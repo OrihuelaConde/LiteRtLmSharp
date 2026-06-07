@@ -1,0 +1,191 @@
+name: Build LiteRT-LM native libraries
+
+# Builds our own libLiteRtLm.so (linux-x64) and LiteRtLm.dll (win-x64) from a
+# pinned LiteRT-LM ref, using native/patch_c_api.sh to add the shared-lib target
+# (upstream has none yet — issue #2154). Accelerator companions are pulled from
+# the repo's prebuilt/<platform>/ via git-lfs. Optionally publishes them as a
+# GitHub Release (tag native-<ref>) on THIS repo, which scripts/restore-natives.ps1
+# can then consume instead of the community prebuilt.
+#
+# Pinning header + binary to the same ref eliminates the ABI skew we hit with the
+# community 0.12.0-a binary (conversation_config crash, missing get_token_count).
+#
+# Run manually from the Actions tab (workflow_dispatch).
+
+on:
+  workflow_dispatch:
+    inputs:
+      litertlm_version:
+        description: 'LiteRT-LM ref (tag, branch, or commit SHA). Bump to a release tag (e.g. v0.13.1) once green.'
+        required: true
+        # Proven-good commit from flutter_gemma's recipe — highest chance of a
+        # first green build. Move to a release tag after the pipeline works.
+        default: '032334d81ff96431492be272e536fbafe094b1e9'
+      publish_release:
+        description: 'Publish artifacts to a GitHub Release on this repo'
+        type: boolean
+        default: false
+
+jobs:
+  build-linux-x64:
+    name: linux-x64
+    # glibc 2.35 baseline for broad compatibility (Ubuntu 22.04+ / Debian 12+ / RHEL 9+).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      LITERTLM_VERSION: ${{ inputs.litertlm_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-17 (XNNPACK AVX-VNNI requires clang >= 15)
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 17
+          sudo ln -sf /usr/bin/clang-17 /usr/bin/clang
+          sudo ln -sf /usr/bin/clang++-17 /usr/bin/clang++
+          clang --version
+
+      - name: Clone LiteRT-LM @ ${{ env.LITERTLM_VERSION }}
+        run: |
+          git clone https://github.com/google-ai-edge/LiteRT-LM /tmp/LiteRT-LM
+          cd /tmp/LiteRT-LM
+          git checkout "$LITERTLM_VERSION"
+          git lfs pull --include="prebuilt/linux_x86_64/*"
+
+      - name: Patch C API (add shared-lib target)
+        run: bash native/patch_c_api.sh /tmp/LiteRT-LM
+
+      - name: Build libLiteRtLm.so
+        run: |
+          cd /tmp/LiteRT-LM
+          bazelisk build -c opt --strip=always \
+            --define=litert_link_capi_so=true \
+            //c:libLiteRtLm.dylib
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts
+          cp /tmp/LiteRT-LM/bazel-bin/c/libLiteRtLm.dylib artifacts/libLiteRtLm.so
+          cp /tmp/LiteRT-LM/prebuilt/linux_x86_64/*.so artifacts/ 2>/dev/null || true
+          ls -lh artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: litertlm-linux_x86_64
+          path: artifacts/
+
+  build-windows-x64:
+    name: win-x64
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      LITERTLM_VERSION: ${{ inputs.litertlm_version }}
+      ANDROID_NDK_HOME: ''
+      BAZEL_OUTPUT_BASE: 'D:\b'   # short path: Bazel + Windows long-path limits
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure git for long paths + symlinks
+        run: |
+          git config --global core.symlinks true
+          git config --system core.longpaths true
+
+      - name: Clone LiteRT-LM @ ${{ env.LITERTLM_VERSION }}
+        run: |
+          git clone https://github.com/google-ai-edge/LiteRT-LM C:\LiteRT-LM
+          cd C:\LiteRT-LM
+          git checkout "$env:LITERTLM_VERSION"
+          git lfs pull --include="prebuilt/windows_x86_64/*"
+
+      - name: Patch C API (add shared-lib target)
+        shell: bash
+        run: bash native/patch_c_api.sh C:/LiteRT-LM
+
+      - name: Build LiteRtLm.dll
+        # resolve_symbols_in_exec=false is required on Windows — without it Bazel
+        # cannot resolve LiteRt* imports at link time (unresolved externals).
+        run: |
+          cd C:\LiteRT-LM
+          bazel --output_base="$env:BAZEL_OUTPUT_BASE" `
+            build -c opt `
+            --linkopt=/OPT:REF --linkopt=/OPT:ICF `
+            --build_tag_filters='-nowindows' `
+            --features=compiler_param_file `
+            --features=archive_param_file `
+            --spawn_strategy=local `
+            --define=litert_link_capi_so=true `
+            --define=resolve_symbols_in_exec=false `
+            //c:libLiteRtLm.dylib
+
+      - name: Download DirectXShaderCompiler runtime (WebGPU/DX12 GPU)
+        run: |
+          $dxcUrl = 'https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/dxc_2026_02_20.zip'
+          Invoke-WebRequest -Uri $dxcUrl -OutFile dxc.zip
+          Expand-Archive -Path dxc.zip -DestinationPath dxc -Force
+
+      - name: Collect artifacts
+        run: |
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          Copy-Item C:\LiteRT-LM\bazel-bin\c\libLiteRtLm.dylib artifacts\LiteRtLm.dll
+
+          $prebuilt = 'C:\LiteRT-LM\prebuilt\windows_x86_64'
+          # Copy every prebuilt DLL as-is (satisfies LiteRtLm.dll's PE imports,
+          # which reference the original lib*-prefixed names).
+          Get-ChildItem "$prebuilt\*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination artifacts\ -Force
+          # Also ship prefixless copies of the lib* accelerators (matches the
+          # filenames the NativeLibraryResolver / default loader probe for).
+          Get-ChildItem 'artifacts\lib*.dll' | ForEach-Object {
+            $stripped = $_.Name -replace '^lib',''
+            Copy-Item $_.FullName "artifacts\$stripped" -Force
+          }
+          # DXC runtime (x64).
+          foreach ($dxc in 'dxil.dll','dxcompiler.dll') {
+            $src = Get-ChildItem -Recurse -Filter $dxc -Path dxc | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+            if (-not $src) { $src = Get-ChildItem -Recurse -Filter $dxc -Path dxc | Select-Object -First 1 }
+            if (-not $src) { throw "DXC runtime missing: $dxc" }
+            Copy-Item $src.FullName "artifacts\$dxc" -Force
+          }
+          Get-ChildItem artifacts\ | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: litertlm-windows_x86_64
+          path: artifacts/
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-linux-x64, build-windows-x64]
+    if: inputs.publish_release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      LITERTLM_VERSION: ${{ inputs.litertlm_version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Package archives + checksums
+        run: |
+          mkdir -p release
+          for rid in linux_x86_64 windows_x86_64; do
+            dir="artifacts/litertlm-${rid}"
+            [ -d "$dir" ] && tar -czf "release/litertlm-${rid}.tar.gz" -C "$dir" .
+          done
+          cd release && sha256sum *.tar.gz | tee checksums.txt
+
+      - name: Create/update Release native-${{ env.LITERTLM_VERSION }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: native-${{ env.LITERTLM_VERSION }}
+          name: LiteRT-LM native ${{ env.LITERTLM_VERSION }}
+          body: |
+            LiteRT-LM C API shared libraries built from source `${{ env.LITERTLM_VERSION }}`
+            via `native/patch_c_api.sh`. Platforms: linux-x64, win-x64.
+
+            Consume with `scripts/restore-natives.ps1` (update its `$version` to match).
+          files: release/*
+          fail_on_unmatched_files: false
