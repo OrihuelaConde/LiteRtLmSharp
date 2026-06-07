@@ -24,6 +24,21 @@ HDR="$DIR/c/engine.h"
 
 echo "Patching LiteRT-LM C API in $DIR ..."
 
+# --- Fix flaky upstream dependency download ---
+# The `minizip` repo in WORKSPACE pulls zlib 1.3.1 from zlib.net, which
+# periodically re-packages its tarballs (changing the sha256) and breaks the
+# pinned checksum -> Bazel aborts ("Checksum was ... but wanted 9a93b2b7..."").
+# Repoint to the canonical zlib 1.3.1 GitHub release, which serves the exact
+# pinned checksum and the same internal layout (zlib-1.3.1/contrib/minizip).
+if [ -f "$DIR/WORKSPACE" ] && grep -q "zlib.net" "$DIR/WORKSPACE"; then
+  GH_ZLIB='https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz'
+  sed -i \
+    -e "s#https://zlib\.net/fossils/zlib-1\.3\.1\.tar\.gz#${GH_ZLIB}#g" \
+    -e "s#https://zlib\.net/zlib-1\.3\.1\.tar\.gz#${GH_ZLIB}#g" \
+    "$DIR/WORKSPACE"
+  echo "  OK: repointed zlib.net -> GitHub release in WORKSPACE (same checksum)."
+fi
+
 if grep -q "linkshared" "$BUILD"; then
   echo "  SKIP: c/BUILD already has a shared-lib target."
   exit 0
