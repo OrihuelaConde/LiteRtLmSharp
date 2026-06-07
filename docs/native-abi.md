@@ -154,12 +154,16 @@ define tool → modelo emite tool-call → ejecutamos → reinyectamos → respu
 > Quirk del template Gemma: con constrained decoding los argumentos llegan con tokens `<|"|>` como
 > comillas (`<|"|>Tokyo<|"|>`). El parser los **sanea** (`StripControlTokens`/`CleanJson`) → `"Tokyo"`.
 
-### ⚠️ Regresión de streaming en el binario propio
-`SendMessageStreamingAsync` **segfaultea (exit 139) en el binario Fase 2** (`032334d8`) — el hilo nativo
-de streaming crashea (probablemente por el `libLiteRt` linkeado por separado vía `litert_link_capi_so`).
-Funcionaba en el binario comunitario `0.12.0-a`. **El path bloqueante (`Send`/`SendMessage`) es estable**
-y es el default del sample/tests. Streaming queda como experimental hasta investigar (posible bridge tipo
-StreamProxy o ajuste de build). El test usa el path bloqueante; la suite pasa 4/4.
+### Streaming: regresión en `032334d8`, RESUELTO en `v0.13.1`
+`SendMessageStreamingAsync` segfaulteaba (exit 139) en el binario del commit interino `032334d8` — el
+hilo nativo de decode crasheaba ANTES del primer callback (rc=0; `[cb:enter]` nunca se alcanzaba). No era
+managed (funcionaba en `0.12.0-a`), ni el WebGPU sampler (#2073), ni `litert_link_capi_so` (presente en
+ambos builds): era una regresión del commit. **Compilar desde el tag de release `v0.13.1` lo arregla.**
+Verificado: streaming OK, tools OK, `get_token_count` ahora exportado (89 funcs), y la secuencia
+streaming→tools en un mismo proceso (que antes segfaulteaba) pasa. Suite 4/4 en v0.13.1.
+
+> Lección: pinear a un **tag de release**, no a un commit arbitrario — más estable y es el objetivo de
+> sincronía con Google. `build-native.yml` ahora usa `v0.13.1` por defecto.
 
 ## Backend GPU en desktop (WebGPU) — comportamiento esperado
 

@@ -1,19 +1,17 @@
 using LiteLMSharp;
 
 // Usage:
-//   LiteLMSharp.Sample <model.litertlm> [prompt]      interactive / one-shot chat (blocking)
-//   LiteLMSharp.Sample <model.litertlm> --tools       function-calling demo
-//   LiteLMSharp.Sample <model.litertlm> --stream "p"  streaming (experimental: see note below)
+//   LiteLMSharp.Sample <model.litertlm> [prompt]   interactive / one-shot chat (streaming)
+//   LiteLMSharp.Sample <model.litertlm> --tools    function-calling demo (blocking)
 if (args.Length < 1)
 {
-    Console.Error.WriteLine("Usage: LiteLMSharp.Sample <model.litertlm> [prompt | --tools | --stream <prompt>]");
+    Console.Error.WriteLine("Usage: LiteLMSharp.Sample <model.litertlm> [prompt | --tools]");
     return 1;
 }
 
 string modelPath = args[0];
 bool toolsDemo = args.Contains("--tools");
-bool useStream = args.Contains("--stream");
-string[] rest = args[1..].Where(a => a is not ("--tools" or "--stream")).ToArray();
+string[] rest = args[1..].Where(a => a != "--tools").ToArray();
 string? oneShotPrompt = rest.Length > 0 ? string.Join(' ', rest) : null;
 
 LiteRtEngine.SetMinLogLevel(3); // WARNING and above
@@ -41,19 +39,7 @@ using var conversation = engine.CreateConversation();
 
 if (oneShotPrompt is not null)
 {
-    if (useStream)
-    {
-        // NOTE: streaming currently segfaults on self-built (Fase 2) binaries — under investigation.
-        // It works on the community native-v0.12.0-a build. Prefer blocking until fixed.
-        Console.Write("Model (streaming): ");
-        await foreach (string chunk in conversation.SendMessageStreamingAsync(oneShotPrompt))
-            Console.Write(chunk);
-        Console.WriteLine();
-    }
-    else
-    {
-        Console.WriteLine("Model: " + conversation.SendMessage(oneShotPrompt));
-    }
+    await StreamReplyAsync(conversation, oneShotPrompt);
     return 0;
 }
 
@@ -65,7 +51,7 @@ while (true)
     if (string.IsNullOrWhiteSpace(line))
         break;
 
-    Console.WriteLine("Model: " + conversation.SendMessage(line));
+    await StreamReplyAsync(conversation, line);
 
     try
     {
@@ -81,6 +67,14 @@ while (true)
 }
 
 return 0;
+
+static async Task StreamReplyAsync(LiteRtConversation conversation, string prompt)
+{
+    Console.Write("Model: ");
+    await foreach (string chunk in conversation.SendMessageStreamingAsync(prompt))
+        Console.Write(chunk);
+    Console.WriteLine();
+}
 
 // Demonstrates the function-calling loop: define a tool, let the model request it,
 // execute it locally, feed the result back, and print the final answer. Uses the

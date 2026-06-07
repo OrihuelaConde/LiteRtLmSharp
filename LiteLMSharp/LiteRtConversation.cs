@@ -156,10 +156,8 @@ public sealed class LiteRtConversation : IDisposable
     /// Sends a user message and streams the response text chunks as they arrive (text only;
     /// for tool calls use the blocking <see cref="Send"/>).
     /// <para>
-    /// EXPERIMENTAL / KNOWN ISSUE: works on the community native-v0.12.0-a binary but currently
-    /// SEGFAULTS on our self-built (Fase 2) binaries — the native streaming thread crashes,
-    /// likely due to the separately-linked libLiteRt (litert_link_capi_so). Prefer
-    /// <see cref="Send"/>/<see cref="SendMessage"/> (blocking) until this is resolved.
+    /// Requires a sound native build: the async decode thread crashed on the interim commit
+    /// 032334d8, but works on release tags (verified on v0.13.1) and on community 0.12.0-a.
     /// </para>
     /// </summary>
     public async IAsyncEnumerable<string> SendMessageStreamingAsync(

@@ -57,17 +57,19 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
 {
     private readonly EngineFixture _fixture = fixture;
 
-    /// <summary>End-to-end blocking generation. Skipped unless LITERTLM_TEST_MODEL is set.
-    /// (Blocking is the stable path; streaming currently segfaults on self-built binaries.)</summary>
+    /// <summary>End-to-end streaming generation. Skipped unless LITERTLM_TEST_MODEL is set.
+    /// (Validated on v0.13.1; the async path crashed on the interim commit 032334d8.)</summary>
     [SkippableFact]
-    public void Blocking_Generation_ProducesText()
+    public async Task Streaming_Generation_ProducesText()
     {
         Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
         using var conversation = _fixture.Engine!.CreateConversation();
-        string reply = conversation.SendMessage("Count from 1 to 3.");
+        var sb = new System.Text.StringBuilder();
+        await foreach (string chunk in conversation.SendMessageStreamingAsync("Count from 1 to 3."))
+            sb.Append(chunk);
 
-        Assert.False(string.IsNullOrWhiteSpace(reply), "Expected a non-empty response.");
+        Assert.True(sb.Length > 0, "Expected a non-empty streamed response.");
     }
 
     /// <summary>
