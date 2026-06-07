@@ -16,11 +16,12 @@ on:
   workflow_dispatch:
     inputs:
       litertlm_version:
-        description: 'LiteRT-LM ref (tag, branch, or commit SHA). Bump to a release tag (e.g. v0.13.1) once green.'
+        description: 'LiteRT-LM ref (tag, branch, or commit SHA).'
         required: true
-        # Proven-good commit from flutter_gemma's recipe — highest chance of a
-        # first green build. Move to a release tag after the pipeline works.
-        default: '032334d81ff96431492be272e536fbafe094b1e9'
+        # Release tag: version-synced with Google, includes get_token_count, and is the
+        # target for streaming-fix validation. Proven fallback commit if a tag regresses:
+        # 032334d81ff96431492be272e536fbafe094b1e9
+        default: 'v0.13.1'
       publish_release:
         description: 'Publish artifacts to a GitHub Release on this repo'
         type: boolean

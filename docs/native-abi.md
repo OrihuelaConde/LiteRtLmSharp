@@ -121,6 +121,46 @@ Probado con `gemma-4-E2B-it.litertlm` (CPU/XNNPACK) desde .NET:
 **Lección para Fase 2 / sincronía:** el header y el binario deben provenir del **mismo tag** de LiteRT-LM.
 El skew explica (3) y (4); compilar nosotros desde un tag fijo lo elimina.
 
+## Tool / function calling (formato de wire verificado)
+
+El C API expone tools vía conversation-config (requiere binario sin el skew — Fase 2):
+`litert_lm_conversation_config_set_tools(config, tools_json)` +
+`litert_lm_conversation_config_set_enable_constrained_decoding(config, true)`.
+
+- **Definición de tools** (estilo OpenAI/Gemini FunctionDeclaration), de `c/engine_test.cc`:
+  ```json
+  [{"type":"function","function":{"name":"get_current_weather","description":"...",
+    "parameters":{"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}}}]
+  ```
+- **Respuesta con tool-call** (lo que devuelve `send_message`; docs Gemma 4 / FunctionGemma):
+  ```json
+  {"role":"assistant","tool_calls":[{"type":"function",
+    "function":{"name":"get_current_weather","arguments":{"location":"Tokyo"}}}]}
+  ```
+- **Mensaje con el resultado del tool** (se reenvía con `send_message`):
+  ```json
+  {"role":"tool","content":[{"name":"get_current_weather","response":{"temperature":15}}]}
+  ```
+
+Wrapper: `LiteRtTool`, `LiteRtConversationOptions.Tools` + `EnableConstrainedDecoding`,
+`conv.Send(text) → LiteRtResponse` (`.Text` o `.ToolCalls`), `conv.SendToolResults(...)`, y
+`conv.SendMessageRaw(json)` como escape hatch. El parser es tolerante (function.arguments objeto o string;
+fallback a name/args top-level) y siempre expone `RawJson`.
+
+**VALIDADO end-to-end** con el binario propio Fase 2 (`032334d8`) + `gemma-4-E2B-it` (CPU): el loop
+define tool → modelo emite tool-call → ejecutamos → reinyectamos → respuesta final correcta. El
+`conversation_config_create` ya **no crashea** (header+binario emparejados).
+
+> Quirk del template Gemma: con constrained decoding los argumentos llegan con tokens `<|"|>` como
+> comillas (`<|"|>Tokyo<|"|>`). El parser los **sanea** (`StripControlTokens`/`CleanJson`) → `"Tokyo"`.
+
+### ⚠️ Regresión de streaming en el binario propio
+`SendMessageStreamingAsync` **segfaultea (exit 139) en el binario Fase 2** (`032334d8`) — el hilo nativo
+de streaming crashea (probablemente por el `libLiteRt` linkeado por separado vía `litert_link_capi_so`).
+Funcionaba en el binario comunitario `0.12.0-a`. **El path bloqueante (`Send`/`SendMessage`) es estable**
+y es el default del sample/tests. Streaming queda como experimental hasta investigar (posible bridge tipo
+StreamProxy o ajuste de build). El test usa el path bloqueante; la suite pasa 4/4.
+
 ## Backend GPU en desktop (WebGPU) — comportamiento esperado
 
 - El backend `"gpu"` en desktop usa **WebGPU nativo (Dawn)**, NO el navegador. Es una capa GPU portable

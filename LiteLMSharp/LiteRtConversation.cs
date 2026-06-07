@@ -1,7 +1,5 @@
-using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Text.Json;
 using System.Threading.Channels;
 using LiteLMSharp.Native;
 
@@ -34,14 +32,19 @@ public sealed class LiteRtConversation : IDisposable
         try
         {
             nint configPtr = nint.Zero;
-            if (options is not null && (options.SystemMessage is not null || options.Sampler is not null || options.MaxOutputTokens > 0))
+            bool hasTools = options?.Tools is { Count: > 0 };
+            bool needsConfig = options is not null &&
+                (options.SystemMessage is not null || options.Sampler is not null ||
+                 options.MaxOutputTokens > 0 || hasTools || options.EnableConstrainedDecoding);
+
+            if (needsConfig)
             {
                 configPtr = LiteRtLmNative.litert_lm_conversation_config_create();
                 if (configPtr == nint.Zero)
                     throw new LiteRtException("litert_lm_conversation_config_create returned null.");
                 config = new ConversationConfigHandle(configPtr);
 
-                if (options.Sampler is not null || options.MaxOutputTokens > 0)
+                if (options!.Sampler is not null || options.MaxOutputTokens > 0)
                 {
                     nint sessionPtr = LiteRtLmNative.litert_lm_session_config_create();
                     if (sessionPtr == nint.Zero)
@@ -68,7 +71,13 @@ public sealed class LiteRtConversation : IDisposable
                 }
 
                 if (options.SystemMessage is not null)
-                    LiteRtLmNative.litert_lm_conversation_config_set_system_message(configPtr, BuildSystemMessage(options.SystemMessage));
+                    LiteRtLmNative.litert_lm_conversation_config_set_system_message(configPtr, LiteRtJson.SystemMessage(options.SystemMessage));
+
+                if (hasTools)
+                    LiteRtLmNative.litert_lm_conversation_config_set_tools(configPtr, LiteRtJson.Tools(options.Tools!));
+
+                if (options.EnableConstrainedDecoding)
+                    LiteRtLmNative.litert_lm_conversation_config_set_enable_constrained_decoding(configPtr, true);
             }
 
             nint convPtr = LiteRtLmNative.litert_lm_conversation_create(engine.Ptr, configPtr);
@@ -99,24 +108,60 @@ public sealed class LiteRtConversation : IDisposable
         }
     }
 
-    /// <summary>Sends a user message and returns the full model response (blocking).</summary>
+    /// <summary>Sends a user message and returns only the text answer (blocking).
+    /// For function calling use <see cref="Send"/>, which also surfaces tool calls.</summary>
     public string SendMessage(string text)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(text);
+        return Send(text).Text ?? string.Empty;
+    }
+
+    /// <summary>Sends a user message and returns the structured response (text or tool calls).</summary>
+    public LiteRtResponse Send(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        return LiteRtResponse.Parse(SendMessageRaw(LiteRtJson.UserMessage(text)));
+    }
+
+    /// <summary>
+    /// Sends the results of executed tools back to the model and returns its next response.
+    /// Call after a <see cref="LiteRtResponse"/> with <see cref="LiteRtResponse.IsToolCall"/> = true.
+    /// </summary>
+    public LiteRtResponse SendToolResults(IEnumerable<LiteRtToolResult> results)
+    {
+        ArgumentNullException.ThrowIfNull(results);
+        return LiteRtResponse.Parse(SendMessageRaw(LiteRtJson.ToolResults(results)));
+    }
+
+    /// <summary>
+    /// Low-level escape hatch: sends a raw message JSON and returns the raw response JSON.
+    /// Use when you need full control over the wire format.
+    /// </summary>
+    public string SendMessageRaw(string messageJson, string? extraContext = null)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(messageJson);
 
         nint responsePtr = LiteRtLmNative.litert_lm_conversation_send_message(
-            _conversation.Ptr, BuildUserMessage(text), null, nint.Zero);
+            _conversation.Ptr, messageJson, extraContext, nint.Zero);
         if (responsePtr == nint.Zero)
             throw new LiteRtException("litert_lm_conversation_send_message returned null.");
 
         using var response = new JsonResponseHandle(responsePtr);
         nint strPtr = LiteRtLmNative.litert_lm_json_response_get_string(response.Ptr);
-        string json = Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
-        return ExtractText(json);
+        return Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
     }
 
-    /// <summary>Sends a user message and streams the response text chunks as they arrive.</summary>
+    /// <summary>
+    /// Sends a user message and streams the response text chunks as they arrive (text only;
+    /// for tool calls use the blocking <see cref="Send"/>).
+    /// <para>
+    /// EXPERIMENTAL / KNOWN ISSUE: works on the community native-v0.12.0-a binary but currently
+    /// SEGFAULTS on our self-built (Fase 2) binaries — the native streaming thread crashes,
+    /// likely due to the separately-linked libLiteRt (litert_link_capi_so). Prefer
+    /// <see cref="Send"/>/<see cref="SendMessage"/> (blocking) until this is resolved.
+    /// </para>
+    /// </summary>
     public async IAsyncEnumerable<string> SendMessageStreamingAsync(
         string text, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -132,7 +177,7 @@ public sealed class LiteRtConversation : IDisposable
         unsafe
         {
             rc = LiteRtLmNative.litert_lm_conversation_send_message_stream(
-                _conversation.Ptr, BuildUserMessage(text), null, nint.Zero,
+                _conversation.Ptr, LiteRtJson.UserMessage(text), null, nint.Zero,
                 &OnStreamChunk, GCHandle.ToIntPtr(gcHandle));
         }
 
@@ -149,8 +194,18 @@ public sealed class LiteRtConversation : IDisposable
         }
         finally
         {
-            if (cancellationToken.IsCancellationRequested)
+            // The native streaming thread invokes the callback until is_final, which completes the
+            // channel. Before freeing the GCHandle (and letting the caller dispose the conversation)
+            // we MUST ensure that thread is done — otherwise it dereferences freed state / a deleted
+            // conversation and segfaults. If the consumer abandoned early, cancel and then wait.
+            if (!channel.Reader.Completion.IsCompleted)
+            {
                 LiteRtLmNative.litert_lm_conversation_cancel_process(_conversation.Ptr);
+                try { await channel.Reader.Completion.ConfigureAwait(false); }
+                catch { /* completion may surface the cancel error; ignore here */ }
+            }
+            if (gcHandle.IsAllocated)
+                gcHandle.Free();
         }
     }
 
@@ -174,78 +229,22 @@ public sealed class LiteRtConversation : IDisposable
             string? piece = Marshal.PtrToStringUTF8(chunk);
             if (!string.IsNullOrEmpty(piece))
             {
-                string text = ExtractText(piece);
+                string text = LiteRtResponse.Parse(piece).Text ?? string.Empty;
                 if (text.Length > 0)
                     state.Channel.Writer.TryWrite(text);
             }
         }
 
         if (isFinal != 0)
-        {
             state.Channel.Writer.TryComplete();
-            if (Interlocked.Exchange(ref state.Freed, 1) == 0)
-                gcHandle.Free();
-        }
+        // NOTE: do NOT free the GCHandle here — the async iterator's finally owns its lifetime and
+        // only frees it once the channel is fully completed, so this callback can never run against
+        // a freed handle.
     }
 
     private sealed class StreamState(Channel<string> channel)
     {
         public readonly Channel<string> Channel = channel;
-        public int Freed;
-    }
-
-    private static string BuildUserMessage(string text)
-    {
-        var buffer = new ArrayBufferWriter<byte>();
-        using (var writer = new Utf8JsonWriter(buffer))
-        {
-            writer.WriteStartObject();
-            writer.WriteString("role", "user");
-            writer.WriteStartArray("content");
-            writer.WriteStartObject();
-            writer.WriteString("type", "text");
-            writer.WriteString("text", text);
-            writer.WriteEndObject();
-            writer.WriteEndArray();
-            writer.WriteEndObject();
-        }
-        return System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
-    }
-
-    private static string BuildSystemMessage(string text)
-    {
-        var buffer = new ArrayBufferWriter<byte>();
-        using (var writer = new Utf8JsonWriter(buffer))
-        {
-            writer.WriteStartObject();
-            writer.WriteString("type", "text");
-            writer.WriteString("text", text);
-            writer.WriteEndObject();
-        }
-        return System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
-    }
-
-    /// <summary>Extracts <c>content[0].text</c> from a response JSON, falling back to the raw string.</summary>
-    private static string ExtractText(string json)
-    {
-        if (string.IsNullOrEmpty(json))
-            return string.Empty;
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("content", out var content)
-                && content.ValueKind == JsonValueKind.Array
-                && content.GetArrayLength() > 0
-                && content[0].TryGetProperty("text", out var textEl))
-            {
-                return textEl.GetString() ?? string.Empty;
-            }
-        }
-        catch (JsonException)
-        {
-            // Not JSON we recognize — return as-is.
-        }
-        return json;
     }
 
     public void Dispose()

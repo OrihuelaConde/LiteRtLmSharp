@@ -32,4 +32,13 @@ public sealed record LiteRtConversationOptions
 
     /// <summary>Maximum output tokens per response. 0 = engine default.</summary>
     public int MaxOutputTokens { get; init; }
+
+    /// <summary>Tools the model may call (function calling). Null/empty = no tools.</summary>
+    public IReadOnlyList<LiteRtTool>? Tools { get; init; }
+
+    /// <summary>
+    /// Force the model to emit valid (schema-constrained) output. Strongly recommended when
+    /// <see cref="Tools"/> are set so tool-call arguments parse reliably.
+    /// </summary>
+    public bool EnableConstrainedDecoding { get; init; }
 }
