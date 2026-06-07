@@ -361,3 +361,20 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# ---------------------------------------------------------------------------
+# LiteLMSharp project-specific
+# ---------------------------------------------------------------------------
+
+# Large model files + runtime-generated caches (download separately; >100MB, GitHub rejects them)
+models/
+
+# Native LiteRT-LM binaries (183MB of third-party DLLs). Restore with scripts/restore-natives.ps1.
+# Fase 2 will build/publish these via CI; not kept in git history.
+runtimes/
+
+# Scratch/reference downloads used during development
+.tmp/
+
+# Claude Code machine-local settings (shared .claude/settings.json may be committed)
+.claude/settings.local.json
