@@ -6,11 +6,11 @@ namespace LiteLMSharp.Native;
 /// <summary>
 /// Resolves the <c>LiteRtLm</c> native library. Probes the assembly directory and the NuGet
 /// <c>runtimes/&lt;rid&gt;/native</c> layout. On Linux/macOS it pre-loads the companion shared
-/// libraries (e.g. libLiteRt) from the same folder first, so the loader resolves them without an
-/// rpath/LD_LIBRARY_PATH (on Windows same-directory resolution already works).
-/// Registered lazily from <see cref="LiteRtEngine"/>'s static constructor.
+/// libraries (e.g. libLiteRt) from the same folder with <c>RTLD_GLOBAL</c> so the main library's
+/// dependencies resolve without an rpath/LD_LIBRARY_PATH. On Windows same-directory resolution
+/// already works. Registered lazily from <see cref="LiteRtEngine"/>'s static constructor.
 /// </summary>
-internal static class NativeLibraryResolver
+internal static partial class NativeLibraryResolver
 {
     private static int _registered;
 
@@ -52,9 +52,10 @@ internal static class NativeLibraryResolver
     }
 
     /// <summary>
-    /// Pre-loads the other shared libraries in <paramref name="dir"/> so the main library's
-    /// dependencies resolve to already-loaded modules. No-op on Windows (same-dir search works).
-    /// Multiple passes handle inter-dependencies; failures are ignored (accelerators load lazily).
+    /// Pre-loads the other shared libraries in <paramref name="dir"/> with RTLD_GLOBAL so the main
+    /// library's dependencies resolve to already-loaded modules. No-op on Windows (same-dir search
+    /// works). Multiple passes handle inter-dependencies; failures are ignored (accelerators load
+    /// lazily / may have optional deps).
     /// </summary>
     private static void PreloadCompanions(string dir, string mainFileName)
     {
@@ -68,12 +69,38 @@ internal static class NativeLibraryResolver
 
         for (int pass = 0; pass < 3 && pending.Count > 0; pass++)
         {
-            var stillPending = pending.Where(lib => !NativeLibrary.TryLoad(lib, out _)).ToList();
+            var stillPending = pending.Where(lib => DlopenGlobal(lib) == nint.Zero).ToList();
             if (stillPending.Count == pending.Count)
                 break; // no progress this pass
             pending = stillPending;
         }
     }
+
+    // RTLD_LAZY (defer symbol resolution) | RTLD_GLOBAL (export symbols to later-loaded libs).
+    // RTLD_GLOBAL differs by OS: 0x8 on macOS, 0x100 on Linux. RTLD_LAZY is 0x1 on both.
+    private const int RtldLazy = 0x1;
+    private static int RtldGlobal => RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? 0x8 : 0x100;
+
+    private static nint DlopenGlobal(string path)
+    {
+        int flags = RtldLazy | RtldGlobal;
+        try
+        {
+            return RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+                ? dlopen_macos(path, flags)
+                : dlopen_linux(path, flags);
+        }
+        catch (DllNotFoundException)
+        {
+            return nint.Zero;
+        }
+    }
+
+    [LibraryImport("libdl.so.2", EntryPoint = "dlopen", StringMarshalling = StringMarshalling.Utf8)]
+    private static partial nint dlopen_linux(string path, int flags);
+
+    [LibraryImport("libdl.dylib", EntryPoint = "dlopen", StringMarshalling = StringMarshalling.Utf8)]
+    private static partial nint dlopen_macos(string path, int flags);
 
     private static string GetPlatformFileName(string name)
     {
