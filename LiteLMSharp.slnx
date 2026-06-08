@@ -4,4 +4,5 @@
   <Project Path="LiteLMSharp.Tests/LiteLMSharp.Tests.csproj" />
   <Project Path="packaging/LiteLMSharp.runtime.win-x64/LiteLMSharp.runtime.win-x64.csproj" />
   <Project Path="packaging/LiteLMSharp.runtime.linux-x64/LiteLMSharp.runtime.linux-x64.csproj" />
+  <Project Path="packaging/LiteLMSharp.runtime.android-arm64/LiteLMSharp.runtime.android-arm64.csproj" />
 </Solution>

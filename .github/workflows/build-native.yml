@@ -155,9 +155,59 @@ jobs:
           name: litertlm-windows_x86_64
           path: artifacts/
 
+  build-android-arm64:
+    name: android-arm64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      LITERTLM_VERSION: ${{ inputs.litertlm_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Android NDK
+        # The runner ships an NDK; LiteRT-LM wants r28b+. If the default is too old the
+        # Bazel step will say so — pin a newer NDK here (e.g. nttld/setup-ndk) if needed.
+        run: |
+          echo "ANDROID_NDK_HOME=${ANDROID_NDK_LATEST_HOME}" >> "$GITHUB_ENV"
+          echo "Using NDK at ${ANDROID_NDK_LATEST_HOME}"
+          ls "${ANDROID_NDK_LATEST_HOME}/source.properties" && cat "${ANDROID_NDK_LATEST_HOME}/source.properties" || true
+
+      - name: Clone LiteRT-LM @ ${{ env.LITERTLM_VERSION }}
+        run: |
+          git clone https://github.com/google-ai-edge/LiteRT-LM /tmp/LiteRT-LM
+          cd /tmp/LiteRT-LM
+          git checkout "$LITERTLM_VERSION"
+          git lfs pull --include="prebuilt/android_arm64/*"
+
+      - name: Patch C API (add shared-lib target)
+        run: bash native/patch_c_api.sh /tmp/LiteRT-LM
+
+      - name: Build libLiteRtLm.so (android-arm64)
+        # No litert_link_capi_so: Android has no separate libLiteRt.so in prebuilt/, so the
+        # LiteRt C API is static-linked into libLiteRtLm.so (exported via the dynamic-list).
+        # max-page-size=16384 satisfies Google Play's 16 KB page-size requirement.
+        run: |
+          cd /tmp/LiteRT-LM
+          bazelisk build -c opt --strip=always \
+            --config=android_arm64 \
+            --linkopt=-Wl,-z,max-page-size=16384 \
+            //c:libLiteRtLm.dylib
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts
+          cp /tmp/LiteRT-LM/bazel-bin/c/libLiteRtLm.dylib artifacts/libLiteRtLm.so
+          cp /tmp/LiteRT-LM/prebuilt/android_arm64/*.so artifacts/ 2>/dev/null || true
+          ls -lh artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: litertlm-android_arm64
+          path: artifacts/
+
   publish-release:
     name: Publish GitHub Release
-    needs: [build-linux-x64, build-windows-x64]
+    needs: [build-linux-x64, build-windows-x64, build-android-arm64]
     if: inputs.publish_release
     runs-on: ubuntu-latest
     permissions:
@@ -172,7 +222,7 @@ jobs:
       - name: Package archives + checksums
         run: |
           mkdir -p release
-          for rid in linux_x86_64 windows_x86_64; do
+          for rid in linux_x86_64 windows_x86_64 android_arm64; do
             dir="artifacts/litertlm-${rid}"
             [ -d "$dir" ] && tar -czf "release/litertlm-${rid}.tar.gz" -C "$dir" .
           done
@@ -185,7 +235,7 @@ jobs:
           name: LiteRT-LM native ${{ env.LITERTLM_VERSION }}
           body: |
             LiteRT-LM C API shared libraries built from source `${{ env.LITERTLM_VERSION }}`
-            via `native/patch_c_api.sh`. Platforms: linux-x64, win-x64.
+            via `native/patch_c_api.sh`. Platforms: linux-x64, win-x64, android-arm64.
 
             Consume with `scripts/restore-natives.ps1` (update its `$version` to match).
           files: release/*

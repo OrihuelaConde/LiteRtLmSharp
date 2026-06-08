@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Native-only NuGet package: LiteRT-LM android-arm64 (.so) under runtimes/android-arm64/native/.
+    .NET Android (net8+) bundles runtimes/<rid>/native/*.so from packages into the APK.
+    On Android the LiteRt C API is static-linked into libLiteRtLm.so (no separate libLiteRt.so).
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IncludeSymbols>false</IncludeSymbols>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+
+    <PackageId>LiteLMSharp.runtime.android-arm64</PackageId>
+    <Description>Native LiteRT-LM runtime (android-arm64) for LiteLMSharp. Built from LiteRT-LM $(LiteRtLmVersion).</Description>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\runtimes\android-arm64\native\*"
+          Pack="true"
+          PackagePath="runtimes\android-arm64\native\" />
+  </ItemGroup>
+
+</Project>

@@ -47,11 +47,11 @@ jobs:
 
       - name: Lay out runtimes/<rid>/native
         run: |
-          mkdir -p runtimes/win-x64/native runtimes/linux-x64/native
+          mkdir -p runtimes/win-x64/native runtimes/linux-x64/native runtimes/android-arm64/native
           tar -xzf natives/litertlm-windows_x86_64.tar.gz -C runtimes/win-x64/native
           tar -xzf natives/litertlm-linux_x86_64.tar.gz   -C runtimes/linux-x64/native
-          echo "win-x64:";   ls runtimes/win-x64/native
-          echo "linux-x64:"; ls runtimes/linux-x64/native
+          [ -f natives/litertlm-android_arm64.tar.gz ] && tar -xzf natives/litertlm-android_arm64.tar.gz -C runtimes/android-arm64/native || echo "no android asset"
+          for r in win-x64 linux-x64 android-arm64; do echo "$r:"; ls "runtimes/$r/native" 2>/dev/null; done
 
       - name: Pack
         run: |
@@ -59,6 +59,7 @@ jobs:
           dotnet pack LiteLMSharp/LiteLMSharp.csproj $common
           dotnet pack packaging/LiteLMSharp.runtime.win-x64/LiteLMSharp.runtime.win-x64.csproj $common
           dotnet pack packaging/LiteLMSharp.runtime.linux-x64/LiteLMSharp.runtime.linux-x64.csproj $common
+          dotnet pack packaging/LiteLMSharp.runtime.android-arm64/LiteLMSharp.runtime.android-arm64.csproj $common
           ls -lh artifacts/*.nupkg
 
       - uses: actions/upload-artifact@v4

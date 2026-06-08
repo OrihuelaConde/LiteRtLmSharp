@@ -87,11 +87,15 @@ cc_binary(
     linkopts = select({
         "@platforms//os:macos": ["-Wl,-exported_symbol,_LiteRt*", "-Wl,-exported_symbol,_litert_lm_*"],
         "@platforms//os:ios": ["-Wl,-exported_symbol,_LiteRt*", "-Wl,-exported_symbol,_litert_lm_*"],
+        # Android uses the GNU/lld linker like Linux: keep LiteRt*/litert_lm_* in the dynamic
+        # export table so the prebuilt accelerators can resolve LiteRt* at runtime.
         "@platforms//os:linux": ["-Wl,--dynamic-list=$(location :dynamic_list.lds)"],
+        "@platforms//os:android": ["-Wl,--dynamic-list=$(location :dynamic_list.lds)"],
         "//conditions:default": [],
     }),
     additional_linker_inputs = select({
         "@platforms//os:linux": [":dynamic_list.lds"],
+        "@platforms//os:android": [":dynamic_list.lds"],
         "//conditions:default": [],
     }),
     visibility = ["//visibility:public"],
