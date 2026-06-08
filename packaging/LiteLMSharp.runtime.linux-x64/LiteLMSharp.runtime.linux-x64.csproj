@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Native-only NuGet package: LiteRT-LM linux-x64 binaries under runtimes/linux-x64/native/.
+    No managed assembly. Pair with the managed LiteLMSharp package (same version).
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IncludeSymbols>false</IncludeSymbols>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+
+    <PackageId>LiteLMSharp.runtime.linux-x64</PackageId>
+    <Description>Native LiteRT-LM runtime (linux-x64) for LiteLMSharp. Built from LiteRT-LM $(LiteRtLmVersion).</Description>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\runtimes\linux-x64\native\*"
+          Pack="true"
+          PackagePath="runtimes\linux-x64\native\" />
+  </ItemGroup>
+
+</Project>

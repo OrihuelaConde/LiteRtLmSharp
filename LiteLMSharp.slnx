@@ -2,4 +2,6 @@
   <Project Path="LiteLMSharp/LiteLMSharp.csproj" />
   <Project Path="samples/Console/LiteLMSharp.Sample.csproj" />
   <Project Path="LiteLMSharp.Tests/LiteLMSharp.Tests.csproj" />
+  <Project Path="packaging/LiteLMSharp.runtime.win-x64/LiteLMSharp.runtime.win-x64.csproj" />
+  <Project Path="packaging/LiteLMSharp.runtime.linux-x64/LiteLMSharp.runtime.linux-x64.csproj" />
 </Solution>

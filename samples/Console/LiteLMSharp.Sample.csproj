@@ -7,6 +7,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>LiteLMSharp.Sample</RootNamespace>
     <AssemblyName>LiteLMSharp.Sample</AssemblyName>
+    <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>

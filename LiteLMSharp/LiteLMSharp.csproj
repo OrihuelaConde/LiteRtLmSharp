@@ -8,34 +8,28 @@
     <IsAotCompatible>true</IsAotCompatible>
     <LangVersion>latest</LangVersion>
 
-    <!-- NuGet metadata -->
+    <!-- Pure managed package. Native binaries ship in LiteLMSharp.runtime.<rid> packages. -->
     <PackageId>LiteLMSharp</PackageId>
-    <Description>.NET binding for Google's LiteRT-LM on-device LLM inference (P/Invoke over the C API).</Description>
-    <Authors>LiteLMSharp contributors</Authors>
-    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <Description>.NET binding for Google's LiteRT-LM on-device LLM inference (P/Invoke over the C API). Add a LiteLMSharp.runtime.&lt;rid&gt; package for native binaries.</Description>
   </PropertyGroup>
 
   <!--
-    PoC: copy the native LiteRT-LM runtime next to the managed assembly so default
-    P/Invoke resolution works for the console sample. The same files are declared
-    for the runtimes/<rid>/native NuGet layout (consumed via NativeLibraryResolver).
-    Production (Fase 2) will replace these checked-in binaries with CI-built ones.
+    Local dev only: copy the native LiteRT-LM runtime next to the managed assembly so the sample
+    and tests resolve it. These come from runtimes/<rid>/native/ (gitignored; produced by
+    build-native.yml or scripts/restore-natives.ps1). Pack=false — they are NOT in this package;
+    they are distributed via the separate LiteLMSharp.runtime.<rid> packages.
   -->
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
-    <None Include="..\runtimes\win-x64\native\*.dll">
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) And Exists('..\runtimes\win-x64\native')">
+    <None Include="..\runtimes\win-x64\native\*.dll" Pack="false">
       <Link>%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Pack>true</Pack>
-      <PackagePath>runtimes\win-x64\native</PackagePath>
     </None>
   </ItemGroup>
 
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Linux'))">
-    <None Include="..\runtimes\linux-x64\native\*.so">
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Linux')) And Exists('..\runtimes\linux-x64\native')">
+    <None Include="..\runtimes\linux-x64\native\*.so" Pack="false">
       <Link>%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Pack>true</Pack>
-      <PackagePath>runtimes\linux-x64\native</PackagePath>
     </None>
   </ItemGroup>
 

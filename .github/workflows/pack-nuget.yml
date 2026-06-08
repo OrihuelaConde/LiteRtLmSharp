@@ -1,0 +1,76 @@
+name: Pack NuGet packages
+
+# Builds the NuGet packages: the managed LiteLMSharp (pure) + per-RID native runtime packages
+# (LiteLMSharp.runtime.win-x64 / .linux-x64). Native binaries are pulled from the GitHub Release
+# produced by build-native.yml (tag native-<native_ref>), so run that first.
+#
+# Run manually from the Actions tab.
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: 'NuGet package version (e.g. 0.13.1-preview.1)'
+        required: true
+        default: '0.13.1-preview.1'
+      native_ref:
+        description: 'LiteRT-LM ref whose native release to consume (release tag = native-<ref>)'
+        required: true
+        default: 'v0.13.1'
+      push:
+        description: 'Push packages to nuget.org (requires NUGET_API_KEY secret)'
+        type: boolean
+        default: false
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Download native binaries from release native-${{ inputs.native_ref }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p natives
+          gh release download "native-${{ inputs.native_ref }}" \
+            --repo "${{ github.repository }}" \
+            --pattern 'litertlm-*.tar.gz' \
+            --dir natives
+          ls -lh natives/
+
+      - name: Lay out runtimes/<rid>/native
+        run: |
+          mkdir -p runtimes/win-x64/native runtimes/linux-x64/native
+          tar -xzf natives/litertlm-windows_x86_64.tar.gz -C runtimes/win-x64/native
+          tar -xzf natives/litertlm-linux_x86_64.tar.gz   -C runtimes/linux-x64/native
+          echo "win-x64:";   ls runtimes/win-x64/native
+          echo "linux-x64:"; ls runtimes/linux-x64/native
+
+      - name: Pack
+        run: |
+          common="-c Release -o artifacts -p:Version=${{ inputs.package_version }} -p:LiteRtLmVersion=${{ inputs.native_ref }} -p:ContinuousIntegrationBuild=true"
+          dotnet pack LiteLMSharp/LiteLMSharp.csproj $common
+          dotnet pack packaging/LiteLMSharp.runtime.win-x64/LiteLMSharp.runtime.win-x64.csproj $common
+          dotnet pack packaging/LiteLMSharp.runtime.linux-x64/LiteLMSharp.runtime.linux-x64.csproj $common
+          ls -lh artifacts/*.nupkg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nupkgs-${{ inputs.package_version }}
+          path: artifacts/*.nupkg
+
+      - name: Push to nuget.org
+        if: inputs.push
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "$NUGET_API_KEY" ]; then echo "NUGET_API_KEY secret not set"; exit 1; fi
+          dotnet nuget push 'artifacts/*.nupkg' --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json --skip-duplicate

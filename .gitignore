@@ -376,5 +376,9 @@ runtimes/
 # Scratch/reference downloads used during development
 .tmp/
 
+# Local NuGet pack output
+.nupkgs/
+artifacts/
+
 # Claude Code machine-local settings (shared .claude/settings.json may be committed)
 .claude/settings.local.json

@@ -1,0 +1,22 @@
+<Project>
+
+  <!--
+    Shared metadata for all LiteLMSharp packages. The package version maps to the LiteRT-LM
+    release tag it is built against (see LiteRtLmVersion) — bump both together.
+  -->
+  <PropertyGroup>
+    <Version>0.13.1-preview.1</Version>
+    <!-- LiteRT-LM release tag the native binaries are built from (build-native.yml input). -->
+    <LiteRtLmVersion>v0.13.1</LiteRtLmVersion>
+
+    <Authors>LiteLMSharp contributors</Authors>
+    <Company>LiteLMSharp</Company>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/OrihuelaConde/LiteLMSharp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/OrihuelaConde/LiteLMSharp</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>litert;litert-lm;llm;gemma;on-device;inference;ai;maui</PackageTags>
+    <PackageReadmeFile Condition="Exists('$(MSBuildProjectDirectory)\README.md')">README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+</Project>
