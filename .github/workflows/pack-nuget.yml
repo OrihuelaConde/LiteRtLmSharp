@@ -47,19 +47,37 @@ jobs:
 
       - name: Lay out runtimes/<rid>/native
         run: |
-          mkdir -p runtimes/win-x64/native runtimes/linux-x64/native runtimes/android-arm64/native
-          tar -xzf natives/litertlm-windows_x86_64.tar.gz -C runtimes/win-x64/native
-          tar -xzf natives/litertlm-linux_x86_64.tar.gz   -C runtimes/linux-x64/native
-          [ -f natives/litertlm-android_arm64.tar.gz ] && tar -xzf natives/litertlm-android_arm64.tar.gz -C runtimes/android-arm64/native || echo "no android asset"
-          for r in win-x64 linux-x64 android-arm64; do echo "$r:"; ls "runtimes/$r/native" 2>/dev/null; done
+          # asset name -> rid dir
+          declare -A map=(
+            [litertlm-windows_x86_64.tar.gz]=win-x64
+            [litertlm-linux_x86_64.tar.gz]=linux-x64
+            [litertlm-android_arm64.tar.gz]=android-arm64
+            [litertlm-macos_arm64.tar.gz]=osx-arm64
+          )
+          for asset in "${!map[@]}"; do
+            rid="${map[$asset]}"
+            mkdir -p "runtimes/$rid/native"
+            if [ -f "natives/$asset" ]; then
+              tar -xzf "natives/$asset" -C "runtimes/$rid/native"
+              # strip macOS AppleDouble files if any
+              find "runtimes/$rid/native" -name '._*' -delete
+              echo "$rid:"; ls "runtimes/$rid/native"
+            else
+              echo "$rid: no asset ($asset) — its runtime package will be skipped"
+            fi
+          done
 
       - name: Pack
         run: |
           common="-c Release -o artifacts -p:Version=${{ inputs.package_version }} -p:LiteRtLmVersion=${{ inputs.native_ref }} -p:ContinuousIntegrationBuild=true"
           dotnet pack LiteLMSharp/LiteLMSharp.csproj $common
-          dotnet pack packaging/LiteLMSharp.runtime.win-x64/LiteLMSharp.runtime.win-x64.csproj $common
-          dotnet pack packaging/LiteLMSharp.runtime.linux-x64/LiteLMSharp.runtime.linux-x64.csproj $common
-          dotnet pack packaging/LiteLMSharp.runtime.android-arm64/LiteLMSharp.runtime.android-arm64.csproj $common
+          for rid in win-x64 linux-x64 android-arm64 osx-arm64; do
+            if [ -n "$(ls runtimes/$rid/native 2>/dev/null)" ]; then
+              dotnet pack "packaging/LiteLMSharp.runtime.$rid/LiteLMSharp.runtime.$rid.csproj" $common
+            else
+              echo "skip LiteLMSharp.runtime.$rid (no natives)"
+            fi
+          done
           ls -lh artifacts/*.nupkg
 
       - uses: actions/upload-artifact@v4

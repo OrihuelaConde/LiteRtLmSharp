@@ -1,49 +1,74 @@
 #!/usr/bin/env pwsh
-# Restores the native LiteRT-LM binaries into runtimes/<rid>/native/.
-# These are not committed (183MB of third-party DLLs); run this once after cloning,
-# before `dotnet build`. Fase 2 will replace this with CI-built, version-matched binaries.
-#
-# Source: prebuilt LiteRT-LM binaries published by flutter_gemma as GitHub Release assets.
-# See docs/native-abi.md for details and the known 0.12.0-a ABI quirks.
+<#
+Restores the native LiteRT-LM binaries into runtimes/<rid>/native/ from THIS repo's
+`native-<version>` GitHub Release (built by .github/workflows/build-native.yml).
+
+Run once after cloning, before building the samples/tests. The repo is private, so this
+uses the `gh` CLI (must be installed and authenticated: `gh auth login`).
+
+Usage:
+  pwsh scripts/restore-natives.ps1                 # current desktop OS only
+  pwsh scripts/restore-natives.ps1 -Rid android-arm64
+  pwsh scripts/restore-natives.ps1 -All
+#>
+param(
+    [string]$Version = 'v0.13.1',
+    [ValidateSet('win-x64', 'linux-x64', 'android-arm64', 'osx-arm64')]
+    [string[]]$Rid,
+    [switch]$All
+)
 
 $ErrorActionPreference = 'Stop'
 
-$version = '0.12.0-a'
-$base = "https://github.com/DenisovAV/flutter_gemma/releases/download/native-v$version"
+$repo = 'OrihuelaConde/LiteLMSharp'
+$assets = @{
+    'win-x64'       = 'litertlm-windows_x86_64.tar.gz'
+    'linux-x64'     = 'litertlm-linux_x86_64.tar.gz'
+    'android-arm64' = 'litertlm-android_arm64.tar.gz'
+    'osx-arm64'     = 'litertlm-macos_arm64.tar.gz'
+}
 
-# rid -> @{ asset; sha256; pattern }
-$targets = @(
-    @{ rid = 'win-x64';   asset = 'litertlm-windows_x86_64.tar.gz'; sha256 = 'b7264091c05001ef84e53761dfee331f761e3a2362b36b28ab2ce39666400d76'; pattern = '*.dll' }
-    @{ rid = 'linux-x64'; asset = 'litertlm-linux_x86_64.tar.gz';   sha256 = '930296b010ecc316c6b6fc4ed1c722b275b4064b59b5aad8ff7b858e9149c0d7'; pattern = '*.so'  }
-)
+$gh = Get-Command gh -ErrorAction SilentlyContinue
+if (-not $gh -and (Test-Path 'C:\Program Files\GitHub CLI\gh.exe')) { $gh = 'C:\Program Files\GitHub CLI\gh.exe' }
+else { $gh = $gh.Source }
+if (-not $gh) { throw "GitHub CLI (gh) not found. Install it and run 'gh auth login'." }
+
+if ($All) { $Rid = @($assets.Keys) }
+elseif (-not $Rid) {
+    $Rid = @(if ($IsWindows) { 'win-x64' } elseif ($IsLinux) { 'linux-x64' } elseif ($IsMacOS) { 'osx-arm64' }
+             else { throw 'Unsupported OS; pass -Rid explicitly.' })
+}
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$tag = "native-$Version"
+$tmp = Join-Path ([System.IO.Path]::GetTempPath()) "litelmsharp-natives"
+Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $tmp | Out-Null
 
-# Only restore the current OS's RID by default (override with -All via env if needed).
-$wantRid = if ($IsWindows) { 'win-x64' } elseif ($IsLinux) { 'linux-x64' } else { $null }
-if (-not $wantRid) { throw "Unsupported OS. Only win-x64 and linux-x64 are available in the PoC." }
+# checksums.txt accompanies the release; verify what we download against it.
+& $gh release download $tag --repo $repo --pattern 'checksums.txt' --dir $tmp --clobber
+$checksums = @{}
+Get-Content (Join-Path $tmp 'checksums.txt') | ForEach-Object {
+    $parts = $_ -split '\s+', 2
+    if ($parts.Count -eq 2) { $checksums[$parts[1].Trim().TrimStart('*')] = $parts[0].ToLower() }
+}
 
-$t = $targets | Where-Object { $_.rid -eq $wantRid } | Select-Object -First 1
-$dest = Join-Path $repoRoot "runtimes/$($t.rid)/native"
-$tmp  = Join-Path ([System.IO.Path]::GetTempPath()) $t.asset
+foreach ($r in $Rid) {
+    $asset = $assets[$r]
+    Write-Host "Restoring $r ($asset) ..."
+    & $gh release download $tag --repo $repo --pattern $asset --dir $tmp --clobber
 
-Write-Host "Downloading $($t.asset) ..."
-Invoke-WebRequest -Uri "$base/$($t.asset)" -OutFile $tmp
+    $file = Join-Path $tmp $asset
+    $actual = (Get-FileHash -Algorithm SHA256 $file).Hash.ToLower()
+    if ($checksums.ContainsKey($asset) -and $checksums[$asset] -ne $actual) {
+        throw "Checksum mismatch for ${asset}: expected $($checksums[$asset]), got $actual"
+    }
 
-$actual = (Get-FileHash -Algorithm SHA256 $tmp).Hash.ToLower()
-if ($actual -ne $t.sha256) { throw "Checksum mismatch for $($t.asset): expected $($t.sha256), got $actual" }
-Write-Host "Checksum OK."
+    $dest = Join-Path $repoRoot "runtimes/$r/native"
+    New-Item -ItemType Directory -Force $dest | Out-Null
+    tar -xzf $file -C $dest
+    Get-ChildItem $dest -Filter '._*' | Remove-Item -Force   # macOS AppleDouble metadata
+    Write-Host "  -> $((Get-ChildItem $dest -File).Count) files in runtimes/$r/native"
+}
 
-New-Item -ItemType Directory -Force $dest | Out-Null
-$extract = Join-Path ([System.IO.Path]::GetTempPath()) "litertlm-$($t.rid)"
-Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force $extract | Out-Null
-
-tar -xzf $tmp -C $extract
-Get-ChildItem $extract -Recurse -Filter $t.pattern | Where-Object { $_.Name -notlike '._*' } |
-    Copy-Item -Destination $dest -Force
-
-$count = (Get-ChildItem $dest -Filter $t.pattern).Count
-Write-Host "Restored $count native files to runtimes/$($t.rid)/native/"
-
-Remove-Item $tmp, $extract -Recurse -Force -ErrorAction SilentlyContinue
+Write-Host 'Done.'

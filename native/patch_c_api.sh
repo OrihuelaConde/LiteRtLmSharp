@@ -85,7 +85,9 @@ cc_binary(
     linkshared = True,
     win_def_file = "windows_exports.def",
     linkopts = select({
-        "@platforms//os:macos": ["-Wl,-exported_symbol,_LiteRt*", "-Wl,-exported_symbol,_litert_lm_*"],
+        # @loader_path rpath: companion dylibs (libLiteRt etc.) resolve from the same
+        # directory as libLiteRtLm.dylib without install_name_tool patching.
+        "@platforms//os:macos": ["-Wl,-exported_symbol,_LiteRt*", "-Wl,-exported_symbol,_litert_lm_*", "-Wl,-rpath,@loader_path"],
         "@platforms//os:ios": ["-Wl,-exported_symbol,_LiteRt*", "-Wl,-exported_symbol,_litert_lm_*"],
         # Android uses the GNU/lld linker like Linux: keep LiteRt*/litert_lm_* in the dynamic
         # export table so the prebuilt accelerators can resolve LiteRt* at runtime.

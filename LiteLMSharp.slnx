@@ -1,8 +1,10 @@
 <Solution>
   <Project Path="LiteLMSharp/LiteLMSharp.csproj" />
   <Project Path="samples/Console/LiteLMSharp.Sample.csproj" />
+  <Project Path="samples/Maui/LiteLMSharp.SampleMaui.csproj" />
   <Project Path="LiteLMSharp.Tests/LiteLMSharp.Tests.csproj" />
   <Project Path="packaging/LiteLMSharp.runtime.win-x64/LiteLMSharp.runtime.win-x64.csproj" />
   <Project Path="packaging/LiteLMSharp.runtime.linux-x64/LiteLMSharp.runtime.linux-x64.csproj" />
   <Project Path="packaging/LiteLMSharp.runtime.android-arm64/LiteLMSharp.runtime.android-arm64.csproj" />
+  <Project Path="packaging/LiteLMSharp.runtime.osx-arm64/LiteLMSharp.runtime.osx-arm64.csproj" />
 </Solution>
