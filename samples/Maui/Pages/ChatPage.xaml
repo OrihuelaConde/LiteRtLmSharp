@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:pages="clr-namespace:LiteLMSharp.SampleMaui.Pages"
+             x:Class="LiteLMSharp.SampleMaui.Pages.ChatPage"
+             x:DataType="pages:ChatPage"
+             Title="Chat">
+
+    <ContentPage.ToolbarItems>
+        <ToolbarItem Text="New" Clicked="OnNewConversation" />
+    </ContentPage.ToolbarItems>
+
+    <Grid RowDefinitions="Auto,*,Auto,Auto" Padding="12" RowSpacing="8">
+
+        <Label x:Name="HeaderLabel"
+               Grid.Row="0"
+               Text="No model loaded — pick one in the Models tab."
+               FontSize="13"
+               TextColor="Gray" />
+
+        <CollectionView x:Name="MessagesView"
+                        Grid.Row="1"
+                        ItemsSource="{Binding Messages}"
+                        SelectionMode="None"
+                        ItemsUpdatingScrollMode="KeepLastItemInView">
+            <CollectionView.ItemTemplate>
+                <DataTemplate x:DataType="pages:ChatMessage">
+                    <Border Margin="0,4" Padding="10" StrokeThickness="0"
+                            StrokeShape="RoundRectangle 10"
+                            BackgroundColor="{Binding Background}"
+                            HorizontalOptions="{Binding Alignment}"
+                            MaximumWidthRequest="540">
+                        <Label Text="{Binding Text}" FontSize="15" LineBreakMode="WordWrap" />
+                    </Border>
+                </DataTemplate>
+            </CollectionView.ItemTemplate>
+        </CollectionView>
+
+        <Label x:Name="GaugeLabel" Grid.Row="2" FontSize="11" TextColor="Gray" IsVisible="False" />
+
+        <Grid Grid.Row="3" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+            <Entry x:Name="InputEntry"
+                   Placeholder="Type a message…"
+                   IsEnabled="False"
+                   Completed="OnSend" />
+            <Button x:Name="SendButton" Grid.Column="1" Text="Send" IsEnabled="False" Clicked="OnSend" />
+            <Button x:Name="StopButton" Grid.Column="2" Text="Stop" IsVisible="False" Clicked="OnStop" />
+        </Grid>
+
+    </Grid>
+</ContentPage>

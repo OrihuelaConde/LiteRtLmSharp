@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:pages="clr-namespace:LiteLMSharp.SampleMaui.Pages"
+             x:Class="LiteLMSharp.SampleMaui.Pages.ModelsPage"
+             x:DataType="pages:ModelsPage"
+             Title="Models">
+
+    <Grid RowDefinitions="Auto,*" Padding="12" RowSpacing="8">
+
+        <Label x:Name="EngineBanner"
+               Grid.Row="0"
+               FontSize="13"
+               TextColor="{AppThemeBinding Light=DarkGreen, Dark=LightGreen}"
+               IsVisible="False" />
+
+        <CollectionView Grid.Row="1" ItemsSource="{Binding Rows}" SelectionMode="None">
+            <CollectionView.ItemTemplate>
+                <DataTemplate x:DataType="pages:ModelRow">
+                    <Border Margin="0,6" Padding="12" StrokeThickness="1"
+                            Stroke="{AppThemeBinding Light=#DDD, Dark=#444}"
+                            StrokeShape="RoundRectangle 10">
+                        <VerticalStackLayout Spacing="6">
+                            <Label Text="{Binding Model.DisplayName}" FontAttributes="Bold" FontSize="16" />
+                            <Label FontSize="12" TextColor="Gray">
+                                <Label.Text>
+                                    <MultiBinding StringFormat="{}{0} · {1}">
+                                        <Binding Path="Model.ApproxSize" />
+                                        <Binding Path="Model.RamHint" />
+                                    </MultiBinding>
+                                </Label.Text>
+                            </Label>
+                            <Label Text="{Binding Status}" FontSize="13" />
+                            <ProgressBar Progress="{Binding Progress}" IsVisible="{Binding IsDownloading}" />
+                            <HorizontalStackLayout Spacing="8">
+                                <Button Text="Download" Command="{Binding DownloadCommand}" IsVisible="{Binding CanDownload}" />
+                                <Button Text="Cancel" Command="{Binding CancelCommand}" IsVisible="{Binding IsDownloading}" />
+                                <Button Text="Load" Command="{Binding LoadCommand}" IsVisible="{Binding CanLoad}" />
+                                <Button Text="Delete" Command="{Binding DeleteCommand}" IsVisible="{Binding CanDelete}"
+                                        BackgroundColor="{AppThemeBinding Light=#FFEBEB, Dark=#4A2222}"
+                                        TextColor="{AppThemeBinding Light=DarkRed, Dark=#FF9999}" />
+                            </HorizontalStackLayout>
+                        </VerticalStackLayout>
+                    </Border>
+                </DataTemplate>
+            </CollectionView.ItemTemplate>
+        </CollectionView>
+
+    </Grid>
+</ContentPage>
