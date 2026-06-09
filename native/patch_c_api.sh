@@ -32,10 +32,12 @@ echo "Patching LiteRT-LM C API in $DIR ..."
 # pinned checksum and the same internal layout (zlib-1.3.1/contrib/minizip).
 if [ -f "$DIR/WORKSPACE" ] && grep -q "zlib.net" "$DIR/WORKSPACE"; then
   GH_ZLIB='https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz'
-  sed -i \
+  # -i.bak: portable across GNU sed (Linux) and BSD sed (macOS).
+  sed -i.bak \
     -e "s#https://zlib\.net/fossils/zlib-1\.3\.1\.tar\.gz#${GH_ZLIB}#g" \
     -e "s#https://zlib\.net/zlib-1\.3\.1\.tar\.gz#${GH_ZLIB}#g" \
     "$DIR/WORKSPACE"
+  rm -f "$DIR/WORKSPACE.bak"
   echo "  OK: repointed zlib.net -> GitHub release in WORKSPACE (same checksum)."
 fi
 
