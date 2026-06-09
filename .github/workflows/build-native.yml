@@ -235,22 +235,30 @@ jobs:
         run: bash native/patch_c_api.sh /tmp/LiteRT-LM
 
       - name: Build libLiteRtLm.dylib (macos-arm64)
-        # Like desktop Linux/Windows: prebuilt/macos_arm64 ships a separate libLiteRt.dylib,
-        # so keep the LiteRt C API a separate shared lib (litert_link_capi_so=true). The patch
-        # adds -rpath @loader_path so companions resolve from the same directory.
+        # Like Android: LiteRt is STATIC-linked into libLiteRtLm.dylib. On macOS,
+        # litert_link_capi_so=true trips an "illegal ambiguous match" in the upstream
+        # @litert select(), and flutter_gemma's proven macOS set ships no separate
+        # libLiteRt.dylib either. LiteRt* symbols stay visible via -exported_symbol
+        # wildcards so the Metal accelerator can resolve them at runtime. The patch
+        # adds -rpath @loader_path so companion dylibs resolve from the same directory.
         run: |
           cd /tmp/LiteRT-LM
           bazelisk build -c opt --strip=always \
-            --define=litert_link_capi_so=true \
             //c:libLiteRtLm.dylib
 
       - name: Collect artifacts
+        # Ship the same companion set flutter_gemma ships on macOS. Deliberately exclude
+        # libLiteRt.dylib (LiteRt is already static inside libLiteRtLm.dylib — loading both
+        # would put two copies of the runtime in the process) and the WebGPU pair (Metal is
+        # the macOS GPU backend).
         run: |
           mkdir -p artifacts
           cp /tmp/LiteRT-LM/bazel-bin/c/libLiteRtLm.dylib artifacts/libLiteRtLm.dylib
-          cp /tmp/LiteRT-LM/prebuilt/macos_arm64/*.dylib artifacts/ 2>/dev/null || true
+          for lib in libGemmaModelConstraintProvider libLiteRtMetalAccelerator libLiteRtTopKMetalSampler; do
+            cp "/tmp/LiteRT-LM/prebuilt/macos_arm64/${lib}.dylib" artifacts/ 2>/dev/null || echo "missing ${lib}"
+          done
           ls -lh artifacts/
-          echo "--- exported litert_lm_* symbols (sample) ---"
+          echo "--- exported litert_lm_* symbols ---"
           nm -gU artifacts/libLiteRtLm.dylib | grep -c litert_lm_ || true
 
       - uses: actions/upload-artifact@v4
