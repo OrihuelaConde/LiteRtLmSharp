@@ -40,10 +40,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "runtimes/${{ matrix.rid }}/native"
-          gh release download "native-${NATIVE_REF}" \
-            --repo "${{ github.repository }}" \
-            --pattern '${{ matrix.asset }}' \
-            --dir .
+          # Retry: the releases API occasionally throws transient 401/5xx (seen 2026-06-10).
+          for attempt in 1 2 3; do
+            gh release download "native-${NATIVE_REF}" \
+              --repo "${{ github.repository }}" \
+              --pattern '${{ matrix.asset }}' \
+              --dir . && break
+            echo "download attempt $attempt failed; retrying in 20s..."
+            [ "$attempt" = "3" ] && exit 1
+            sleep 20
+          done
           tar -xzf '${{ matrix.asset }}' -C "runtimes/${{ matrix.rid }}/native"
           ls "runtimes/${{ matrix.rid }}/native"
 
