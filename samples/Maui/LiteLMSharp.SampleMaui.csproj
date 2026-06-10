@@ -61,7 +61,18 @@
 	</ItemGroup>
 
 	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
-		<AndroidNativeLibrary Include="..\..\runtimes\android-arm64\native\*.so" Abi="arm64-v8a" />
+		<!--
+		  Full native set. GPU on Android REQUIRES the <uses-native-library> declarations in
+		  AndroidManifest.xml (Android 12+): without libOpenCL.so access the registry silently
+		  falls back to the Dawn/Vulkan accelerator, whose shaders fail on older Adreno drivers
+		  and produce garbage output. With the manifest fix the registry prefers OpenCL
+		  (verified on a Moto G100 / Adreno 650 / Android 12).
+		  Known harmless: the prebuilt TopK samplers fail to dlopen (missing DT_NEEDED on
+		  libLiteRtLm.so: "cannot locate symbol LiteRtCreateEnvironment") so sampling runs on
+		  CPU; matmuls stay on GPU. Fixable with patchelf in the native build (flutter_gemma #270).
+		-->
+		<AndroidNativeLibrary Include="..\..\runtimes\android-arm64\native\*.so"
+		                      Abi="arm64-v8a" />
 	</ItemGroup>
 
 	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">

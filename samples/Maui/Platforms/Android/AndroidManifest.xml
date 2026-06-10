@@ -1,7 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 	<!-- largeHeap: loading a multi-GB .litertlm needs as much heap headroom as Android will give us. -->
-	<application android:allowBackup="true" android:icon="@mipmap/appicon" android:roundIcon="@mipmap/appicon_round" android:supportsRtl="true" android:largeHeap="true"></application>
+	<application android:allowBackup="true" android:icon="@mipmap/appicon" android:roundIcon="@mipmap/appicon_round" android:supportsRtl="true" android:largeHeap="true">
+		<!--
+		  Android 12+ (API 31) only grants access to vendor native libraries that are declared
+		  here; without libOpenCL.so the GPU backend silently loses OpenCL and falls back to the
+		  Dawn/Vulkan accelerator (broken on older Adreno drivers -> garbage output). Same set
+		  Google's AI Edge Gallery declares.
+		-->
+		<uses-native-library android:name="libvndksupport.so" android:required="false" />
+		<uses-native-library android:name="libOpenCL.so" android:required="false" />
+		<uses-native-library android:name="libcdsprpc.so" android:required="false" />
+		<uses-native-library android:name="libedgetpu_litert.so" android:required="false" />
+	</application>
 	<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 	<uses-permission android:name="android.permission.INTERNET" />
 </manifest>
