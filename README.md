@@ -76,10 +76,10 @@ pwsh scripts/restore-natives.ps1
 (The repo is currently private; `restore-natives.ps1` uses the `gh` CLI to pull our
 `native-v0.13.1` release. `-All` restores every RID, `-Rid android-arm64` a specific one.)
 
-Then `dotnet build LiteLMSharp.slnx` and `dotnet test`. Note: the solution includes the MAUI
-sample, which needs the MAUI workloads (`dotnet workload install maui`); without them, build the
-library/console/tests projects directly. To run the model/tools tests, set `LITERTLM_TEST_MODEL`
-(and `LITERTLM_TEST_TOOLS=1`) to a `.litertlm` file.
+Then `dotnet build LiteLMSharp.slnx` and `dotnet test` (library + tests + packaging; bare .NET SDK
+is enough). The samples have their own solution, `samples/LiteLMSharp.Samples.slnx` — the MAUI
+sample in it needs the MAUI workloads (`dotnet workload install maui`). To run the model/tools
+tests, set `LITERTLM_TEST_MODEL` (and `LITERTLM_TEST_TOOLS=1`) to a `.litertlm` file.
 
 ## How it's built (CI)
 

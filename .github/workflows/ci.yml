@@ -47,12 +47,12 @@ jobs:
           tar -xzf '${{ matrix.asset }}' -C "runtimes/${{ matrix.rid }}/native"
           ls "runtimes/${{ matrix.rid }}/native"
 
-      # Build projects directly instead of the solution: LiteLMSharp.slnx includes the MAUI
-      # sample, which needs MAUI workloads the hosted runners don't have (and installing them
-      # would burn minutes). Tests transitively build the library.
+      # Main solution (lib + tests + packaging) builds with the bare SDK. Samples live in
+      # samples/LiteLMSharp.Samples.slnx; only the console one is built here (the MAUI sample
+      # needs MAUI workloads the hosted runners don't have).
       - name: Build
         run: |
-          dotnet build LiteLMSharp.Tests/LiteLMSharp.Tests.csproj -c Release
+          dotnet build LiteLMSharp.slnx -c Release
           dotnet build samples/Console/LiteLMSharp.Sample.csproj -c Release
 
       - name: Test (interop tests load the native lib; model tests auto-skip)

@@ -1,0 +1,11 @@
+<Solution>
+  <!--
+    Samples solution: open this one to build/run the samples. The MAUI sample requires the
+    MAUI workloads (dotnet workload install maui). The library project is included so you can
+    step into the binding while debugging; the main LiteLMSharp.slnx (lib + tests + packaging)
+    builds with the bare .NET SDK and is what CI uses.
+  -->
+  <Project Path="../LiteLMSharp/LiteLMSharp.csproj" />
+  <Project Path="Console/LiteLMSharp.Sample.csproj" />
+  <Project Path="Maui/LiteLMSharp.SampleMaui.csproj" />
+</Solution>
