@@ -298,18 +298,32 @@ jobs:
 
       - name: Collect artifacts
         # Companion set mirrors prebuilt/ios_arm64 minus libLiteRt.dylib (static inside the
-        # main dylib). Print each dylib's LC_BUILD_VERSION: flutter_gemma had to vtool-patch
-        # minos on some prebuilt companions (#245) — surface the data before deciding.
+        # main dylib). Google ships libGemmaModelConstraintProvider with minos 26.2 — apps
+        # targeting older iOS fail to embed it. Same fix flutter_gemma uses (#245): vtool the
+        # minos down to 16.0 (keeping the sdk version) and re-sign ad-hoc (vtool invalidates
+        # the signature; the app build re-signs everything anyway).
         run: |
           mkdir -p artifacts
           cp /tmp/LiteRT-LM/bazel-bin/c/libLiteRtLm.dylib artifacts/libLiteRtLm.dylib
           for lib in libGemmaModelConstraintProvider libLiteRtMetalAccelerator libLiteRtTopKMetalSampler; do
             cp "/tmp/LiteRT-LM/prebuilt/ios_arm64/${lib}.dylib" artifacts/ 2>/dev/null || echo "missing ${lib}"
           done
+
+          chmod +w artifacts/*.dylib
+          for f in artifacts/*.dylib; do
+            minos=$(otool -l "$f" | awk '/LC_BUILD_VERSION/{v=1} v && /minos/{print $2; exit}')
+            sdk=$(otool -l "$f" | awk '/LC_BUILD_VERSION/{v=1} v && /sdk/{print $2; exit}')
+            if [ "$(printf '%s\n' "16.1" "$minos" | sort -V | head -1)" = "16.1" ]; then
+              echo "patching $f: minos $minos -> 16.0 (sdk $sdk)"
+              vtool -set-build-version ios 16.0 "$sdk" -replace -output "$f" "$f"
+              codesign --force --sign - "$f"
+            fi
+          done
+
           ls -lh artifacts/
           echo "--- exported litert_lm_* symbols ---"
           nm -gU artifacts/libLiteRtLm.dylib | grep -c litert_lm_ || true
-          echo "--- platform/min-OS of each dylib ---"
+          echo "--- platform/min-OS of each dylib (post-patch) ---"
           for f in artifacts/*.dylib; do
             echo "== $f"
             otool -l "$f" | grep -A4 -E "LC_BUILD_VERSION|LC_VERSION_MIN" | head -8
