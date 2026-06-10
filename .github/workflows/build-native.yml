@@ -207,6 +207,23 @@ jobs:
           cp /tmp/LiteRT-LM/prebuilt/android_arm64/*.so artifacts/ 2>/dev/null || true
           ls -lh artifacts/
 
+      - name: Patch GPU samplers (add DT_NEEDED libLiteRtLm.so)
+        # Google's prebuilt TopK samplers reference LiteRt* symbols but ship without a
+        # DT_NEEDED on libLiteRtLm.so, so their dlopen fails ("cannot locate symbol
+        # LiteRtCreateEnvironment") and sampling falls back to CPU (upstream LiteRT-LM#2211;
+        # same fix flutter_gemma ships since 0.15.1). Note: bionic ignores
+        # RTLD_NOLOAD|RTLD_GLOBAL flag promotion, so a consumer-side fix is not possible.
+        # Known caveat from #2211: a few devices (e.g. Tensor G2) reject patchelf-modified
+        # ELFs — the failure mode there is the same graceful CPU-sampling fallback as today.
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q patchelf
+          for f in artifacts/libLiteRtTopKOpenClSampler.so artifacts/libLiteRtTopKWebGpuSampler.so; do
+            if [ -f "$f" ]; then
+              patchelf --add-needed libLiteRtLm.so "$f"
+              echo "$f NEEDED:"; patchelf --print-needed "$f"
+            fi
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: litertlm-android_arm64
