@@ -23,7 +23,7 @@ on:
         # 032334d81ff96431492be272e536fbafe094b1e9
         default: 'v0.13.1'
       platforms:
-        description: 'Platforms to build (comma-separated: linux-x64,win-x64,android-arm64,macos-arm64) or "all". Build only NEW platforms to save Actions minutes; the release keeps existing assets.'
+        description: 'Platforms to build (comma-separated: linux-x64,win-x64,android-arm64,macos-arm64,ios-arm64) or "all". Build only NEW platforms to save Actions minutes; the release keeps existing assets.'
         required: true
         default: 'all'
       publish_release:
@@ -266,9 +266,63 @@ jobs:
           name: litertlm-macos_arm64
           path: artifacts/
 
+  build-ios-arm64:
+    name: ios-arm64
+    if: inputs.platforms == 'all' || contains(inputs.platforms, 'ios-arm64')
+    # NOTE: macOS runners bill at 10x on private repos — run platform-filtered.
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      LITERTLM_VERSION: ${{ inputs.litertlm_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone LiteRT-LM @ ${{ env.LITERTLM_VERSION }}
+        run: |
+          git clone https://github.com/google-ai-edge/LiteRT-LM /tmp/LiteRT-LM
+          cd /tmp/LiteRT-LM
+          git checkout "$LITERTLM_VERSION"
+          git lfs pull --include="prebuilt/ios_arm64/*"
+
+      - name: Patch C API (add shared-lib target)
+        run: bash native/patch_c_api.sh /tmp/LiteRT-LM
+
+      - name: Build libLiteRtLm.dylib (ios-arm64, device)
+        # Same recipe as macOS: LiteRt static-linked, LiteRt*/litert_lm_* exported via
+        # -exported_symbol wildcards. --config=ios_arm64 sets ios_minimum_os=13.0.
+        run: |
+          cd /tmp/LiteRT-LM
+          bazelisk build -c opt --strip=always \
+            --config=ios_arm64 \
+            //c:libLiteRtLm.dylib
+
+      - name: Collect artifacts
+        # Companion set mirrors prebuilt/ios_arm64 minus libLiteRt.dylib (static inside the
+        # main dylib). Print each dylib's LC_BUILD_VERSION: flutter_gemma had to vtool-patch
+        # minos on some prebuilt companions (#245) — surface the data before deciding.
+        run: |
+          mkdir -p artifacts
+          cp /tmp/LiteRT-LM/bazel-bin/c/libLiteRtLm.dylib artifacts/libLiteRtLm.dylib
+          for lib in libGemmaModelConstraintProvider libLiteRtMetalAccelerator libLiteRtTopKMetalSampler; do
+            cp "/tmp/LiteRT-LM/prebuilt/ios_arm64/${lib}.dylib" artifacts/ 2>/dev/null || echo "missing ${lib}"
+          done
+          ls -lh artifacts/
+          echo "--- exported litert_lm_* symbols ---"
+          nm -gU artifacts/libLiteRtLm.dylib | grep -c litert_lm_ || true
+          echo "--- platform/min-OS of each dylib ---"
+          for f in artifacts/*.dylib; do
+            echo "== $f"
+            otool -l "$f" | grep -A4 -E "LC_BUILD_VERSION|LC_VERSION_MIN" | head -8
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: litertlm-ios_arm64
+          path: artifacts/
+
   publish-release:
     name: Publish GitHub Release
-    needs: [build-linux-x64, build-windows-x64, build-android-arm64, build-macos-arm64]
+    needs: [build-linux-x64, build-windows-x64, build-android-arm64, build-macos-arm64, build-ios-arm64]
     # Run as long as nothing failed (skipped platform jobs are fine) and publishing was requested.
     if: ${{ !cancelled() && inputs.publish_release && !contains(needs.*.result, 'failure') }}
     runs-on: ubuntu-latest
@@ -286,7 +340,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p release
-          for rid in linux_x86_64 windows_x86_64 android_arm64 macos_arm64; do
+          for rid in linux_x86_64 windows_x86_64 android_arm64 macos_arm64 ios_arm64; do
             dir="artifacts/litertlm-${rid}"
             [ -d "$dir" ] && tar -czf "release/litertlm-${rid}.tar.gz" -C "$dir" . || echo "skip ${rid} (not built this run)"
           done
