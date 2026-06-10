@@ -38,15 +38,15 @@ por el dynamic-list). El preload RTLD_GLOBAL del resolver no aplica (no hay dir 
 El modelo `.litertlm` (~2.5 GB para E2B) **no se empaqueta** en el APK: descargarlo a almacenamiento del
 app en primer arranque y pasar su ruta a `LiteRtEngine.Load`.
 
-## Pendiente / a validar (necesita workload .NET Android + device/emulador)
-1. **Correr `build-native.yml`** (ahora con android) y revisar logs:
-   - **NDK**: LiteRT-LM pide r28b+; el runner trae uno — si es viejo, pinear NDK (p.ej. `nttld/setup-ndk`).
-   - Que el dynamic-list aplique en android y que `litert_lm_*`/`LiteRt*` queden exportados.
-2. **`pack-nuget.yml`** para generar `LiteLMSharp.runtime.android-arm64`.
-3. **App MAUI/.NET Android de prueba** en device/emulador arm64: cargar modelo, generar, tools.
-   - Memoria: E2B necesita varios GB → device con RAM suficiente (gama alta).
-   - GPU en Android: OpenCL/Vulkan vía los accelerators; CPU como fallback.
-4. Considerar `android-x64` (emuladores x86_64) además de arm64.
+## Estado de validación
+1. ✅ `build-native.yml` android verde (NDK del runner alcanzó; dynamic-list aplica; símbolos OK).
+2. ✅ `pack-nuget.yml` genera `LiteLMSharp.runtime.android-arm64`.
+3. ✅ **Validado en device físico** (Moto G100, Android 12): carga de modelo, chat, streaming —
+   **CPU y GPU** (ver diagnóstico GPU abajo). Workload MAUI instalado; app sample en `samples/Maui`.
+4. `android-x64` (emuladores) descartado por ahora — pruebas en device físico (el prebuilt
+   `android_x86_64` existe upstream si algún día hace falta).
+5. ⏳ Pendiente: re-test en device con los samplers patcheados (`patchelf --add-needed`, ver abajo)
+   para habilitar GPU sampling.
 
 ## Riesgos
 - Versión de NDK en el runner vs r28b+.
@@ -81,11 +81,16 @@ sobre Dawn por sí solo** (con el set completo de 7 `.so` presente) → texto co
 Perfil esperado: init GPU más lenta (subida de pesos + compilación de kernels CL, ~17 s en el G100),
 decode más rápido que CPU.
 
-### Hallazgo adicional: samplers TopK no cargan (inofensivo)
+### Hallazgo adicional: samplers TopK no cargan → patchelf aplicado en CI
 `dlopen failed: cannot locate symbol "LiteRtCreateEnvironment"` — a los samplers prebuilt de Google
-les falta `DT_NEEDED libLiteRtLm.so` (mismo bug que flutter_gemma arregló con
-`patchelf --add-needed` en su issue #270). El fallback es graceful: sampling en CPU, matmuls en GPU.
-Posible mejora futura: añadir el patchelf al job android de `build-native.yml`.
+les falta `DT_NEEDED libLiteRtLm.so` (upstream **LiteRT-LM#2211**; flutter lo arregló igual en su
+#270). El fallback es graceful: sampling en CPU, matmuls en GPU. Según #2211, el fallback cuesta ~3×
+de decode en modelos con sección MTP drafter (gemma-4-E2B la tiene).
+- **No hay workaround consumer-side**: probamos `dlopen(RTLD_NOLOAD|RTLD_GLOBAL)` en device y bionic
+  ignora la promoción de flags (se fijan en la primera carga).
+- **Fix aplicado**: `patchelf --add-needed libLiteRtLm.so` en el job android de `build-native.yml`.
+  Caveat de #2211: algunos linkers (Tensor G2) rechazan ELFs parcheados — modo de falla graceful
+  (CPU sampling, como sin patch). ⏳ Pendiente re-test en device con los binarios patcheados.
 
 ### Ecosistema (mismo problema en otros proyectos)
 - flutter_gemma [#214](https://github.com/DenisovAV/flutter_gemma/issues/214) (basura GPU en A55) y

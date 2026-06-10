@@ -16,10 +16,20 @@ ABI-skew que vimos: `litert_lm_conversation_config_create` crasheando y `get_tok
 ## Cómo correrlo
 
 GitHub → pestaña **Actions** → *Build LiteRT-LM native libraries* → **Run workflow**:
-- `litertlm_version`: ref a compilar. Por defecto un **commit probado** (`032334d8…`, receta de flutter_gemma)
-  para maximizar un primer build verde. **Una vez verde, subir a un tag de release** (p.ej. `v0.13.1`) para
-  sincronizar con Google y habilitar `get_token_count` + el path de conversation-config.
+- `litertlm_version`: ref a compilar. Default: **`v0.13.1`** (siempre pinear a un **tag de release**,
+  no a commits sueltos — el commit interino `032334d8` nos costó un segfault de streaming).
+- `platforms`: lista separada por comas (`linux-x64,win-x64,android-arm64,macos-arm64,ios-arm64`) o
+  `all`. **Construir solo plataformas nuevas** ahorra minutos (los runners macOS facturan 10x en
+  repos privados); el release **acumula** assets y mergea `checksums.txt` entre runs parciales.
 - `publish_release`: si se marca, publica los `.tar.gz` + checksums como Release `native-<ref>`.
+
+Notas por plataforma:
+- **Desktop (linux/win)**: `litert_link_capi_so=true` (libLiteRt separada). Windows además
+  `resolve_symbols_in_exec=false`.
+- **Android**: sin `litert_link_capi_so` (LiteRt estática), page-size 16 KB, y **patchelf** sobre los
+  samplers TopK (`--add-needed libLiteRtLm.so`, upstream #2211).
+- **macOS/iOS**: como Android (LiteRt estática; `litert_link_capi_so` dispara un select ambiguo en
+  @litert); companions Metal; iOS además parchea `minos` con vtool cuando >16.
 
 Tras publicar, apuntar `scripts/restore-natives.ps1` (`$version` y, si se quiere, la URL base) a **nuestro**
 release en vez del de flutter_gemma.

@@ -4,8 +4,18 @@
 inference (e.g. Gemma) for any .NET app, including MAUI. P/Invoke over LiteRT-LM's C API, with native
 binaries distributed per-RID as NuGet packages (LLamaSharp-style).
 
-> Status: **preview**. Desktop **win-x64** and **linux-x64** working (chat, streaming, function calling).
-> Versions track LiteRT-LM release tags (currently **v0.13.1**). macOS + mobile (Android/iOS) are planned.
+> Status: **preview**. Chat, token streaming and function calling working. Versions track
+> LiteRT-LM release tags (currently **v0.13.1**).
+>
+> | Platform | Native binaries | NuGet package | Runtime-validated |
+> |---|---|---|---|
+> | win-x64 | ✅ | ✅ | ✅ |
+> | linux-x64 | ✅ | ✅ | ✅ (CI) |
+> | android-arm64 | ✅ | ✅ | ✅ (device, CPU & GPU) |
+> | osx-arm64 | ✅ | ✅ | ⏳ |
+> | ios-arm64 | ✅ | ⏳ (needs xcframework packaging) | ⏳ |
+>
+> See [docs/roadmap.md](docs/roadmap.md) for the full status and pending work.
 
 ## Quick start
 
@@ -63,6 +73,11 @@ See [`samples/Console`](samples/Console) for a runnable demo (`--tools` for the 
   too small can make blocking generation return nothing.
 - **Conversations are not thread-safe** — serialize calls per conversation.
 - **win-x64** needs the Microsoft Visual C++ Redistributable (the native DLLs import `VCRUNTIME140`).
+- **Android GPU needs manifest declarations.** Android 12+ only grants access to vendor native
+  libraries declared via `<uses-native-library>`; without `libOpenCL.so` the engine silently picks a
+  Vulkan path that produces garbage on older Adreno drivers. Copy the `<uses-native-library>` block
+  from [the MAUI sample's AndroidManifest](samples/Maui/Platforms/Android/AndroidManifest.xml).
+  Full diagnosis in [docs/fase3-android.md](docs/fase3-android.md).
 
 ## Building from source
 

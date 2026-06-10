@@ -3,6 +3,13 @@
 > Fuente de verdad: [`c/engine.h`](https://github.com/google-ai-edge/LiteRT-LM/blob/main/c/engine.h)
 > del repo oficial. Este documento resume el ABI **verificado** sobre el binario real.
 
+> **Estado actual (v0.13.1, binarios propios):** los hallazgos sobre el binario comunitario
+> `0.12.0-a` y el commit interino `032334d8` (crash de `conversation_config_create`,
+> `get_token_count` ausente, `send_message` bloqueante devolviendo null, segfault de streaming) son
+> **HISTÓRICOS** — todos resueltos al compilar nuestros binarios desde el tag `v0.13.1` con header
+> emparejado. Hoy funcionan: config/system-prompt/sampler, tools, streaming, token count, en las 5
+> plataformas. Se conservan abajo como registro de diagnóstico.
+
 ## Resumen de viabilidad (verificado)
 
 - El header `c/engine.h` declara una API **C plana** (`extern "C"`) con **punteros opacos** —

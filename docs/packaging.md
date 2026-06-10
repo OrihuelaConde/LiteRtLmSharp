@@ -7,6 +7,12 @@ Modelo estilo LLamaSharp: **un paquete managed puro + paquetes de runtime nativo
 | `LiteLMSharp` | Solo el assembly managed (`lib/net10.0/LiteLMSharp.dll`). Sin nativos. | net10.0 |
 | `LiteLMSharp.runtime.win-x64` | `runtimes/win-x64/native/*.dll` (LiteRtLm + companions + DXC). Sin lib. | (native-only) |
 | `LiteLMSharp.runtime.linux-x64` | `runtimes/linux-x64/native/*.so`. Sin lib. | (native-only) |
+| `LiteLMSharp.runtime.android-arm64` | `runtimes/android-arm64/native/*.so` (van al APK como `lib/arm64-v8a/`). | (native-only) |
+| `LiteLMSharp.runtime.osx-arm64` | `runtimes/osx-arm64/native/*.dylib` (Apple Silicon). | (native-only) |
+
+> iOS no tiene runtime package todavía: en iOS un nupkg `runtimes/` no se auto-embebe — requiere
+> xcframework + `.targets` con `NativeReference`; se hará junto con la fase de app iOS/TestFlight.
+> Todos los paquetes incluyen `LICENSE.txt`, `NOTICE` y `THIRD-PARTY-NOTICES.md` en la raíz.
 
 Las **versiones van juntas** y mapean al tag de LiteRT-LM (ver `Directory.Build.props`:
 `Version` ↔ `LiteRtLmVersion`). Hoy: `0.13.1-preview.1` ↔ `v0.13.1`.
@@ -44,5 +50,7 @@ Local: `dotnet pack LiteLMSharp/LiteLMSharp.csproj -c Release -o .nupkgs` (manag
   Al hacer el repo público (o publicar a nuget.org), el consumo es directo.
 - **MSVC runtime**: `LiteRtLm.dll` (win-x64) importa `MSVCP140/VCRUNTIME140*`; depende del VC++ Redistributable
   en la máquina del usuario. A futuro: documentarlo como prerequisito o evaluar shippearlo.
-- Próximos RIDs (Fase 3): `linux-arm64`, `android-arm64`, `ios-arm64` (mismo patrón de paquete runtime).
+- Próximos RIDs posibles: `linux-arm64`, `android-x64` (emuladores), `ios-arm64` (vía xcframework).
 - Opcional a futuro: meta-paquete `LiteLMSharp.Backend.Desktop` que dependa de los runtime win/linux.
+- Android GPU: el consumidor debe declarar `<uses-native-library>` en su manifest (ver README y
+  docs/fase3-android.md) — considerar documentarlo en el README del paquete cuando se publique.
