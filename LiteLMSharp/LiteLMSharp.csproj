@@ -10,7 +10,7 @@
 
     <!-- Pure managed package. Native binaries ship in LiteLMSharp.runtime.<rid> packages. -->
     <PackageId>LiteLMSharp</PackageId>
-    <Description>.NET binding for Google's LiteRT-LM on-device LLM inference (P/Invoke over the C API). Add a LiteLMSharp.runtime.&lt;rid&gt; package for native binaries.</Description>
+    <Description>.NET binding for Google's LiteRT-LM on-device LLM inference (P/Invoke over the C API). Add a LiteLMSharp.runtime.&lt;rid&gt; package for native binaries. $(LiteLMDisclaimer)</Description>
   </PropertyGroup>
 
   <!--

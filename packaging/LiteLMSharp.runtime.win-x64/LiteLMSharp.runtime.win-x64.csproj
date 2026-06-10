@@ -15,7 +15,7 @@
     <NoWarn>$(NoWarn);NU5128</NoWarn>
 
     <PackageId>LiteLMSharp.runtime.win-x64</PackageId>
-    <Description>Native LiteRT-LM runtime (win-x64) for LiteLMSharp. Built from LiteRT-LM $(LiteRtLmVersion).</Description>
+    <Description>Native LiteRT-LM runtime (win-x64) for LiteLMSharp. Built from LiteRT-LM $(LiteRtLmVersion). $(LiteLMDisclaimer)</Description>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 

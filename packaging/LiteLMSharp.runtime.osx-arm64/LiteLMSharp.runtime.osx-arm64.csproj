@@ -14,7 +14,7 @@
     <NoWarn>$(NoWarn);NU5128</NoWarn>
 
     <PackageId>LiteLMSharp.runtime.osx-arm64</PackageId>
-    <Description>Native LiteRT-LM runtime (osx-arm64, Apple Silicon) for LiteLMSharp. Built from LiteRT-LM $(LiteRtLmVersion).</Description>
+    <Description>Native LiteRT-LM runtime (osx-arm64, Apple Silicon) for LiteLMSharp. Built from LiteRT-LM $(LiteRtLmVersion). $(LiteLMDisclaimer)</Description>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 

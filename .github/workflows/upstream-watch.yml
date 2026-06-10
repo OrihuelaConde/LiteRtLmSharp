@@ -1,0 +1,53 @@
+name: Watch upstream LiteRT-LM releases
+
+# Twice a week, compare the latest LiteRT-LM release tag against the version we pin in
+# Directory.Build.props (<LiteRtLmVersion>). If upstream is ahead and there is no open
+# issue for it yet, open one with the update checklist. Costs seconds of ubuntu time.
+
+on:
+  schedule:
+    - cron: '0 9 * * 1,4' # Mon & Thu 09:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare pinned vs latest upstream tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pinned=$(sed -n 's#.*<LiteRtLmVersion>\(.*\)</LiteRtLmVersion>.*#\1#p' Directory.Build.props)
+          latest=$(gh api repos/google-ai-edge/LiteRT-LM/releases/latest --jq .tag_name)
+          echo "pinned: $pinned — upstream latest: $latest"
+
+          if [ -z "$pinned" ] || [ -z "$latest" ]; then
+            echo "::error::Could not determine versions"; exit 1
+          fi
+          if [ "$pinned" = "$latest" ]; then
+            echo "Up to date."; exit 0
+          fi
+
+          title="Upstream LiteRT-LM $latest released (we pin $pinned)"
+          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq 'length')
+          if [ "$existing" != "0" ]; then
+            echo "Issue already open."; exit 0
+          fi
+
+          gh issue create --title "$title" --body "$(cat <<EOF
+          Google published [LiteRT-LM \`$latest\`](https://github.com/google-ai-edge/LiteRT-LM/releases/tag/$latest); we currently pin \`$pinned\`.
+
+          Update checklist:
+          - [ ] Skim the upstream changelog for C API changes (\`c/engine.h\`) and compare against our P/Invoke surface
+          - [ ] Run **Build LiteRT-LM native libraries** with \`litertlm_version=$latest\` (all platforms) and \`publish_release=true\`
+          - [ ] Validate locally (console sample: chat, streaming, \`--tools\`) with the new win-x64 binaries
+          - [ ] Bump \`LiteRtLmVersion\` and \`Version\` in \`Directory.Build.props\`, update \`scripts/restore-natives.ps1\` default and \`ci.yml\` \`NATIVE_REF\`
+          - [ ] Run **Pack NuGet packages** with the new version
+          EOF
+          )"

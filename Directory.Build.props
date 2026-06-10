@@ -17,6 +17,16 @@
     <RepositoryType>git</RepositoryType>
     <PackageTags>litert;litert-lm;llm;gemma;on-device;inference;ai;maui</PackageTags>
     <PackageReadmeFile Condition="Exists('$(MSBuildProjectDirectory)\README.md')">README.md</PackageReadmeFile>
+
+    <!-- Appended to every package Description. Keep in sync with NOTICE / README. -->
+    <LiteLMDisclaimer>Unofficial community bindings, not affiliated with or endorsed by Google. LiteRT is a trademark of Google LLC.</LiteLMDisclaimer>
   </PropertyGroup>
+
+  <!-- Ship the legal files inside every package (PackagePath="" = nupkg root). -->
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)LICENSE.txt" Pack="true" PackagePath="" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)NOTICE" Pack="true" PackagePath="" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="" Visible="false" />
+  </ItemGroup>
 
 </Project>

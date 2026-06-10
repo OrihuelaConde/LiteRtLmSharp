@@ -92,6 +92,12 @@ tests, set `LITERTLM_TEST_MODEL` (and `LITERTLM_TEST_TOOLS=1`) to a `.litertlm` 
 More detail in [`docs/`](docs): [native ABI](docs/native-abi.md), [native build](docs/fase2-native-build.md),
 [packaging](docs/packaging.md).
 
-## License
+## License and trademarks
 
-Apache-2.0. LiteRT-LM and its binaries are (c) Google, also Apache-2.0.
+Apache-2.0 (see [LICENSE.txt](LICENSE.txt), [NOTICE](NOTICE) and
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)).
+
+This is an unofficial, community-maintained project. It is **not affiliated with, sponsored,
+or endorsed by Google**. LiteRT, LiteRT-LM and Gemma are trademarks of Google LLC. The native
+binaries are built from [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) source
+(Apache-2.0) at pinned release tags.
