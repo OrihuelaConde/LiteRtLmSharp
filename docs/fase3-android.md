@@ -45,8 +45,11 @@ app en primer arranque y pasar su ruta a `LiteRtEngine.Load`.
    **CPU y GPU** (ver diagnóstico GPU abajo). Workload MAUI instalado; app sample en `samples/Maui`.
 4. `android-x64` (emuladores) descartado por ahora — pruebas en device físico (el prebuilt
    `android_x86_64` existe upstream si algún día hace falta).
-5. ⏳ Pendiente: re-test en device con los samplers patcheados (`patchelf --add-needed`, ver abajo)
-   para habilitar GPU sampling.
+5. ✅ Re-test en device con los samplers patcheados: **el patchelf funciona en el G100**
+   (checksums device==local; cero warnings de `sampler_factory` → GPU sampling activo; output
+   correcto). Mejora de velocidad no perceptible: el gran salto (~3×, #2211) requiere además
+   habilitar speculative decoding (`litert_lm_engine_settings_set_enable_speculative_decoding`,
+   apagado por defecto y aún no expuesto en el binding — candidato a roadmap).
 
 ## Riesgos
 - Versión de NDK en el runner vs r28b+.

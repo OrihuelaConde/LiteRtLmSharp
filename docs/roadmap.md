@@ -30,9 +30,10 @@ GPU requiere `<uses-native-library>` en el manifest.
 
 ## Pendientes accionables (en orden sugerido)
 
-1. **Android GPU sampling**: re-test en el G100 con los samplers patcheados (`patchelf`, run de CI
-   en curso al escribir esto). Verificar que cargan, que el output sigue correcto, y si mejora el
-   decode (MTP drafter).
+1. ✅ ~~Android GPU sampling~~: verificado en el G100 — los samplers patcheados cargan (sin
+   fallback a CPU sampling) y el output es correcto. Follow-up de roadmap: exponer
+   `EnableSpeculativeDecoding` en `LiteRtEngineOptions` (el API C existe, default off) — es lo que
+   desbloquea el ~3× de decode con el MTP drafter según #2211.
 2. **Validación macOS**: preparar "mac test kit" (console sample publicado osx-arm64 + natives +
    instrucciones) para el colega con Mac Apple Silicon.
 3. **Liberación** (bloqueado por respuesta de naming en #2535):
