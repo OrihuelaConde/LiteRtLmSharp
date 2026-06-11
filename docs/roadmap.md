@@ -46,10 +46,11 @@ is the total context window; VC++ Redistributable required on win-x64; Android G
    #2211 that is what unlocks the ~3× decode speedup with the MTP drafter.
 2. **macOS validation**: prepare a "mac test kit" (console sample published for osx-arm64 +
    natives + instructions) for testing on Apple Silicon hardware.
-3. **Public release** (in progress): ✅ rename to `LiteRtLmSharp` (naming guidance asked in
-   #2535; no objection pattern — Rust/Flutter community bindings use equivalent names) →
-   make the repo public → publish `0.1.0-preview.1` to nuget.org → reserve the ID prefix.
-   Legal is ready (Apache-2.0 + NOTICE + THIRD-PARTY-NOTICES + disclaimers in packages/README).
+3. ✅ ~~Public release~~ (2026-06-11): renamed to `LiteRtLmSharp`, repo public,
+   `0.1.0-preview.1` published to nuget.org via Trusted Publishing (OIDC, no API key),
+   consumer smoke test passed, announced in #2535 and listing PR opened
+   ([LiteRT-LM#2552](https://github.com/google-ai-edge/LiteRT-LM/pull/2552)).
+   Pending follow-up: request the `LiteRtLmSharp.` ID prefix reservation on nuget.org.
 4. **Upstream reports**: (a) ✅ posted to #1881 — Vulkan/Dawn FP16 shaders fail on older Adreno
    and the engine emits silent garbage instead of an error/fallback; (b) dropped — the
    `uses-native-library` requirement is documented in upstream's Kotlin getting-started docs;
@@ -69,8 +70,9 @@ is the total context window; VC++ Redistributable required on win-x64; Android G
   fix, **drop the patchelf** from the android job. Also watch the related #2241, #1860 and the
   OpenCL bug #1850 (`Invalid command queue` — did not reproduce on our Adreno 650 test device,
   but hits other Adreno GPUs).
-- **[LiteRT-LM#2535](https://github.com/google-ai-edge/LiteRT-LM/issues/2535)** — our naming
-  issue. Close the loop there once the packages are published.
+- **[LiteRT-LM#2552](https://github.com/google-ai-edge/LiteRT-LM/pull/2552)** — our PR to be
+  listed in upstream's Supported Language APIs table (announced in #2535). Watch for review
+  feedback.
 - **New LiteRT-LM tags** — automated: `upstream-watch.yml` (Mon/Thu) opens a checklist issue
   when upstream publishes a release.
 - **flutter_gemma** — releases/issues as a recipe source (e.g. their #270/#214 anticipated our
