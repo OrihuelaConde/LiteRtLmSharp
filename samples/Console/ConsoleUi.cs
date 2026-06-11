@@ -48,7 +48,7 @@ static class Ui
     public static void Banner() => WriteLine("""
 
         ┌───────────────────────────────────────────────┐
-        │   LiteRtLmSharp · on-device LLM for .NET        │
+        │   LiteRtLmSharp · on-device LLM for .NET      │
         └───────────────────────────────────────────────┘
         """, ConsoleColor.Cyan);
 

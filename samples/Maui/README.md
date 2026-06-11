@@ -25,7 +25,7 @@ instead — see the repo README):
 - Windows: `litertlm-windows_x86_64.tar.gz` into `runtimes/win-x64/native/`
 
 ```
-gh release download native-v0.13.1 -p 'litertlm-android_arm64.tar.gz'
+pwsh scripts/restore-natives.ps1 -Rid android-arm64   # and/or -Rid win-x64
 ```
 
 ## Run on an Android device

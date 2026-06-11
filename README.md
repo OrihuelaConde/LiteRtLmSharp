@@ -111,7 +111,7 @@ Native binaries are **not** committed. To run the sample/tests locally, restore 
 pwsh scripts/restore-natives.ps1
 ```
 
-(`-All` restores every RID, `-Rid android-arm64` a specific one; needs the `gh` CLI.)
+(`-All` restores every RID, `-Rid android-arm64` a specific one; plain HTTPS, no auth needed.)
 
 Then `dotnet build LiteRtLmSharp.slnx` and `dotnet test` (library + tests + packaging; bare .NET SDK
 is enough). The samples have their own solution, `samples/LiteRtLmSharp.Samples.slnx` — the MAUI
