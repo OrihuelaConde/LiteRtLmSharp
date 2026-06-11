@@ -16,8 +16,9 @@ phase (the csproj documents how to add the TFMs).
 
 ## Prerequisites
 
-Native binaries restored at `runtimes/<rid>/native/` (this sample uses direct references while the
-NuGet packages are unpublished):
+Native binaries restored at `runtimes/<rid>/native/` (the samples reference the library by
+project so they always exercise the current source; consumers should use the NuGet packages
+instead — see the repo README):
 
 - Android: extract `litertlm-android_arm64.tar.gz` from the `native-v0.13.1` GitHub release into
   `runtimes/android-arm64/native/`

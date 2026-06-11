@@ -3,8 +3,8 @@
 Restores the native LiteRT-LM binaries into runtimes/<rid>/native/ from THIS repo's
 `native-<version>` GitHub Release (built by .github/workflows/build-native.yml).
 
-Run once after cloning, before building the samples/tests. The repo is private, so this
-uses the `gh` CLI (must be installed and authenticated: `gh auth login`).
+Run once after cloning, before building the samples/tests. Uses the `gh` CLI (must be
+installed and authenticated: `gh auth login`).
 
 Usage:
   pwsh scripts/restore-natives.ps1                 # current desktop OS only

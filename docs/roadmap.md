@@ -1,77 +1,90 @@
-# Estado del proyecto y roadmap
+# Project status and roadmap
 
-Última actualización: 2026-06-11. Fuente de verdad del "qué está hecho y qué falta".
+Last updated: 2026-06-11. Source of truth for "what's done and what's pending".
 
-## Estado por plataforma
+## Status per platform
 
-| Plataforma | Binarios nativos (CI) | Paquete NuGet | Validación runtime |
+| Platform | Native binaries (CI) | NuGet package | Runtime validation |
 |---|---|---|---|
 | win-x64 | ✅ | ✅ | ✅ (local + CI) |
-| linux-x64 | ✅ | ✅ | ✅ (CI carga real) |
-| android-arm64 | ✅ | ✅ | ✅ device (Moto G100): CPU y GPU |
-| osx-arm64 | ✅ | ✅ | ⏳ colega con Mac Apple Silicon |
-| ios-arm64 | ✅ | ⏳ (requiere xcframework) | ⏳ vía TestFlight |
+| linux-x64 | ✅ | ✅ | ✅ (CI, real model load) |
+| android-arm64 | ✅ | ✅ | ✅ physical device (Adreno 650): CPU and GPU |
+| osx-arm64 | ✅ | ✅ | ⏳ built in CI, not yet validated on hardware |
+| ios-arm64 | ✅ | ⏳ (needs xcframework packaging) | ⏳ |
 
-Todo pinneado a **LiteRT-LM v0.13.1**; versión de paquetes `0.13.1-preview.1`.
+Native binaries are pinned to **LiteRT-LM v0.13.1**.
 
-## Funcionalidad del binding
+## Versioning policy
 
-| Área | Estado |
+Package versions are **independent** of the LiteRT-LM native version (LLamaSharp/Whisper.net
+model). The managed package and every `LiteRtLmSharp.runtime.<rid>` package share one version
+and are published together; `Directory.Build.props` pins the native tag via `LiteRtLmVersion`
+and the README compatibility table maps each release to it. Bump **minor** for native bumps or
+new features, **patch** for binding-only fixes; tag the repo `v<version>` per published release.
+
+## Binding functionality
+
+| Area | Status |
 |---|---|
-| Chat (bloqueante + streaming token a token, cancelación) | ✅ |
-| Function calling / tools (constrained decoding, sanitización de tokens Gemma) | ✅ |
-| System prompt, sampler params, max tokens, token count (medidor de contexto) | ✅ |
-| AOT/trim-friendly (`[LibraryImport]`, `[UnmanagedCallersOnly]`, sin reflection) | ✅ |
-| Multimodal (imagen/audio), embeddings, tokenize/detokenize, benchmark API | 🔜 roadmap |
+| Chat (blocking + per-token streaming, cancellation) | ✅ |
+| Function calling / tools (constrained decoding, Gemma token sanitization) | ✅ |
+| System prompt, sampler params, max tokens, token count (context gauge) | ✅ |
+| AOT/trim-friendly (`[LibraryImport]`, `[UnmanagedCallersOnly]`, no reflection) | ✅ |
+| Multimodal (image/audio), embeddings, tokenize/detokenize, benchmark API | 🔜 roadmap |
 
-Restricciones conocidas (documentadas en README): un engine VIVO a la vez (recargar tras
-`Dispose` funciona — verificado en win-x64 cpu→cpu y cpu→gpu; es el patrón de Edge Gallery para
-cambiar modelo/backend sin reiniciar); conversaciones no thread-safe; `MaxNumTokens` = ventana
-total de contexto; VC++ Redistributable en win-x64; Android GPU requiere `<uses-native-library>`
-en el manifest.
+Known constraints (documented in the README): one engine ALIVE at a time (reloading after
+`Dispose` works — verified on win-x64 cpu→cpu and cpu→gpu; this is Edge Gallery's pattern for
+switching model/backend without restarting); conversations are not thread-safe; `MaxNumTokens`
+is the total context window; VC++ Redistributable required on win-x64; Android GPU requires
+`<uses-native-library>` in the app manifest.
 
-## Pendientes accionables (en orden sugerido)
+## Actionable next steps (suggested order)
 
-1. ✅ ~~Android GPU sampling~~: verificado en el G100 — los samplers patcheados cargan (sin
-   fallback a CPU sampling) y el output es correcto. Follow-up de roadmap: exponer
-   `EnableSpeculativeDecoding` en `LiteRtEngineOptions` (el API C existe, default off) — es lo que
-   desbloquea el ~3× de decode con el MTP drafter según #2211.
-2. **Validación macOS**: preparar "mac test kit" (console sample publicado osx-arm64 + natives +
-   instrucciones) para el colega con Mac Apple Silicon.
-3. **Liberación** (bloqueado por respuesta de naming en #2535):
-   rename (repo/namespaces/IDs `LiteRtLmSharp` o `LiteRTLM.NET`) → repo público → publicar a
-   nuget.org + reservar prefijo de ID. Lo legal ya está listo (Apache-2.0 + NOTICE +
-   THIRD-PARTY-NOTICES + disclaimers en paquetes/README).
-4. **Reporte upstream** (redactar JUNTOS antes de publicar): (a) shaders Vulkan fallan → basura
-   silenciosa sin fallback; (b) `uses-native-library` sin documentar para consumidores del C API;
-   (c) aportar a #2211 el hallazgo de que bionic ignora la promoción `RTLD_NOLOAD|RTLD_GLOBAL`
-   (no hay workaround consumer-side).
-5. **Fase iOS app**: Apple Developer Program → xcframework + `.targets` NativeReference → app MAUI
-   `net10.0-ios` → firma en CI → TestFlight al iPhone 16 Pro.
-6. **Opcionales**: API multimodal/embeddings; `android-x64` para emuladores; SourceLink/símbolos;
-   meta-paquete Desktop; CONTRIBUTING + templates; migrar samples a `PackageReference` cuando los
-   NuGets estén publicados; PR a upstream para aparecer en su lista de bindings.
+1. ✅ ~~Android GPU sampling~~: verified on a physical device — the patched samplers load (no
+   CPU-sampling fallback) and output is correct. Roadmap follow-up: expose
+   `EnableSpeculativeDecoding` in `LiteRtEngineOptions` (the C API exists, default off) — per
+   #2211 that is what unlocks the ~3× decode speedup with the MTP drafter.
+2. **macOS validation**: prepare a "mac test kit" (console sample published for osx-arm64 +
+   natives + instructions) for testing on Apple Silicon hardware.
+3. **Public release** (in progress): ✅ rename to `LiteRtLmSharp` (naming guidance asked in
+   #2535; no objection pattern — Rust/Flutter community bindings use equivalent names) →
+   make the repo public → publish `0.1.0-preview.1` to nuget.org → reserve the ID prefix.
+   Legal is ready (Apache-2.0 + NOTICE + THIRD-PARTY-NOTICES + disclaimers in packages/README).
+4. **Upstream reports**: (a) ✅ posted to #1881 — Vulkan/Dawn FP16 shaders fail on older Adreno
+   and the engine emits silent garbage instead of an error/fallback; (b) dropped — the
+   `uses-native-library` requirement is documented in upstream's Kotlin getting-started docs;
+   (c) ✅ posted to #2211 — bionic ignores `RTLD_NOLOAD|RTLD_GLOBAL` flag promotion, so there is
+   no consumer-side workaround for the missing `DT_NEEDED`.
+5. **iOS app phase**: Apple Developer Program → xcframework + `.targets` NativeReference →
+   MAUI `net10.0-ios` app → CI signing → TestFlight.
+6. **Optional**: multimodal/embeddings API; `android-x64` for emulators; Desktop meta-package;
+   CONTRIBUTING + issue templates; scheduled smoke-test workflow that consumes the published
+   packages from nuget.org; PR upstream to be listed among the language bindings (planned right
+   after the nuget.org release).
 
-## Watchlist (revisar periódicamente)
+## Watchlist (re-check periodically)
 
-- **[LiteRT-LM#2211](https://github.com/google-ai-edge/LiteRT-LM/issues/2211)** — samplers GPU sin
-  `DT_NEEDED` (nuestro patchelf es el workaround). Si Google publica prebuilts arreglados o un fix,
-  **quitar el patchelf** del job android. Atentos también a los relacionados #2241, #1860 y al bug
-  OpenCL #1850 (`Invalid command queue` — no nos afectó en el G100, pero afecta otros Adreno).
-- **[LiteRT-LM#2535](https://github.com/google-ai-edge/LiteRT-LM/issues/2535)** — nuestro issue de
-  naming. Su respuesta destraba el rename y la liberación.
-- **Tags nuevos de LiteRT-LM** — automatizado: `upstream-watch.yml` (lunes/jueves) abre un issue con
-  el checklist de actualización cuando hay release nuevo.
-- **flutter_gemma** — releases/issues como fuente de recetas (p.ej. su #270/#214 anticiparon
-  nuestros problemas de Android GPU).
+- **[LiteRT-LM#2211](https://github.com/google-ai-edge/LiteRT-LM/issues/2211)** — GPU samplers
+  missing `DT_NEEDED` (our patchelf is the workaround). If Google ships fixed prebuilts or a
+  fix, **drop the patchelf** from the android job. Also watch the related #2241, #1860 and the
+  OpenCL bug #1850 (`Invalid command queue` — did not reproduce on our Adreno 650 test device,
+  but hits other Adreno GPUs).
+- **[LiteRT-LM#2535](https://github.com/google-ai-edge/LiteRT-LM/issues/2535)** — our naming
+  issue. Close the loop there once the packages are published.
+- **New LiteRT-LM tags** — automated: `upstream-watch.yml` (Mon/Thu) opens a checklist issue
+  when upstream publishes a release.
+- **flutter_gemma** — releases/issues as a recipe source (e.g. their #270/#214 anticipated our
+  Android GPU problems).
 
-## Decisiones de arquitectura (registro)
+## Architecture decisions (log)
 
-- Wrapper P/Invoke sobre el **C API** (`c/engine.h`), nunca C++/CLI. .NET 10 exclusivo.
-- Binarios **propios** desde tags de release (jamás commits sueltos — lección del segfault de
-  streaming en `032334d8`), vía `native/patch_c_api.sh` + `build-native.yml` (input `platforms`
-  para no recompilar lo existente; release acumula assets).
-- Distribución estilo LLamaSharp: managed puro + `runtime.<rid>` por plataforma.
-- Desktop linkea `libLiteRt` separada (`litert_link_capi_so`); Android/macOS/iOS la llevan estática.
-- Soluciones separadas: `LiteRtLmSharp.slnx` (lib+tests+packaging, SDK pelado, CI) y
-  `samples/LiteRtLmSharp.Samples.slnx` (console + MAUI, requiere workloads).
+- P/Invoke wrapper over the **C API** (`c/engine.h`), never C++/CLI. .NET 10 only.
+- **Self-built** native binaries from release tags (never loose commits — lesson from the
+  streaming segfault at `032334d8`), via `native/patch_c_api.sh` + `build-native.yml`
+  (`platforms` input to avoid rebuilding existing assets; the release accumulates assets).
+- LLamaSharp-style distribution: pure managed + per-RID `runtime.<rid>` packages, all sharing
+  one version per release (see Versioning policy above).
+- Desktop links `libLiteRt` as a separate shared lib (`litert_link_capi_so`); Android/macOS/iOS
+  link it statically.
+- Separate solutions: `LiteRtLmSharp.slnx` (lib+tests+packaging, bare SDK, CI) and
+  `samples/LiteRtLmSharp.Samples.slnx` (console + MAUI, needs workloads).
