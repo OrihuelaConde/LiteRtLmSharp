@@ -22,6 +22,7 @@ public static class MauiProgram
 		builder.Services.AddSingleton<EngineService>();
 		builder.Services.AddTransient<ModelsPage>();
 		builder.Services.AddTransient<ChatPage>();
+		builder.Services.AddTransient<ToolsPage>();
 
 #if DEBUG
 		builder.Logging.AddDebug();

@@ -37,14 +37,23 @@ public partial class ModelsPage : ContentPage
     {
         if (_engine.LoadedModel is { } m)
         {
-            EngineBanner.Text = $"✓ {m.DisplayName} is loaded — chat is ready. Restart the app to switch models.";
+            EngineBanner.Text = $"✓ {m.DisplayName} ({_engine.LoadedBackend}) is loaded — chat is ready. Load another model or backend to switch.";
             EngineBanner.IsVisible = true;
         }
     }
 
     internal Task ShowError(string title, string message) => DisplayAlertAsync(title, message, "OK");
 
+    internal Task<bool> Confirm(string title, string message) => DisplayAlertAsync(title, message, "Switch", "Cancel");
+
     internal Task GoToChat() => Shell.Current.GoToAsync("//ChatPage");
+
+    internal void RefreshAllRows()
+    {
+        foreach (var row in Rows)
+            row.RefreshState();
+        RefreshBanner();
+    }
 }
 
 /// <summary>Per-model row state for the Models list.</summary>
@@ -92,7 +101,9 @@ public sealed class ModelRow : INotifyPropertyChanged
 
     public bool CanDownload => !IsDownloading && !_store.IsDownloaded(Model);
     public bool CanDelete => !IsDownloading && (_store.IsDownloaded(Model) || _store.HasPartialDownload(Model));
-    public bool CanLoad => !IsDownloading && _store.IsDownloaded(Model) && !_engine.IsLoaded;
+    // Load stays available while another model is loaded: the engine can be swapped in-place
+    // (also lets you reload the SAME model on the other backend).
+    public bool CanLoad => !IsDownloading && _store.IsDownloaded(Model);
 
     public void RefreshState()
     {
@@ -102,7 +113,7 @@ public sealed class ModelRow : INotifyPropertyChanged
         {
             long mb = (_store.GetDownloadedBytes(Model) ?? 0) / (1024 * 1024);
             Status = _engine.LoadedModel?.Id == Model.Id
-                ? $"Loaded ({mb} MB on disk)"
+                ? $"Loaded on {_engine.LoadedBackend} ({mb} MB on disk)"
                 : $"Downloaded ({mb} MB)";
         }
         else if (_store.HasPartialDownload(Model))
@@ -156,7 +167,7 @@ public sealed class ModelRow : INotifyPropertyChanged
     {
         if (_engine.LoadedModel?.Id == Model.Id)
         {
-            await _page.ShowError("Model in use", "This model is loaded in the engine. Restart the app first.");
+            await _page.ShowError("Model in use", "This model is loaded in the engine. Load another model first.");
             return;
         }
         _store.Delete(Model);
@@ -165,7 +176,16 @@ public sealed class ModelRow : INotifyPropertyChanged
 
     private async Task LoadAsync()
     {
-        string backend = await _page.DisplayActionSheetAsync("Backend", "Cancel", null, "CPU", "GPU") switch
+        // Switching models/backends is fine, but make it deliberate: the old engine is
+        // disposed and every conversation (Chat and Tools tabs) is reset.
+        if (_engine.IsLoaded &&
+            !await _page.Confirm("Switch model?",
+                $"This unloads {_engine.LoadedModel!.DisplayName} ({_engine.LoadedBackend}) and clears all conversations."))
+            return;
+
+        // GPU-only models reject CPU at engine creation, so don't offer it.
+        string[] backends = Model.GpuOnly ? ["GPU"] : ["CPU", "GPU"];
+        string backend = await _page.DisplayActionSheetAsync("Backend", "Cancel", null, backends) switch
         {
             "GPU" => "gpu",
             "CPU" => "cpu",
@@ -177,7 +197,7 @@ public sealed class ModelRow : INotifyPropertyChanged
         try
         {
             await _engine.LoadAsync(Model, _store.GetLocalPath(Model), backend);
-            RefreshState();
+            _page.RefreshAllRows(); // the previously loaded model's row needs its status back
             await _page.GoToChat();
         }
         catch (Exception ex)

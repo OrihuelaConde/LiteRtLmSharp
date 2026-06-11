@@ -4,8 +4,12 @@ On-device LLM chat app: download/manage Gemma 4 `.litertlm` models and chat with
 all running locally via LiteLMSharp.
 
 - **Models tab** — catalog of Gemma 4 models from `litert-community` (Hugging Face): download with
-  progress + resume, delete, pick CPU/GPU and load.
+  progress + resume, delete, pick CPU/GPU and load. Loading while another model is active swaps
+  the engine in-place (no app restart) — same pattern as Google's Edge Gallery.
 - **Chat tab** — streaming chat with Stop (cancellation), context-usage gauge, New conversation.
+- **Tools tab** — function-calling demo: the model can call real device APIs (battery status,
+  device info via MAUI essentials) and a mock weather service. Each question runs in a fresh
+  conversation, so Chat and Tools never share context.
 
 Targets today: **Android** (physical arm64 device) and **Windows**. iOS/macOS arrive with the Apple
 phase (the csproj documents how to add the TFMs).
@@ -45,8 +49,9 @@ dotnet build -f net10.0-windows10.0.19041.0 -t:Run
 
 ## Notes
 
-- **One model per app run**: LiteRT-LM's native environment initializes once per process; to switch
-  models, restart the app (the UI tells you).
+- **One engine alive at a time**: switching model or backend disposes every conversation and the
+  engine, then loads the new one (`EngineService.LoadAsync` → `UnloadAsync`). Pages release their
+  conversations via the `EngineService.Unloading` event before the engine goes away.
 - Models are stored in the app's private data dir (`FileSystem.AppDataDirectory/models`); deleting
   the app deletes the models.
 - First token after a long prompt can take a while on phone CPUs — that's the prefill, not a hang.

@@ -10,6 +10,7 @@ public partial class ChatPage : ContentPage
     private readonly EngineService _engine;
     private LiteRtConversation? _conversation;
     private CancellationTokenSource? _replyCts;
+    private Task? _replyTask;
 
     public ObservableCollection<ChatMessage> Messages { get; } = [];
 
@@ -19,6 +20,10 @@ public partial class ChatPage : ContentPage
         _engine = engine;
         BindingContext = this;
         _engine.Loaded += () => MainThread.BeginInvokeOnMainThread(RefreshEngineState);
+        _engine.Unloading += ReleaseConversationAsync;
+        // Keep the latest message in view: the stack grows on every add AND on every streamed
+        // chunk, and SizeChanged covers both. ScrollToAsync clamps the overshoot.
+        MessagesStack.SizeChanged += (_, _) => _ = MessagesScroll.ScrollToAsync(0, MessagesStack.Height, animated: false);
         RefreshEngineState();
     }
 
@@ -26,30 +31,52 @@ public partial class ChatPage : ContentPage
     {
         if (_engine.LoadedModel is { } model)
         {
-            HeaderLabel.Text = $"{model.DisplayName} · context {EngineService.ContextTokens} tokens";
+            HeaderLabel.Text = $"{model.DisplayName} · {_engine.LoadedBackend} · context {EngineService.ContextTokens} tokens";
             InputEntry.IsEnabled = true;
             SendButton.IsEnabled = true;
             _conversation ??= _engine.NewConversation();
         }
     }
 
+    /// <summary>
+    /// The engine is about to be disposed (model/backend switch). Stop any in-flight reply and
+    /// dispose our conversation — conversations must not outlive their engine.
+    /// </summary>
+    private async Task ReleaseConversationAsync()
+    {
+        _replyCts?.Cancel();
+        if (_replyTask is not null)
+            await _replyTask; // never faults: StreamReplyAsync handles its own errors
+        _conversation?.Dispose();
+        _conversation = null;
+
+        Messages.Clear();
+        GaugeLabel.IsVisible = false;
+        HeaderLabel.Text = "Loading…";
+        InputEntry.IsEnabled = false;
+        SendButton.IsEnabled = false;
+    }
+
     private void OnNewConversation(object? sender, EventArgs e)
     {
-        if (!_engine.IsLoaded) return;
-        _replyCts?.Cancel();
+        if (!_engine.IsLoaded || _replyCts is not null) return;
         _conversation?.Dispose();
         _conversation = _engine.NewConversation();
         Messages.Clear();
         GaugeLabel.IsVisible = false;
     }
 
-    private async void OnSend(object? sender, EventArgs e)
+    private void OnSend(object? sender, EventArgs e)
     {
         string prompt = InputEntry.Text?.Trim() ?? "";
         if (prompt.Length == 0 || _conversation is null || _replyCts is not null)
             return;
-
         InputEntry.Text = "";
+        _replyTask = StreamReplyAsync(prompt);
+    }
+
+    private async Task StreamReplyAsync(string prompt)
+    {
         Messages.Add(ChatMessage.User(prompt));
         var reply = ChatMessage.Assistant();
         Messages.Add(reply);
@@ -59,7 +86,7 @@ public partial class ChatPage : ContentPage
         var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            await foreach (string chunk in _conversation.SendMessageStreamingAsync(prompt, _replyCts.Token))
+            await foreach (string chunk in _conversation!.SendMessageStreamingAsync(prompt, _replyCts.Token))
                 reply.Append(chunk);
             if (reply.Text.Length == 0)
                 reply.Append("(empty response)");
@@ -82,10 +109,12 @@ public partial class ChatPage : ContentPage
 
     private void OnStop(object? sender, EventArgs e) => _replyCts?.Cancel();
 
+    // The Entry stays enabled while a reply streams: disabling the focused control on Windows
+    // throws focus to the toolbar and makes the input area flicker on every message.
+    // OnSend already ignores input while a reply is in flight.
     private void SetBusy(bool busy)
     {
         SendButton.IsEnabled = !busy;
-        InputEntry.IsEnabled = !busy;
         StopButton.IsVisible = busy;
     }
 

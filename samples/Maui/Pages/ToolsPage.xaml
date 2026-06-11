@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:pages="clr-namespace:LiteLMSharp.SampleMaui.Pages"
+             x:Class="LiteLMSharp.SampleMaui.Pages.ToolsPage"
+             x:DataType="pages:ToolsPage"
+             Title="Tools">
+
+    <Grid RowDefinitions="Auto,Auto,*,Auto,Auto" Padding="12" RowSpacing="8">
+
+        <Label x:Name="HeaderLabel"
+               Grid.Row="0"
+               Text="No model loaded — pick one in the Models tab."
+               FontSize="13"
+               TextColor="Gray" />
+
+        <Label Grid.Row="1"
+               Text="Function calling: the model can read your battery and device info (real MAUI APIs) or a mock weather service. Each question runs in a fresh conversation."
+               FontSize="12"
+               TextColor="Gray" />
+
+        <!-- ScrollView + BindableLayout for the same reason as ChatPage: CollectionView
+             flickers on Windows every time an entry is added. -->
+        <ScrollView x:Name="LogScroll" Grid.Row="2">
+            <VerticalStackLayout x:Name="LogStack"
+                                 BindableLayout.ItemsSource="{Binding Log}">
+                <BindableLayout.ItemTemplate>
+                    <DataTemplate x:DataType="pages:ToolLogEntry">
+                        <Label Margin="0,2" Padding="4"
+                               Text="{Binding Text}"
+                               TextColor="{Binding Color}"
+                               FontSize="13"
+                               LineBreakMode="WordWrap" />
+                    </DataTemplate>
+                </BindableLayout.ItemTemplate>
+            </VerticalStackLayout>
+        </ScrollView>
+
+        <HorizontalStackLayout Grid.Row="3" Spacing="8">
+            <Button Text="Battery?" FontSize="12" Clicked="OnSuggestion" />
+            <Button Text="My device?" FontSize="12" Clicked="OnSuggestion" />
+            <Button Text="Weather in Tokyo?" FontSize="12" Clicked="OnSuggestion" />
+        </HorizontalStackLayout>
+
+        <Grid Grid.Row="4" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+            <Entry x:Name="InputEntry"
+                   Placeholder="Ask something a tool can answer…"
+                   IsEnabled="False"
+                   Completed="OnSend" />
+            <Button x:Name="SendButton" Grid.Column="1" Text="Send" IsEnabled="False" Clicked="OnSend" />
+        </Grid>
+
+    </Grid>
+</ContentPage>

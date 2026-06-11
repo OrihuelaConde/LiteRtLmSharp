@@ -1,6 +1,10 @@
 namespace LiteLMSharp.SampleMaui.Services;
 
 /// <summary>A known LiteRT-LM model that the app can download and run.</summary>
+/// <remarks>
+/// <paramref name="GpuOnly"/>: some published .litertlm files carry a backend constraint and
+/// refuse to load on CPU ("Main backend constraint mismatch") — the 12B build is one of them.
+/// </remarks>
 public sealed record ModelInfo(
     string Id,
     string DisplayName,
@@ -8,7 +12,8 @@ public sealed record ModelInfo(
     string DownloadUrl,
     string ApproxSize,
     string RamHint,
-    bool MobileFriendly);
+    bool MobileFriendly,
+    bool GpuOnly = false);
 
 /// <summary>
 /// Gemma models published as ready-to-run <c>.litertlm</c> files by the
@@ -41,8 +46,9 @@ public static class ModelCatalog
             DisplayName: "Gemma 4 12B (instruct)",
             FileName: "gemma-4-12B-it.litertlm",
             DownloadUrl: $"{Hf}/litert-community/gemma-4-12B-it-litert-lm/resolve/main/gemma-4-12B-it.litertlm",
-            ApproxSize: "~12 GB",
-            RamHint: "Desktop-class only",
-            MobileFriendly: false),
+            ApproxSize: "~6.5 GB",
+            RamHint: "Needs ~8 GB free RAM — GPU only, desktop-class",
+            MobileFriendly: false,
+            GpuOnly: true),
     ];
 }

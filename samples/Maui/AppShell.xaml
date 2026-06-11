@@ -15,6 +15,10 @@
             Title="Chat"
             ContentTemplate="{DataTemplate pages:ChatPage}"
             Route="ChatPage" />
+        <ShellContent
+            Title="Tools"
+            ContentTemplate="{DataTemplate pages:ToolsPage}"
+            Route="ToolsPage" />
     </TabBar>
 
 </Shell>

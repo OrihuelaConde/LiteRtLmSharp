@@ -25,8 +25,13 @@ public sealed class ModelStore
 
     public void Delete(ModelInfo model)
     {
-        if (File.Exists(GetLocalPath(model))) File.Delete(GetLocalPath(model));
-        if (File.Exists(GetPartialPath(model))) File.Delete(GetPartialPath(model));
+        if (!Directory.Exists(ModelsDirectory))
+            return;
+        // The runtime drops cache files next to the model (XNNPack flags, GPU mldrift weights —
+        // the latter can be as large as the model itself). They are all named
+        // "<model file name><suffix>", as is our ".partial", so one sweep removes everything.
+        foreach (string file in Directory.GetFiles(ModelsDirectory, model.FileName + "*"))
+            File.Delete(file);
     }
 
     /// <summary>

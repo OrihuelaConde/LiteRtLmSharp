@@ -18,23 +18,25 @@
                FontSize="13"
                TextColor="Gray" />
 
-        <CollectionView x:Name="MessagesView"
-                        Grid.Row="1"
-                        ItemsSource="{Binding Messages}"
-                        SelectionMode="None"
-                        ItemsUpdatingScrollMode="KeepLastItemInView">
-            <CollectionView.ItemTemplate>
-                <DataTemplate x:DataType="pages:ChatMessage">
-                    <Border Margin="0,4" Padding="10" StrokeThickness="0"
-                            StrokeShape="RoundRectangle 10"
-                            BackgroundColor="{Binding Background}"
-                            HorizontalOptions="{Binding Alignment}"
-                            MaximumWidthRequest="540">
-                        <Label Text="{Binding Text}" FontSize="15" LineBreakMode="WordWrap" />
-                    </Border>
-                </DataTemplate>
-            </CollectionView.ItemTemplate>
-        </CollectionView>
+        <!-- ScrollView + BindableLayout instead of CollectionView: on Windows, CollectionView
+             re-virtualizes (visibly flickers) every time an item is added or the streaming
+             reply grows. A chat demo holds few messages, so virtualization buys nothing. -->
+        <ScrollView x:Name="MessagesScroll" Grid.Row="1">
+            <VerticalStackLayout x:Name="MessagesStack"
+                                 BindableLayout.ItemsSource="{Binding Messages}">
+                <BindableLayout.ItemTemplate>
+                    <DataTemplate x:DataType="pages:ChatMessage">
+                        <Border Margin="0,4" Padding="10" StrokeThickness="0"
+                                StrokeShape="RoundRectangle 10"
+                                BackgroundColor="{Binding Background}"
+                                HorizontalOptions="{Binding Alignment}"
+                                MaximumWidthRequest="540">
+                            <Label Text="{Binding Text}" FontSize="15" LineBreakMode="WordWrap" />
+                        </Border>
+                    </DataTemplate>
+                </BindableLayout.ItemTemplate>
+            </VerticalStackLayout>
+        </ScrollView>
 
         <Label x:Name="GaugeLabel" Grid.Row="2" FontSize="11" TextColor="Gray" IsVisible="False" />
 
