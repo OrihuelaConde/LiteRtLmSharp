@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       package_version:
-        description: 'NuGet package version (e.g. 0.13.1-preview.1)'
+        description: 'NuGet package version (e.g. 0.1.0-preview.1; independent of the native ref)'
         required: true
-        default: '0.13.1-preview.1'
+        default: '0.1.0-preview.1'
       native_ref:
         description: 'LiteRT-LM ref whose native release to consume (release tag = native-<ref>)'
         required: true

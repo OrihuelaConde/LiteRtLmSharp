@@ -11,6 +11,11 @@
     <!-- Pure managed package. Native binaries ship in LiteRtLmSharp.runtime.<rid> packages. -->
     <PackageId>LiteRtLmSharp</PackageId>
     <Description>.NET binding for Google's LiteRT-LM on-device LLM inference (P/Invoke over the C API). Add a LiteRtLmSharp.runtime.&lt;rid&gt; package for native binaries. $(LiteRtLmDisclaimer)</Description>
+
+    <!-- Debugger source mapping for the published package (SourceLink ships with the SDK). -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
   </PropertyGroup>
 
   <!--
