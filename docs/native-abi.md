@@ -1,203 +1,215 @@
-# LiteRT-LM C ABI — referencia para el binding .NET
+# LiteRT-LM C ABI — reference for the .NET binding
 
-> Fuente de verdad: [`c/engine.h`](https://github.com/google-ai-edge/LiteRT-LM/blob/main/c/engine.h)
-> del repo oficial. Este documento resume el ABI **verificado** sobre el binario real.
+> Source of truth: [`c/engine.h`](https://github.com/google-ai-edge/LiteRT-LM/blob/main/c/engine.h)
+> in the official repo. This document summarizes the ABI as **verified** against the real binary.
 
-> **Estado actual (v0.13.1, binarios propios):** los hallazgos sobre el binario comunitario
-> `0.12.0-a` y el commit interino `032334d8` (crash de `conversation_config_create`,
-> `get_token_count` ausente, `send_message` bloqueante devolviendo null, segfault de streaming) son
-> **HISTÓRICOS** — todos resueltos al compilar nuestros binarios desde el tag `v0.13.1` con header
-> emparejado. Hoy funcionan: config/system-prompt/sampler, tools, streaming, token count, en las 5
-> plataformas. Se conservan abajo como registro de diagnóstico.
+> **Current state (v0.13.1, self-built binaries):** the findings about the community binary
+> `0.12.0-a` and the interim commit `032334d8` (`conversation_config_create` crash, missing
+> `get_token_count`, blocking `send_message` returning null, streaming segfault) are
+> **HISTORICAL** — all resolved by compiling our own binaries from the `v0.13.1` tag with the
+> matching header. Today config/system-prompt/sampler, tools, streaming and token count work on
+> all 5 platforms. The notes below are kept as a diagnostic record.
 
-## Resumen de viabilidad (verificado)
+## Viability summary (verified)
 
-- El header `c/engine.h` declara una API **C plana** (`extern "C"`) con **punteros opacos** —
-  ideal para P/Invoke. ~89 funciones, prefijo `litert_lm_`.
-- Export en Windows vía `__declspec(dllexport)`; en Linux/macOS vía `visibility("default")`.
-- **Verificado sobre binario**: `LiteRtLm.dll` (prebuilt de flutter_gemma, tag `native-v0.12.0-a`)
-  exporta **89 funciones `litert_lm_*`** en su tabla de exports (confirmado con `dumpbin /exports`).
-  → El P/Invoke contra estos binarios es viable hoy, sin compilar desde source.
+- The `c/engine.h` header declares a **flat C API** (`extern "C"`) with **opaque pointers** —
+  ideal for P/Invoke. ~89 functions, `litert_lm_` prefix.
+- Exported on Windows via `__declspec(dllexport)`; on Linux/macOS via `visibility("default")`.
+- **Verified against the binary**: `LiteRtLm.dll` (flutter_gemma prebuilt, tag `native-v0.12.0-a`)
+  exports **89 `litert_lm_*` functions** in its export table (confirmed with `dumpbin /exports`).
+  → P/Invoke against these binaries was viable from day one, without building from source.
 
-## Origen de los binarios prebuilt (PoC)
+## Origin of the prebuilt binaries (PoC phase)
 
-flutter_gemma publica los nativos de LiteRT-LM como assets de GitHub Release en **su propio repo**:
+flutter_gemma publishes LiteRT-LM natives as GitHub Release assets on **its own repo**:
 
 - Base: `https://github.com/DenisovAV/flutter_gemma/releases/download/native-v<version>/`
-- Versión actual usada: `0.12.0-a` (tag `native-v0.12.0-a`).
-- Assets relevantes para desktop:
+- Version used during the PoC: `0.12.0-a` (tag `native-v0.12.0-a`).
+- Relevant desktop assets:
   - `litertlm-windows_x86_64.tar.gz` (sha256 `b7264091c05001ef84e53761dfee331f761e3a2362b36b28ab2ce39666400d76`)
   - `litertlm-linux_x86_64.tar.gz` (sha256 `930296b010ecc316c6b6fc4ed1c722b275b4064b59b5aad8ff7b858e9149c0d7`)
-- Lib principal: **`LiteRtLm.dll`** (Win) / **`libLiteRtLm.so`** (Linux) → nombre P/Invoke: `LiteRtLm`.
+- Main lib: **`LiteRtLm.dll`** (Win) / **`libLiteRtLm.so`** (Linux) → P/Invoke name: `LiteRtLm`.
 
-### Companions necesarios (Windows x64)
-`LiteRtLm.dll` resuelve por PE imports (en LoadLibrary) las copias con prefijo `lib`:
+### Required companions (Windows x64)
+`LiteRtLm.dll` resolves the `lib`-prefixed copies via PE imports (at LoadLibrary time):
 `libLiteRt.dll`, `libGemmaModelConstraintProvider.dll`, `libLiteRtTopKWebGpuSampler.dll`,
-`libLiteRtWebGpuAccelerator.dll`, más runtime DXC (`dxcompiler.dll`, `dxil.dll`) y NPU Intel opcional
-(`LiteRtDispatch.dll`, `openvino*.dll`, `tbb*.dll`). **Todos los `.dll` del tarball deben ir juntos en
-el directorio de salida.** El CPU backend funciona sin la parte NPU.
+`libLiteRtWebGpuAccelerator.dll`, plus the DXC runtime (`dxcompiler.dll`, `dxil.dll`) and the
+optional Intel NPU set (`LiteRtDispatch.dll`, `openvino*.dll`, `tbb*.dll`). **Every `.dll` in
+the tarball must ship together in the output directory.** The CPU backend works without the
+NPU part.
 
-> Nota de licencias: estos binarios son Apache-2.0 (LiteRT-LM) re-empaquetados por flutter_gemma. Para
-> producción montaremos build propio (Fase 2) y/o consumiremos el target oficial de #2154.
+> License note: those binaries are Apache-2.0 (LiteRT-LM) repackaged by flutter_gemma. For
+> production we build our own (see docs/native-build.md) and/or will consume the official
+> target from #2154.
 
-## Flujo mínimo (API Conversation — alto nivel, recomendado)
+## Minimal flow (Conversation API — high level, recommended)
 
-Maneja plantillas de chat internamente; espeja las Gemini Chat APIs vía JSON.
+Handles chat templates internally; mirrors the Gemini Chat APIs via JSON.
 
 ```c
 // 1. Settings
 LiteRtLmEngineSettings* s = litert_lm_engine_settings_create(model_path, "cpu", NULL, NULL);
-litert_lm_engine_settings_set_max_num_tokens(s, 512);          // opcional
-// 2. Engine (pesado, tiene los pesos)
+litert_lm_engine_settings_set_max_num_tokens(s, 512);          // optional
+// 2. Engine (heavy, owns the weights)
 LiteRtLmEngine* e = litert_lm_engine_create(s);
-// 3. Conversation (config NULL = default)
+// 3. Conversation (NULL config = defaults)
 LiteRtLmConversation* c = litert_lm_conversation_create(e, NULL);
-// 4a. Envío bloqueante
+// 4a. Blocking send
 LiteRtLmJsonResponse* r = litert_lm_conversation_send_message(c, msg_json, NULL, NULL);
-const char* out_json = litert_lm_json_response_get_string(r);  // string propiedad de r
-// 4b. ...o streaming (callback en hilo de fondo)
+const char* out_json = litert_lm_json_response_get_string(r);  // string owned by r
+// 4b. ...or streaming (callback on a background thread)
 litert_lm_conversation_send_message_stream(c, msg_json, NULL, NULL, cb, user_data);
-// 5. Liberar en orden inverso
+// 5. Release in reverse order
 litert_lm_json_response_delete(r);
 litert_lm_conversation_delete(c);
 litert_lm_engine_delete(e);
 litert_lm_engine_settings_delete(s);
 ```
 
-### Contrato JSON (verificado en `c/engine_test.cc`)
+### JSON contract (verified in `c/engine_test.cc`)
 
-- **Mensaje de usuario** (`message_json`):
+- **User message** (`message_json`):
   ```json
   {"role": "user", "content": [{"type": "text", "text": "Hello"}]}
   ```
-- **Respuesta** (`litert_lm_json_response_get_string`): mismo shape; el texto se lee en
+- **Response** (`litert_lm_json_response_get_string`): same shape; the text lives at
   `response["content"][0]["text"]`.
-- **System message** (en `litert_lm_conversation_config_set_system_message`, content es objeto no array):
+- **System message** (for `litert_lm_conversation_config_set_system_message`, content is an
+  object, not an array):
   ```json
   {"type":"text","text":"You are a helpful assistant."}
   ```
 
-### Callback de streaming
+### Streaming callback
 ```c
 typedef void (*LiteRtLmStreamCallback)(void* callback_data, const char* chunk,
                                        bool is_final, const char* error_msg);
 ```
-- `chunk`: trozo de texto (válido solo durante la llamada → copiar). `error_msg`: NULL en éxito.
-- `is_final`: true en el último chunk → señalizar fin. Se invoca desde hilo de fondo.
+- `chunk`: text fragment (valid only during the call → copy it). `error_msg`: NULL on success.
+- `is_final`: true on the last chunk → signal completion. Invoked from a background thread.
 
-## Convenciones de marshalling .NET
+## .NET marshalling conventions
 
-- Strings `const char*` = **UTF-8** → `StringMarshalling.Utf8` en `[LibraryImport]`.
-- `bool` C = `bool` de 1 byte → `[MarshalAs(UnmanagedType.U1)]` / `byte`.
-- Punteros opacos → `SafeHandle` por tipo; liberar con su `*_delete`.
-- x64 tiene convención única; declarar Cdecl explícito (`[UnmanagedCallConv(Cdecl)]`) por portabilidad.
-- Callback: usar `[UnmanagedCallersOnly(Cdecl)]` + `GCHandle` en `callback_data` (AOT-friendly,
-  sin marshalling de delegates).
+- `const char*` strings = **UTF-8** → `StringMarshalling.Utf8` in `[LibraryImport]`.
+- C `bool` = 1-byte bool → `[MarshalAs(UnmanagedType.U1)]` / `byte`.
+- Opaque pointers → one `SafeHandle` per type; release with its `*_delete`.
+- x64 has a single calling convention; declare Cdecl explicitly
+  (`[UnmanagedCallConv(Cdecl)]`) for portability.
+- Callback: use `[UnmanagedCallersOnly(Cdecl)]` + a `GCHandle` in `callback_data`
+  (AOT-friendly, no delegate marshalling).
 
-## Tipos/structs clave del header
+## Key header types/structs
 - `LiteRtLmSamplerParams { LiteRtLmSamplerType type; int32 top_k; float top_p; float temperature; int32 seed; }`
 - `LiteRtLmSamplerType`: 0 Unspecified, 1 TopK, 2 TopP, 3 Greedy.
-- `LiteRtLmInputData { LiteRtLmInputDataType type; const void* data; size_t size; }` (multimodal; texto=UTF-8).
+- `LiteRtLmInputData { LiteRtLmInputDataType type; const void* data; size_t size; }` (multimodal; text=UTF-8).
 - `LiteRtLmInputDataType`: Text, Image, ImageEnd, Audio, AudioEnd.
 
-## Hallazgos empíricos sobre el binario prebuilt `native-v0.12.0-a` (VERIFICADO en runtime)
+## Empirical findings on the prebuilt `native-v0.12.0-a` binary (VERIFIED at runtime)
 
-Probado con `gemma-4-E2B-it.litertlm` (CPU/XNNPACK) desde .NET:
+Tested with `gemma-4-E2B-it.litertlm` (CPU/XNNPACK) from .NET:
 
-1. **Generación funciona end-to-end** (bloqueante y streaming). Engine carga en ~0.2 s (mmap).
-2. **Los chunks de streaming son objetos JSON completos por token**, no texto plano:
-   `{"role":"assistant","content":[{"type":"text","text":"1"}]}`. → hay que parsear **cada** chunk
-   con `content[0].text` (no solo la respuesta final del path bloqueante).
-3. **`litert_lm_conversation_config_create` provoca AccessViolation (0xC0000005)** en este binario,
-   pese a estar en la tabla de exports (ordinal 28). Es **skew de versión**: el header viene de `main`
-   (~0.13+) y el binario es 0.12.0-a. → Por ahora usar conversación con **config NULL**
-   (`litert_lm_conversation_create(engine, NULL)`); system message y sampler quedan deshabilitados
-   hasta Fase 2 (build propio con header del mismo tag). `LiteRtConversationOptions` ya documenta esto.
-4. **`litert_lm_conversation_send_message` (bloqueante) devolvió NULL** en algunas condiciones donde el
-   **streaming sí funcionó**. → El path **streaming es el robusto** en este binario; tratar el bloqueante
-   como best-effort.
-5. **`litert_lm_conversation_get_token_count` NO está en este binario** (lanza `EntryPointNotFoundException`);
-   se añadió upstream después de 0.12.0-a. El binding existe pero hay que usarlo con try/catch hasta Fase 2.
-6. **`MaxNumTokens` = ventana de contexto TOTAL** (KV cache = prompt + respuesta, **acumulado entre turnos**).
-   Si es pequeña (p.ej. 1024) una respuesta larga la llena y los turnos siguientes **se desbordan y degeneran
-   en texto incoherente** (síntoma observado: respuesta cortada a media palabra, luego basura tipo "Laptop").
-   Subir a 4096 resolvió un multi-turno coherente. No es bug del binding; es gestión de contexto del LLM.
-   Para producción: exponer/gestionar historial y, cuando el binario lo permita, cap por turno vía
-   `session_config_set_max_output_tokens`.
+1. **Generation works end-to-end** (blocking and streaming). Engine loads in ~0.2 s (mmap).
+2. **Streaming chunks are full JSON objects per token**, not plain text:
+   `{"role":"assistant","content":[{"type":"text","text":"1"}]}`. → **every** chunk must be
+   parsed for `content[0].text` (not just the final blocking-path response).
+3. **`litert_lm_conversation_config_create` triggers an AccessViolation (0xC0000005)** in this
+   binary, despite being in the export table (ordinal 28). It is **version skew**: the header
+   came from `main` (~0.13+) while the binary was 0.12.0-a. → Workaround at the time: create
+   conversations with a **NULL config** (`litert_lm_conversation_create(engine, NULL)`).
+4. **Blocking `litert_lm_conversation_send_message` returned NULL** in some conditions where
+   **streaming worked**. → The **streaming path was the robust one** in this binary.
+5. **`litert_lm_conversation_get_token_count` is NOT in this binary** (throws
+   `EntryPointNotFoundException`); it was added upstream after 0.12.0-a.
+6. **`MaxNumTokens` is the TOTAL context window** (KV cache = prompt + response, **accumulated
+   across turns**). If small (e.g. 1024) a long answer fills it and later turns **overflow and
+   degenerate into incoherent text** (observed symptom: answer cut mid-word, then garbage like
+   "Laptop"). Raising it to 4096 fixed a coherent multi-turn chat. Not a binding bug; it's LLM
+   context management. For production: expose/manage history and, when the binary allows it,
+   cap per-turn output via `session_config_set_max_output_tokens`.
 
-**Lección para Fase 2 / sincronía:** el header y el binario deben provenir del **mismo tag** de LiteRT-LM.
-El skew explica (3) y (4); compilar nosotros desde un tag fijo lo elimina.
+**Sync lesson:** the header and the binary must come from the **same LiteRT-LM tag**. The skew
+explains (3) and (4); building from a pinned tag eliminates it.
 
-## Tool / function calling (formato de wire verificado)
+## Tool / function calling (verified wire format)
 
-El C API expone tools vía conversation-config (requiere binario sin el skew — Fase 2):
+The C API exposes tools via the conversation config (requires a skew-free binary):
 `litert_lm_conversation_config_set_tools(config, tools_json)` +
 `litert_lm_conversation_config_set_enable_constrained_decoding(config, true)`.
 
-- **Definición de tools** (estilo OpenAI/Gemini FunctionDeclaration), de `c/engine_test.cc`:
+- **Tool definition** (OpenAI/Gemini FunctionDeclaration style, from `c/engine_test.cc`):
   ```json
   [{"type":"function","function":{"name":"get_current_weather","description":"...",
     "parameters":{"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}}}]
   ```
-- **Respuesta con tool-call** (lo que devuelve `send_message`; docs Gemma 4 / FunctionGemma):
+- **Tool-call response** (what `send_message` returns; Gemma 4 / FunctionGemma docs):
   ```json
   {"role":"assistant","tool_calls":[{"type":"function",
     "function":{"name":"get_current_weather","arguments":{"location":"Tokyo"}}}]}
   ```
-- **Mensaje con el resultado del tool** (se reenvía con `send_message`):
+- **Tool-result message** (sent back via `send_message`):
   ```json
   {"role":"tool","content":[{"name":"get_current_weather","response":{"temperature":15}}]}
   ```
 
-Wrapper: `LiteRtTool`, `LiteRtConversationOptions.Tools` + `EnableConstrainedDecoding`,
-`conv.Send(text) → LiteRtResponse` (`.Text` o `.ToolCalls`), `conv.SendToolResults(...)`, y
-`conv.SendMessageRaw(json)` como escape hatch. El parser es tolerante (function.arguments objeto o string;
-fallback a name/args top-level) y siempre expone `RawJson`.
+Wrapper surface: `LiteRtTool`, `LiteRtConversationOptions.Tools` + `EnableConstrainedDecoding`,
+`conv.Send(text) → LiteRtResponse` (`.Text` or `.ToolCalls`), `conv.SendToolResults(...)`, and
+`conv.SendMessageRaw(json)` as an escape hatch. The parser is tolerant (function.arguments as
+object or string; fallback to top-level name/args) and always exposes `RawJson`.
 
-**VALIDADO end-to-end** con el binario propio Fase 2 (`032334d8`) + `gemma-4-E2B-it` (CPU): el loop
-define tool → modelo emite tool-call → ejecutamos → reinyectamos → respuesta final correcta. El
-`conversation_config_create` ya **no crashea** (header+binario emparejados).
+**VALIDATED end-to-end** with our own binary + `gemma-4-E2B-it` (CPU): define tool → model
+emits tool-call → execute → re-inject → correct final answer. `conversation_config_create`
+no longer crashes (matched header+binary).
 
-> Quirk del template Gemma: con constrained decoding los argumentos llegan con tokens `<|"|>` como
-> comillas (`<|"|>Tokyo<|"|>`). El parser los **sanea** (`StripControlTokens`/`CleanJson`) → `"Tokyo"`.
+> Gemma template quirk: with constrained decoding the arguments arrive with `<|"|>` tokens as
+> quotes (`<|"|>Tokyo<|"|>`). The parser **sanitizes** them (`StripControlTokens`/`CleanJson`)
+> → `"Tokyo"`.
 
-### Streaming: regresión en `032334d8`, RESUELTO en `v0.13.1`
-`SendMessageStreamingAsync` segfaulteaba (exit 139) en el binario del commit interino `032334d8` — el
-hilo nativo de decode crasheaba ANTES del primer callback (rc=0; `[cb:enter]` nunca se alcanzaba). No era
-managed (funcionaba en `0.12.0-a`), ni el WebGPU sampler (#2073), ni `litert_link_capi_so` (presente en
-ambos builds): era una regresión del commit. **Compilar desde el tag de release `v0.13.1` lo arregla.**
-Verificado: streaming OK, tools OK, `get_token_count` ahora exportado (89 funcs), y la secuencia
-streaming→tools en un mismo proceso (que antes segfaulteaba) pasa. Suite 4/4 en v0.13.1.
+### Streaming: regression in `032334d8`, RESOLVED in `v0.13.1`
+`SendMessageStreamingAsync` segfaulted (exit 139) with the interim-commit binary `032334d8` —
+the native decode thread crashed BEFORE the first callback (rc=0; `[cb:enter]` never reached).
+It was not managed code (worked on `0.12.0-a`), not the WebGPU sampler (#2073), and not
+`litert_link_capi_so` (present in both builds): it was a regression in that commit.
+**Building from the `v0.13.1` release tag fixes it.** Verified: streaming OK, tools OK,
+`get_token_count` now exported (89 funcs), and the streaming→tools sequence in one process
+(which used to segfault) passes. Test suite 4/4 on v0.13.1.
 
-> Lección: pinear a un **tag de release**, no a un commit arbitrario — más estable y es el objetivo de
-> sincronía con Google. `build-native.yml` ahora usa `v0.13.1` por defecto.
+> Lesson: pin to a **release tag**, never an arbitrary commit — more stable and it is the sync
+> target with Google. `build-native.yml` uses `v0.13.1` by default.
 
-## Backend GPU en desktop (WebGPU) — comportamiento esperado
+## Desktop GPU backend (WebGPU) — expected behavior
 
-- El backend `"gpu"` en desktop usa **WebGPU nativo (Dawn)**, NO el navegador. Es una capa GPU portable
-  que mapea a: **Direct3D 12 en Windows**, Vulkan en Linux, Metal en macOS. (En Android: OpenCL/Vulkan.)
-- Verificado: con `Backend="gpu"` el log selecciona la GPU discreta (p.ej. `NVIDIA RTX 3080, backend=Direct3D 12`)
-  y corre las capas del transformer en GPU (`delegate_webgpu.cc`, `delegate_kernel.cc`). Companions que lo
-  habilitan (ya incluidos): `LiteRtWebGpuAccelerator.dll` + `dxcompiler.dll`/`dxil.dll` (DirectX Shader Compiler).
-- Que aparezca también "Created TensorFlow Lite XNNPACK delegate for CPU" es normal: ops no-GPU + embeddings
-  mmap corren en CPU (delegación mixta). El grueso (matmuls) va en GPU. Init más lento que CPU (~1.6s vs ~0.2s)
-  por subir pesos a la GPU y compilar kernels.
+- The `"gpu"` backend on desktop uses **native WebGPU (Dawn)**, NOT a browser. It is a portable
+  GPU layer mapping to: **Direct3D 12 on Windows**, Vulkan on Linux, Metal on macOS.
+  (On Android: OpenCL/Vulkan.)
+- Verified: with `Backend="gpu"` the log selects the discrete GPU (e.g.
+  `NVIDIA RTX 3080, backend=Direct3D 12`) and runs the transformer layers on GPU
+  (`delegate_webgpu.cc`, `delegate_kernel.cc`). Enabling companions (already shipped):
+  `LiteRtWebGpuAccelerator.dll` + `dxcompiler.dll`/`dxil.dll` (DirectX Shader Compiler).
+- Seeing "Created TensorFlow Lite XNNPACK delegate for CPU" alongside is normal: non-GPU ops +
+  mmap'd embeddings run on CPU (mixed delegation). The bulk (matmuls) runs on GPU. Init is
+  slower than CPU (~1.6 s vs ~0.2 s) due to weight upload and kernel compilation.
 
-### Sampler GPU cae a CPU en Windows/macOS — bug upstream (#2073), NO del binding
-- Síntoma: `Could not load symbol LiteRtTopKWebGpuSampler_UpdateConfig` → `Falling back to CPU sampling`.
-- Causa (verificado con `dumpbin /exports`): el `LiteRtTopKWebGpuSampler.dll` de Windows exporta **solo 3 de 7**
-  funciones (`_Create`, `_Destroy`, `_SampleToIdAndScoreBuffer`); falta `_UpdateConfig` etc. Es el
-  [issue #2073](https://github.com/google-ai-edge/LiteRT-LM/issues/2073) (Linux/Android sí traen las 7).
-- El mensaje de fallback menciona `.so` / `LD_LIBRARY_PATH` / `prebuilt/`: es un **string de log sin localizar**
-  (Linux-céntrico); en Windows el archivo equivalente es el `.dll` que ya enviamos. No intenta cargar `.so`.
-- Impacto: el **sampling** (selección del token) corre en CPU; las **matmuls siguen en GPU**. El sampling es
-  diminuto frente a las matmuls → impacto de rendimiento despreciable. Salida correcta igual.
-- Fix definitivo: build propio (Fase 2) o prebuilt nuevo cuando #2073 se resuelva upstream.
+### GPU sampler falls back to CPU on Windows/macOS — upstream bug (#2073), NOT the binding
+- Symptom: `Could not load symbol LiteRtTopKWebGpuSampler_UpdateConfig` →
+  `Falling back to CPU sampling`.
+- Cause (verified with `dumpbin /exports`): the Windows `LiteRtTopKWebGpuSampler.dll` exports
+  **only 3 of 7** functions (`_Create`, `_Destroy`, `_SampleToIdAndScoreBuffer`); missing
+  `_UpdateConfig` etc. That is
+  [issue #2073](https://github.com/google-ai-edge/LiteRT-LM/issues/2073) (Linux/Android ship
+  all 7).
+- The fallback message mentions `.so` / `LD_LIBRARY_PATH` / `prebuilt/`: it is a
+  **non-localized, Linux-centric log string**; on Windows the equivalent file is the `.dll` we
+  already ship. It does not actually try to load a `.so`.
+- Impact: **sampling** (token selection) runs on CPU; the **matmuls stay on GPU**. Sampling is
+  tiny compared to the matmuls → negligible performance impact. Output is correct either way.
+- Definitive fix: our own build or a new prebuilt once #2073 is resolved upstream.
 
-> Nota: los logs `I0000 …` aparecen pese a `SetMinLogLevel(3)` porque se emiten **antes** de
-> `absl::InitializeLog()` (van directo a STDERR); nuestro nivel no los puede silenciar.
+> Note: `I0000 …` logs show up despite `SetMinLogLevel(3)` because they are emitted **before**
+> `absl::InitializeLog()` (straight to STDERR); our log level cannot silence them.
 
-## Estado del shared-library oficial
-- Hoy el C API solo se ofrece como `cc_library` Bazel (`:engine`, `:engine_cpu`) y `add_litertlm_library(... STATIC)`
-  en CMake → **no hay** target oficial de shared lib. Seguimiento: issue #2154 / PR #2155.
-- Mitigación PoC: consumir el `LiteRtLm.dll`/`.so` de flutter_gemma (ya verificado). Producción: build propio.
+## Official shared-library status
+- Today the C API ships only as a Bazel `cc_library` (`:engine`, `:engine_cpu`) and
+  `add_litertlm_library(... STATIC)` in CMake → there is **no** official shared-lib target.
+  Tracking: issue #2154 / PR #2155.
+- PoC mitigation was consuming flutter_gemma's `LiteRtLm.dll`/`.so` (verified). Production:
+  our own build (docs/native-build.md).
