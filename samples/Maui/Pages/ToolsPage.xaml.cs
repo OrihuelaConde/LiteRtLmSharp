@@ -1,8 +1,8 @@
 using System.Collections.ObjectModel;
-using LiteLMSharp;
-using LiteLMSharp.SampleMaui.Services;
+using LiteRtLmSharp;
+using LiteRtLmSharp.SampleMaui.Services;
 
-namespace LiteLMSharp.SampleMaui.Pages;
+namespace LiteRtLmSharp.SampleMaui.Pages;
 
 /// <summary>
 /// Function-calling demo, kept separate from the chat (like the console sample's tools mode).

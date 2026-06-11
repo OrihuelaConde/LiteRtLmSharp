@@ -2,7 +2,7 @@
 
   <!--
     Native-only NuGet package: LiteRT-LM linux-x64 binaries under runtimes/linux-x64/native/.
-    No managed assembly. Pair with the managed LiteLMSharp package (same version).
+    No managed assembly. Pair with the managed LiteRtLmSharp package (same version).
   -->
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
@@ -12,8 +12,8 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <NoWarn>$(NoWarn);NU5128</NoWarn>
 
-    <PackageId>LiteLMSharp.runtime.linux-x64</PackageId>
-    <Description>Native LiteRT-LM runtime (linux-x64) for LiteLMSharp. Built from LiteRT-LM $(LiteRtLmVersion). $(LiteLMDisclaimer)</Description>
+    <PackageId>LiteRtLmSharp.runtime.linux-x64</PackageId>
+    <Description>Native LiteRT-LM runtime (linux-x64) for LiteRtLmSharp. Built from LiteRT-LM $(LiteRtLmVersion). $(LiteRtLmDisclaimer)</Description>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 

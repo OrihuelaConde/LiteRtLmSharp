@@ -1,7 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
-namespace LiteLMSharp.Native;
+namespace LiteRtLmSharp.Native;
 
 /// <summary>
 /// Raw P/Invoke declarations for the LiteRT-LM C API (see <c>c/engine.h</c> upstream).

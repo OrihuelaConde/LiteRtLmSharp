@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace LiteLMSharp.Native;
+namespace LiteRtLmSharp.Native;
 
 /// <summary>
 /// Base <see cref="SafeHandle"/> for LiteRT-LM opaque pointers. Each derived type

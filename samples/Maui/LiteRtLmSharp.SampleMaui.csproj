@@ -11,7 +11,7 @@
 		<TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">$(TargetFrameworks);net10.0-windows10.0.19041.0</TargetFrameworks>
 
 		<OutputType>Exe</OutputType>
-		<RootNamespace>LiteLMSharp.SampleMaui</RootNamespace>
+		<RootNamespace>LiteRtLmSharp.SampleMaui</RootNamespace>
 		<UseMaui>true</UseMaui>
 		<SingleProject>true</SingleProject>
 		<ImplicitUsings>enable</ImplicitUsings>
@@ -19,8 +19,8 @@
 		<MauiXamlInflator>SourceGen</MauiXamlInflator>
 		<IsPackable>false</IsPackable>
 
-		<ApplicationTitle>LiteLMSharp</ApplicationTitle>
-		<ApplicationId>com.litelmsharp.sample</ApplicationId>
+		<ApplicationTitle>LiteRtLmSharp</ApplicationTitle>
+		<ApplicationId>com.litertlmsharp.sample</ApplicationId>
 		<ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
 		<ApplicationVersion>1</ApplicationVersion>
 
@@ -53,11 +53,11 @@
 	  managed library + native binaries from runtimes/<rid>/native (restore them first — see
 	  scripts/restore-natives.ps1 and the native-v* GitHub release). Once the packages are on a
 	  feed, replace all of this with:
-	    <PackageReference Include="LiteLMSharp" ... />
-	    <PackageReference Include="LiteLMSharp.runtime.android-arm64" ... />  (etc.)
+	    <PackageReference Include="LiteRtLmSharp" ... />
+	    <PackageReference Include="LiteRtLmSharp.runtime.android-arm64" ... />  (etc.)
 	-->
 	<ItemGroup>
-		<ProjectReference Include="..\..\LiteLMSharp\LiteLMSharp.csproj" />
+		<ProjectReference Include="..\..\LiteRtLmSharp\LiteRtLmSharp.csproj" />
 	</ItemGroup>
 
 	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">

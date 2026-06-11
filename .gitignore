@@ -363,7 +363,7 @@ MigrationBackup/
 FodyWeavers.xsd
 
 # ---------------------------------------------------------------------------
-# LiteLMSharp project-specific
+# LiteRtLmSharp project-specific
 # ---------------------------------------------------------------------------
 
 # Large model files + runtime-generated caches (download separately; >100MB, GitHub rejects them)

@@ -1,9 +1,9 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using LiteLMSharp;
-using LiteLMSharp.SampleMaui.Services;
+using LiteRtLmSharp;
+using LiteRtLmSharp.SampleMaui.Services;
 
-namespace LiteLMSharp.SampleMaui.Pages;
+namespace LiteRtLmSharp.SampleMaui.Pages;
 
 public partial class ChatPage : ContentPage
 {

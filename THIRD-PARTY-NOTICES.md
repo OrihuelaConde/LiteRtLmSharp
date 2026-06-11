@@ -1,6 +1,6 @@
 # Third-party notices
 
-LiteLMSharp redistributes, or is derived from, the following third-party components.
+LiteRtLmSharp redistributes, or is derived from, the following third-party components.
 
 ---
 
@@ -10,7 +10,7 @@ LiteLMSharp redistributes, or is derived from, the following third-party compone
 - Copyright: The ODML Authors / Google LLC
 - License: Apache License 2.0 (same text as this repository's `LICENSE.txt`)
 
-The native libraries shipped in the `LiteLMSharp.runtime.*` packages (`LiteRtLm` /
+The native libraries shipped in the `LiteRtLmSharp.runtime.*` packages (`LiteRtLm` /
 `libLiteRtLm` and companion accelerator libraries such as `LiteRt`,
 `LiteRtWebGpuAccelerator`, `LiteRtTopKWebGpuSampler`, `LiteRtMetalAccelerator`,
 `LiteRtTopKMetalSampler`, `LiteRtGpuAccelerator`, `LiteRtOpenClAccelerator`,
@@ -89,6 +89,6 @@ for the LiteRT-LM C API) is derived from the approach pioneered by flutter_gemma
 
 ## Models
 
-LiteLMSharp does not redistribute any model weights. Model files (e.g. Gemma
+LiteRtLmSharp does not redistribute any model weights. Model files (e.g. Gemma
 `.litertlm` bundles from https://huggingface.co/litert-community) are downloaded by
 the end user and are subject to their own licenses and terms of use.

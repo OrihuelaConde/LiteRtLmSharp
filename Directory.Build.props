@@ -1,7 +1,7 @@
 <Project>
 
   <!--
-    Shared metadata for all LiteLMSharp packages. The package version maps to the LiteRT-LM
+    Shared metadata for all LiteRtLmSharp packages. The package version maps to the LiteRT-LM
     release tag it is built against (see LiteRtLmVersion) — bump both together.
   -->
   <PropertyGroup>
@@ -9,17 +9,17 @@
     <!-- LiteRT-LM release tag the native binaries are built from (build-native.yml input). -->
     <LiteRtLmVersion>v0.13.1</LiteRtLmVersion>
 
-    <Authors>LiteLMSharp contributors</Authors>
-    <Company>LiteLMSharp</Company>
+    <Authors>LiteRtLmSharp contributors</Authors>
+    <Company>LiteRtLmSharp</Company>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/OrihuelaConde/LiteLMSharp</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/OrihuelaConde/LiteLMSharp</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/OrihuelaConde/LiteRtLmSharp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/OrihuelaConde/LiteRtLmSharp</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>litert;litert-lm;llm;gemma;on-device;inference;ai;maui</PackageTags>
     <PackageReadmeFile Condition="Exists('$(MSBuildProjectDirectory)\README.md')">README.md</PackageReadmeFile>
 
     <!-- Appended to every package Description. Keep in sync with NOTICE / README. -->
-    <LiteLMDisclaimer>Unofficial community bindings, not affiliated with or endorsed by Google. LiteRT is a trademark of Google LLC.</LiteLMDisclaimer>
+    <LiteRtLmDisclaimer>Unofficial community bindings, not affiliated with or endorsed by Google. LiteRT is a trademark of Google LLC.</LiteRtLmDisclaimer>
   </PropertyGroup>
 
   <!-- Ship the legal files inside every package (PackagePath="" = nupkg root). -->

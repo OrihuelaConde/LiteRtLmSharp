@@ -1,4 +1,4 @@
-﻿namespace LiteLMSharp.SampleMaui;
+﻿namespace LiteRtLmSharp.SampleMaui;
 
 public partial class AppShell : Shell
 {

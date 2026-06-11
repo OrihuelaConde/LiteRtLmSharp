@@ -1,4 +1,4 @@
-namespace LiteLMSharp.SampleMaui.Services;
+namespace LiteRtLmSharp.SampleMaui.Services;
 
 /// <summary>
 /// Manages model files on local storage: download (with progress + resume), delete, lookup.

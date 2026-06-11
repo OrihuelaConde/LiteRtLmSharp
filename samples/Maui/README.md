@@ -1,7 +1,7 @@
-# LiteLMSharp MAUI sample
+# LiteRtLmSharp MAUI sample
 
 On-device LLM chat app: download/manage Gemma 4 `.litertlm` models and chat with streaming,
-all running locally via LiteLMSharp.
+all running locally via LiteRtLmSharp.
 
 - **Models tab** — catalog of Gemma 4 models from `litert-community` (Hugging Face): download with
   progress + resume, delete, pick CPU/GPU and load. Loading while another model is active swaps

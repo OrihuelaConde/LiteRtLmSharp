@@ -1,6 +1,6 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 
-namespace LiteLMSharp.SampleMaui;
+namespace LiteRtLmSharp.SampleMaui;
 
 public partial class App : Application
 {

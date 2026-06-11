@@ -2,9 +2,9 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows.Input;
-using LiteLMSharp.SampleMaui.Services;
+using LiteRtLmSharp.SampleMaui.Services;
 
-namespace LiteLMSharp.SampleMaui.Pages;
+namespace LiteRtLmSharp.SampleMaui.Pages;
 
 public partial class ModelsPage : ContentPage
 {

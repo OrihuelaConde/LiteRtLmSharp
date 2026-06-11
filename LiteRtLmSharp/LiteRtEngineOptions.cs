@@ -1,4 +1,4 @@
-namespace LiteLMSharp;
+namespace LiteRtLmSharp;
 
 /// <summary>Options for creating a <see cref="LiteRtEngine"/>.</summary>
 public sealed record LiteRtEngineOptions

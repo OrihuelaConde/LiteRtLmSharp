@@ -1,10 +1,10 @@
-using LiteLMSharp;
+using LiteRtLmSharp;
 
-namespace LiteLMSharp.Sample;
+namespace LiteRtLmSharp.Sample;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Console plumbing: colors, menus, model/backend pickers, argument parsing.
-// NOTHING in this file is required to use LiteLMSharp — it only makes the
+// NOTHING in this file is required to use LiteRtLmSharp — it only makes the
 // sample pleasant to drive. The library calls all live in Program.cs.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -48,7 +48,7 @@ static class Ui
     public static void Banner() => WriteLine("""
 
         ┌───────────────────────────────────────────────┐
-        │   LiteLMSharp · on-device LLM for .NET        │
+        │   LiteRtLmSharp · on-device LLM for .NET        │
         └───────────────────────────────────────────────┘
         """, ConsoleColor.Cyan);
 

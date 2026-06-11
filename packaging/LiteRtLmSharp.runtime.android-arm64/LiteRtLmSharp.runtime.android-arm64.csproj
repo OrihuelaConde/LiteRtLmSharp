@@ -13,8 +13,8 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <NoWarn>$(NoWarn);NU5128</NoWarn>
 
-    <PackageId>LiteLMSharp.runtime.android-arm64</PackageId>
-    <Description>Native LiteRT-LM runtime (android-arm64) for LiteLMSharp. Built from LiteRT-LM $(LiteRtLmVersion). $(LiteLMDisclaimer)</Description>
+    <PackageId>LiteRtLmSharp.runtime.android-arm64</PackageId>
+    <Description>Native LiteRT-LM runtime (android-arm64) for LiteRtLmSharp. Built from LiteRT-LM $(LiteRtLmVersion). $(LiteRtLmDisclaimer)</Description>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 

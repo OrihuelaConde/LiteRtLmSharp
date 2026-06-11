@@ -1,7 +1,7 @@
 ﻿using Android.App;
 using Android.Runtime;
 
-namespace LiteLMSharp.SampleMaui;
+namespace LiteRtLmSharp.SampleMaui;
 
 [Application]
 public class MainApplication : MauiApplication

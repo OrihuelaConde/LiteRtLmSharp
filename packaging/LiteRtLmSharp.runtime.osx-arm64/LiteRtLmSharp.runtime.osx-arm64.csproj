@@ -2,7 +2,7 @@
 
   <!--
     Native-only NuGet package: LiteRT-LM macos-arm64 (.dylib) under runtimes/osx-arm64/native/.
-    No managed assembly. Pair with the managed LiteLMSharp package (same version).
+    No managed assembly. Pair with the managed LiteRtLmSharp package (same version).
     libLiteRtLm.dylib links companions via -rpath @loader_path (same directory).
   -->
   <PropertyGroup>
@@ -13,8 +13,8 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <NoWarn>$(NoWarn);NU5128</NoWarn>
 
-    <PackageId>LiteLMSharp.runtime.osx-arm64</PackageId>
-    <Description>Native LiteRT-LM runtime (osx-arm64, Apple Silicon) for LiteLMSharp. Built from LiteRT-LM $(LiteRtLmVersion). $(LiteLMDisclaimer)</Description>
+    <PackageId>LiteRtLmSharp.runtime.osx-arm64</PackageId>
+    <Description>Native LiteRT-LM runtime (osx-arm64, Apple Silicon) for LiteRtLmSharp. Built from LiteRT-LM $(LiteRtLmVersion). $(LiteRtLmDisclaimer)</Description>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 

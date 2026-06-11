@@ -2,7 +2,7 @@ using System.Buffers;
 using System.Text;
 using System.Text.Json;
 
-namespace LiteLMSharp;
+namespace LiteRtLmSharp;
 
 /// <summary>
 /// A tool the model may call. <see cref="ParametersJson"/> is a JSON-Schema object string

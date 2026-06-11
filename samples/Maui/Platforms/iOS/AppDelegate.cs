@@ -1,6 +1,6 @@
 ﻿using Foundation;
 
-namespace LiteLMSharp.SampleMaui;
+namespace LiteRtLmSharp.SampleMaui;
 
 [Register("AppDelegate")]
 public class AppDelegate : MauiUIApplicationDelegate

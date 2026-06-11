@@ -73,5 +73,5 @@ en el manifest.
   para no recompilar lo existente; release acumula assets).
 - Distribución estilo LLamaSharp: managed puro + `runtime.<rid>` por plataforma.
 - Desktop linkea `libLiteRt` separada (`litert_link_capi_so`); Android/macOS/iOS la llevan estática.
-- Soluciones separadas: `LiteLMSharp.slnx` (lib+tests+packaging, SDK pelado, CI) y
-  `samples/LiteLMSharp.Samples.slnx` (console + MAUI, requiere workloads).
+- Soluciones separadas: `LiteRtLmSharp.slnx` (lib+tests+packaging, SDK pelado, CI) y
+  `samples/LiteRtLmSharp.Samples.slnx` (console + MAUI, requiere workloads).

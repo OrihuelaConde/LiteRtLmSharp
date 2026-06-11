@@ -1,11 +1,11 @@
 using System.Diagnostics;
 using System.Text;
-using LiteLMSharp;
-using LiteLMSharp.Sample;
+using LiteRtLmSharp;
+using LiteRtLmSharp.Sample;
 
-// LiteLMSharp console sample.
+// LiteRtLmSharp console sample.
 //
-// THIS file is the one worth reading: every LiteLMSharp API call in the sample lives here.
+// THIS file is the one worth reading: every LiteRtLmSharp API call in the sample lives here.
 // ConsoleUi.cs is console plumbing (colors, menus, pickers, argument parsing) and teaches
 // nothing about the library.
 //
@@ -14,10 +14,10 @@ using LiteLMSharp.Sample;
 // SendMessageStreamingAsync() generate replies. Dispose conversations, then the engine.
 // Only one engine may be alive at a time — dispose it first to switch model or backend.
 //
-// Interactive (no args):   LiteLMSharp.Sample
-// Scripted (for testing):  LiteLMSharp.Sample <model.litertlm> [prompt]
-//                          LiteLMSharp.Sample <model.litertlm> --tools
-//                          LiteLMSharp.Sample <model.litertlm> --backend gpu --context 8192
+// Interactive (no args):   LiteRtLmSharp.Sample
+// Scripted (for testing):  LiteRtLmSharp.Sample <model.litertlm> [prompt]
+//                          LiteRtLmSharp.Sample <model.litertlm> --tools
+//                          LiteRtLmSharp.Sample <model.litertlm> --backend gpu --context 8192
 
 Console.OutputEncoding = Encoding.UTF8;
 LiteRtEngine.SetMinLogLevel(3); // WARNING+ (early native logs still print to stderr)

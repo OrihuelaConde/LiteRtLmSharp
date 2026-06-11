@@ -8,16 +8,16 @@
     <IsAotCompatible>true</IsAotCompatible>
     <LangVersion>latest</LangVersion>
 
-    <!-- Pure managed package. Native binaries ship in LiteLMSharp.runtime.<rid> packages. -->
-    <PackageId>LiteLMSharp</PackageId>
-    <Description>.NET binding for Google's LiteRT-LM on-device LLM inference (P/Invoke over the C API). Add a LiteLMSharp.runtime.&lt;rid&gt; package for native binaries. $(LiteLMDisclaimer)</Description>
+    <!-- Pure managed package. Native binaries ship in LiteRtLmSharp.runtime.<rid> packages. -->
+    <PackageId>LiteRtLmSharp</PackageId>
+    <Description>.NET binding for Google's LiteRT-LM on-device LLM inference (P/Invoke over the C API). Add a LiteRtLmSharp.runtime.&lt;rid&gt; package for native binaries. $(LiteRtLmDisclaimer)</Description>
   </PropertyGroup>
 
   <!--
     Local dev only: copy the native LiteRT-LM runtime next to the managed assembly so the sample
     and tests resolve it. These come from runtimes/<rid>/native/ (gitignored; produced by
     build-native.yml or scripts/restore-natives.ps1). Pack=false — they are NOT in this package;
-    they are distributed via the separate LiteLMSharp.runtime.<rid> packages.
+    they are distributed via the separate LiteRtLmSharp.runtime.<rid> packages.
   -->
   <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) And Exists('..\runtimes\win-x64\native')">
     <None Include="..\runtimes\win-x64\native\*.dll" Pack="false">
