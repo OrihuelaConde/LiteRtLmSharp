@@ -79,7 +79,7 @@ echo "  Generated windows_exports.def with $defcount exported functions."
 
 cat >> "$BUILD" << 'BUILDEOF'
 
-# Added by LiteLMSharp: redistributable shared library exposing the C API.
+# Added by LiteRtLmSharp: redistributable shared library exposing the C API.
 # Output file is named libLiteRtLm.dylib regardless of platform (Bazel target
 # label); the CI renames it to libLiteRtLm.so / LiteRtLm.dll afterwards.
 cc_binary(

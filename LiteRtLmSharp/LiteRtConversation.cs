@@ -1,9 +1,9 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
-using LiteLMSharp.Native;
+using LiteRtLmSharp.Native;
 
-namespace LiteLMSharp;
+namespace LiteRtLmSharp;
 
 /// <summary>
 /// A stateful conversation over a <see cref="LiteRtEngine"/>. Handles chat templating

@@ -1,6 +1,6 @@
 # Fase 3 — Android
 
-Objetivo: correr LiteLMSharp en `net10.0-android` / MAUI (RID `android-arm64`).
+Objetivo: correr LiteRtLmSharp en `net10.0-android` / MAUI (RID `android-arm64`).
 
 ## Hallazgo clave que simplifica todo
 Una librería **`net10.0` es consumible por apps `net10.0-android`** → **el paquete managed NO necesita
@@ -17,7 +17,7 @@ multitarget**. Android solo necesita el binario nativo `.so` y un runtime-packag
   - **page-size 16 KB**: requisito de Google Play.
   - Companions desde `prebuilt/android_arm64/`: `libLiteRtGpuAccelerator.so`, `libLiteRtOpenClAccelerator.so`,
     `libLiteRtTopKOpenClSampler.so`, `libGemmaModelConstraintProvider.so` (+WebGPU). NO `libLiteRt.so`.
-- **Runtime package** `LiteLMSharp.runtime.android-arm64`: ✅ agregado. `.NET Android` empaqueta
+- **Runtime package** `LiteRtLmSharp.runtime.android-arm64`: ✅ agregado. `.NET Android` empaqueta
   `runtimes/android-arm64/native/*.so` en el APK (bajo `lib/arm64-v8a/`).
 - **pack-nuget.yml**: ✅ actualizado para incluir android.
 - **Managed**: sin cambios (net10.0).
@@ -32,15 +32,15 @@ por el dynamic-list). El preload RTLD_GLOBAL del resolver no aplica (no hay dir 
 
 ## Consumo (MAUI / .NET Android)
 ```xml
-<PackageReference Include="LiteLMSharp" Version="0.13.1-preview.1" />
-<PackageReference Include="LiteLMSharp.runtime.android-arm64" Version="0.13.1-preview.1" />
+<PackageReference Include="LiteRtLmSharp" Version="0.13.1-preview.1" />
+<PackageReference Include="LiteRtLmSharp.runtime.android-arm64" Version="0.13.1-preview.1" />
 ```
 El modelo `.litertlm` (~2.5 GB para E2B) **no se empaqueta** en el APK: descargarlo a almacenamiento del
 app en primer arranque y pasar su ruta a `LiteRtEngine.Load`.
 
 ## Estado de validación
 1. ✅ `build-native.yml` android verde (NDK del runner alcanzó; dynamic-list aplica; símbolos OK).
-2. ✅ `pack-nuget.yml` genera `LiteLMSharp.runtime.android-arm64`.
+2. ✅ `pack-nuget.yml` genera `LiteRtLmSharp.runtime.android-arm64`.
 3. ✅ **Validado en device físico** (Moto G100, Android 12): carga de modelo, chat, streaming —
    **CPU y GPU** (ver diagnóstico GPU abajo). Workload MAUI instalado; app sample en `samples/Maui`.
 4. `android-x64` (emuladores) descartado por ahora — pruebas en device físico (el prebuilt

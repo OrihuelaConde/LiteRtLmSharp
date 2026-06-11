@@ -1,6 +1,6 @@
-using LiteLMSharp.Native;
+using LiteRtLmSharp.Native;
 
-namespace LiteLMSharp;
+namespace LiteRtLmSharp;
 
 /// <summary>
 /// A LiteRT-LM inference engine. Heavyweight: holds the model weights. Create one per

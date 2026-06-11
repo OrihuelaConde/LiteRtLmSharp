@@ -1,8 +1,8 @@
-﻿using LiteLMSharp.SampleMaui.Pages;
-using LiteLMSharp.SampleMaui.Services;
+﻿using LiteRtLmSharp.SampleMaui.Pages;
+using LiteRtLmSharp.SampleMaui.Services;
 using Microsoft.Extensions.Logging;
 
-namespace LiteLMSharp.SampleMaui;
+namespace LiteRtLmSharp.SampleMaui;
 
 public static class MauiProgram
 {

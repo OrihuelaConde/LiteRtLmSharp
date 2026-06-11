@@ -43,7 +43,7 @@ release en vez del de flutter_gemma.
 
 ## Sincronía con Google
 
-Versionado: `LiteLMSharp x.y.z` ↔ tag de LiteRT-LM consumido (documentar en CHANGELOG). Un tag nuevo de
+Versionado: `LiteRtLmSharp x.y.z` ↔ tag de LiteRT-LM consumido (documentar en CHANGELOG). Un tag nuevo de
 upstream → re-correr el workflow con ese tag → publicar release → bump del paquete. (Futuro: un workflow
 "watcher" que abra PR al salir un tag nuevo.)
 

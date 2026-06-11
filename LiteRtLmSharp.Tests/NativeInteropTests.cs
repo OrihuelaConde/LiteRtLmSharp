@@ -1,7 +1,7 @@
-using LiteLMSharp;
+using LiteRtLmSharp;
 using Xunit;
 
-namespace LiteLMSharp.Tests;
+namespace LiteRtLmSharp.Tests;
 
 public class NativeInteropTests
 {

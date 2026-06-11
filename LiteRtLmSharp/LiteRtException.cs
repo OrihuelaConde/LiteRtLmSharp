@@ -1,4 +1,4 @@
-namespace LiteLMSharp;
+namespace LiteRtLmSharp;
 
 /// <summary>Raised when a LiteRT-LM native call fails.</summary>
 public sealed class LiteRtException : Exception

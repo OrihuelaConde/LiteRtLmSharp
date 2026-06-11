@@ -1,7 +1,7 @@
 name: Pack NuGet packages
 
-# Builds the NuGet packages: the managed LiteLMSharp (pure) + per-RID native runtime packages
-# (LiteLMSharp.runtime.win-x64 / .linux-x64). Native binaries are pulled from the GitHub Release
+# Builds the NuGet packages: the managed LiteRtLmSharp (pure) + per-RID native runtime packages
+# (LiteRtLmSharp.runtime.win-x64 / .linux-x64). Native binaries are pulled from the GitHub Release
 # produced by build-native.yml (tag native-<native_ref>), so run that first.
 #
 # Run manually from the Actions tab.
@@ -70,12 +70,12 @@ jobs:
       - name: Pack
         run: |
           common="-c Release -o artifacts -p:Version=${{ inputs.package_version }} -p:LiteRtLmVersion=${{ inputs.native_ref }} -p:ContinuousIntegrationBuild=true"
-          dotnet pack LiteLMSharp/LiteLMSharp.csproj $common
+          dotnet pack LiteRtLmSharp/LiteRtLmSharp.csproj $common
           for rid in win-x64 linux-x64 android-arm64 osx-arm64; do
             if [ -n "$(ls runtimes/$rid/native 2>/dev/null)" ]; then
-              dotnet pack "packaging/LiteLMSharp.runtime.$rid/LiteLMSharp.runtime.$rid.csproj" $common
+              dotnet pack "packaging/LiteRtLmSharp.runtime.$rid/LiteRtLmSharp.runtime.$rid.csproj" $common
             else
-              echo "skip LiteLMSharp.runtime.$rid (no natives)"
+              echo "skip LiteRtLmSharp.runtime.$rid (no natives)"
             fi
           done
           ls -lh artifacts/*.nupkg

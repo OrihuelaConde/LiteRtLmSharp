@@ -1,4 +1,4 @@
-namespace LiteLMSharp;
+namespace LiteRtLmSharp;
 
 /// <summary>Token sampling strategy. Mirrors LiteRT-LM's <c>LiteRtLmSamplerType</c>.</summary>
 public enum SamplerType

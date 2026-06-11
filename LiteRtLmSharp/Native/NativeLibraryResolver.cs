@@ -1,7 +1,7 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 
-namespace LiteLMSharp.Native;
+namespace LiteRtLmSharp.Native;
 
 /// <summary>
 /// Resolves the <c>LiteRtLm</c> native library. Probes the assembly directory and the NuGet

@@ -1,4 +1,4 @@
-# LiteLMSharp
+# LiteRtLmSharp
 
 .NET 10 bindings for [Google's LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) — on-device LLM
 inference (e.g. Gemma) for any .NET app, including MAUI. P/Invoke over LiteRT-LM's C API, with native
@@ -20,13 +20,13 @@ binaries distributed per-RID as NuGet packages (LLamaSharp-style).
 ## Quick start
 
 ```xml
-<PackageReference Include="LiteLMSharp" Version="0.13.1-preview.1" />
-<PackageReference Include="LiteLMSharp.runtime.win-x64" Version="0.13.1-preview.1" />
-<!-- or LiteLMSharp.runtime.linux-x64 -->
+<PackageReference Include="LiteRtLmSharp" Version="0.13.1-preview.1" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="0.13.1-preview.1" />
+<!-- or LiteRtLmSharp.runtime.linux-x64 -->
 ```
 
 ```csharp
-using LiteLMSharp;
+using LiteRtLmSharp;
 
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 {
@@ -92,8 +92,8 @@ pwsh scripts/restore-natives.ps1
 (The repo is currently private; `restore-natives.ps1` uses the `gh` CLI to pull our
 `native-v0.13.1` release. `-All` restores every RID, `-Rid android-arm64` a specific one.)
 
-Then `dotnet build LiteLMSharp.slnx` and `dotnet test` (library + tests + packaging; bare .NET SDK
-is enough). The samples have their own solution, `samples/LiteLMSharp.Samples.slnx` — the MAUI
+Then `dotnet build LiteRtLmSharp.slnx` and `dotnet test` (library + tests + packaging; bare .NET SDK
+is enough). The samples have their own solution, `samples/LiteRtLmSharp.Samples.slnx` — the MAUI
 sample in it needs the MAUI workloads (`dotnet workload install maui`). To run the model/tools
 tests, set `LITERTLM_TEST_MODEL` (and `LITERTLM_TEST_TOOLS=1`) to a `.litertlm` file.
 

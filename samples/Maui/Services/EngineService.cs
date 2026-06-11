@@ -1,6 +1,6 @@
-using LiteLMSharp;
+using LiteRtLmSharp;
 
-namespace LiteLMSharp.SampleMaui.Services;
+namespace LiteRtLmSharp.SampleMaui.Services;
 
 /// <summary>
 /// Holds the single <see cref="LiteRtEngine"/> for the app. Only one engine may be ALIVE at a

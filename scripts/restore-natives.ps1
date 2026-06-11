@@ -20,7 +20,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$repo = 'OrihuelaConde/LiteLMSharp'
+$repo = 'OrihuelaConde/LiteRtLmSharp'
 $assets = @{
     'win-x64'       = 'litertlm-windows_x86_64.tar.gz'
     'linux-x64'     = 'litertlm-linux_x86_64.tar.gz'
@@ -41,7 +41,7 @@ elseif (-not $Rid) {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $tag = "native-$Version"
-$tmp = Join-Path ([System.IO.Path]::GetTempPath()) "litelmsharp-natives"
+$tmp = Join-Path ([System.IO.Path]::GetTempPath()) "litertlmsharp-natives"
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $tmp | Out-Null
 

@@ -63,6 +63,6 @@
 #*.RTF   diff=astextplain
 
 ###############################################################################
-# LiteLMSharp: shell scripts must stay LF so bash works in CI on all platforms.
+# LiteRtLmSharp: shell scripts must stay LF so bash works in CI on all platforms.
 ###############################################################################
 *.sh text eol=lf

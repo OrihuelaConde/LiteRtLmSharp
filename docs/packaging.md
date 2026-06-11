@@ -4,11 +4,11 @@ Modelo estilo LLamaSharp: **un paquete managed puro + paquetes de runtime nativo
 
 | Paquete | Contenido | TFM |
 |---|---|---|
-| `LiteLMSharp` | Solo el assembly managed (`lib/net10.0/LiteLMSharp.dll`). Sin nativos. | net10.0 |
-| `LiteLMSharp.runtime.win-x64` | `runtimes/win-x64/native/*.dll` (LiteRtLm + companions + DXC). Sin lib. | (native-only) |
-| `LiteLMSharp.runtime.linux-x64` | `runtimes/linux-x64/native/*.so`. Sin lib. | (native-only) |
-| `LiteLMSharp.runtime.android-arm64` | `runtimes/android-arm64/native/*.so` (van al APK como `lib/arm64-v8a/`). | (native-only) |
-| `LiteLMSharp.runtime.osx-arm64` | `runtimes/osx-arm64/native/*.dylib` (Apple Silicon). | (native-only) |
+| `LiteRtLmSharp` | Solo el assembly managed (`lib/net10.0/LiteRtLmSharp.dll`). Sin nativos. | net10.0 |
+| `LiteRtLmSharp.runtime.win-x64` | `runtimes/win-x64/native/*.dll` (LiteRtLm + companions + DXC). Sin lib. | (native-only) |
+| `LiteRtLmSharp.runtime.linux-x64` | `runtimes/linux-x64/native/*.so`. Sin lib. | (native-only) |
+| `LiteRtLmSharp.runtime.android-arm64` | `runtimes/android-arm64/native/*.so` (van al APK como `lib/arm64-v8a/`). | (native-only) |
+| `LiteRtLmSharp.runtime.osx-arm64` | `runtimes/osx-arm64/native/*.dylib` (Apple Silicon). | (native-only) |
 
 > iOS no tiene runtime package todavía: en iOS un nupkg `runtimes/` no se auto-embebe — requiere
 > xcframework + `.targets` con `NativeReference`; se hará junto con la fase de app iOS/TestFlight.
@@ -20,8 +20,8 @@ Las **versiones van juntas** y mapean al tag de LiteRT-LM (ver `Directory.Build.
 ## Consumo (incluido MAUI)
 
 ```xml
-<PackageReference Include="LiteLMSharp" Version="0.13.1-preview.1" />
-<PackageReference Include="LiteLMSharp.runtime.win-x64" Version="0.13.1-preview.1" />
+<PackageReference Include="LiteRtLmSharp" Version="0.13.1-preview.1" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="0.13.1-preview.1" />
 <!-- y/o linux-x64 según el target -->
 ```
 
@@ -40,7 +40,7 @@ runtime package (cada consumidor elige su RID, como LLamaSharp).
    `dotnet pack` de los 3 proyectos con la versión dada, sube los `.nupkg` como artifact, y
    (opcional, `push=true` + secret `NUGET_API_KEY`) publica a nuget.org.
 
-Local: `dotnet pack LiteLMSharp/LiteLMSharp.csproj -c Release -o .nupkgs` (managed) y los proyectos en
+Local: `dotnet pack LiteRtLmSharp/LiteRtLmSharp.csproj -c Release -o .nupkgs` (managed) y los proyectos en
 `packaging/` (requieren los nativos ya presentes en `runtimes/<rid>/native/`).
 
 ## Notas / pendientes
@@ -51,6 +51,6 @@ Local: `dotnet pack LiteLMSharp/LiteLMSharp.csproj -c Release -o .nupkgs` (manag
 - **MSVC runtime**: `LiteRtLm.dll` (win-x64) importa `MSVCP140/VCRUNTIME140*`; depende del VC++ Redistributable
   en la máquina del usuario. A futuro: documentarlo como prerequisito o evaluar shippearlo.
 - Próximos RIDs posibles: `linux-arm64`, `android-x64` (emuladores), `ios-arm64` (vía xcframework).
-- Opcional a futuro: meta-paquete `LiteLMSharp.Backend.Desktop` que dependa de los runtime win/linux.
+- Opcional a futuro: meta-paquete `LiteRtLmSharp.Backend.Desktop` que dependa de los runtime win/linux.
 - Android GPU: el consumidor debe declarar `<uses-native-library>` en su manifest (ver README y
   docs/fase3-android.md) — considerar documentarlo en el README del paquete cuando se publique.

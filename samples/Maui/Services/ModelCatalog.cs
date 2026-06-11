@@ -1,4 +1,4 @@
-namespace LiteLMSharp.SampleMaui.Services;
+namespace LiteRtLmSharp.SampleMaui.Services;
 
 /// <summary>A known LiteRT-LM model that the app can download and run.</summary>
 /// <remarks>

@@ -2,7 +2,7 @@
 
   <!--
     Native-only NuGet package: LiteRT-LM win-x64 binaries under runtimes/win-x64/native/.
-    No managed assembly. Pair with the managed LiteLMSharp package (same version).
+    No managed assembly. Pair with the managed LiteRtLmSharp package (same version).
     Binaries are produced by build-native.yml; pack-nuget.yml lays them into
     ../../runtimes/win-x64/native/ before packing.
   -->
@@ -14,8 +14,8 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <NoWarn>$(NoWarn);NU5128</NoWarn>
 
-    <PackageId>LiteLMSharp.runtime.win-x64</PackageId>
-    <Description>Native LiteRT-LM runtime (win-x64) for LiteLMSharp. Built from LiteRT-LM $(LiteRtLmVersion). $(LiteLMDisclaimer)</Description>
+    <PackageId>LiteRtLmSharp.runtime.win-x64</PackageId>
+    <Description>Native LiteRT-LM runtime (win-x64) for LiteRtLmSharp. Built from LiteRT-LM $(LiteRtLmVersion). $(LiteRtLmDisclaimer)</Description>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 

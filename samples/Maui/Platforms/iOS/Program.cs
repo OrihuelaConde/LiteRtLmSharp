@@ -1,7 +1,7 @@
 ﻿using ObjCRuntime;
 using UIKit;
 
-namespace LiteLMSharp.SampleMaui;
+namespace LiteRtLmSharp.SampleMaui;
 
 public class Program
 {
