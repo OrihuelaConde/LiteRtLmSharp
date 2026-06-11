@@ -18,7 +18,7 @@ on:
         required: true
         default: 'v0.13.1'
       push:
-        description: 'Push packages to nuget.org (requires NUGET_API_KEY secret)'
+        description: 'Push packages to nuget.org (via Trusted Publishing — OIDC, no secret needed)'
         type: boolean
         default: false
 
@@ -27,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write  # OIDC token for nuget.org Trusted Publishing
     steps:
       - uses: actions/checkout@v4
 
@@ -83,13 +84,21 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: nupkgs-${{ inputs.package_version }}
-          path: artifacts/*.nupkg
+          path: |
+            artifacts/*.nupkg
+            artifacts/*.snupkg
+
+      # Trusted Publishing: exchange the GitHub OIDC token for a 1-hour nuget.org API key
+      # (policy configured on nuget.org under the OrihuelaConde account for this workflow file).
+      - name: NuGet login (OIDC -> temp API key)
+        if: inputs.push
+        uses: NuGet/login@v1
+        id: nuget_login
+        with:
+          user: OrihuelaConde
 
       - name: Push to nuget.org
         if: inputs.push
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
-          if [ -z "$NUGET_API_KEY" ]; then echo "NUGET_API_KEY secret not set"; exit 1; fi
-          dotnet nuget push 'artifacts/*.nupkg' --api-key "$NUGET_API_KEY" \
+          dotnet nuget push 'artifacts/*.nupkg' --api-key "${{ steps.nuget_login.outputs.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json --skip-duplicate
