@@ -1,13 +1,17 @@
 <Project>
 
   <!--
-    Shared metadata for all LiteRtLmSharp packages. The package version maps to the LiteRT-LM
-    release tag it is built against (see LiteRtLmVersion) — bump both together.
+    Shared metadata for all LiteRtLmSharp packages. The package version is independent of the
+    LiteRT-LM native version (pinned via LiteRtLmVersion below): bump minor for native bumps or
+    new features, patch for binding-only fixes. The managed package and every
+    LiteRtLmSharp.runtime.<rid> package always share the same version and are published together;
+    the README compatibility table maps each release to the LiteRT-LM tag it was built against.
   -->
   <PropertyGroup>
-    <Version>0.13.1-preview.1</Version>
+    <Version>0.1.0-preview.1</Version>
     <!-- LiteRT-LM release tag the native binaries are built from (build-native.yml input). -->
     <LiteRtLmVersion>v0.13.1</LiteRtLmVersion>
+    <PackageReleaseNotes>Built against LiteRT-LM $(LiteRtLmVersion).</PackageReleaseNotes>
 
     <Authors>LiteRtLmSharp contributors</Authors>
     <Company>LiteRtLmSharp</Company>
@@ -16,14 +20,16 @@
     <RepositoryUrl>https://github.com/OrihuelaConde/LiteRtLmSharp</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>litert;litert-lm;llm;gemma;on-device;inference;ai;maui</PackageTags>
-    <PackageReadmeFile Condition="Exists('$(MSBuildProjectDirectory)\README.md')">README.md</PackageReadmeFile>
+    <!-- Every package embeds the repo-root README (shown on nuget.org). -->
+    <PackageReadmeFile>README.md</PackageReadmeFile>
 
     <!-- Appended to every package Description. Keep in sync with NOTICE / README. -->
     <LiteRtLmDisclaimer>Unofficial community bindings, not affiliated with or endorsed by Google. LiteRT is a trademark of Google LLC.</LiteRtLmDisclaimer>
   </PropertyGroup>
 
-  <!-- Ship the legal files inside every package (PackagePath="" = nupkg root). -->
+  <!-- Ship the README and legal files inside every package (PackagePath="" = nupkg root). -->
   <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="" Visible="false" />
     <None Include="$(MSBuildThisFileDirectory)LICENSE.txt" Pack="true" PackagePath="" Visible="false" />
     <None Include="$(MSBuildThisFileDirectory)NOTICE" Pack="true" PackagePath="" Visible="false" />
     <None Include="$(MSBuildThisFileDirectory)THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="" Visible="false" />

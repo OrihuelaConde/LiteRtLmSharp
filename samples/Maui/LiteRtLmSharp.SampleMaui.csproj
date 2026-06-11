@@ -49,10 +49,11 @@
 	</ItemGroup>
 
 	<!--
-	  Direct references while the NuGet packages are not published: project reference to the
-	  managed library + native binaries from runtimes/<rid>/native (restore them first — see
-	  scripts/restore-natives.ps1 and the native-v* GitHub release). Once the packages are on a
-	  feed, replace all of this with:
+	  The samples intentionally reference the library by project so they always build and test
+	  the current source tree (CI relies on this). Native binaries come from runtimes/<rid>/native
+	  (restore them first — see scripts/restore-natives.ps1 and the native-v* GitHub release).
+	  Consumers should instead use the published packages — see the PackageReference snippet in
+	  the repo README:
 	    <PackageReference Include="LiteRtLmSharp" ... />
 	    <PackageReference Include="LiteRtLmSharp.runtime.android-arm64" ... />  (etc.)
 	-->
