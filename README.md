@@ -67,8 +67,9 @@ See [`samples/Console`](samples/Console) for a runnable demo (`--tools` for the 
 
 ## Important notes
 
-- **One engine per process.** LiteRT-LM's native environment initializes once; a second
-  `LiteRtEngine.Load` throws. Create multiple conversations from a single engine.
+- **One engine alive at a time.** Loading a second engine while one is alive throws (it would
+  hang in the native layer). To switch model or backend, dispose the conversations and the
+  engine, then `LiteRtEngine.Load` again — same pattern as Google's Edge Gallery.
 - **`MaxNumTokens`** is the total context window (prompt + response, across turns). Use >= 1024;
   too small can make blocking generation return nothing.
 - **Conversations are not thread-safe** — serialize calls per conversation.

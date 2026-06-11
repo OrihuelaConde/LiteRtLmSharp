@@ -26,9 +26,9 @@ public class NativeInteropTests
 }
 
 /// <summary>
-/// Loads the model engine ONCE for the whole test class. The native LiteRT environment does not
-/// re-initialize cleanly more than once per process, so every engine-backed test must share a
-/// single <see cref="LiteRtEngine"/> (one per process) and create per-test conversations from it.
+/// Loads the model engine ONCE for the whole test class. Only one engine may be ALIVE at a
+/// time (and engine creation is the expensive step), so engine-backed tests share a single
+/// <see cref="LiteRtEngine"/> and create per-test conversations from it.
 /// Set LITERTLM_TEST_MODEL to a .litertlm file to enable these tests.
 /// </summary>
 public sealed class EngineFixture : IDisposable

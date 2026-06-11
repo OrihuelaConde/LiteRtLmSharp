@@ -1,6 +1,6 @@
 # Estado del proyecto y roadmap
 
-Última actualización: 2026-06-10. Fuente de verdad del "qué está hecho y qué falta".
+Última actualización: 2026-06-11. Fuente de verdad del "qué está hecho y qué falta".
 
 ## Estado por plataforma
 
@@ -24,9 +24,11 @@ Todo pinneado a **LiteRT-LM v0.13.1**; versión de paquetes `0.13.1-preview.1`.
 | AOT/trim-friendly (`[LibraryImport]`, `[UnmanagedCallersOnly]`, sin reflection) | ✅ |
 | Multimodal (imagen/audio), embeddings, tokenize/detokenize, benchmark API | 🔜 roadmap |
 
-Restricciones conocidas (documentadas en README): un engine por proceso; conversaciones no
-thread-safe; `MaxNumTokens` = ventana total de contexto; VC++ Redistributable en win-x64; Android
-GPU requiere `<uses-native-library>` en el manifest.
+Restricciones conocidas (documentadas en README): un engine VIVO a la vez (recargar tras
+`Dispose` funciona — verificado en win-x64 cpu→cpu y cpu→gpu; es el patrón de Edge Gallery para
+cambiar modelo/backend sin reiniciar); conversaciones no thread-safe; `MaxNumTokens` = ventana
+total de contexto; VC++ Redistributable en win-x64; Android GPU requiere `<uses-native-library>`
+en el manifest.
 
 ## Pendientes accionables (en orden sugerido)
 

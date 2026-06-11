@@ -13,10 +13,12 @@ public sealed class LiteRtEngine : IDisposable
 
     static LiteRtEngine() => NativeLibraryResolver.Initialize();
 
-    // LiteRT-LM's native environment initializes once per process and does not re-initialize;
-    // a second engine creation hangs. Guard with a process-wide one-shot flag so callers get a
-    // clear exception instead of a hang.
-    private static int s_engineCreated;
+    // Two LIVE engines in one process is unsupported (creating a second engine while the first
+    // is alive hangs in the native layer). Recreating an engine after disposing the previous one
+    // works — Google's Edge Gallery switches model/backend exactly this way (engine.close() +
+    // new Engine). Guard with a process-wide live count so callers get a clear exception
+    // instead of a hang.
+    private static int s_liveEngines;
 
     private LiteRtEngine(EngineHandle engine) => _engine = engine;
 
@@ -24,12 +26,12 @@ public sealed class LiteRtEngine : IDisposable
     public static void SetMinLogLevel(int level) => LiteRtLmNative.litert_lm_set_min_log_level(level);
 
     /// <summary>
-    /// Loads a model and creates the engine. Only ONE engine may be created per process
-    /// (LiteRT-LM's native environment is process-global); create multiple
-    /// <see cref="LiteRtConversation"/> objects from a single engine instead.
+    /// Loads a model and creates the engine. Only ONE engine may be alive at a time
+    /// (a second concurrent engine hangs in the native layer). To switch model or backend,
+    /// dispose every conversation and the engine first, then call <see cref="Load"/> again.
     /// </summary>
     /// <exception cref="ArgumentException">The model file does not exist.</exception>
-    /// <exception cref="InvalidOperationException">An engine was already created in this process.</exception>
+    /// <exception cref="InvalidOperationException">Another engine is still alive in this process.</exception>
     /// <exception cref="LiteRtException">Native engine creation failed.</exception>
     public static LiteRtEngine Load(LiteRtEngineOptions options)
     {
@@ -37,11 +39,11 @@ public sealed class LiteRtEngine : IDisposable
         if (!File.Exists(options.ModelPath))
             throw new ArgumentException($"Model file not found: {options.ModelPath}", nameof(options));
 
-        if (Interlocked.CompareExchange(ref s_engineCreated, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref s_liveEngines, 1, 0) != 0)
             throw new InvalidOperationException(
-                "Only one LiteRtEngine can be created per process: LiteRT-LM's native environment " +
-                "initializes once and does not re-initialize (a second load would hang). Reuse the " +
-                "engine and create multiple conversations from it.");
+                "Another LiteRtEngine is still alive in this process; a second concurrent engine " +
+                "hangs in the native layer. Dispose the existing engine (and its conversations) " +
+                "first, then load the new model.");
 
         try
         {
@@ -56,14 +58,18 @@ public sealed class LiteRtEngine : IDisposable
 
             nint enginePtr = LiteRtLmNative.litert_lm_engine_create(settings.Ptr);
             if (enginePtr == nint.Zero)
-                throw new LiteRtException("litert_lm_engine_create returned null. Check the model path and backend.");
+                throw new LiteRtException(
+                    "litert_lm_engine_create returned null. The C API does not expose the reason " +
+                    "(it is logged to the native stderr). Common causes: corrupt/incomplete model " +
+                    "file, or a backend the model does not support — some published .litertlm " +
+                    "files carry a backend constraint (e.g. GPU-only) and refuse to load on CPU.");
 
             return new LiteRtEngine(new EngineHandle(enginePtr));
         }
         catch
         {
-            // Creation failed before the environment was established — allow a corrected retry.
-            Interlocked.Exchange(ref s_engineCreated, 0);
+            // Creation failed — allow a corrected retry.
+            Interlocked.Exchange(ref s_liveEngines, 0);
             throw;
         }
     }
@@ -80,5 +86,7 @@ public sealed class LiteRtEngine : IDisposable
         if (_disposed) return;
         _disposed = true;
         _engine.Dispose();
+        // The native engine is gone; a new one may be loaded now.
+        Interlocked.Exchange(ref s_liveEngines, 0);
     }
 }
