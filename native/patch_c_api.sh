@@ -91,9 +91,27 @@ cc_binary(
         # directory as libLiteRtLm.dylib without install_name_tool patching.
         "@platforms//os:macos": ["-Wl,-exported_symbol,_LiteRt*", "-Wl,-exported_symbol,_litert_lm_*", "-Wl,-rpath,@loader_path"],
         "@platforms//os:ios": ["-Wl,-exported_symbol,_LiteRt*", "-Wl,-exported_symbol,_litert_lm_*"],
-        # Android uses the GNU/lld linker like Linux: keep LiteRt*/litert_lm_* in the dynamic
-        # export table so the prebuilt accelerators can resolve LiteRt* at runtime.
-        "@platforms//os:linux": ["-Wl,--dynamic-list=$(location :dynamic_list.lds)"],
+        # Linux: besides the dynamic-list exports, isolate our statically-linked internals
+        # (abseil/llguidance/...) from the prebuilt libGemmaModelConstraintProvider.so the
+        # engine links against (DT_NEEDED, upstream constrained_decoding/BUILD) — that
+        # prebuilt embeds its own copies of the same libraries, and cross-library symbol
+        # binding between the two corrupted memory: SIGSEGV in decode whenever tools +
+        # constrained decoding were enabled (repro 2026-06-12; matches LiteRT-LM#2149).
+        # Google's official wheel binary (which passes the same test) links with
+        # -Bsymbolic/--gc-sections; --exclude-libs,ALL additionally drops archive symbols
+        # from our dynamic table so the provider cannot bind into them. rpath $ORIGIN lets
+        # DT_NEEDED companions resolve from our own directory without preloading.
+        "@platforms//os:linux": [
+            "-Wl,--dynamic-list=$(location :dynamic_list.lds)",
+            "-Wl,--exclude-libs,ALL",
+            "-Wl,-Bsymbolic",
+            "-Wl,--gc-sections",
+            "-Wl,-rpath,$$ORIGIN",
+        ],
+        # Android keeps the previous minimal linkopts on purpose: its sampler/accelerator
+        # setup is different (LiteRt C API static-linked + patchelf'd samplers, see
+        # build-native.yml) and is validated as-is. If #1859-style tool crashes surface
+        # there, mirror the Linux isolation flags as a follow-up.
         "@platforms//os:android": ["-Wl,--dynamic-list=$(location :dynamic_list.lds)"],
         "//conditions:default": [],
     }),
