@@ -312,36 +312,37 @@ jobs:
         run: bash native/patch_c_api.sh /tmp/LiteRT-LM
 
       - name: Build libLiteRtLm.dylib (ios-arm64, device)
-        # Same recipe as macOS: LiteRt as a SEPARATE shared lib so the prebuilt Metal
-        # sampler (LC_LOAD_DYLIB @rpath/libLiteRt.dylib) can dlopen — static linking made
-        # it silently fall back to CPU sampling (proven on macOS, model-tests 27436193072).
-        # resolve_symbols_in_exec=false is REQUIRED with capi_so: the repo .bazelrc defaults
-        # it to true and the pinned @litert litert_runtime_c_api_shared_lib srcs select()
-        # has both :resolve_symbols_in_exec and :ios keys -> "illegal ambiguous match".
-        # NOTE: upstream CI never builds iOS with this define pair (only macOS); if this
-        # fails (e.g. ld platform mismatch on the @litert-built dylib), fall back to the
-        # static recipe + install_name_tool -change on the sampler.
+        # LiteRt STATIC-linked — deliberately NOT the macOS dynamic recipe, for two
+        # verified reasons (2026-06-12):
+        # 1. It isn't needed: unlike the macOS prebuilt, Google's iOS
+        #    libLiteRtTopKMetalSampler.dylib has NO @rpath/libLiteRt.dylib load command —
+        #    all 166 of its LiteRt* imports use DYNAMIC_LOOKUP (ordinal 254, flat
+        #    namespace), and the static libLiteRtLm.dylib exports every one of them
+        #    (166/166 coverage), so the sampler resolves against us at dlopen.
+        # 2. It doesn't build: with litert_link_capi_so=true the pinned @litert routes
+        #    iOS through a macos_dylib copy_file; that rule's macOS transition pulls
+        #    XNNPACK SSE microkernels into the ios config, where -mstackrealign clashes
+        #    with build:ios --copt=-fembed-bitcode (run 27436848074).
+        # LiteRt*/litert_lm_* stay exported via -exported_symbol wildcards.
         # --config=ios_arm64 sets ios_minimum_os=13.0.
         run: |
           cd /tmp/LiteRT-LM
           bazelisk build -c opt --strip=always \
             --config=ios_arm64 \
-            --define=litert_link_capi_so=true \
-            --define=resolve_symbols_in_exec=false \
             //c:libLiteRtLm.dylib
 
       - name: Collect artifacts
-        # Full prebuilt/ios_arm64 companion set INCLUDING libLiteRt.dylib (the runtime the
-        # main dylib and Metal sampler resolve via @rpath, like macOS/linux). Google ships
-        # some companions with minos 26.2 — apps targeting older iOS fail to embed them.
-        # Same fix flutter_gemma uses (#245): vtool the minos down to 16.0 (keeping the sdk
-        # version) and re-sign ad-hoc (vtool invalidates the signature; the app build
-        # re-signs everything anyway). The loop globs artifacts/*.dylib so libLiteRt.dylib
-        # is patched too.
+        # Companion set mirrors prebuilt/ios_arm64 minus libLiteRt.dylib (LiteRt is static
+        # inside the main dylib; the iOS prebuilt companions don't reference
+        # @rpath/libLiteRt.dylib — see build-step comment). Google ships
+        # libGemmaModelConstraintProvider with minos 26.2 — apps targeting older iOS fail
+        # to embed it. Same fix flutter_gemma uses (#245): vtool the minos down to 16.0
+        # (keeping the sdk version) and re-sign ad-hoc (vtool invalidates the signature;
+        # the app build re-signs everything anyway).
         run: |
           mkdir -p artifacts
           cp /tmp/LiteRT-LM/bazel-bin/c/libLiteRtLm.dylib artifacts/libLiteRtLm.dylib
-          for lib in libLiteRt libGemmaModelConstraintProvider libLiteRtMetalAccelerator libLiteRtTopKMetalSampler; do
+          for lib in libGemmaModelConstraintProvider libLiteRtMetalAccelerator libLiteRtTopKMetalSampler; do
             cp "/tmp/LiteRT-LM/prebuilt/ios_arm64/${lib}.dylib" artifacts/ 2>/dev/null || echo "missing ${lib}"
           done
 
@@ -359,7 +360,7 @@ jobs:
           ls -lh artifacts/
           echo "--- exported litert_lm_* symbols ---"
           nm -gU artifacts/libLiteRtLm.dylib | grep -c litert_lm_ || true
-          echo "--- libLiteRtLm.dylib load commands (expect @rpath/libLiteRt.dylib) ---"
+          echo "--- libLiteRtLm.dylib load commands (no @rpath/libLiteRt.dylib: static) ---"
           otool -L artifacts/libLiteRtLm.dylib
           echo "--- platform/min-OS of each dylib (post-patch) ---"
           for f in artifacts/*.dylib; do

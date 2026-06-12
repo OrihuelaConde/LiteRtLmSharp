@@ -93,8 +93,13 @@ drift). The remaining 65 group into six areas, in suggested priority order:
      macOS build excluded → CPU-sampling fallback. macos-arm64 now builds with
      `litert_link_capi_so=true` + `resolve_symbols_in_exec=false` (the second define is
      mandatory — see Architecture decisions) and ships `libLiteRt.dylib`; the re-run GPU
-     pass shows no "Metal sampler not available" fallback (run 27436193072). iOS still uses
-     the static recipe — mirror the fix there if Metal sampling matters on device.
+     pass shows no "Metal sampler not available" fallback (run 27436193072). iOS does NOT
+     need (and cannot use) this fix: Google's iOS prebuilt sampler has no
+     @rpath/libLiteRt.dylib load command — its 166 LiteRt* imports are DYNAMIC_LOOKUP and
+     the static libLiteRtLm.dylib exports all of them (verified by Mach-O inspection,
+     2026-06-12); the dynamic recipe also fails to build on iOS (@litert routes iOS through
+     a macos_dylib whose transition pulls XNNPACK SSE kernels into the -fembed-bitcode ios
+     config, run 27436848074).
    - `ToolCalling_Unconstrained` failed on backend=gpu with a malformed tool call
      (`call:get_current_weather{location}`, unparseable) — generation variance under GPU
      numerics, not a binding bug. Second occurrence on 2026-06-12 (recurred in the
