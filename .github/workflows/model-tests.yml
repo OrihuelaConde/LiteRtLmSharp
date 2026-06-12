@@ -1,0 +1,104 @@
+name: Model tests (linux-x64)
+
+# Runs the model-backed interop tests on ubuntu-latest with a real .litertlm model — the path
+# the regular CI job skips (no LITERTLM_TEST_MODEL). Four scenarios: blocking chat, streaming,
+# tool calling without constrained decoding, and tool calling WITH constrained decoding (which
+# on linux-x64 currently asserts the temporary guard throws — the upstream prebuilt constraint
+# provider returns broken constraints, LiteRT-LM#2149 root-caused 2026-06-12; when Google ships
+# a fixed prebuilt and the guard is removed, that test flips to the real end-to-end loop).
+# Weekly + on demand; the ~2.6 GB model is cached between runs (repo cache, 10 GB limit, free
+# for public repos — no account storage/billing impact).
+#
+# Model choice: gemma-4-E2B-it (litert-community, ungated) — deliberately NOT a smaller one:
+#  - the small Gemma .litertlm repos (gemma-3-270m-it, Gemma3-1B-IT, functiongemma-*) are
+#    gated on Hugging Face (license acceptance + token), which this job avoids needing;
+#  - Qwen3-0.6B is ungated but its chat template rejects the tools injection ("tried to use
+#    + operator on unsupported types map and string" → send_message returns null), so it
+#    cannot exercise the tool-calling path. Both verified 2026-06-12.
+
+on:
+  schedule:
+    - cron: '0 7 * * 1' # Mon 07:00 UTC
+  workflow_dispatch:
+
+env:
+  # Keep in sync with Directory.Build.props <LiteRtLmVersion>.
+  NATIVE_REF: v0.13.1
+  MODEL_FILE: gemma-4-E2B-it.litertlm
+  MODEL_URL: https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm
+  # LFS oid of the file on Hugging Face; also guards against a cached/partial download.
+  MODEL_SHA256: 181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c
+
+jobs:
+  model-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore native binaries (linux-x64)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p runtimes/linux-x64/native
+          # Retry: the releases API occasionally throws transient 401/5xx (seen 2026-06-10).
+          for attempt in 1 2 3; do
+            gh release download "native-${NATIVE_REF}" \
+              --repo "${{ github.repository }}" \
+              --pattern 'litertlm-linux_x86_64.tar.gz' \
+              --dir . && break
+            echo "download attempt $attempt failed; retrying in 20s..."
+            [ "$attempt" = "3" ] && exit 1
+            sleep 20
+          done
+          tar -xzf litertlm-linux_x86_64.tar.gz -C runtimes/linux-x64/native
+          ls runtimes/linux-x64/native
+
+      - name: Cache model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: models/${{ env.MODEL_FILE }}
+          key: litertlm-model-${{ env.MODEL_SHA256 }}
+
+      - name: Download model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p models
+          curl -fL --retry 3 --retry-delay 15 -o "models/$MODEL_FILE" "$MODEL_URL"
+
+      - name: Verify model checksum
+        run: echo "$MODEL_SHA256  models/$MODEL_FILE" | sha256sum -c -
+
+      - name: Build
+        run: dotnet build LiteRtLmSharp.slnx -c Release
+
+      # --blame-crash turns a native SIGSEGV that kills the test host into a failed run with a
+      # sequence file + minidump instead of a silent green/cancelled job; --blame-hang aborts a
+      # decode that never returns (the other failure mode reported in LiteRT-LM#2149).
+      - name: Test with model (streaming + tools)
+        timeout-minutes: 30
+        env:
+          LITERTLM_TEST_MODEL: ${{ github.workspace }}/models/${{ env.MODEL_FILE }}
+          LITERTLM_TEST_TOOLS: '1'
+        run: |
+          dotnet test LiteRtLmSharp.Tests/LiteRtLmSharp.Tests.csproj -c Release --no-build \
+            --logger "console;verbosity=normal" \
+            --blame-crash --blame-crash-dump-type mini \
+            --blame-hang --blame-hang-dump-type mini --blame-hang-timeout 15m \
+            --results-directory TestResults
+
+      - name: Upload test results and crash/hang dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-test-results
+          path: TestResults
+          if-no-files-found: ignore
+          # Crash/hang dumps can reach ~750 MB; free on public repos but keep retention short.
+          retention-days: 7

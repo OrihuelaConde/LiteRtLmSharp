@@ -57,6 +57,19 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
 {
     private readonly EngineFixture _fixture = fixture;
 
+    /// <summary>Plain blocking chat. Skipped unless LITERTLM_TEST_MODEL is set.</summary>
+    [SkippableFact]
+    public void Chat_Blocking_ProducesText()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var conversation = _fixture.Engine!.CreateConversation();
+        var response = conversation.Send("Reply with one short sentence: what is the capital of France?");
+
+        Assert.False(string.IsNullOrWhiteSpace(response.Text),
+            $"Expected a non-empty blocking response. Raw: {response.RawJson}");
+    }
+
     /// <summary>End-to-end streaming generation. Skipped unless LITERTLM_TEST_MODEL is set.
     /// (Validated on v0.13.1; the async path crashed on the interim commit 032334d8.)</summary>
     [SkippableFact]
@@ -73,20 +86,53 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     }
 
     /// <summary>
-    /// Function-calling loop. Gated on LITERTLM_TEST_TOOLS=1 because it uses the conversation-config
-    /// path, which access-violates on the community native-v0.12.0-a binary — only run with a
-    /// version-matched (Fase 2) build in runtimes/win-x64/native.
+    /// Function-calling loop WITHOUT constrained decoding — works on every platform (this is
+    /// the documented workaround while the linux-x64 constrained-decoding guard is in place).
     /// </summary>
     [SkippableFact]
-    public void ToolCalling_Loop_ExecutesTool()
+    public void ToolCalling_Unconstrained_Loop_ExecutesTool()
     {
-        Skip.If(_fixture.Engine is null || Environment.GetEnvironmentVariable("LITERTLM_TEST_TOOLS") != "1",
+        SkipUnlessToolTestsEnabled();
+        RunToolCallingLoop(constrainedDecoding: false);
+    }
+
+    /// <summary>
+    /// Function-calling loop WITH constrained decoding. On linux-x64 this currently asserts the
+    /// temporary guard fires (upstream prebuilt constraint provider is broken — LiteRT-LM#2149,
+    /// see the roadmap watchlist); everywhere else it runs the real end-to-end loop.
+    /// </summary>
+    [SkippableFact]
+    public void ToolCalling_Constrained_Loop_ExecutesTool()
+    {
+        SkipUnlessToolTestsEnabled();
+
+        if (OperatingSystem.IsLinux() && !OperatingSystem.IsAndroid())
+        {
+            // TEMPORARY branch: validates the guard in LiteRtConversation.Create. When Google
+            // republishes a fixed linux prebuilt and the guard is removed, DELETE this branch so
+            // the constrained loop runs for real on Linux too (removal steps: docs/roadmap.md).
+            Assert.Throws<PlatformNotSupportedException>(() => RunToolCallingLoop(constrainedDecoding: true));
+            return;
+        }
+
+        RunToolCallingLoop(constrainedDecoding: true);
+    }
+
+    /// <summary>
+    /// Gated on LITERTLM_TEST_TOOLS=1 because the conversation-config path access-violates on
+    /// version-skewed binaries (e.g. community native-v0.12.0-a) — only run with a
+    /// version-matched build in runtimes/&lt;rid&gt;/native.
+    /// </summary>
+    private void SkipUnlessToolTestsEnabled()
+        => Skip.If(_fixture.Engine is null || Environment.GetEnvironmentVariable("LITERTLM_TEST_TOOLS") != "1",
             "Set LITERTLM_TEST_TOOLS=1 (and LITERTLM_TEST_MODEL with a version-matched binary) to run.");
 
+    private void RunToolCallingLoop(bool constrainedDecoding)
+    {
         using var conv = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions
         {
             SystemMessage = "Use tools when needed.",
-            EnableConstrainedDecoding = true,
+            EnableConstrainedDecoding = constrainedDecoding,
             MaxOutputTokens = 128,
             Tools =
             [

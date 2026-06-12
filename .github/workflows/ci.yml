@@ -2,7 +2,8 @@ name: CI
 
 # Build + tests on Linux and Windows. Restores the native binaries from the native-<ref> release
 # so the interop tests actually load LiteRtLm (this is also how we validate the linux-x64 runtime).
-# Model/tools tests auto-skip here (no LITERTLM_TEST_MODEL).
+# Model/tools tests auto-skip here (no LITERTLM_TEST_MODEL); model-tests.yml runs them on
+# linux-x64 with a real model, weekly and on demand.
 
 on:
   push:
