@@ -59,7 +59,8 @@ is the total context window; VC++ Redistributable required on win-x64; Android G
 5. **iOS app phase**: Apple Developer Program → xcframework + `.targets` NativeReference →
    MAUI `net10.0-ios` app → CI signing → TestFlight.
 6. **Optional**: multimodal/embeddings API; `android-x64` for emulators; Desktop meta-package;
-   CONTRIBUTING + issue templates; scheduled smoke-test workflow that consumes the published
+   ✅ ~~CONTRIBUTING + issue templates~~ (2026-06-11: CONTRIBUTING.md, issue forms, PR template,
+   SECURITY.md, Discussions enabled); scheduled smoke-test workflow that consumes the published
    packages from nuget.org; PR upstream to be listed among the language bindings (planned right
    after the nuget.org release).
 

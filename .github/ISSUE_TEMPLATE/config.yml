@@ -1,0 +1,8 @@
+blank_issues_allowed: false
+contact_links:
+  - name: Questions & help
+    url: https://github.com/OrihuelaConde/LiteRtLmSharp/discussions
+    about: Ask usage questions or share what you're building in GitHub Discussions.
+  - name: LiteRT-LM engine issues
+    url: https://github.com/google-ai-edge/LiteRT-LM/issues
+    about: Problems inside the native engine (generation quality, native crashes, model support) belong upstream.

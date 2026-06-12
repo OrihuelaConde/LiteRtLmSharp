@@ -1,0 +1,87 @@
+name: Bug report
+description: Something in the binding doesn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! If the problem is **inside the native engine** (generation
+        quality, crashes in the native library, model support), it may belong upstream in
+        [google-ai-edge/LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM/issues) —
+        but if you're not sure, file it here and we'll help triage.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: Minimal code snippet or steps that reproduce the problem.
+      placeholder: |
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions { ... });
+        ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: LiteRtLmSharp version
+      placeholder: "0.1.0-preview.1 (or commit hash if built from source)"
+    validations:
+      required: true
+  - type: dropdown
+    id: rid
+    attributes:
+      label: Platform (runtime package)
+      options:
+        - win-x64
+        - linux-x64
+        - android-arm64
+        - osx-arm64
+        - ios-arm64
+        - Other / built from source
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      options:
+        - cpu
+        - gpu
+        - both / not sure
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: "e.g. gemma3-1b-it from huggingface.co/litert-community"
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS and version, device (for Android/iOS), .NET SDK version, app type (console/MAUI/...).
+      placeholder: |
+        Windows 11 24H2, .NET SDK 10.0.x, console app
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Relevant console output, stack trace, or adb logcat. Rendered as code automatically.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues (including upstream LiteRT-LM for engine-level problems)
+          required: true
+        - label: I read the "Important notes" section of the README (one engine at a time, MaxNumTokens, VC++ redist, Android GPU manifest)
+          required: true

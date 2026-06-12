@@ -137,9 +137,9 @@ More detail in [`docs/`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/mas
 
 ## Contributing
 
-Issues and PRs are welcome. To get a working dev setup: clone, `pwsh scripts/restore-natives.ps1`,
-`dotnet build LiteRtLmSharp.slnx`, `dotnet test`. Please open an issue first for anything beyond
-a small fix.
+Issues and PRs are welcome — see [CONTRIBUTING.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/CONTRIBUTING.md)
+for the dev setup and guidelines. Please open an issue first for anything beyond a small fix,
+and use [Discussions](https://github.com/OrihuelaConde/LiteRtLmSharp/discussions) for questions.
 
 ## License and trademarks
 

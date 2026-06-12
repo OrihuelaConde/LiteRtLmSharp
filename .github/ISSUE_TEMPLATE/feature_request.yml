@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a new capability or API change
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the [roadmap](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md)
+        first — it may already be planned. Note that features the LiteRT-LM **C API** doesn't
+        expose yet (e.g. some multimodal paths) need upstream support before the binding can
+        offer them.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do that you can't do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: If you have an API shape in mind, sketch it here.
+      placeholder: |
+        var embeddings = engine.Embed("some text");
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: pr
+    attributes:
+      label: Contribution
+      options:
+        - label: I'm willing to open a PR for this once the approach is agreed
