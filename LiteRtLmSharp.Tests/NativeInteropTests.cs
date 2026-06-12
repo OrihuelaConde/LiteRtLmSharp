@@ -29,7 +29,8 @@ public class NativeInteropTests
 /// Loads the model engine ONCE for the whole test class. Only one engine may be ALIVE at a
 /// time (and engine creation is the expensive step), so engine-backed tests share a single
 /// <see cref="LiteRtEngine"/> and create per-test conversations from it.
-/// Set LITERTLM_TEST_MODEL to a .litertlm file to enable these tests.
+/// Set LITERTLM_TEST_MODEL to a .litertlm file to enable these tests, and optionally
+/// LITERTLM_TEST_BACKEND to run them on another backend (e.g. "gpu"; default "cpu").
 /// </summary>
 public sealed class EngineFixture : IDisposable
 {
@@ -44,7 +45,7 @@ public sealed class EngineFixture : IDisposable
             Engine = LiteRtEngine.Load(new LiteRtEngineOptions
             {
                 ModelPath = modelPath,
-                Backend = "cpu",
+                Backend = Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu",
                 MaxNumTokens = 2048,
             });
         }
