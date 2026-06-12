@@ -114,3 +114,25 @@ jobs:
             echo "==================== GPU | $prompt"
             "$CLI" --backend=gpu --model_path="$PWD/models/$MODEL_FILE" --input_prompt="$prompt"
           done
+
+      # Apples-to-apples with our runtime package: gpu_registry tries libLiteRtGpuAccelerator,
+      # then libLiteRtWebGpuAccelerator, then the Metal one, keeping the FIRST that loads. With
+      # Google's full prebuilt dir the probe above lands on the WebGPU delegate, but our
+      # osx-arm64 package excludes the WebGPU pair, so the binding runs the native METAL
+      # delegate — the path where model-tests sees the GPU-only glitch. Hide the WebGPU dylibs
+      # so the stock CLI is forced onto that same Metal delegate + Metal sampler.
+      - name: Probe GPU backend (Metal delegate — WebGPU dylibs hidden)
+        timeout-minutes: 20
+        run: |
+          mkdir -p metal-only
+          for lib in libLiteRt libLiteRtMetalAccelerator libLiteRtTopKMetalSampler libGemmaModelConstraintProvider; do
+            cp "/tmp/LiteRT-LM/prebuilt/macos_arm64/${lib}.dylib" metal-only/ 2>/dev/null || echo "missing ${lib}"
+          done
+          ls -lh metal-only/
+          export DYLD_LIBRARY_PATH="$PWD/metal-only"
+          for prompt in \
+            "Reply with one short sentence: what is the capital of France?" \
+            'Return exactly this JSON and nothing else: {"name":"get_current_weather","location":"Tokyo"}'; do
+            echo "==================== GPU-Metal | $prompt"
+            "$CLI" --backend=gpu --model_path="$PWD/models/$MODEL_FILE" --input_prompt="$prompt"
+          done
