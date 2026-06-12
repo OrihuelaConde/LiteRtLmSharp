@@ -101,10 +101,20 @@ drift). The remaining 65 group into six areas, in suggested priority order:
      a macos_dylib whose transition pulls XNNPACK SSE kernels into the -fembed-bitcode ios
      config, run 27436848074).
    - `ToolCalling_Unconstrained` failed on backend=gpu with a malformed tool call
-     (`call:get_current_weather{location}`, unparseable) — generation variance under GPU
-     numerics, not a binding bug. Second occurrence on 2026-06-12 (recurred in the
-     post-fix GPU run); if it stays GPU-only and persistent, consider retry-tolerance in
-     the test or pinning a seed.
+     (`call:get_current_weather{location}`, unparseable) — **root-caused 2026-06-12 as the
+     upstream native METAL delegate, not our binding**, via `mac-gpu-cli-probe.yml` (manual
+     workflow that runs Google's own litert_lm_main on the runner): the prebuilt v0.11.0 CLI
+     and a stock v0.13.1 build both generate byte-perfect output on backend=gpu through the
+     WebGPU delegate (Dawn→Metal, `Apple Paravirtual device`), but the same stock v0.13.1
+     CLI forced onto the native Metal delegate (WebGPU dylibs hidden — the configuration our
+     package ships) degenerates into "the the the…" on an exact-JSON prompt (runs
+     27446959593, 27447067775, 27447850507). gpu_registry keeps the FIRST accelerator that
+     loads (GpuAccelerator → WebGpuAccelerator → Metal), so Google's full prebuilt set never
+     exercises Metal while our package — which excludes the WebGPU pair — always does.
+     Whether real Apple Silicon hardware (non-paravirtual Metal) reproduces it is the
+     remaining unknown (mac test kit). Options: ship the WebGPU pair in osx-arm64 (on the
+     runner it is both correct and ~3× faster decode than the Metal delegate: 30.5 vs 10.1
+     tok/s), and/or report upstream with the CLI-only repro.
    Real-hardware Metal validation (the "mac test kit": console sample published for
    osx-arm64 + natives + instructions) is now unblocked and still worthwhile.
 3. ✅ ~~Public release~~ (2026-06-11): renamed to `LiteRtLmSharp`, repo public,
