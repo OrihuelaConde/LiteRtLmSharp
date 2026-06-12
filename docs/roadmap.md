@@ -1,6 +1,6 @@
 # Project status and roadmap
 
-Last updated: 2026-06-11. Source of truth for "what's done and what's pending".
+Last updated: 2026-06-12. Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -30,13 +30,52 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Function calling / tools (constrained decoding, Gemma token sanitization) | ✅ |
 | System prompt, sampler params, max tokens, token count (context gauge) | ✅ |
 | AOT/trim-friendly (`[LibraryImport]`, `[UnmanagedCallersOnly]`, no reflection) | ✅ |
-| Multimodal (image/audio), embeddings, tokenize/detokenize, benchmark API | 🔜 roadmap |
+| Multimodal (image/audio), tokenize/detokenize, benchmark API | 🔜 see C API coverage below |
 
 Known constraints (documented in the README): one engine ALIVE at a time (reloading after
 `Dispose` works — verified on win-x64 cpu→cpu and cpu→gpu; this is Edge Gallery's pattern for
 switching model/backend without restarting); conversations are not thread-safe; `MaxNumTokens`
 is the total context window; VC++ Redistributable required on win-x64; Android GPU requires
 `<uses-native-library>` in the app manifest.
+
+## C API coverage (audit 2026-06-12, header v0.13.1)
+
+**24 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
+drift). The remaining 65 group into six areas, in suggested priority order:
+
+### High value (user-facing features)
+
+| Feature | Functions | Notes |
+|---|---|---|
+| Restore chat history | `conversation_config_set_messages` | Rebuild a conversation from persisted messages — pairs with context-window management (upstream #1878). |
+| Extra context | `conversation_config_set_extra_context` | e.g. `enable_thinking` for Gemma 4 reasoning mode. |
+| Conversation clone | `conversation_clone` | Fork/branch a conversation reusing the KV cache. |
+| Engine cache dir | `engine_settings_set_cache_dir` | Persistent compiled-shader/weight cache → much faster GPU re-init. |
+| Speculative decoding | `engine_settings_set_enable_speculative_decoding` | Already a follow-up from the #2211 work (~3× decode with the MTP drafter). |
+| Multimodal messages | `engine_settings_set_max_num_images`, `conversation_optional_args_create/delete/set_visual_token_budget` | Image/audio content is mostly **wrapper work**: the bound `send_message` already accepts `{"type":"image","blob":<base64>}` content parts; vision/audio backends are parameters of the already-bound `engine_settings_create`. |
+
+### Medium value (developer utilities)
+
+| Feature | Functions | Notes |
+|---|---|---|
+| Tokenizer surface (16) | `engine_tokenize`, `engine_detokenize`, `engine_get_start_token`, `engine_get_stop_tokens`, `tokenize_result_*` (3), `detokenize_result_*` (2), `token_union_*` (4), `token_unions_*` (3) | Exact token counting / prompt budgeting without running inference. |
+| Benchmark API (11) | `engine_settings_enable_benchmark`, `conversation_get_benchmark_info`, `benchmark_info_*` (9) | Prefill/decode tok/s, time-to-first-token, init time — for the MAUI sample and perf regression tracking. |
+| KV-cache channel filter | `conversation_config_set_filter_channel_content_from_kv_cache` | Drop thinking-channel tokens from the KV cache. |
+| Prompt debugging | `conversation_render_message_to_string` | See the rendered (templated) prompt for a message. |
+| Engine tuning | `engine_settings_set_prefill_chunk_size`, `set_parallel_file_section_loading`, `set_activation_data_type` | CPU prefill chunking, load parallelism, force-F32. |
+
+### Low priority (advanced / niche)
+
+| Feature | Functions | Notes |
+|---|---|---|
+| Raw Session API (11) | `engine_create_session`, `session_run_prefill`, `session_run_decode(_async)`, `session_generate_content(_stream)`, `session_run_text_scoring`, `session_cancel_process`, `session_config_set_apply_prompt_template`, `session_delete`, `session_get_benchmark_info` | Low-level prefill/decode bypassing chat templates; includes text scoring (log-prob ranking) and the raw no-template mode. |
+| Responses introspection (10) | `responses_*` | Candidates, scores, per-token logits — only meaningful with the Session API. |
+| Benchmark fake tokens | `engine_settings_set_num_prefill_tokens`, `set_num_decode_tokens` | Synthetic-token benchmarking. |
+| NPU dispatch dir | `engine_settings_set_litert_dispatch_lib_dir` | Qualcomm/Intel NPU dispatch library location. |
+
+> Note: the C API has **no embeddings functions** at v0.13.1 (flutter_gemma implements
+> embeddings via a separate native library, not this header), so embeddings stay out of
+> scope until upstream exposes them.
 
 ## Actionable next steps (suggested order)
 
@@ -58,7 +97,9 @@ is the total context window; VC++ Redistributable required on win-x64; Android G
    no consumer-side workaround for the missing `DT_NEEDED`.
 5. **iOS app phase**: Apple Developer Program → xcframework + `.targets` NativeReference →
    MAUI `net10.0-ios` app → CI signing → TestFlight.
-6. **Optional**: multimodal/embeddings API; `android-x64` for emulators; Desktop meta-package;
+6. **Optional**: binding coverage push per the "C API coverage" section above (start with the
+   high-value group: history restore, extra context, clone, cache dir, speculative decoding,
+   multimodal); `android-x64` for emulators; Desktop meta-package;
    ✅ ~~CONTRIBUTING + issue templates~~ (2026-06-11: CONTRIBUTING.md, issue forms, PR template,
    SECURITY.md, Discussions enabled); scheduled smoke-test workflow that consumes the published
    packages from nuget.org; PR upstream to be listed among the language bindings (planned right
@@ -74,6 +115,19 @@ is the total context window; VC++ Redistributable required on win-x64; Android G
 - **[LiteRT-LM#2552](https://github.com/google-ai-edge/LiteRT-LM/pull/2552)** — our PR to be
   listed in upstream's Supported Language APIs table (announced in #2535). Watch for review
   feedback.
+- **[LiteRT-LM#2149](https://github.com/google-ai-edge/LiteRT-LM/issues/2149)** — ROOT CAUSE
+  FOUND (2026-06-12, full gdb analysis): the upstream prebuilt
+  `prebuilt/linux_x86_64/libGemmaModelConstraintProvider.so` (rev `b41cb271`, the only
+  Gemma4-capable one) returns half-initialized constraints (internal FST = NULL) →
+  SIGSEGV in `fst_constraints::Constraint::start()` on the first decode step. Google's
+  wheel works (embeds the provider from internal source); same-rev Windows DLL works.
+  **Our binding ships a TEMPORARY GUARD**: `EnableConstrainedDecoding = true` on linux-x64
+  throws `PlatformNotSupportedException` instead of dying (LiteRtConversation.Create).
+  **When Google republishes a fixed linux prebuilt: rebuild natives, re-run the Docker
+  repro (scripts in `%TEMP%\litert-repro`), and REMOVE the guard + the `<remarks>` on
+  `LiteRtConversationOptions.EnableConstrainedDecoding`.** Android is NOT affected
+  (tools validated on physical device, CPU and GPU; upstream #1859 looks like a
+  custom-model issue, discarded).
 - **New LiteRT-LM tags** — automated: `upstream-watch.yml` (Mon/Thu) opens a checklist issue
   when upstream publishes a release.
 - **flutter_gemma** — releases/issues as a recipe source (e.g. their #270/#214 anticipated our
