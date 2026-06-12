@@ -85,19 +85,23 @@ drift). The remaining 65 group into six areas, in suggested priority order:
    #2211 that is what unlocks the ~3× decode speedup with the MTP drafter.
 2. **macOS validation**: ✅ CPU — `model-tests.yml` runs the full suite weekly on `macos-15`
    (Apple Silicon), 6/6 on 2026-06-12 including the real constrained-decoding loop. The
-   experimental GPU/Metal pass (`continue-on-error`) showed the runner's paravirtual Metal
+   experimental GPU/Metal pass (`continue-on-error`) shows the runner's paravirtual Metal
    device DOES run inference (delegate kernels initialize, chat/streaming/constrained pass
-   on backend=gpu), with two caveats:
-   - `libLiteRtTopKMetalSampler.dylib` fails to dlopen: it needs `@rpath/libLiteRt.dylib`,
-     which our osx-arm64 package deliberately excludes (LiteRt is statically linked into
-     `libLiteRtLm.dylib` on macOS) → falls back to CPU sampling. Follow-up: build macOS
-     with `litert_link_capi_so=true` like linux-x64 (or ship the dylib) so GPU sampling
-     works, then re-run the GPU pass.
-   - `ToolCalling_Unconstrained` failed once on backend=gpu with a malformed tool call
+   on backend=gpu).
+   - ✅ ~~Metal sampler dlopen failure~~ (fixed 2026-06-12): the prebuilt
+     `libLiteRtTopKMetalSampler.dylib` needs `@rpath/libLiteRt.dylib`, which the static-link
+     macOS build excluded → CPU-sampling fallback. macos-arm64 now builds with
+     `litert_link_capi_so=true` + `resolve_symbols_in_exec=false` (the second define is
+     mandatory — see Architecture decisions) and ships `libLiteRt.dylib`; the re-run GPU
+     pass shows no "Metal sampler not available" fallback (run 27436193072). iOS still uses
+     the static recipe — mirror the fix there if Metal sampling matters on device.
+   - `ToolCalling_Unconstrained` failed on backend=gpu with a malformed tool call
      (`call:get_current_weather{location}`, unparseable) — generation variance under GPU
-     numerics, not a binding bug; watch whether it recurs weekly.
+     numerics, not a binding bug. Second occurrence on 2026-06-12 (recurred in the
+     post-fix GPU run); if it stays GPU-only and persistent, consider retry-tolerance in
+     the test or pinning a seed.
    Real-hardware Metal validation (the "mac test kit": console sample published for
-   osx-arm64 + natives + instructions) is still worthwhile once GPU sampling is fixed.
+   osx-arm64 + natives + instructions) is now unblocked and still worthwhile.
 3. ✅ ~~Public release~~ (2026-06-11): renamed to `LiteRtLmSharp`, repo public,
    `0.1.0-preview.1` published to nuget.org via Trusted Publishing (OIDC, no API key),
    consumer smoke test passed, announced in #2535 and listing PR opened
