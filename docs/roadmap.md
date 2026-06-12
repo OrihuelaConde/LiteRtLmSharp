@@ -155,7 +155,10 @@ drift). The remaining 65 group into six areas, in suggested priority order:
   (`platforms` input to avoid rebuilding existing assets; the release accumulates assets).
 - LLamaSharp-style distribution: pure managed + per-RID `runtime.<rid>` packages, all sharing
   one version per release (see Versioning policy above).
-- Desktop links `libLiteRt` as a separate shared lib (`litert_link_capi_so`); Android/macOS/iOS
-  link it statically.
+- Desktop (linux/win/macOS) links `libLiteRt` as a separate shared lib (`litert_link_capi_so`
+  + `resolve_symbols_in_exec=false`; without the second define macOS hits an
+  "illegal ambiguous match" because the repo .bazelrc defaults it to true); Android/iOS link
+  it statically. macOS switched to dynamic on 2026-06-12: the prebuilt Metal sampler carries
+  `@rpath/libLiteRt.dylib` and could not dlopen against the static build (CPU-sampling fallback).
 - Separate solutions: `LiteRtLmSharp.slnx` (lib+tests+packaging, bare SDK, CI) and
   `samples/LiteRtLmSharp.Samples.slnx` (console + MAUI, needs workloads).

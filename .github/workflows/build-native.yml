@@ -252,31 +252,38 @@ jobs:
         run: bash native/patch_c_api.sh /tmp/LiteRT-LM
 
       - name: Build libLiteRtLm.dylib (macos-arm64)
-        # Like Android: LiteRt is STATIC-linked into libLiteRtLm.dylib. On macOS,
-        # litert_link_capi_so=true trips an "illegal ambiguous match" in the upstream
-        # @litert select(), and flutter_gemma's proven macOS set ships no separate
-        # libLiteRt.dylib either. LiteRt* symbols stay visible via -exported_symbol
-        # wildcards so the Metal accelerator can resolve them at runtime. The patch
-        # adds -rpath @loader_path so companion dylibs resolve from the same directory.
+        # Like linux-x64: LiteRt stays a SEPARATE shared lib (litert_link_capi_so) so the
+        # prebuilt Metal sampler — which carries LC_LOAD_DYLIB @rpath/libLiteRt.dylib — can
+        # load it at runtime (static linking made its dlopen fail and sampling fall back to
+        # CPU). resolve_symbols_in_exec=false is REQUIRED with it on macOS: the repo
+        # .bazelrc defaults that define to true, and with both set the upstream
+        # @litert//litert/c:litert_runtime_c_api_shared_lib srcs select() has two matching
+        # conditions (:resolve_symbols_in_exec and :macos) -> "illegal ambiguous match".
+        # Google's own CI-Mac dylib pass uses this exact define pair. The patch adds
+        # -rpath @loader_path so companion dylibs resolve from the same directory.
         run: |
           cd /tmp/LiteRT-LM
           bazelisk build -c opt --strip=always \
+            --define=litert_link_capi_so=true \
+            --define=resolve_symbols_in_exec=false \
             //c:libLiteRtLm.dylib
 
       - name: Collect artifacts
-        # Ship the same companion set flutter_gemma ships on macOS. Deliberately exclude
-        # libLiteRt.dylib (LiteRt is already static inside libLiteRtLm.dylib — loading both
-        # would put two copies of the runtime in the process) and the WebGPU pair (Metal is
+        # flutter_gemma's companion set PLUS Google's prebuilt libLiteRt.dylib (the runtime
+        # both libLiteRtLm.dylib and the Metal sampler now resolve via @rpath — same
+        # arrangement as linux-x64's libLiteRt.so). Still exclude the WebGPU pair (Metal is
         # the macOS GPU backend).
         run: |
           mkdir -p artifacts
           cp /tmp/LiteRT-LM/bazel-bin/c/libLiteRtLm.dylib artifacts/libLiteRtLm.dylib
-          for lib in libGemmaModelConstraintProvider libLiteRtMetalAccelerator libLiteRtTopKMetalSampler; do
+          for lib in libLiteRt libGemmaModelConstraintProvider libLiteRtMetalAccelerator libLiteRtTopKMetalSampler; do
             cp "/tmp/LiteRT-LM/prebuilt/macos_arm64/${lib}.dylib" artifacts/ 2>/dev/null || echo "missing ${lib}"
           done
           ls -lh artifacts/
           echo "--- exported litert_lm_* symbols ---"
           nm -gU artifacts/libLiteRtLm.dylib | grep -c litert_lm_ || true
+          echo "--- libLiteRtLm.dylib load commands (expect @rpath/libLiteRt.dylib) ---"
+          otool -L artifacts/libLiteRtLm.dylib
 
       - uses: actions/upload-artifact@v4
         with:
