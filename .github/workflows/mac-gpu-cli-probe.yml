@@ -1,0 +1,116 @@
+name: Mac GPU probe (upstream CLI)
+
+# Diagnostic, manual-only. Runs Google's OWN litert_lm_main CLI on a macos-15 runner with
+# backend=cpu and backend=gpu and prints both outputs, to discriminate whether the GPU-only
+# generation glitch seen in model-tests.yml (ToolCalling_Unconstrained emitting a malformed
+# tool call on backend=gpu — see docs/roadmap.md "macOS validation") is:
+#  - a limitation of the runner's paravirtual Metal device (Google's CLI misbehaves too), or
+#  - something on our side (binding/packaging) — Google's CLI generates clean output on gpu.
+#
+# Two modes:
+#  - prebuilt-v0.11.0: download the last CLI binary Google published (v0.11.0 — v0.12+ releases
+#    ship only xcframeworks). Purest signal (untouched Google binary) but the v0.11-era engine
+#    may not load the gemma-4 .litertlm; if it errors out, fall back to the build mode.
+#  - build-from-source: bazelisk-build the stock //runtime/engine:litert_lm_main at the pinned
+#    ref (NO patch_c_api.sh — the patch only adds the shared-lib target the binding needs).
+#    Slower (~1-2 h) but version-matched with our natives.
+# Both modes pull Google's prebuilt macos_arm64 dylibs (Metal accelerator + sampler) from the
+# matching upstream tag and expose them via DYLD_LIBRARY_PATH, mirroring how our package works.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'CLI source'
+        type: choice
+        options:
+          - prebuilt-v0.11.0
+          - build-from-source
+        default: prebuilt-v0.11.0
+      litertlm_version:
+        description: 'LiteRT-LM ref for build-from-source mode (and its prebuilt dylibs)'
+        default: v0.13.1
+
+env:
+  # Same model as model-tests.yml; keep the three values in sync with it.
+  MODEL_FILE: gemma-4-E2B-it.litertlm
+  MODEL_URL: https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm
+  MODEL_SHA256: 181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c
+
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - name: Cache model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: models/${{ env.MODEL_FILE }}
+          key: litertlm-model-${{ env.MODEL_SHA256 }}
+          enableCrossOsArchive: true
+
+      - name: Download model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p models
+          curl -fL --retry 3 --retry-delay 15 -o "models/$MODEL_FILE" "$MODEL_URL"
+
+      - name: Verify model checksum
+        run: echo "$MODEL_SHA256  models/$MODEL_FILE" | sha256sum -c -
+
+      - name: Get CLI (prebuilt v0.11.0)
+        if: inputs.mode == 'prebuilt-v0.11.0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.11.0 --repo google-ai-edge/LiteRT-LM \
+            --pattern 'litert_lm_main.macos_arm64' --dir cli
+          chmod +x cli/litert_lm_main.macos_arm64
+          echo "CLI=$PWD/cli/litert_lm_main.macos_arm64" >> "$GITHUB_ENV"
+          echo "DYLIB_TAG=v0.11.0" >> "$GITHUB_ENV"
+
+      - name: Build CLI from source (${{ inputs.litertlm_version }})
+        if: inputs.mode == 'build-from-source'
+        run: |
+          git clone https://github.com/google-ai-edge/LiteRT-LM /tmp/LiteRT-LM
+          cd /tmp/LiteRT-LM
+          git checkout "${{ inputs.litertlm_version }}"
+          bazelisk build -c opt --strip=always //runtime/engine:litert_lm_main
+          echo "CLI=/tmp/LiteRT-LM/bazel-bin/runtime/engine/litert_lm_main" >> "$GITHUB_ENV"
+          echo "DYLIB_TAG=${{ inputs.litertlm_version }}" >> "$GITHUB_ENV"
+
+      - name: Fetch matching prebuilt dylibs (Metal accelerator + sampler)
+        run: |
+          if [ -d /tmp/LiteRT-LM ]; then
+            cd /tmp/LiteRT-LM
+          else
+            git clone --depth 1 --branch "$DYLIB_TAG" https://github.com/google-ai-edge/LiteRT-LM /tmp/LiteRT-LM
+            cd /tmp/LiteRT-LM
+          fi
+          git lfs pull --include="prebuilt/macos_arm64/*"
+          ls -lh prebuilt/macos_arm64/
+          echo "DYLD_LIBRARY_PATH=/tmp/LiteRT-LM/prebuilt/macos_arm64" >> "$GITHUB_ENV"
+
+      # Same prompt twice so the only variable is the backend. The second prompt asks for
+      # exact structured output — closest CLI-reachable analogue of the tool-call formatting
+      # that glitches in model-tests (the CLI has no tools support).
+      - name: Probe CPU backend
+        timeout-minutes: 20
+        run: |
+          for prompt in \
+            "Reply with one short sentence: what is the capital of France?" \
+            'Return exactly this JSON and nothing else: {"name":"get_current_weather","location":"Tokyo"}'; do
+            echo "==================== CPU | $prompt"
+            "$CLI" --backend=cpu --model_path="$PWD/models/$MODEL_FILE" --input_prompt="$prompt"
+          done
+
+      - name: Probe GPU backend
+        timeout-minutes: 20
+        run: |
+          for prompt in \
+            "Reply with one short sentence: what is the capital of France?" \
+            'Return exactly this JSON and nothing else: {"name":"get_current_weather","location":"Tokyo"}'; do
+            echo "==================== GPU | $prompt"
+            "$CLI" --backend=gpu --model_path="$PWD/models/$MODEL_FILE" --input_prompt="$prompt"
+          done
