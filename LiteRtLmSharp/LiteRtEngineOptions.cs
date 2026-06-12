@@ -36,5 +36,11 @@ public sealed record LiteRtConversationOptions
     /// Force the model to emit valid (schema-constrained) output. Strongly recommended when
     /// <see cref="Tools"/> are set so tool-call arguments parse reliably.
     /// </summary>
+    /// <remarks>
+    /// Temporarily throws <see cref="PlatformNotSupportedException"/> on linux-x64: the
+    /// upstream prebuilt constraint provider shipped with LiteRT-LM v0.13.1 returns broken
+    /// constraints and crashes the native process (google-ai-edge/LiteRT-LM#2149). Tools work
+    /// with this set to <c>false</c>. The guard is removed once upstream ships a fixed binary.
+    /// </remarks>
     public bool EnableConstrainedDecoding { get; init; }
 }

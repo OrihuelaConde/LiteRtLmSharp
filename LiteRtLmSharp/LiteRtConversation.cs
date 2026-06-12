@@ -26,6 +26,22 @@ public sealed class LiteRtConversation : IDisposable
 
     internal static unsafe LiteRtConversation Create(EngineHandle engine, LiteRtConversationOptions? options)
     {
+        // TEMPORARY GUARD — remove when upstream republishes a fixed linux prebuilt.
+        // The linux-x64 libGemmaModelConstraintProvider.so shipped with LiteRT-LM v0.13.1
+        // returns half-initialized constraints (internal FST is NULL) and the process dies
+        // with SIGSEGV on the first decode step — a managed exception beats a dead process.
+        // Windows/macOS/Android providers are fine. See google-ai-edge/LiteRT-LM#2149.
+        if (options is { EnableConstrainedDecoding: true }
+            && OperatingSystem.IsLinux() && !OperatingSystem.IsAndroid())
+        {
+            throw new PlatformNotSupportedException(
+                "EnableConstrainedDecoding is temporarily blocked on linux-x64: the upstream " +
+                "prebuilt constraint provider (LiteRT-LM v0.13.1) returns broken constraints and " +
+                "the native process crashes on the first decode step (google-ai-edge/LiteRT-LM#2149). " +
+                "Set EnableConstrainedDecoding = false — tools still work; arguments are just not " +
+                "grammar-constrained. This guard will be removed once upstream ships a fixed binary.");
+        }
+
         ConversationConfigHandle? config = null;
         SessionConfigHandle? sessionConfig = null;
 
