@@ -6,10 +6,10 @@ Last updated: 2026-06-12. Source of truth for "what's done and what's pending".
 
 | Platform | Native binaries (CI) | NuGet package | Runtime validation |
 |---|---|---|---|
-| win-x64 | ✅ | ✅ | ✅ (local + CI) |
+| win-x64 | ✅ | ✅ | ✅ (local + CI, incl. weekly model tests with real constrained decoding) |
 | linux-x64 | ✅ | ✅ | ✅ (CI, real model load) |
 | android-arm64 | ✅ | ✅ | ✅ physical device (Adreno 650): CPU and GPU |
-| osx-arm64 | ✅ | ✅ | ⏳ model-tests CI leg added (macos-15, first run pending); no physical hardware yet |
+| osx-arm64 | ✅ | ✅ | ✅ CPU validated in CI (macos-15, 2026-06-12, 6/6 incl. real constrained decoding); GPU/Metal partial — see next steps |
 | ios-arm64 | ✅ | ⏳ (needs xcframework packaging) | ⏳ |
 
 Native binaries are pinned to **LiteRT-LM v0.13.1**.
@@ -83,11 +83,21 @@ drift). The remaining 65 group into six areas, in suggested priority order:
    CPU-sampling fallback) and output is correct. Roadmap follow-up: expose
    `EnableSpeculativeDecoding` in `LiteRtEngineOptions` (the C API exists, default off) — per
    #2211 that is what unlocks the ~3× decode speedup with the MTP drafter.
-2. **macOS validation**: `model-tests.yml` now runs the full model suite on `macos-15`
-   (Apple Silicon) — CPU path, plus an experimental GPU/Metal pass (`continue-on-error`;
-   the runner's paravirtualized Metal device may not support the compute path). If the GPU
-   pass fails on the runner, real-hardware Metal still needs the "mac test kit" (console
-   sample published for osx-arm64 + natives + instructions).
+2. **macOS validation**: ✅ CPU — `model-tests.yml` runs the full suite weekly on `macos-15`
+   (Apple Silicon), 6/6 on 2026-06-12 including the real constrained-decoding loop. The
+   experimental GPU/Metal pass (`continue-on-error`) showed the runner's paravirtual Metal
+   device DOES run inference (delegate kernels initialize, chat/streaming/constrained pass
+   on backend=gpu), with two caveats:
+   - `libLiteRtTopKMetalSampler.dylib` fails to dlopen: it needs `@rpath/libLiteRt.dylib`,
+     which our osx-arm64 package deliberately excludes (LiteRt is statically linked into
+     `libLiteRtLm.dylib` on macOS) → falls back to CPU sampling. Follow-up: build macOS
+     with `litert_link_capi_so=true` like linux-x64 (or ship the dylib) so GPU sampling
+     works, then re-run the GPU pass.
+   - `ToolCalling_Unconstrained` failed once on backend=gpu with a malformed tool call
+     (`call:get_current_weather{location}`, unparseable) — generation variance under GPU
+     numerics, not a binding bug; watch whether it recurs weekly.
+   Real-hardware Metal validation (the "mac test kit": console sample published for
+   osx-arm64 + natives + instructions) is still worthwhile once GPU sampling is fixed.
 3. ✅ ~~Public release~~ (2026-06-11): renamed to `LiteRtLmSharp`, repo public,
    `0.1.0-preview.1` published to nuget.org via Trusted Publishing (OIDC, no API key),
    consumer smoke test passed, announced in #2535 and listing PR opened
