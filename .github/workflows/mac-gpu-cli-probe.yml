@@ -136,3 +136,26 @@ jobs:
             echo "==================== GPU-Metal | $prompt"
             "$CLI" --backend=gpu --model_path="$PWD/models/$MODEL_FILE" --input_prompt="$prompt"
           done
+
+      # Decisive split between "Metal COMPUTE is bad on paravirtual GPU" and "the Metal SAMPLER
+      # is broken (upstream #2073, exports 3/7 C-ABI symbols)". This is flutter_gemma's exact
+      # macOS config: Metal accelerator for compute, but NO GPU sampler shipped → sampler_factory
+      # falls back to CPU top-k. Omit the Metal sampler AND the WebGPU pair; keep only the Metal
+      # accelerator + libLiteRt + constraint provider. Clean output here => the broken Metal
+      # sampler is the culprit (and our c886061 "load the Metal sampler" change is what regressed
+      # us); still-garbled => Metal compute itself is wrong on the runner's paravirtual device.
+      - name: Probe GPU backend (Metal compute + CPU sampling — flutter_gemma config)
+        timeout-minutes: 20
+        run: |
+          mkdir -p metal-compute-cpu-sampler
+          for lib in libLiteRt libLiteRtMetalAccelerator libGemmaModelConstraintProvider; do
+            cp "/tmp/LiteRT-LM/prebuilt/macos_arm64/${lib}.dylib" metal-compute-cpu-sampler/ 2>/dev/null || echo "missing ${lib}"
+          done
+          ls -lh metal-compute-cpu-sampler/
+          export DYLD_LIBRARY_PATH="$PWD/metal-compute-cpu-sampler"
+          for prompt in \
+            "Reply with one short sentence: what is the capital of France?" \
+            'Return exactly this JSON and nothing else: {"name":"get_current_weather","location":"Tokyo"}'; do
+            echo "==================== GPU-MetalCompute-CPUSampler | $prompt"
+            "$CLI" --backend=gpu --model_path="$PWD/models/$MODEL_FILE" --input_prompt="$prompt"
+          done
