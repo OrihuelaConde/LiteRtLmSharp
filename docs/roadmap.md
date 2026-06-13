@@ -9,7 +9,7 @@ Last updated: 2026-06-12. Source of truth for "what's done and what's pending".
 | win-x64 | ✅ | ✅ | ✅ (local + CI, incl. weekly model tests with real constrained decoding) |
 | linux-x64 | ✅ | ✅ | ✅ (CI, real model load) |
 | android-arm64 | ✅ | ✅ | ✅ physical device (Adreno 650): CPU and GPU |
-| osx-arm64 | ✅ | ✅ | ✅ CPU validated in CI (macos-15, 2026-06-12, 6/6 incl. real constrained decoding); GPU/Metal partial — see next steps |
+| osx-arm64 | ✅ | ✅ | ✅ CI (macos-15): CPU 6/6 and GPU 6/6 (GPU via WebGPU; 2026-06-13, incl. real constrained decoding). Real-hardware Metal still pending — see next steps |
 | ios-arm64 | ✅ | ⏳ (needs xcframework packaging) | ⏳ |
 
 Native binaries are pinned to **LiteRT-LM v0.13.1**.
@@ -83,11 +83,11 @@ drift). The remaining 65 group into six areas, in suggested priority order:
    CPU-sampling fallback) and output is correct. Roadmap follow-up: expose
    `EnableSpeculativeDecoding` in `LiteRtEngineOptions` (the C API exists, default off) — per
    #2211 that is what unlocks the ~3× decode speedup with the MTP drafter.
-2. **macOS validation**: ✅ CPU — `model-tests.yml` runs the full suite weekly on `macos-15`
-   (Apple Silicon), 6/6 on 2026-06-12 including the real constrained-decoding loop. The
-   experimental GPU/Metal pass (`continue-on-error`) shows the runner's paravirtual Metal
-   device DOES run inference (delegate kernels initialize, chat/streaming/constrained pass
-   on backend=gpu).
+2. **macOS validation**: ✅ CI, CPU and GPU — `model-tests.yml` runs the full suite weekly on
+   `macos-15` (Apple Silicon): CPU 6/6 and GPU 6/6 (run 27458626459, 2026-06-13), both
+   including the real constrained-decoding loop. The GPU pass is now a REQUIRED check (no
+   longer `continue-on-error`) and runs the WebGPU delegate, not the native Metal one (why
+   below). Real-hardware validation still pending (no Apple Silicon machine on hand).
    - ✅ ~~Metal sampler dlopen failure~~ (fixed 2026-06-12): the prebuilt
      `libLiteRtTopKMetalSampler.dylib` needs `@rpath/libLiteRt.dylib`, which the static-link
      macOS build excluded → CPU-sampling fallback. macos-arm64 now builds with
@@ -123,8 +123,17 @@ drift). The remaining 65 group into six areas, in suggested priority order:
      Apple Silicon, where Metal works (their 5/5 tests); we cannot validate Metal in CI because
      the runner's GPU is paravirtual. Whether real-hardware WebGPU-on-macOS is equally clean is
      the remaining unknown (mac test kit); on the runner WebGPU is both correct and ~3× faster.
+     **✅ DONE (2026-06-13):** `build-native.yml` macos-arm64 collect now ships the full set;
+     `native-v0.13.1` rebuilt+republished and the model-tests osx-arm64 GPU pass is 6/6 green
+     (run 27458626459 — log shows "Created a WebGPU environment", WebGPU sampler falls back to
+     CPU cleanly, all tools tests pass). Our binding needs NO `gpu_registry` patch (unlike
+     flutter_gemma): the upstream WebGpu→Metal desktop order already picks WebGPU, and
+     `NativeLibraryResolver`'s RTLD_GLOBAL preload of the whole dir caused no symbol clash with
+     the also-shipped Metal pair. `libLiteRtWebGpuAccelerator.dylib` is self-contained (Dawn
+     static, no `@rpath/libLiteRt.dylib` dep), so no extra companion was needed.
    Real-hardware Metal validation (the "mac test kit": console sample published for
-   osx-arm64 + natives + instructions) is now unblocked and still worthwhile.
+   osx-arm64 + natives + instructions) is now unblocked and still worthwhile (it would also
+   tell us whether real-hardware WebGPU-on-macOS is as clean as it is on the runner).
 3. ✅ ~~Public release~~ (2026-06-11): renamed to `LiteRtLmSharp`, repo public,
    `0.1.0-preview.1` published to nuget.org via Trusted Publishing (OIDC, no API key),
    consumer smoke test passed, announced in #2535 and listing PR opened

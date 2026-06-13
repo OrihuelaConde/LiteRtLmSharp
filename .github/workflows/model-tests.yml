@@ -8,8 +8,8 @@ name: Model tests
 # upstream prebuilt constraint provider returns broken constraints, LiteRT-LM#2149 root-caused
 # 2026-06-12; when Google ships a fixed prebuilt and the guard is removed, that test flips to
 # the real end-to-end loop) and on win-x64/osx-arm64 runs the real constrained loop.
-# osx-arm64 (macos-15 = Apple Silicon) is the first real validation of the macOS natives; it
-# also gets an experimental GPU (Metal) pass — see that step's comment.
+# osx-arm64 (macos-15 = Apple Silicon) validates the macOS natives on CPU and GPU; the GPU pass
+# runs WebGPU (Dawn->Metal), not the native Metal delegate — see that step's comment for why.
 # Weekly + on demand; the ~2.6 GB model is cached between runs (repo cache, 10 GB limit, free
 # for public repos — no account storage/billing impact) and shared across OSes via
 # enableCrossOsArchive so the three legs reuse one blob.
@@ -150,14 +150,15 @@ jobs:
             --blame-hang --blame-hang-dump-type mini --blame-hang-timeout 15m \
             --results-directory TestResults
 
-      # EXPERIMENTAL: GitHub's Apple Silicon runners are VMs whose GPU is Apple's paravirtual
-      # Metal device (Virtualization.framework) — Metal is exposed but compute support is not
-      # guaranteed, so this pass may fail without indicating a real osx-arm64 GPU problem;
-      # continue-on-error keeps the job green either way. Real-hardware Metal validation stays
-      # on the roadmap. Same suite, engine loaded with Backend=gpu (libLiteRtMetalAccelerator).
-      - name: Test with model (GPU/Metal — experimental)
+      # GPU pass on the macos-15 runner. Its GPU is Apple's paravirtual Metal device
+      # (Virtualization.framework), on which the NATIVE Metal delegate garbles output — but the
+      # WebGPU delegate (Dawn->Metal) is correct, and upstream gpu_registry prefers WebGpu over
+      # Metal on macOS desktop, so with both shipped (build-native.yml) the engine runs WebGPU
+      # here. Root-caused with Google's own CLI (mac-gpu-cli-probe.yml) and confirmed 6/6 below,
+      # so this is a REQUIRED check now, not experimental. Real Apple Silicon (where the native
+      # Metal delegate also works, per flutter_gemma) is still unvalidated by us — see roadmap.
+      - name: Test with model (GPU — WebGPU/Metal)
         if: matrix.rid == 'osx-arm64'
-        continue-on-error: true
         timeout-minutes: 20
         shell: bash
         env:

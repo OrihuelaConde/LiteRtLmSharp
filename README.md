@@ -11,11 +11,11 @@ binaries distributed per-RID as NuGet packages (LLamaSharp-style).
 >
 > | Platform | Native binaries | NuGet package | Runtime-validated |
 > |---|---|---|---|
-> | win-x64 | ✅ | ✅ | ✅ |
-> | linux-x64 | ✅ | ✅ | ✅ (CI) |
-> | android-arm64 | ✅ | ✅ | ✅ (device, CPU & GPU) |
-> | osx-arm64 | ✅ | ✅ | ⏳ |
-> | ios-arm64 | ✅ | ⏳ (needs xcframework packaging) | ⏳ |
+> | win-x64 | ✅ | ✅ | ✅ real hardware — CPU & GPU |
+> | linux-x64 | ✅ | ✅ | ✅ real hardware — CPU & GPU (CPU also in CI) |
+> | android-arm64 | ✅ | ✅ | ✅ real device, Adreno 650 — CPU & GPU |
+> | osx-arm64 | ✅ | ✅ | ✅ CI — CPU & GPU (GPU via WebGPU); real hardware pending |
+> | ios-arm64 | ✅ | ⏳ (needs xcframework packaging) | ⏳ pending |
 >
 > See the [roadmap](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md)
 > for the full status and pending work.
