@@ -101,20 +101,28 @@ drift). The remaining 65 group into six areas, in suggested priority order:
      a macos_dylib whose transition pulls XNNPACK SSE kernels into the -fembed-bitcode ios
      config, run 27436848074).
    - `ToolCalling_Unconstrained` failed on backend=gpu with a malformed tool call
-     (`call:get_current_weather{location}`, unparseable) — **root-caused 2026-06-12 as the
-     upstream native METAL delegate, not our binding**, via `mac-gpu-cli-probe.yml` (manual
-     workflow that runs Google's own litert_lm_main on the runner): the prebuilt v0.11.0 CLI
-     and a stock v0.13.1 build both generate byte-perfect output on backend=gpu through the
-     WebGPU delegate (Dawn→Metal, `Apple Paravirtual device`), but the same stock v0.13.1
-     CLI forced onto the native Metal delegate (WebGPU dylibs hidden — the configuration our
-     package ships) degenerates into "the the the…" on an exact-JSON prompt (runs
-     27446959593, 27447067775, 27447850507). gpu_registry keeps the FIRST accelerator that
-     loads (GpuAccelerator → WebGpuAccelerator → Metal), so Google's full prebuilt set never
-     exercises Metal while our package — which excludes the WebGPU pair — always does.
-     Whether real Apple Silicon hardware (non-paravirtual Metal) reproduces it is the
-     remaining unknown (mac test kit). Options: ship the WebGPU pair in osx-arm64 (on the
-     runner it is both correct and ~3× faster decode than the Metal delegate: 30.5 vs 10.1
-     tok/s), and/or report upstream with the CLI-only repro.
+     (`call:get_current_weather{location}`, unparseable) — **root-caused 2026-06-12 to the
+     upstream native METAL delegate on the paravirtual runner, NOT our binding and NOT the
+     sampler**, via `mac-gpu-cli-probe.yml` (manual workflow that runs Google's own
+     litert_lm_main on the runner). Four passes, same runner/model:
+     | Compute | Sampler | Output | Decode |
+     |---|---|---|---|
+     | WebGPU (Dawn→Metal) | CPU-fallback | ✅ byte-perfect | 30 tok/s |
+     | Metal | Metal (#2073) | ❌ `the the the…` | 10 tok/s |
+     | Metal | CPU (flutter_gemma config) | ❌ `the the the…` | 30 tok/s |
+
+     Removing the sampler entirely (3rd row, flutter_gemma's exact macOS recipe) did NOT fix
+     it, so the broken Metal sampler (#2073) is exonerated — the Metal *compute* path is wrong
+     on GitHub's `Apple Paravirtual device`. Runs 27446959593 / 27447067775 / 27447850507 /
+     27457151573. `gpu_registry`'s desktop order is WebGpu→OpenCL→Metal, so Google's own CLI
+     (full prebuilt set) runs WebGPU and is clean; our package excluded the WebGPU pair
+     (inherited from flutter_gemma, a461607) so it always hit Metal. **Decision (user, 2026-06-13):
+     ship Google's complete macos_arm64 set — WebGPU pair + Metal pair — so the engine runs
+     WebGPU on the runner (correct) and keeps Metal as a real-hardware fallback.** This matches
+     upstream's macOS default (PR #2302). flutter_gemma keeps Metal only because it runs on real
+     Apple Silicon, where Metal works (their 5/5 tests); we cannot validate Metal in CI because
+     the runner's GPU is paravirtual. Whether real-hardware WebGPU-on-macOS is equally clean is
+     the remaining unknown (mac test kit); on the runner WebGPU is both correct and ~3× faster.
    Real-hardware Metal validation (the "mac test kit": console sample published for
    osx-arm64 + natives + instructions) is now unblocked and still worthwhile.
 3. ✅ ~~Public release~~ (2026-06-11): renamed to `LiteRtLmSharp`, repo public,

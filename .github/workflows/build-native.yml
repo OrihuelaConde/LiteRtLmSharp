@@ -269,21 +269,32 @@ jobs:
             //c:libLiteRtLm.dylib
 
       - name: Collect artifacts
-        # flutter_gemma's companion set PLUS Google's prebuilt libLiteRt.dylib (the runtime
-        # both libLiteRtLm.dylib and the Metal sampler now resolve via @rpath — same
-        # arrangement as linux-x64's libLiteRt.so). Still exclude the WebGPU pair (Metal is
-        # the macOS GPU backend).
+        # Ship Google's COMPLETE macos_arm64 prebuilt GPU set — both the Metal pair AND the
+        # WebGPU pair (+ the generic accelerator stub) — not Metal only. Why: on GitHub's
+        # paravirtual Metal runner the native Metal delegate garbles output regardless of the
+        # sampler, while WebGPU (Dawn->Metal) is correct and ~3x faster — verified with Google's
+        # OWN litert_lm_main CLI in mac-gpu-cli-probe.yml (4 passes: WebGPU clean on cpu+gpu;
+        # Metal compute garbled with the Metal sampler AND with CPU sampling). Upstream
+        # gpu_registry's desktop load order is WebGpu -> OpenCL -> Metal, so with both present
+        # the engine runs WebGPU and falls back to Metal only if WebGPU fails to load (e.g. a
+        # real Apple Silicon Mac, still untested by us). This also matches upstream's macOS
+        # default (LiteRT-LM PR #2302). Dawn is statically linked inside
+        # libLiteRtWebGpuAccelerator.dylib — there is no separate libwebgpu_dawn.dylib in the
+        # prebuilt. libLiteRt.dylib stays a separate shared lib (litert_link_capi_so) so every
+        # companion resolves it via @rpath/@loader_path; NativeLibraryResolver additionally
+        # RTLD_GLOBAL-preloads the whole directory. (Reverts the WebGPU exclusion from a461607,
+        # which was inherited from flutter_gemma's macOS bundle — but flutter_gemma runs on real
+        # hardware where Metal works; our CI runner does not.)
         run: |
           mkdir -p artifacts
           cp /tmp/LiteRT-LM/bazel-bin/c/libLiteRtLm.dylib artifacts/libLiteRtLm.dylib
-          for lib in libLiteRt libGemmaModelConstraintProvider libLiteRtMetalAccelerator libLiteRtTopKMetalSampler; do
-            cp "/tmp/LiteRT-LM/prebuilt/macos_arm64/${lib}.dylib" artifacts/ 2>/dev/null || echo "missing ${lib}"
-          done
+          cp /tmp/LiteRT-LM/prebuilt/macos_arm64/*.dylib artifacts/
           ls -lh artifacts/
           echo "--- exported litert_lm_* symbols ---"
           nm -gU artifacts/libLiteRtLm.dylib | grep -c litert_lm_ || true
-          echo "--- libLiteRtLm.dylib load commands (expect @rpath/libLiteRt.dylib) ---"
+          echo "--- load commands (expect @rpath/libLiteRt.dylib deps) ---"
           otool -L artifacts/libLiteRtLm.dylib
+          otool -L artifacts/libLiteRtWebGpuAccelerator.dylib
 
       - uses: actions/upload-artifact@v4
         with:
