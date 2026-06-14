@@ -9,13 +9,17 @@ binaries distributed per-RID as NuGet packages (LLamaSharp-style).
 
 > Status: **preview**. Chat, token streaming and function calling working.
 >
-> | Platform | Native binaries | NuGet package | Runtime-validated |
-> |---|---|---|---|
-> | win-x64 | ✅ | ✅ | ✅ real hardware — CPU & GPU |
-> | linux-x64 | ✅ | ✅ | ✅ real hardware — CPU & GPU (CPU also in CI) |
-> | android-arm64 | ✅ | ✅ | ✅ real device, Adreno 650 — CPU & GPU |
-> | osx-arm64 | ✅ | ✅ | ✅ CI — CPU & GPU (GPU via WebGPU); real hardware pending |
-> | ios-arm64 | ✅ | ⏳ (needs xcframework packaging) | ⏳ pending |
+> | Platform | Native | NuGet | CPU | GPU | Validated on |
+> |---|:---:|:---:|:---:|:---:|---|
+> | win-x64 | ✅ | ✅ | ✅ | ✅ | real hardware |
+> | linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware |
+> | android-arm64 | ✅ | ✅ | ✅ | ✅ | real device |
+> | osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI |
+> | ios-arm64 | ✅ | ⏳ | — | — | pending |
+>
+> <sub>**CPU / GPU** = inference validated on that backend. macOS GPU runs in CI on the **WebGPU**
+> (Dawn→Metal) delegate; the native Metal delegate ships as a real-hardware fallback. iOS still
+> needs xcframework packaging.</sub>
 >
 > See the [roadmap](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md)
 > for the full status and pending work.

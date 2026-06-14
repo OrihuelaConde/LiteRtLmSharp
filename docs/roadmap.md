@@ -4,13 +4,17 @@ Last updated: 2026-06-12. Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
-| Platform | Native binaries (CI) | NuGet package | Runtime validation |
-|---|---|---|---|
-| win-x64 | ✅ | ✅ | ✅ (local + CI, incl. weekly model tests with real constrained decoding) |
-| linux-x64 | ✅ | ✅ | ✅ (CI, real model load) |
-| android-arm64 | ✅ | ✅ | ✅ physical device (Adreno 650): CPU and GPU |
-| osx-arm64 | ✅ | ✅ | ✅ CI (macos-15): CPU 6/6 and GPU 6/6 (GPU via WebGPU; 2026-06-13, incl. real constrained decoding). Real-hardware Metal still pending — see next steps |
-| ios-arm64 | ✅ | ⏳ (needs xcframework packaging) | ⏳ |
+| Platform | Native | NuGet | CPU | GPU | Validated on |
+|---|:---:|:---:|:---:|:---:|---|
+| win-x64 | ✅ | ✅ | ✅ | ✅ | real hardware (+ CI, CPU) |
+| linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware (+ CI, CPU) |
+| android-arm64 | ✅ | ✅ | ✅ | ✅ | real device (Adreno 650) |
+| osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI only (macos-15; GPU via WebGPU) |
+| ios-arm64 | ✅ | ⏳ | — | — | pending (needs xcframework) |
+
+<sub>**CPU / GPU** = inference validated on that backend. **CI** = weekly `model-tests.yml` (real
+model, incl. constrained decoding); real-hardware results are from dev machines/devices. macOS GPU
+specifics and dates are in [§macOS validation](#actionable-next-steps-suggested-order) below.</sub>
 
 Native binaries are pinned to **LiteRT-LM v0.13.1**.
 
