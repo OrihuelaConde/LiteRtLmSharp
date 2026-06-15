@@ -70,3 +70,12 @@ internal sealed class JsonResponseHandle(nint handle) : LiteRtLmHandle(handle)
         return true;
     }
 }
+
+internal sealed class BenchmarkInfoHandle(nint handle) : LiteRtLmHandle(handle)
+{
+    protected override bool ReleaseHandle()
+    {
+        LiteRtLmNative.litert_lm_benchmark_info_delete(handle);
+        return true;
+    }
+}

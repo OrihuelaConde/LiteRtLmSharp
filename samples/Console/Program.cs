@@ -17,6 +17,7 @@ using LiteRtLmSharp.Sample;
 // Interactive (no args):   LiteRtLmSharp.Sample
 // Scripted (for testing):  LiteRtLmSharp.Sample <model.litertlm> [prompt]
 //                          LiteRtLmSharp.Sample <model.litertlm> --tools
+//                          LiteRtLmSharp.Sample <model.litertlm> --spec     (speculative decoding)
 //                          LiteRtLmSharp.Sample <model.litertlm> --backend gpu --context 8192
 
 Console.OutputEncoding = Encoding.UTF8;
@@ -27,6 +28,7 @@ CliArgs cli = CliArgs.Parse(args);
 string? modelPath = cli.ModelPath;
 string backend = cli.Backend;
 int contextTokens = cli.ContextTokens;
+bool speculative = cli.Speculative;
 
 if (modelPath is null)
 {
@@ -35,6 +37,7 @@ if (modelPath is null)
     if (modelPath is null)
         return 0; // user quit
     backend = Picker.Backend();
+    speculative = Picker.Speculative();
 }
 
 while (true)
@@ -42,7 +45,21 @@ while (true)
     LiteRtEngine engine;
     try
     {
-        Ui.Info($"\nLoading model ({Path.GetFileName(modelPath)}, {backend}, ctx {contextTokens}) …");
+        // Speculative decoding on the WebGPU GPU backend needs the disk cache OFF (the MTP drafter's
+        // shared weight-cache file fails to open on Windows otherwise — upstream issue). Default to
+        // disabling it for that combo unless the user picked a cache mode explicitly via --cache.
+        string? cacheDir = cli.CacheDir
+            ?? (speculative && backend == "gpu" ? LiteRtEngineOptions.CacheDisabled : null);
+
+        string cacheNote = cacheDir switch
+        {
+            LiteRtEngineOptions.CacheDisabled => ", cache off",
+            LiteRtEngineOptions.CacheInMemory => ", cache in-memory",
+            null or "" => "",
+            _ => $", cache {cacheDir}",
+        };
+        Ui.Info($"\nLoading model ({Path.GetFileName(modelPath)}, {backend}, ctx {contextTokens}"
+            + $"{(speculative ? ", speculative" : "")}{cacheNote}) …");
         var sw = Stopwatch.StartNew();
 
         engine = LiteRtEngine.Load(new LiteRtEngineOptions
@@ -50,6 +67,9 @@ while (true)
             ModelPath = modelPath,
             Backend = backend,          // "cpu" or "gpu"
             MaxNumTokens = contextTokens, // total context window (prompt + replies, all turns)
+            EnableSpeculativeDecoding = speculative, // MTP drafter → faster decode (supported models)
+            EnableBenchmark = true,     // so the gauge can show decode tok/s and time-to-first-token
+            CacheDir = cacheDir,        // null = next to model; ":nocache" disables it (GPU+spec)
         });
 
         Ui.Success($"Engine ready in {sw.Elapsed.TotalSeconds:F1}s.\n");
@@ -75,7 +95,7 @@ while (true)
             return 0;
         }
 
-        bool switchModel = await MainMenuAsync(engine, modelPath, backend, contextTokens);
+        bool switchModel = await MainMenuAsync(engine, modelPath, backend, contextTokens, speculative);
         if (!switchModel)
             return 0;
     } // ← the engine is disposed here; only then may a new one be loaded.
@@ -84,13 +104,15 @@ while (true)
     if (modelPath is null)
         return 0;
     backend = Picker.Backend();
+    speculative = Picker.Speculative();
 }
 
 // ─────────────────────────── Menu loop ───────────────────────────
 
 // Returns true when the user wants to switch model/backend (caller disposes this engine
 // and loads a new one), false to quit.
-static async Task<bool> MainMenuAsync(LiteRtEngine engine, string modelPath, string backend, int contextTokens)
+static async Task<bool> MainMenuAsync(
+    LiteRtEngine engine, string modelPath, string backend, int contextTokens, bool speculative)
 {
     LiteRtConversation chat = NewChat(engine);
     try
@@ -102,7 +124,7 @@ static async Task<bool> MainMenuAsync(LiteRtEngine engine, string modelPath, str
                 "Chat (streaming)",
                 "Function-calling demo",
                 "New conversation",
-                "Switch model / backend",
+                "Switch model / backend / speculative",
                 "Info",
                 "Quit");
             switch (Ui.Pick(1, 6))
@@ -111,7 +133,7 @@ static async Task<bool> MainMenuAsync(LiteRtEngine engine, string modelPath, str
                 case 2: RunToolsDemo(engine); break;
                 case 3: chat.Dispose(); chat = NewChat(engine); Ui.Success("Started a fresh conversation."); break;
                 case 4: return true;
-                case 5: PrintInfo(modelPath, backend, contextTokens, chat); break;
+                case 5: PrintInfo(modelPath, backend, contextTokens, speculative, chat); break;
                 case 6: return false;
             }
         }
@@ -176,7 +198,7 @@ static void PrintContextGauge(LiteRtConversation chat, int contextTokens, TimeSp
         int used = chat.TokenCount;
         double frac = contextTokens > 0 ? (double)used / contextTokens : 0;
         var color = frac > 0.85 ? ConsoleColor.Red : ConsoleColor.DarkGray;
-        Ui.WriteLine($"[context {used}/{contextTokens} ({frac:P0}) · {elapsed.TotalSeconds:F1}s]", color);
+        Ui.WriteLine($"[context {used}/{contextTokens} ({frac:P0}) · {elapsed.TotalSeconds:F1}s{BenchSuffix(chat)}]", color);
         if (frac > 0.85)
             Ui.WriteLine("[context almost full — start a new conversation to avoid degraded replies]", ConsoleColor.Red);
     }
@@ -184,6 +206,19 @@ static void PrintContextGauge(LiteRtConversation chat, int contextTokens, TimeSp
     {
         Ui.WriteLine($"[{elapsed.TotalSeconds:F1}s]", ConsoleColor.DarkGray); // older native binary without TokenCount
     }
+}
+
+// Decode throughput + time-to-first-token from the benchmark API. Empty when benchmark info is
+// unavailable (benchmark not enabled, no decode turn yet, or an older native binary).
+static string BenchSuffix(LiteRtConversation chat)
+{
+    try
+    {
+        if (chat.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b)
+            return $" · {b.LastDecodeTokensPerSecond:F1} tok/s decode · TTFT {b.TimeToFirstTokenSeconds:F2}s";
+    }
+    catch (EntryPointNotFoundException) { /* native binary predates the benchmark API */ }
+    return "";
 }
 
 // ──────────────────── Function calling (tools) ────────────────────
@@ -244,12 +279,19 @@ static string ExecuteTool(LiteRtToolCall call) => call.Name switch
 
 // ───────────────────────────── Info ─────────────────────────────
 
-static void PrintInfo(string modelPath, string backend, int contextTokens, LiteRtConversation chat)
+static void PrintInfo(string modelPath, string backend, int contextTokens, bool speculative, LiteRtConversation chat)
 {
     Ui.WriteLine("\nSession info", ConsoleColor.White);
-    Ui.WriteLine($"  Model:   {modelPath}", ConsoleColor.Gray);
-    Ui.WriteLine($"  Backend: {backend}", ConsoleColor.Gray);
-    Ui.WriteLine($"  Context: {contextTokens} tokens", ConsoleColor.Gray);
-    try { Ui.WriteLine($"  In use:  {chat.TokenCount} tokens", ConsoleColor.Gray); }
+    Ui.WriteLine($"  Model:       {modelPath}", ConsoleColor.Gray);
+    Ui.WriteLine($"  Backend:     {backend}", ConsoleColor.Gray);
+    Ui.WriteLine($"  Context:     {contextTokens} tokens", ConsoleColor.Gray);
+    Ui.WriteLine($"  Speculative: {(speculative ? "on (MTP drafter)" : "off")}", ConsoleColor.Gray);
+    try { Ui.WriteLine($"  In use:      {chat.TokenCount} tokens", ConsoleColor.Gray); }
     catch (EntryPointNotFoundException) { /* token count not available on this binary */ }
+    try
+    {
+        if (chat.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b)
+            Ui.WriteLine($"  Last decode: {b.LastDecodeTokensPerSecond:F1} tok/s · TTFT {b.TimeToFirstTokenSeconds:F2}s", ConsoleColor.Gray);
+    }
+    catch (EntryPointNotFoundException) { /* benchmark API not available on this binary */ }
 }

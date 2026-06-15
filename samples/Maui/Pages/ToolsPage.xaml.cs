@@ -52,7 +52,7 @@ public partial class ToolsPage : ContentPage
     {
         if (_engine.LoadedModel is { } model)
         {
-            HeaderLabel.Text = $"{model.DisplayName} · {_engine.LoadedBackend}";
+            HeaderLabel.Text = $"{model.DisplayName} · {_engine.LoadedBackend} · {_engine.SpeculativeLabel}";
             InputEntry.IsEnabled = true;
             SendButton.IsEnabled = true;
         }

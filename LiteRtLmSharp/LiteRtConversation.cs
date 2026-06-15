@@ -124,6 +124,46 @@ public sealed class LiteRtConversation : IDisposable
         }
     }
 
+    /// <summary>
+    /// Returns benchmark timings (prefill/decode tokens-per-second, time-to-first-token, init
+    /// time) for this conversation, or <c>null</c> when benchmarking was not enabled
+    /// (<see cref="LiteRtEngineOptions.EnableBenchmark"/>) or no turn has completed yet.
+    /// </summary>
+    /// <remarks>
+    /// The native per-turn accessors do not bounds-check their index, so this only reads a turn
+    /// after confirming the corresponding turn count is &gt; 0. Throws
+    /// <see cref="EntryPointNotFoundException"/> on native binaries predating the benchmark API.
+    /// </remarks>
+    public LiteRtBenchmarkInfo? GetBenchmarkInfo()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        nint infoPtr = LiteRtLmNative.litert_lm_conversation_get_benchmark_info(_conversation.Ptr);
+        if (infoPtr == nint.Zero)
+            return null;
+
+        using var info = new BenchmarkInfoHandle(infoPtr);
+        int prefillTurns = LiteRtLmNative.litert_lm_benchmark_info_get_num_prefill_turns(info.Ptr);
+        int decodeTurns = LiteRtLmNative.litert_lm_benchmark_info_get_num_decode_turns(info.Ptr);
+
+        return new LiteRtBenchmarkInfo
+        {
+            TimeToFirstTokenSeconds = LiteRtLmNative.litert_lm_benchmark_info_get_time_to_first_token(info.Ptr),
+            TotalInitTimeSeconds = LiteRtLmNative.litert_lm_benchmark_info_get_total_init_time_in_second(info.Ptr),
+            NumPrefillTurns = prefillTurns,
+            NumDecodeTurns = decodeTurns,
+            // Per-turn getters are unguarded natively — never pass a negative index.
+            LastPrefillTokenCount = prefillTurns > 0
+                ? LiteRtLmNative.litert_lm_benchmark_info_get_prefill_token_count_at(info.Ptr, prefillTurns - 1) : 0,
+            LastDecodeTokenCount = decodeTurns > 0
+                ? LiteRtLmNative.litert_lm_benchmark_info_get_decode_token_count_at(info.Ptr, decodeTurns - 1) : 0,
+            LastPrefillTokensPerSecond = prefillTurns > 0
+                ? LiteRtLmNative.litert_lm_benchmark_info_get_prefill_tokens_per_sec_at(info.Ptr, prefillTurns - 1) : 0,
+            LastDecodeTokensPerSecond = decodeTurns > 0
+                ? LiteRtLmNative.litert_lm_benchmark_info_get_decode_tokens_per_sec_at(info.Ptr, decodeTurns - 1) : 0,
+        };
+    }
+
     /// <summary>Sends a user message and returns only the text answer (blocking).
     /// For function calling use <see cref="Send"/>, which also surfaces tool calls.</summary>
     public string SendMessage(string text)

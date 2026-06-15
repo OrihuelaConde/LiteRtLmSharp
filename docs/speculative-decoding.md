@@ -1,0 +1,159 @@
+# Speculative decoding
+
+Speculative decoding speeds up token generation by letting a small **Multi-Token-Prediction (MTP)
+drafter** — shipped *inside* the `.litertlm` file — propose several tokens ahead, which the main
+model then verifies in a single forward pass. When the drafter is accurate, many tokens are accepted
+per main-model step, so decode throughput goes up without changing the output distribution.
+
+LiteRtLmSharp exposes it as a single engine-level flag, plus the native **benchmark API** to measure
+the effect.
+
+## Requirements
+
+- A model that ships an MTP drafter. The **Gemma 4** builds (`gemma-4-E2B-it`, `E4B`, `12B`) do;
+  models without a drafter make the flag a no-op (no speedup, no error).
+- It is fixed at engine creation — choose it in `LiteRtEngineOptions`, not per conversation.
+- **On the WebGPU GPU backend (desktop), disable the disk cache** —
+  `CacheDir = LiteRtEngineOptions.CacheDisabled`. With the default disk cache the drafter's shared
+  weight-cache file fails to open ("Access denied") on Windows and engine creation fails. This is an
+  upstream issue, not a binding bug — Google's own `litert-lm` CLI fails identically with
+  `--cache disk` and works with `--cache no` (full investigation in [Root cause](#root-cause-the-disk-cache)).
+
+## Using it
+
+```csharp
+using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+{
+    ModelPath = "gemma-4-E2B-it.litertlm",
+    Backend = "gpu",
+    MaxNumTokens = 4096,
+    EnableSpeculativeDecoding = true,                 // MTP drafter
+    EnableBenchmark = true,                           // so GetBenchmarkInfo() reports timings
+    CacheDir = LiteRtEngineOptions.CacheDisabled,     // REQUIRED for speculative + WebGPU GPU
+});
+
+using var chat = engine.CreateConversation();
+chat.SendMessage("Hello!");
+
+if (chat.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b)
+    Console.WriteLine($"{b.LastDecodeTokensPerSecond:F1} tok/s decode · TTFT {b.TimeToFirstTokenSeconds:F2}s");
+```
+
+On CPU you can drop the `CacheDir` line (the disk cache is fine there).
+
+`GetBenchmarkInfo()` works after both blocking (`Send`) and streaming
+(`SendMessageStreamingAsync`) generation. It returns `null` when benchmarking was not enabled or no
+turn has completed yet; it throws `EntryPointNotFoundException` on native binaries that predate the
+benchmark API (the samples catch this and fall back to wall-clock timing).
+
+### In the samples
+
+- **Console**: `--spec` flag, or the *Switch model / backend / speculative* menu option (default
+  off). The context gauge then shows `… · N tok/s decode · TTFT …`.
+  ```
+  LiteRtLmSharp.Sample gemma-4-E2B-it.litertlm "Tell me a joke" --spec
+  ```
+- **MAUI**: after picking the backend, a *Speculative decoding* prompt (shown only for MTP-capable
+  models). The three tab headers show `· speculative on/off` and the gauge shows decode tok/s · TTFT.
+
+Both samples automatically set `CacheDir = CacheDisabled` when speculative decoding is enabled on the
+GPU backend, so the toggle "just works" there.
+
+## How effectiveness is measured
+
+The model test `SpeculativeDecodingBenchmarkTests` does an A/B: it loads the engine with the drafter
+**off**, runs one fixed prompt, reads decode tokens/sec from the benchmark API, disposes the engine,
+then repeats with the drafter **on**. It asserts both runs produce coherent text and that the
+benchmark reports decode throughput, and logs the speedup ratio (a Markdown row) for this doc.
+
+Run it locally (the gate keeps it out of the fast unit-test runs):
+
+```powershell
+$env:LITERTLM_TEST_MODEL = "<path>\gemma-4-E2B-it.litertlm"
+$env:LITERTLM_TEST_BENCH = "1"   # also set LITERTLM_TEST_BACKEND=gpu to measure GPU
+dotnet test LiteRtLmSharp.Tests/LiteRtLmSharp.Tests.csproj -c Release `
+  --filter "FullyQualifiedName~SpeculativeDecodingBenchmarkTests" --logger "console;verbosity=detailed"
+```
+
+In CI it runs weekly on the CPU leg of `model-tests.yml` (linux-x64 / win-x64 / osx-arm64); the
+printed row lands in that job's console log.
+
+> Sampler note: the v0.13.1 native build only implements the **TopP** sampler (Greedy and TopK
+> return *"not implemented yet"*). Speculative decoding preserves the output *distribution*, not the
+> exact token sequence under sampling, so the A/B checks coherence + throughput rather than asserting
+> byte-identical output.
+
+## Measured results
+
+`gemma-4-E2B-it.litertlm`, single fixed prompt, 128 max output tokens. Decode throughput is the
+native benchmark API's `decode_tokens_per_sec` for the turn.
+
+| Platform / backend | spec OFF | spec ON | speedup | Notes |
+|---|---:|---:|---:|---|
+| win-x64 · CPU (dev box, 2026-06-15) | 29.9 tok/s | 23.4 tok/s | **0.78×** | works, but slower — see below |
+| win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, 2026-06-15) | 41.8 tok/s | 35.5 tok/s | **0.85×** | A/B both with cache off; plain GPU *with* the disk cache ≈85 tok/s |
+| linux-x64 · CPU (CI) | _weekly_ | _weekly_ | _weekly_ | from `model-tests.yml` |
+| osx-arm64 · CPU (CI) | _weekly_ | _weekly_ | _weekly_ | from `model-tests.yml` |
+| android-arm64 · GPU OpenCL/Adreno | _TBD (real device)_ | _TBD_ | _TBD_ | where upstream reports ≈3× |
+
+### Findings
+
+- **CPU regresses.** On desktop CPU the drafter + verification overhead is not amortized, so
+  speculative decoding is a net loss for this model (≈0.78×). This matches the general result that
+  speculative decoding helps memory-bandwidth-bound (accelerator) decode, not compute-bound CPU
+  decode. Both outputs were coherent, full paragraphs, and the `*.mtp_drafter.xnnpack_cache_*` file
+  produced alongside the model confirms the drafter was actually engaged.
+- **Desktop WebGPU GPU works (with the cache off), but doesn't help here.** With
+  `CacheDir = CacheDisabled` the engine loads and the drafter speculates on the GPU (the CLI reports
+  ~0.32 draft-acceptance on this prompt). In a fair A/B with the cache off on both legs, spec is a
+  slight regression (35.5 vs 41.8 tok/s, 0.85×). Two compounding factors: our package's WebGPU
+  **sampler** does not load (`LiteRtTopKWebGpuSampler_UpdateConfig` is missing → CPU-sampling
+  fallback), which is expensive in the tight draft/verify loop; and disabling the disk cache itself
+  costs throughput here (plain GPU *with* the cache runs ~85 tok/s). So the drafter's overhead isn't
+  recovered on this desktop config.
+- **Accelerators are where it wins.** Upstream's ≈3× figure (LiteRT-LM#2211) is on
+  mobile/accelerator GPU (e.g. Android OpenCL/Adreno), where verification is cheap relative to the
+  drafter and the GPU sampler is available. Validating that on a real Android device is the
+  remaining open item.
+
+## Root cause: the disk cache
+
+Our binding first appeared to fail GPU+MTP at engine creation. Running **Google's official `litert-lm`
+CLI** (`pip install litert-lm`, v0.13.1 — the same engine version) on the same machine and model
+reproduced the **identical** failure with the default `--cache disk`:
+
+```
+delegate_webgpu.cc] Failed to create litert::ml_drift::DelegateKernelLiteRt: INTERNAL:
+  Could not map file ('…gemma-4-E2B-it.litertlm_…_mldrift_weight_cache.bin'): Access denied.
+  serialization_weight_cache/mmap_handle.cc:147 → … → llm_litert_mtp_drafter.cc:197
+```
+
+With `--cache no` the CLI **succeeds** and the drafter runs. So it is **not a binding bug**: with MTP
+the main model and the drafter share one `…_mldrift_weight_cache.bin`, and on Windows the second
+consumer's `mmap` of that file fails (a file-sharing violation). Pointing the cache at a different
+directory does **not** help (same shared file, same error) — only disabling the disk cache avoids it.
+The CLI's `--cache no` maps to `litert_lm_engine_settings_set_cache_dir(settings, ":nocache")`, which
+we now expose as `CacheDir = LiteRtEngineOptions.CacheDisabled`.
+
+Source-level (v0.13.1): `CreateCompilationOptions` in `runtime/executor/llm_executor_settings_utils.cc`
+applies the `.mtp_drafter` cache suffix only on the CPU/XNNPACK branch, not the GPU/MlDrift branch, so
+the main model and the drafter resolve to one `…_mldrift_weight_cache.bin` — which is why a custom
+directory doesn't help. The Windows share-mode that turns the collision into "Access denied" lives in
+the closed `libLiteRtWebGpuAccelerator` (inferred `ERROR_SHARING_VIOLATION`).
+
+### Upstream tracking (researched 2026-06-15)
+
+- **Cache**: no dedicated issue for the Windows/WebGPU case yet —
+  [#2503](https://github.com/google-ai-edge/LiteRT-LM/issues/2503) is the iOS/Metal sibling, and a
+  buried comment on [#2461](https://github.com/google-ai-edge/LiteRT-LM/issues/2461) reports the exact
+  trace as a **regression from v0.12.0** (without MTP, so the collision is broader than MTP). A new
+  upstream issue is warranted.
+- **CPU-sampling fallback**: this is [#2073](https://github.com/google-ai-edge/LiteRT-LM/issues/2073)
+  (WebGPU sampler exports 3/7 C-ABI functions on macOS/Windows → CPU fallback). OPEN, no upstream fix.
+  We **cannot** fix it our side (Google's prebuilt sampler, no public source; can't add exports to a
+  compiled binary) — it needs an upstream re-export. Per flutter_gemma #287 the steady-state cost is
+  small (~3%), but it weighs more on the speculative draft/verify loop.
+
+In short: ship the flag; on CPU it works (default cache) but can be slower; on the desktop WebGPU GPU
+set `CacheDir = CacheDisabled`; reach for it on accelerators with an MTP-capable model. The samples
+apply the cache workaround automatically so the toggle just works.

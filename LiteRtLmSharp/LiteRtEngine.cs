@@ -55,6 +55,12 @@ public sealed class LiteRtEngine : IDisposable
             using var settings = new EngineSettingsHandle(settingsPtr);
             if (options.MaxNumTokens > 0)
                 LiteRtLmNative.litert_lm_engine_settings_set_max_num_tokens(settings.Ptr, options.MaxNumTokens);
+            if (!string.IsNullOrEmpty(options.CacheDir))
+                LiteRtLmNative.litert_lm_engine_settings_set_cache_dir(settings.Ptr, options.CacheDir);
+            if (options.EnableBenchmark)
+                LiteRtLmNative.litert_lm_engine_settings_enable_benchmark(settings.Ptr);
+            if (options.EnableSpeculativeDecoding)
+                LiteRtLmNative.litert_lm_engine_settings_set_enable_speculative_decoding(settings.Ptr, true);
 
             nint enginePtr = LiteRtLmNative.litert_lm_engine_create(settings.Ptr);
             if (enginePtr == nint.Zero)

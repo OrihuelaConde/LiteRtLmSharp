@@ -1,6 +1,6 @@
 # Project status and roadmap
 
-Last updated: 2026-06-12. Source of truth for "what's done and what's pending".
+Last updated: 2026-06-15. Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -33,8 +33,9 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Chat (blocking + per-token streaming, cancellation) | ✅ |
 | Function calling / tools (constrained decoding, Gemma token sanitization) | ✅ |
 | System prompt, sampler params, max tokens, token count (context gauge) | ✅ |
+| Speculative decoding (MTP drafter) + benchmark API (decode/prefill tok/s, TTFT, init time) | ✅ |
 | AOT/trim-friendly (`[LibraryImport]`, `[UnmanagedCallersOnly]`, no reflection) | ✅ |
-| Multimodal (image/audio), tokenize/detokenize, benchmark API | 🔜 see C API coverage below |
+| Multimodal (image/audio), tokenize/detokenize | 🔜 see C API coverage below |
 
 Known constraints (documented in the README): one engine ALIVE at a time (reloading after
 `Dispose` works — verified on win-x64 cpu→cpu and cpu→gpu; this is Edge Gallery's pattern for
@@ -44,8 +45,8 @@ is the total context window; VC++ Redistributable required on win-x64; Android G
 
 ## C API coverage (audit 2026-06-12, header v0.13.1)
 
-**24 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
-drift). The remaining 65 group into six areas, in suggested priority order:
+**37 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
+drift). The remaining 52 group into six areas, in suggested priority order:
 
 ### High value (user-facing features)
 
@@ -54,8 +55,8 @@ drift). The remaining 65 group into six areas, in suggested priority order:
 | Restore chat history | `conversation_config_set_messages` | Rebuild a conversation from persisted messages — pairs with context-window management (upstream #1878). |
 | Extra context | `conversation_config_set_extra_context` | e.g. `enable_thinking` for Gemma 4 reasoning mode. |
 | Conversation clone | `conversation_clone` | Fork/branch a conversation reusing the KV cache. |
-| Engine cache dir | `engine_settings_set_cache_dir` | Persistent compiled-shader/weight cache → much faster GPU re-init. |
-| Speculative decoding | `engine_settings_set_enable_speculative_decoding` | Already a follow-up from the #2211 work (~3× decode with the MTP drafter). |
+| ✅ Engine cache dir | `engine_settings_set_cache_dir` | **Done 2026-06-15** (`LiteRtEngineOptions.CacheDir`, + `CacheDisabled`/`CacheInMemory` sentinels). Persistent compiled-shader/weight cache → faster GPU re-init; also the fix for speculative decoding on WebGPU (set `CacheDisabled`). |
+| ✅ Speculative decoding | `engine_settings_set_enable_speculative_decoding` | **Done 2026-06-15** (`EnableSpeculativeDecoding`). Measured (gemma-4-E2B): desktop CPU **regresses** (~0.78×); desktop **WebGPU works** with `CacheDir=CacheDisabled` but doesn't help here (0.85× in a fair cache-off A/B; CPU-sampling fallback) — the disk-cache requirement is an upstream issue, see watchlist; accelerators are the expected ~3× win. See [speculative-decoding.md](speculative-decoding.md). |
 | Multimodal messages | `engine_settings_set_max_num_images`, `conversation_optional_args_create/delete/set_visual_token_budget` | Image/audio content is mostly **wrapper work**: the bound `send_message` already accepts `{"type":"image","blob":<base64>}` content parts; vision/audio backends are parameters of the already-bound `engine_settings_create`. |
 
 ### Medium value (developer utilities)
@@ -63,7 +64,7 @@ drift). The remaining 65 group into six areas, in suggested priority order:
 | Feature | Functions | Notes |
 |---|---|---|
 | Tokenizer surface (16) | `engine_tokenize`, `engine_detokenize`, `engine_get_start_token`, `engine_get_stop_tokens`, `tokenize_result_*` (3), `detokenize_result_*` (2), `token_union_*` (4), `token_unions_*` (3) | Exact token counting / prompt budgeting without running inference. |
-| Benchmark API (11) | `engine_settings_enable_benchmark`, `conversation_get_benchmark_info`, `benchmark_info_*` (9) | Prefill/decode tok/s, time-to-first-token, init time — for the MAUI sample and perf regression tracking. |
+| ✅ Benchmark API (11) | `engine_settings_enable_benchmark`, `conversation_get_benchmark_info`, `benchmark_info_*` (9) | **Done 2026-06-15** (`EnableBenchmark` → `LiteRtConversation.GetBenchmarkInfo()`). Prefill/decode tok/s, time-to-first-token, init time. Surfaced in both samples' gauges + the speculative-decoding A/B test. Per-turn getters guarded (the C wrapper does not bounds-check the turn index). |
 | KV-cache channel filter | `conversation_config_set_filter_channel_content_from_kv_cache` | Drop thinking-channel tokens from the KV cache. |
 | Prompt debugging | `conversation_render_message_to_string` | See the rendered (templated) prompt for a message. |
 | Engine tuning | `engine_settings_set_prefill_chunk_size`, `set_parallel_file_section_loading`, `set_activation_data_type` | CPU prefill chunking, load parallelism, force-F32. |
@@ -84,9 +85,17 @@ drift). The remaining 65 group into six areas, in suggested priority order:
 ## Actionable next steps (suggested order)
 
 1. ✅ ~~Android GPU sampling~~: verified on a physical device — the patched samplers load (no
-   CPU-sampling fallback) and output is correct. Roadmap follow-up: expose
-   `EnableSpeculativeDecoding` in `LiteRtEngineOptions` (the C API exists, default off) — per
-   #2211 that is what unlocks the ~3× decode speedup with the MTP drafter.
+   CPU-sampling fallback) and output is correct. ✅ ~~Roadmap follow-up: expose
+   `EnableSpeculativeDecoding`~~ — **done 2026-06-15** alongside the benchmark API, an A/B model
+   test, and sample toggles (Console `--spec`/menu, MAUI per-model switch). **Measured findings**
+   (gemma-4-E2B, dev box): desktop CPU regresses (~0.78×, 29.9→23.4 tok/s — drafter overhead not
+   amortized on CPU); desktop **WebGPU works only with the disk cache off** (`CacheDir=CacheDisabled`)
+   and doesn't help there either (0.85× in a fair cache-off A/B, 35.5 vs 41.8 tok/s — our WebGPU
+   sampler falls back to CPU; plain GPU with the cache is ~85 tok/s).
+   The cache requirement is an upstream file-sharing bug confirmed against Google's own CLI (see
+   watchlist), fixed our side by binding `engine_settings_set_cache_dir`. The expected ~3× is on
+   accelerators (Android OpenCL/Adreno) — real-device validation is the open follow-up. Full
+   write-up: [speculative-decoding.md](speculative-decoding.md).
 2. **macOS validation**: ✅ CI, CPU and GPU — `model-tests.yml` runs the full suite weekly on
    `macos-15` (Apple Silicon): CPU 6/6 and GPU 6/6 (run 27458626459, 2026-06-13), both
    including the real constrained-decoding loop. The GPU pass is now a REQUIRED check (no
@@ -182,6 +191,43 @@ drift). The remaining 65 group into six areas, in suggested priority order:
   loop IS exercised weekly in CI on win-x64 and osx-arm64 (`model-tests.yml` matrix). Android is NOT affected
   (tools validated on physical device, CPU and GPU; upstream #1859 looks like a
   custom-model issue, discarded).
+- **Speculative decoding + WebGPU needs the disk cache off** (root-caused 2026-06-15) — on the
+  desktop WebGPU/D3D12 GPU backend, `EnableSpeculativeDecoding = true` with the default disk cache
+  fails `litert_lm_engine_create`: the MTP drafter and main model share one
+  `…_mldrift_weight_cache.bin` and on Windows the second `mmap` of that file fails ("Access denied",
+  `serialization_weight_cache/mmap_handle.cc:147` → `llm_litert_mtp_drafter.cc:197`). **Confirmed
+  UPSTREAM, not our binding**: Google's own `litert-lm` CLI (pip, v0.13.1) reproduces it exactly with
+  `--cache disk` and works with `--cache no` (= `cache_dir ":nocache"`). A custom cache dir does NOT
+  help (same shared file). **Fixed our side** by binding `engine_settings_set_cache_dir` and exposing
+  `LiteRtEngineOptions.CacheDir` (set `CacheDisabled` for GPU+spec); both samples apply it
+  automatically. **Upstream landscape (researched 2026-06-15):** no dedicated, indexed issue exists
+  for the Windows/WebGPU case — only **[#2503](https://github.com/google-ai-edge/LiteRT-LM/issues/2503)**
+  (OPEN, iOS/Metal sibling: same shared `mldrift_weight_cache.bin`, sibling string "Cannot insert a
+  buffer in a cache that is not building") and a **buried comment on
+  [#2461](https://github.com/google-ai-edge/LiteRT-LM/issues/2461)** where `@vladimirvivien` posts the
+  exact Windows/WebGPU "Access is denied" trace on v0.13.1 and calls it a **regression from v0.12.0**
+  (and hit it WITHOUT MTP → the Windows mldrift-cache mmap collision is broader than just the two-
+  consumer MTP case). Source-level root cause (v0.13.1): `CreateCompilationOptions` in
+  `runtime/executor/llm_executor_settings_utils.cc` applies the `.mtp_drafter` cache suffix only on the
+  CPU/XNNPACK branch, NOT the GPU/MlDrift branch → main + drafter resolve to one cache file. PR #2372
+  (merged) is a different Windows MTP mapping fix (`.litertlm` sections, not the weight cache) and does
+  NOT fix this. ✅ **Filed [#2572](https://github.com/google-ai-edge/LiteRT-LM/issues/2572)**
+  (2026-06-15), cross-ref #2503/#2461; named the `CreateCompilationOptions` GPU-branch `cache_suffix`
+  omission. flutter_gemma has no matching report. Full write-up: [speculative-decoding.md](speculative-decoding.md).
+- **[LiteRT-LM#2073](https://github.com/google-ai-edge/LiteRT-LM/issues/2073)** — WebGPU TopK sampler
+  exports only **3/7** C-ABI functions on **macOS/Windows** (Linux/Android ship 7) → `sampler_factory`
+  can't resolve `LiteRtTopKWebGpuSampler_UpdateConfig` (+ 3 others) and **falls back to CPU sampling**.
+  This is our exact GPU-sampling fallback (confirmed against the committed `webgpu_exported_symbols.lds`
+  / `windows_exported_symbols.def` at v0.13.1; Metal was fixed to 7/7, WebGPU left at 3/7). OPEN, filed
+  by flutter_gemma's author (DenisovAV), **zero Google engagement, no fix PR**; #2502 was closed as a
+  dup. **We CANNOT self-fix this**: we ship Google's *prebuilt* WebGPU sampler (LFS, no public source),
+  and you can't add exports to a compiled binary — the Android `patchelf --add-needed` trick fixes
+  `DT_NEEDED` (#2211), not exports. Strictly needs an upstream prebuilt re-export. Per flutter_gemma
+  #287 the fallback costs only ~3% of steady-state decode, but it hurts the speculative draft/verify
+  loop more. ✅ **Commented our Windows/WebGPU v0.13.1 repro on #2073** (2026-06-15,
+  [issuecomment-4705832501](https://github.com/google-ai-edge/LiteRT-LM/issues/2073#issuecomment-4705832501));
+  verified the export lists ourselves (`webgpu_exported_symbols.lds`/`windows_exported_symbols.def` = 3,
+  `metal_exported_symbols.lds` = 7 at v0.13.1). Watch for an upstream re-export.
 - **New LiteRT-LM tags** — automated: `upstream-watch.yml` (Mon/Thu) opens a checklist issue
   when upstream publishes a release.
 - **flutter_gemma** — releases/issues as a recipe source (e.g. their #270/#214 anticipated our

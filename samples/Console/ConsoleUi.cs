@@ -9,13 +9,13 @@ namespace LiteRtLmSharp.Sample;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// <summary>Parsed command-line arguments for the scripted (non-interactive) modes.</summary>
-record CliArgs(string? ModelPath, string Backend, string? OneShotPrompt, bool ToolsMode, int ContextTokens)
+record CliArgs(string? ModelPath, string Backend, string? OneShotPrompt, bool ToolsMode, int ContextTokens, bool Speculative, string? CacheDir)
 {
     public static CliArgs Parse(string[] args)
     {
-        string? model = null, prompt = null;
+        string? model = null, prompt = null, cacheDir = null;
         string backend = "cpu";
-        bool tools = false;
+        bool tools = false, spec = false;
         int ctx = 4096;
         var rest = new List<string>();
 
@@ -24,14 +24,26 @@ record CliArgs(string? ModelPath, string Backend, string? OneShotPrompt, bool To
             switch (args[i])
             {
                 case "--tools": tools = true; break;
+                case "--spec": spec = true; break;
                 case "--backend" when i + 1 < args.Length: backend = args[++i]; break;
                 case "--context" when i + 1 < args.Length && int.TryParse(args[i + 1], out int c): ctx = c; i++; break;
+                // --cache <disk|no|memory|PATH>: disk = default (next to model), no/memory map to the
+                // engine sentinels, anything else is treated as a cache directory path.
+                case "--cache" when i + 1 < args.Length: cacheDir = CacheArg(args[++i]); break;
                 default: rest.Add(args[i]); break;
             }
         }
         if (rest.Count > 0) { model = rest[0]; if (rest.Count > 1) prompt = string.Join(' ', rest.Skip(1)); }
-        return new CliArgs(model, backend, prompt, tools, ctx);
+        return new CliArgs(model, backend, prompt, tools, ctx, spec, cacheDir);
     }
+
+    private static string? CacheArg(string v) => v.ToLowerInvariant() switch
+    {
+        "disk" or "" => null,                                   // engine default: next to the model
+        "no" or "none" or "off" => LiteRtEngineOptions.CacheDisabled,
+        "memory" or "ram" => LiteRtEngineOptions.CacheInMemory,
+        _ => v,                                                 // a directory path
+    };
 }
 
 /// <summary>Colored console output helpers.</summary>
@@ -126,6 +138,15 @@ static class Picker
         Ui.WriteLine("  1) CPU  (most compatible)", ConsoleColor.Gray);
         Ui.WriteLine("  2) GPU  (WebGPU → D3D12/Vulkan/Metal; sampling falls back to CPU)", ConsoleColor.Gray);
         return Ui.Pick(1, 2) == 2 ? "gpu" : "cpu";
+    }
+
+    /// <summary>Whether to enable speculative decoding (the MTP drafter). Default off.</summary>
+    public static bool Speculative()
+    {
+        Ui.WriteLine("\nSpeculative decoding (needs an MTP-drafter model, e.g. Gemma 4 E2B/E4B):", ConsoleColor.White);
+        Ui.WriteLine("  1) Off  (default)", ConsoleColor.Gray);
+        Ui.WriteLine("  2) On   (faster decode on supported models)", ConsoleColor.Gray);
+        return Ui.Pick(1, 2) == 2;
     }
 
     // Searches the current directory and a few ancestors for *.litertlm and models/*.litertlm.

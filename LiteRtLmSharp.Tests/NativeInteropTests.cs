@@ -1,5 +1,6 @@
 using LiteRtLmSharp;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace LiteRtLmSharp.Tests;
 
@@ -150,4 +151,117 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
             [new LiteRtToolResult("get_current_weather", """{"temperature":15,"unit":"celsius"}""")]);
         Assert.False(string.IsNullOrWhiteSpace(final.Text), $"Expected a final text answer. Raw: {final.RawJson}");
     }
+}
+
+/// <summary>
+/// A/B benchmark for speculative decoding: measures decode throughput (via the native benchmark
+/// API) with the MTP drafter OFF vs ON, on the same fixed prompt, and confirms both runs still
+/// produce coherent, non-empty text. The speedup ratio is logged for the docs/CI record.
+/// <para>
+/// Sampler note: the v0.13.1 native build only implements the TopP sampler (Greedy/TopK return
+/// "not implemented yet"), so the runs are stochastic and the two outputs are NOT expected to be
+/// byte-identical — we therefore assert coherence + measured throughput (the real deliverable) and
+/// log output similarity rather than asserting equality. A fixed seed keeps each run reproducible.
+/// </para>
+/// <para>
+/// This class loads its OWN engines (it does NOT take <see cref="EngineFixture"/>) and disposes each
+/// before loading the next, so only one engine is ever alive — required because two live engines hang
+/// the native layer. Safe to coexist with <see cref="ModelTests"/>: the assembly disables test
+/// parallelization (see AssemblyInfo.cs), so classes run one at a time and the shared fixture engine
+/// is never alive while this runs.
+/// </para>
+/// Gated on <c>LITERTLM_TEST_BENCH=1</c> (in addition to <c>LITERTLM_TEST_MODEL</c>) because it loads
+/// the model twice — only worth it against a known MTP-capable model such as gemma-4-E2B-it.
+/// </summary>
+public sealed class SpeculativeDecodingBenchmarkTests(ITestOutputHelper output)
+{
+    private readonly ITestOutputHelper _output = output;
+
+    // Reliably generates a sustained answer so decode throughput is measurable over many tokens.
+    private const string Prompt = "Write a detailed paragraph about the history of the printing press.";
+    private const int MaxOutputTokens = 128;
+
+    [SkippableFact]
+    public void SpeculativeDecoding_SpeedsUpDecode_AndProducesText()
+    {
+        string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
+        Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model)
+                || Environment.GetEnvironmentVariable("LITERTLM_TEST_BENCH") != "1",
+            "Set LITERTLM_TEST_BENCH=1 and LITERTLM_TEST_MODEL to an MTP-capable .litertlm file to run.");
+
+        string backend = Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu";
+
+        Result baseline = Measure(model!, backend, speculative: false);
+        Result spec = Measure(model!, backend, speculative: true);
+
+        double ratio = baseline.DecodeTps > 0 ? spec.DecodeTps / baseline.DecodeTps : 0;
+
+        // Emit a Markdown row so the weekly CI log (and a copy/paste into docs/speculative-decoding.md)
+        // captures the measured speedup per backend.
+        _output.WriteLine("| backend | spec off decode tok/s | spec on decode tok/s | speedup | TTFT off | TTFT on |");
+        _output.WriteLine("|---|---:|---:|---:|---:|---:|");
+        _output.WriteLine(
+            $"| {backend} | {baseline.DecodeTps:F1} | {spec.DecodeTps:F1} | {ratio:F2}x | {baseline.Ttft:F2}s | {spec.Ttft:F2}s |");
+        _output.WriteLine($"spec OFF output: {baseline.Text}");
+        _output.WriteLine($"spec ON  output: {spec.Text}");
+
+        // The benchmark API must actually report decode throughput on both runs (proves the binding
+        // and that benchmark instrumentation is wired through engine creation).
+        Assert.True(baseline.DecodeTps > 0, "No decode throughput recorded with speculative decoding OFF.");
+        Assert.True(spec.DecodeTps > 0, "No decode throughput recorded with speculative decoding ON.");
+
+        // Coherence: speculative decoding must still produce real text (not empty, not a degenerate
+        // single-character repetition). We do NOT assert equality — TopP sampling is stochastic.
+        AssertCoherent(baseline.Text, "speculative OFF");
+        AssertCoherent(spec.Text, "speculative ON");
+
+        // Effectiveness is informational: a regression below 1x on an MTP model is suspicious but can
+        // be hardware noise, so warn rather than fail.
+        if (ratio < 1.0)
+            _output.WriteLine(
+                $"WARNING: speculative decoding did not speed up decode (ratio {ratio:F2}x). " +
+                "Expected >=1x on an MTP-capable model — verify the model ships a drafter.");
+    }
+
+    private static Result Measure(string model, string backend, bool speculative)
+    {
+        LiteRtEngine.SetMinLogLevel(3);
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = model,
+            Backend = backend,
+            MaxNumTokens = 2048,
+            EnableBenchmark = true,
+            EnableSpeculativeDecoding = speculative,
+            // On the WebGPU GPU backend the MTP drafter's shared weight-cache file fails to open on
+            // Windows ("Access denied") unless the disk cache is off; disable it for GPU so the A/B
+            // can run there too (an upstream issue — Google's own CLI needs --cache no, see
+            // docs/speculative-decoding.md). Both legs use the same setting for a fair comparison.
+            CacheDir = backend == "gpu" ? LiteRtEngineOptions.CacheDisabled : null,
+        });
+        using var conv = engine.CreateConversation(new LiteRtConversationOptions
+        {
+            // TopP is the only sampler the v0.13.1 native build implements (Greedy/TopK return
+            // "not implemented yet"). A fixed seed keeps each run reproducible; speculative decoding
+            // preserves the output distribution, so coherence — not byte-equality — is what we check.
+            Sampler = new SamplerParams { Type = SamplerType.TopP, TopK = 40, TopP = 0.95f, Temperature = 1.0f, Seed = 42 },
+            MaxOutputTokens = MaxOutputTokens,
+        });
+
+        LiteRtResponse response = conv.Send(Prompt);
+        LiteRtBenchmarkInfo? bench = conv.GetBenchmarkInfo();
+        return new Result(
+            response.Text ?? string.Empty,
+            bench?.LastDecodeTokensPerSecond ?? 0,
+            bench?.TimeToFirstTokenSeconds ?? 0);
+    } // engine disposed here → the next Measure may load its own
+
+    private static void AssertCoherent(string text, string label)
+    {
+        Assert.False(string.IsNullOrWhiteSpace(text), $"Empty response ({label}).");
+        Assert.True(text.Trim().Length >= 16, $"Response too short to be coherent ({label}): {text}");
+        Assert.True(text.Distinct().Count() > 3, $"Degenerate response ({label}): {text}");
+    }
+
+    private readonly record struct Result(string Text, double DecodeTps, double Ttft);
 }

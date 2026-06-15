@@ -4,6 +4,9 @@ namespace LiteRtLmSharp.SampleMaui.Services;
 /// <remarks>
 /// <paramref name="GpuOnly"/>: some published .litertlm files carry a backend constraint and
 /// refuse to load on CPU ("Main backend constraint mismatch") — the 12B build is one of them.
+/// <paramref name="SupportsSpeculativeDecoding"/>: the model ships an MTP drafter, so speculative
+/// decoding gives a real decode speedup (all the Gemma 4 builds do). The Models page defaults the
+/// speculative toggle ON for these and hides it for the rest.
 /// </remarks>
 public sealed record ModelInfo(
     string Id,
@@ -13,7 +16,8 @@ public sealed record ModelInfo(
     string ApproxSize,
     string RamHint,
     bool MobileFriendly,
-    bool GpuOnly = false);
+    bool GpuOnly = false,
+    bool SupportsSpeculativeDecoding = true);
 
 /// <summary>
 /// Gemma models published as ready-to-run <c>.litertlm</c> files by the

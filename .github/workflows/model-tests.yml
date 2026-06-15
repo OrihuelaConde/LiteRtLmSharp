@@ -2,9 +2,10 @@ name: Model tests
 
 # Runs the model-backed interop tests with a real .litertlm model — the path the regular CI job
 # skips (no LITERTLM_TEST_MODEL). Matrix over linux-x64 / win-x64 / osx-arm64 (choose via the
-# platforms input, like build-native.yml; the weekly schedule tests all). Four scenarios per OS:
-# blocking chat, streaming, tool calling without constrained decoding, and tool calling WITH
-# constrained decoding — which on linux-x64 currently asserts the temporary guard throws (the
+# platforms input, like build-native.yml; the weekly schedule tests all). Scenarios per OS:
+# blocking chat, streaming, tool calling without constrained decoding, tool calling WITH
+# constrained decoding, and a speculative-decoding A/B benchmark (decode tok/s, drafter off vs
+# on) — the constrained-decoding one on linux-x64 currently asserts the temporary guard throws (the
 # upstream prebuilt constraint provider returns broken constraints, LiteRT-LM#2149 root-caused
 # 2026-06-12; when Google ships a fixed prebuilt and the guard is removed, that test flips to
 # the real end-to-end loop) and on win-x64/osx-arm64 runs the real constrained loop.
@@ -137,12 +138,17 @@ jobs:
       # --blame-crash turns a native SIGSEGV that kills the test host into a failed run with a
       # sequence file + minidump instead of a silent green/cancelled job; --blame-hang aborts a
       # decode that never returns (the other failure mode reported in LiteRT-LM#2149).
-      - name: Test with model (CPU — streaming + tools)
+      # LITERTLM_TEST_BENCH=1 also runs the speculative-decoding A/B benchmark (loads the model
+      # twice — drafter off vs on — and reports decode tok/s via the native benchmark API). The
+      # gemma-4-E2B-it model ships an MTP drafter, so the speedup is measured here; the printed
+      # Markdown row lands in this step's console log and feeds docs/speculative-decoding.md.
+      - name: Test with model (CPU — streaming + tools + speculative benchmark)
         timeout-minutes: 30
         shell: bash
         env:
           LITERTLM_TEST_MODEL: ${{ github.workspace }}/models/${{ env.MODEL_FILE }}
           LITERTLM_TEST_TOOLS: '1'
+          LITERTLM_TEST_BENCH: '1'
         run: |
           dotnet test LiteRtLmSharp.Tests/LiteRtLmSharp.Tests.csproj -c Release --no-build \
             --logger "console;verbosity=normal" \

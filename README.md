@@ -7,7 +7,8 @@
 inference (e.g. Gemma) for any .NET app, including MAUI. P/Invoke over LiteRT-LM's C API, with native
 binaries distributed per-RID as NuGet packages (LLamaSharp-style).
 
-> Status: **preview**. Chat, token streaming and function calling working.
+> Status: **preview**. Chat, token streaming, function calling, speculative decoding and
+> benchmarking working.
 >
 > | Platform | Native | NuGet | CPU | GPU | Validated on |
 > |---|:---:|:---:|:---:|:---:|---|
@@ -77,10 +78,37 @@ if (r.IsToolCall)
 }
 ```
 
+### Speculative decoding & benchmarking
+
+Models that ship an MTP drafter (the Gemma 4 builds do) can decode faster via speculative decoding.
+Turn on benchmarking to measure it (decode/prefill tok/s, time-to-first-token):
+
+```csharp
+using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+{
+    ModelPath = "gemma-4-E2B-it.litertlm",
+    Backend = "cpu",
+    EnableSpeculativeDecoding = true,   // MTP drafter
+    EnableBenchmark = true,             // enables GetBenchmarkInfo()
+});
+
+using var chat = engine.CreateConversation();
+chat.SendMessage("Hello!");
+
+if (chat.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b)
+    Console.WriteLine($"{b.LastDecodeTokensPerSecond:F1} tok/s decode · TTFT {b.TimeToFirstTokenSeconds:F2}s");
+```
+
+The win is accelerator-specific — on desktop CPU it can be slower, and on the desktop WebGPU GPU
+backend you must set `CacheDir = LiteRtEngineOptions.CacheDisabled` (otherwise engine creation fails —
+an upstream issue that also affects Google's own CLI). Measured numbers, requirements and the full
+root-cause are in
+[docs/speculative-decoding.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/speculative-decoding.md).
+
 See [`samples/Console`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/Console)
-for a runnable demo (`--tools` for the function-calling loop) and
+for a runnable demo (`--tools` for the function-calling loop, `--spec` for speculative decoding) and
 [`samples/Maui`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/Maui) for a
-full Android/Windows chat app with model download, streaming and tools.
+full Android/Windows chat app with model download, streaming, tools and a speculative-decoding toggle.
 
 ## Why .NET 10 only?
 

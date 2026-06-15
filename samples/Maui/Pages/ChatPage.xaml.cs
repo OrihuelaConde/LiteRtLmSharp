@@ -31,7 +31,8 @@ public partial class ChatPage : ContentPage
     {
         if (_engine.LoadedModel is { } model)
         {
-            HeaderLabel.Text = $"{model.DisplayName} · {_engine.LoadedBackend} · context {EngineService.ContextTokens} tokens";
+            HeaderLabel.Text = $"{model.DisplayName} · {_engine.LoadedBackend} · context {EngineService.ContextTokens} tokens"
+                + $" · {_engine.SpeculativeLabel}";
             InputEntry.IsEnabled = true;
             SendButton.IsEnabled = true;
             _conversation ??= _engine.NewConversation();
@@ -120,19 +121,34 @@ public partial class ChatPage : ContentPage
 
     private void UpdateGauge(TimeSpan elapsed)
     {
+        string bench = BenchSuffix();
         try
         {
             int used = _conversation?.TokenCount ?? 0;
             double frac = (double)used / EngineService.ContextTokens;
-            GaugeLabel.Text = $"context {used}/{EngineService.ContextTokens} ({frac:P0}) · {elapsed.TotalSeconds:F1}s";
+            GaugeLabel.Text = $"context {used}/{EngineService.ContextTokens} ({frac:P0}) · {elapsed.TotalSeconds:F1}s{bench}";
             GaugeLabel.TextColor = frac > 0.85 ? Colors.Red : Colors.Gray;
             GaugeLabel.IsVisible = true;
         }
         catch (EntryPointNotFoundException)
         {
-            GaugeLabel.Text = $"{elapsed.TotalSeconds:F1}s";
+            GaugeLabel.Text = $"{elapsed.TotalSeconds:F1}s{bench}";
             GaugeLabel.IsVisible = true;
         }
+    }
+
+    // Decode throughput + time-to-first-token from the benchmark API (engine loaded with
+    // EnableBenchmark). Empty when unavailable — no decode turn recorded, or an older native
+    // binary without the benchmark API.
+    private string BenchSuffix()
+    {
+        try
+        {
+            if (_conversation?.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b)
+                return $" · {b.LastDecodeTokensPerSecond:F1} tok/s decode · TTFT {b.TimeToFirstTokenSeconds:F2}s";
+        }
+        catch (EntryPointNotFoundException) { /* native binary predates the benchmark API */ }
+        return "";
     }
 }
 

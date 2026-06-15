@@ -5,8 +5,12 @@ all running locally via LiteRtLmSharp.
 
 - **Models tab** — catalog of Gemma 4 models from `litert-community` (Hugging Face): download with
   progress + resume, delete, pick CPU/GPU and load. Loading while another model is active swaps
-  the engine in-place (no app restart) — same pattern as Google's Edge Gallery.
-- **Chat tab** — streaming chat with Stop (cancellation), context-usage gauge, New conversation.
+  the engine in-place (no app restart) — same pattern as Google's Edge Gallery. When you load an
+  MTP-capable model it also asks whether to enable speculative decoding (default on; on GPU the disk
+  cache is turned off automatically, which that combo requires — see `docs/speculative-decoding.md`).
+- **Chat tab** — streaming chat with Stop (cancellation), New conversation, and a gauge showing
+  context usage, elapsed time and (when available) decode tokens/sec · time-to-first-token. The
+  header shows the loaded model, backend and speculative on/off.
 - **Tools tab** — function-calling demo: the model can call real device APIs (battery status,
   device info via MAUI essentials) and a mock weather service. Each question runs in a fresh
   conversation, so Chat and Tools never share context.

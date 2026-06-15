@@ -8,7 +8,9 @@
 > `get_token_count`, blocking `send_message` returning null, streaming segfault) are
 > **HISTORICAL** — all resolved by compiling our own binaries from the `v0.13.1` tag with the
 > matching header. Today config/system-prompt/sampler, tools, streaming and token count work on
-> all 5 platforms. The notes below are kept as a diagnostic record.
+> all 5 platforms. Speculative decoding, the benchmark API, and the engine cache-dir setting were
+> bound on 2026-06-15 (see [`roadmap.md`](roadmap.md) for the C-API coverage count, now 37/89). The
+> notes below are kept as a diagnostic record.
 >
 > Caveat (2026-06-12): "all 5 platforms" for **tools** was validated by hand on win-x64/Android;
 > on desktop Linux the tools + constrained-decoding path had never actually run in CI (regular CI

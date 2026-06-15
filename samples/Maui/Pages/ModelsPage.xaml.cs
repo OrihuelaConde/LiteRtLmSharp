@@ -37,7 +37,7 @@ public partial class ModelsPage : ContentPage
     {
         if (_engine.LoadedModel is { } m)
         {
-            EngineBanner.Text = $"✓ {m.DisplayName} ({_engine.LoadedBackend}) is loaded — chat is ready. Load another model or backend to switch.";
+            EngineBanner.Text = $"✓ {m.DisplayName} ({_engine.LoadedBackend} · {_engine.SpeculativeLabel}) is loaded — chat is ready. Load another model or backend to switch.";
             EngineBanner.IsVisible = true;
         }
     }
@@ -45,6 +45,15 @@ public partial class ModelsPage : ContentPage
     internal Task ShowError(string title, string message) => DisplayAlertAsync(title, message, "OK");
 
     internal Task<bool> Confirm(string title, string message) => DisplayAlertAsync(title, message, "Switch", "Cancel");
+
+    /// <summary>Asks whether to enable speculative decoding, with a one-line explanation. Returns
+    /// true to enable. Shown right after the backend pick so the choice is tied to the engine load.</summary>
+    internal Task<bool> AskSpeculativeDecoding() => DisplayAlertAsync(
+        "Speculative decoding",
+        "The model drafts several tokens ahead with a small MTP drafter and verifies them in one " +
+        "step — this can speed up decoding on models that ship a drafter (this one does). The gain " +
+        "is largest on accelerator GPUs; on desktop CPU it may be slower. Enable it?",
+        "Enable", "Off");
 
     internal Task GoToChat() => Shell.Current.GoToAsync("//ChatPage");
 
@@ -193,10 +202,15 @@ public sealed class ModelRow : INotifyPropertyChanged
         };
         if (backend.Length == 0) return;
 
+        // Speculative decoding is fixed at engine creation, so ask right before loading — only for
+        // models that ship an MTP drafter (others would just no-op). Tying it to the load keeps the
+        // choice coupled to the engine restart instead of a switch sitting on the row.
+        bool speculative = Model.SupportsSpeculativeDecoding && await _page.AskSpeculativeDecoding();
+
         Status = "Loading model… (this can take a while)";
         try
         {
-            await _engine.LoadAsync(Model, _store.GetLocalPath(Model), backend);
+            await _engine.LoadAsync(Model, _store.GetLocalPath(Model), backend, speculative);
             _page.RefreshAllRows(); // the previously loaded model's row needs its status back
             await _page.GoToChat();
         }

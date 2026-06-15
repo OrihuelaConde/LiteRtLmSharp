@@ -52,8 +52,10 @@ storage on first run and pass its path to `LiteRtEngine.Load`.
 5. ✅ Re-tested on device with the patched samplers: **the patchelf works** (device==local
    checksums; zero `sampler_factory` warnings → GPU sampling active; correct output). No
    perceptible speed gain yet: the big jump (~3×, #2211) additionally requires speculative
-   decoding (`litert_lm_engine_settings_set_enable_speculative_decoding`, off by default and
-   not yet exposed in the binding — roadmap candidate).
+   decoding, now exposed as `LiteRtEngineOptions.EnableSpeculativeDecoding`
+   (`litert_lm_engine_settings_set_enable_speculative_decoding`). Measuring the ~3× on a real
+   Adreno device is the open follow-up — on desktop it doesn't help (CPU regresses; desktop WebGPU
+   needs the cache off and still doesn't speed up here). See [speculative-decoding.md](speculative-decoding.md).
 
 ## Risks
 - Runner NDK version vs r28b+.

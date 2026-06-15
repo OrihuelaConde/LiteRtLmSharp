@@ -30,6 +30,23 @@ internal static unsafe partial class LiteRtLmNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_engine_settings_set_max_num_tokens(nint settings, int max_num_tokens);
 
+    /// <summary>Enables speculative decoding (MTP drafter); requires a model that ships a drafter.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_enable_speculative_decoding(
+        nint settings, [MarshalAs(UnmanagedType.U1)] bool enable);
+
+    /// <summary>Turns on benchmark instrumentation so the conversation exposes timings.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_enable_benchmark(nint settings);
+
+    /// <summary>Directory for the compiled-artifact cache. Special values <c>:nocache</c> (disable)
+    /// and <c>:memory</c> (in-RAM); empty = next to the model file.</summary>
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_cache_dir(nint settings, string cache_dir);
+
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_engine_settings_delete(nint settings);
@@ -129,6 +146,53 @@ internal static unsafe partial class LiteRtLmNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_json_response_delete(nint response);
+
+    // --- Benchmark info --------------------------------------------------
+    // Populated only when the engine was created with benchmark enabled
+    // (litert_lm_engine_settings_enable_benchmark). Prefill/decode metrics
+    // accumulate per turn; the latest turn is index (num_*_turns - 1).
+
+    /// <summary>Returns the benchmark info for the conversation, or null when unavailable.
+    /// Caller owns it and must free with <see cref="litert_lm_benchmark_info_delete"/>.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_conversation_get_benchmark_info(nint conversation);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_benchmark_info_delete(nint info);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial double litert_lm_benchmark_info_get_time_to_first_token(nint info);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial double litert_lm_benchmark_info_get_total_init_time_in_second(nint info);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial int litert_lm_benchmark_info_get_num_prefill_turns(nint info);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial int litert_lm_benchmark_info_get_num_decode_turns(nint info);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial int litert_lm_benchmark_info_get_prefill_token_count_at(nint info, int index);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial int litert_lm_benchmark_info_get_decode_token_count_at(nint info, int index);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial double litert_lm_benchmark_info_get_prefill_tokens_per_sec_at(nint info, int index);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial double litert_lm_benchmark_info_get_decode_tokens_per_sec_at(nint info, int index);
 }
 
 /// <summary>Mirrors <c>LiteRtLmSamplerType</c> in engine.h.</summary>

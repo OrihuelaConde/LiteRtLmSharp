@@ -14,7 +14,11 @@ public sealed class EngineService
     public LiteRtEngine? Engine { get; private set; }
     public ModelInfo? LoadedModel { get; private set; }
     public string? LoadedBackend { get; private set; }
+    public bool LoadedSpeculative { get; private set; }
     public bool IsLoaded => Engine is not null;
+
+    /// <summary>Shared "speculative on/off" label so every tab's header says it the same way.</summary>
+    public string SpeculativeLabel => LoadedSpeculative ? "speculative on" : "speculative off";
 
     /// <summary>Raised after a model finishes loading (on the thread that loaded it).</summary>
     public event Action? Loaded;
@@ -29,7 +33,7 @@ public sealed class EngineService
     private bool _switching;
 
     /// <summary>Loads a model, first unloading the current one if any.</summary>
-    public async Task LoadAsync(ModelInfo model, string modelPath, string backend)
+    public async Task LoadAsync(ModelInfo model, string modelPath, string backend, bool enableSpeculativeDecoding)
     {
         if (_switching)
             throw new InvalidOperationException("Another model load is already in progress.");
@@ -45,9 +49,17 @@ public sealed class EngineService
                 ModelPath = modelPath,
                 Backend = backend,
                 MaxNumTokens = ContextTokens,
+                EnableSpeculativeDecoding = enableSpeculativeDecoding, // MTP drafter → faster decode
+                EnableBenchmark = true,                                // gauge shows decode tok/s
+                // Speculative decoding on the WebGPU GPU backend needs the disk cache off, or the
+                // MTP drafter's shared weight-cache file fails to open ("Access denied") on Windows
+                // and the engine fails to load (upstream issue — see docs/speculative-decoding.md).
+                CacheDir = enableSpeculativeDecoding && backend == "gpu"
+                    ? LiteRtEngineOptions.CacheDisabled : null,
             }));
             LoadedModel = model;
             LoadedBackend = backend;
+            LoadedSpeculative = enableSpeculativeDecoding;
             Loaded?.Invoke();
         }
         finally
@@ -69,6 +81,7 @@ public sealed class EngineService
         Engine = null;
         LoadedModel = null;
         LoadedBackend = null;
+        LoadedSpeculative = false;
         await Task.Run(engine.Dispose);
     }
 
