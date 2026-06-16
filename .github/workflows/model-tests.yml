@@ -155,6 +155,12 @@ jobs:
             --blame-crash --blame-crash-dump-type mini \
             --blame-hang --blame-hang-dump-type mini --blame-hang-timeout 15m \
             --results-directory TestResults
+          # Echo the speculative-decoding A/B row (the test appends it to the step summary) into the
+          # log too: the console logger swallows ITestOutputHelper output for passing tests at normal
+          # verbosity, so this is the only place the measured tok/s land in the retrievable log.
+          echo "::group::Speculative decoding A/B (step summary)"
+          cat "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          echo "::endgroup::"
 
       # GPU pass on the macos-15 runner. Its GPU is Apple's paravirtual Metal device
       # (Virtualization.framework), on which the NATIVE Metal delegate garbles output — but the
