@@ -18,6 +18,7 @@ using LiteRtLmSharp.Sample;
 // Scripted (for testing):  LiteRtLmSharp.Sample <model.litertlm> [prompt]
 //                          LiteRtLmSharp.Sample <model.litertlm> --tools
 //                          LiteRtLmSharp.Sample <model.litertlm> --spec     (speculative decoding)
+//                          LiteRtLmSharp.Sample <model.litertlm> --thinking (reasoning mode)
 //                          LiteRtLmSharp.Sample <model.litertlm> --backend gpu --context 8192
 
 Console.OutputEncoding = Encoding.UTF8;
@@ -29,6 +30,7 @@ string? modelPath = cli.ModelPath;
 string backend = cli.Backend;
 int contextTokens = cli.ContextTokens;
 bool speculative = cli.Speculative;
+bool thinking = cli.Thinking;
 
 if (modelPath is null)
 {
@@ -38,6 +40,7 @@ if (modelPath is null)
         return 0; // user quit
     backend = Picker.Backend();
     speculative = Picker.Speculative();
+    thinking = Picker.Thinking();
 }
 
 while (true)
@@ -59,7 +62,7 @@ while (true)
             _ => $", cache {cacheDir}",
         };
         Ui.Info($"\nLoading model ({Path.GetFileName(modelPath)}, {backend}, ctx {contextTokens}"
-            + $"{(speculative ? ", speculative" : "")}{cacheNote}) …");
+            + $"{(speculative ? ", speculative" : "")}{(thinking ? ", thinking" : "")}{cacheNote}) …");
         var sw = Stopwatch.StartNew();
 
         engine = LiteRtEngine.Load(new LiteRtEngineOptions
@@ -90,12 +93,12 @@ while (true)
         }
         if (cli.OneShotPrompt is not null)
         {
-            using var c = engine.CreateConversation();
+            using var c = engine.CreateConversation(new LiteRtConversationOptions { EnableThinking = thinking });
             await StreamReplyAsync(c, cli.OneShotPrompt, contextTokens);
             return 0;
         }
 
-        bool switchModel = await MainMenuAsync(engine, modelPath, backend, contextTokens, speculative);
+        bool switchModel = await MainMenuAsync(engine, modelPath, backend, contextTokens, speculative, thinking);
         if (!switchModel)
             return 0;
     } // ← the engine is disposed here; only then may a new one be loaded.
@@ -105,6 +108,7 @@ while (true)
         return 0;
     backend = Picker.Backend();
     speculative = Picker.Speculative();
+    thinking = Picker.Thinking();
 }
 
 // ─────────────────────────── Menu loop ───────────────────────────
@@ -112,9 +116,9 @@ while (true)
 // Returns true when the user wants to switch model/backend (caller disposes this engine
 // and loads a new one), false to quit.
 static async Task<bool> MainMenuAsync(
-    LiteRtEngine engine, string modelPath, string backend, int contextTokens, bool speculative)
+    LiteRtEngine engine, string modelPath, string backend, int contextTokens, bool speculative, bool thinking)
 {
-    LiteRtConversation chat = NewChat(engine);
+    LiteRtConversation chat = NewChat(engine, thinking);
     try
     {
         while (true)
@@ -124,16 +128,16 @@ static async Task<bool> MainMenuAsync(
                 "Chat (streaming)",
                 "Function-calling demo",
                 "New conversation",
-                "Switch model / backend / speculative",
+                "Switch model / backend / speculative / thinking",
                 "Info",
                 "Quit");
             switch (Ui.Pick(1, 6))
             {
                 case 1: await ChatLoopAsync(chat, contextTokens); break;
                 case 2: RunToolsDemo(engine); break;
-                case 3: chat.Dispose(); chat = NewChat(engine); Ui.Success("Started a fresh conversation."); break;
+                case 3: chat.Dispose(); chat = NewChat(engine, thinking); Ui.Success("Started a fresh conversation."); break;
                 case 4: return true;
-                case 5: PrintInfo(modelPath, backend, contextTokens, speculative, chat); break;
+                case 5: PrintInfo(modelPath, backend, contextTokens, speculative, thinking, chat); break;
                 case 6: return false;
             }
         }
@@ -146,10 +150,11 @@ static async Task<bool> MainMenuAsync(
 
 // ─────────────────── Chat: streaming generation ───────────────────
 
-static LiteRtConversation NewChat(LiteRtEngine engine) => engine.CreateConversation(new LiteRtConversationOptions
+static LiteRtConversation NewChat(LiteRtEngine engine, bool thinking) => engine.CreateConversation(new LiteRtConversationOptions
 {
     SystemMessage = "You are a concise, helpful assistant.",
     Sampler = new SamplerParams { Type = SamplerType.TopP, TopK = 40, TopP = 0.95f, Temperature = 0.8f },
+    EnableThinking = thinking,
 });
 
 static async Task ChatLoopAsync(LiteRtConversation chat, int contextTokens)
@@ -170,20 +175,46 @@ static async Task StreamReplyAsync(LiteRtConversation chat, string prompt, int c
     using var cts = new CancellationTokenSource();
     using var hookup = Ui.HookCtrlC(cts);
 
-    Ui.Write("Model: ", ConsoleColor.Green);
     var sw = Stopwatch.StartNew();
+    bool thinkingShown = false, answerStarted = false;
+
+    // Print the "Model: " prefix lazily so the (dimmed) thinking trace can come first.
+    void StartAnswer()
+    {
+        if (answerStarted) return;
+        if (thinkingShown) Console.WriteLine();   // close the thinking line
+        Ui.Write("Model: ", ConsoleColor.Green);
+        answerStarted = true;
+    }
+
     try
     {
-        // Tokens arrive as chunks; cancellation stops generation mid-reply.
-        await foreach (string chunk in chat.SendMessageStreamingAsync(prompt, cts.Token))
-            Console.Write(chunk);
+        // Chunks arrive tagged as reasoning ("thinking", only with EnableThinking on) or answer
+        // (this chat has no tools, so no tool-call chunks). Show the thinking trace dimmed above the
+        // answer. Cancellation stops generation mid-reply.
+        await foreach (LiteRtStreamChunk chunk in chat.SendMessageStreamingAsync(prompt, cts.Token))
+        {
+            if (chunk.IsThinking)
+            {
+                if (!thinkingShown) { Ui.Write("Thinking: ", ConsoleColor.DarkGray); thinkingShown = true; }
+                Ui.Write(chunk.Text, ConsoleColor.DarkGray);
+            }
+            else
+            {
+                StartAnswer();
+                Console.Write(chunk.Text);
+            }
+        }
+        StartAnswer(); // ensure the "Model: " prefix even for an empty answer
     }
     catch (OperationCanceledException)
     {
+        StartAnswer();
         Ui.Write("  [cancelled]", ConsoleColor.DarkYellow);
     }
     catch (LiteRtException ex)
     {
+        StartAnswer();
         Ui.Write($"  [error: {ex.Message}]", ConsoleColor.Red);
     }
     Console.WriteLine();
@@ -279,13 +310,14 @@ static string ExecuteTool(LiteRtToolCall call) => call.Name switch
 
 // ───────────────────────────── Info ─────────────────────────────
 
-static void PrintInfo(string modelPath, string backend, int contextTokens, bool speculative, LiteRtConversation chat)
+static void PrintInfo(string modelPath, string backend, int contextTokens, bool speculative, bool thinking, LiteRtConversation chat)
 {
     Ui.WriteLine("\nSession info", ConsoleColor.White);
     Ui.WriteLine($"  Model:       {modelPath}", ConsoleColor.Gray);
     Ui.WriteLine($"  Backend:     {backend}", ConsoleColor.Gray);
     Ui.WriteLine($"  Context:     {contextTokens} tokens", ConsoleColor.Gray);
     Ui.WriteLine($"  Speculative: {(speculative ? "on (MTP drafter)" : "off")}", ConsoleColor.Gray);
+    Ui.WriteLine($"  Thinking:    {(thinking ? "on" : "off")}", ConsoleColor.Gray);
     try { Ui.WriteLine($"  In use:      {chat.TokenCount} tokens", ConsoleColor.Gray); }
     catch (EntryPointNotFoundException) { /* token count not available on this binary */ }
     try

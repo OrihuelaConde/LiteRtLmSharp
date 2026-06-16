@@ -49,9 +49,15 @@ public sealed class LiteRtConversation : IDisposable
         {
             nint configPtr = nint.Zero;
             bool hasTools = options?.Tools is { Count: > 0 };
+            // Merge the typed EnableThinking flag with any raw ExtraContext into one JSON object
+            // (null when neither is set); validates the JSON shape before touching native.
+            string? extraContext = options is null
+                ? null
+                : LiteRtJson.ExtraContext(options.ExtraContext, options.EnableThinking);
             bool needsConfig = options is not null &&
                 (options.SystemMessage is not null || options.Sampler is not null ||
-                 options.MaxOutputTokens > 0 || hasTools || options.EnableConstrainedDecoding);
+                 options.MaxOutputTokens > 0 || hasTools || options.EnableConstrainedDecoding ||
+                 extraContext is not null || options.FilterThinkingFromKvCache);
 
             if (needsConfig)
             {
@@ -94,6 +100,12 @@ public sealed class LiteRtConversation : IDisposable
 
                 if (options.EnableConstrainedDecoding)
                     LiteRtLmNative.litert_lm_conversation_config_set_enable_constrained_decoding(configPtr, true);
+
+                if (extraContext is not null)
+                    LiteRtLmNative.litert_lm_conversation_config_set_extra_context(configPtr, extraContext);
+
+                if (options.FilterThinkingFromKvCache)
+                    LiteRtLmNative.litert_lm_conversation_config_set_filter_channel_content_from_kv_cache(configPtr, true);
             }
 
             nint convPtr = LiteRtLmNative.litert_lm_conversation_create(engine.Ptr, configPtr);
@@ -209,20 +221,26 @@ public sealed class LiteRtConversation : IDisposable
     }
 
     /// <summary>
-    /// Sends a user message and streams the response text chunks as they arrive (text only;
-    /// for tool calls use the blocking <see cref="Send"/>).
+    /// Sends a user message and streams the reply as <see cref="LiteRtStreamChunk"/> pieces, each
+    /// tagged by <see cref="LiteRtStreamChunk.Kind"/> as answer text, reasoning ("thinking") text,
+    /// or a tool call. Route on the kind rather than assuming a global order; concatenate same-kind
+    /// text deltas to rebuild the answer and the thinking trace. With
+    /// <see cref="LiteRtConversationOptions.EnableThinking"/> on, reasoning models emit the thinking
+    /// trace before the answer. A <see cref="LiteRtStreamChunkKind.ToolCall"/> chunk only appears when
+    /// the conversation was created with tools — handle it like the blocking <see cref="Send"/> loop
+    /// (run the tools, then <see cref="SendToolResults"/>).
     /// <para>
     /// Requires a sound native build: the async decode thread crashed on the interim commit
     /// 032334d8, but works on release tags (verified on v0.13.1) and on community 0.12.0-a.
     /// </para>
     /// </summary>
-    public async IAsyncEnumerable<string> SendMessageStreamingAsync(
+    public async IAsyncEnumerable<LiteRtStreamChunk> SendMessageStreamingAsync(
         string text, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(text);
 
-        var channel = Channel.CreateUnbounded<string>(
+        var channel = Channel.CreateUnbounded<LiteRtStreamChunk>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
         var state = new StreamState(channel);
         var gcHandle = GCHandle.Alloc(state);
@@ -243,7 +261,7 @@ public sealed class LiteRtConversation : IDisposable
 
         try
         {
-            await foreach (string chunk in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            await foreach (LiteRtStreamChunk chunk in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
                 yield return chunk;
         }
         finally
@@ -278,15 +296,10 @@ public sealed class LiteRtConversation : IDisposable
         }
         else if (chunk != nint.Zero)
         {
-            // Each streaming chunk is a full JSON message ({"content":[{"text":"..."}]}),
-            // so extract the text fragment before handing it to the consumer.
             string? piece = Marshal.PtrToStringUTF8(chunk);
             if (!string.IsNullOrEmpty(piece))
-            {
-                string text = LiteRtResponse.Parse(piece).Text ?? string.Empty;
-                if (text.Length > 0)
-                    state.Channel.Writer.TryWrite(text);
-            }
+                foreach (LiteRtStreamChunk c in SplitMessageChunk(piece))
+                    state.Channel.Writer.TryWrite(c);
         }
 
         if (isFinal != 0)
@@ -296,9 +309,28 @@ public sealed class LiteRtConversation : IDisposable
         // a freed handle.
     }
 
-    private sealed class StreamState(Channel<string> channel)
+    /// <summary>
+    /// Splits one streamed message-chunk JSON into tagged pieces: the reasoning ("thinking") delta
+    /// first (if any), then either the tool calls (when present) or the answer-text delta. Content
+    /// and channel values are per-chunk deltas; tool calls arrive complete. Internal so the split can
+    /// be unit-tested without a model — the native callback just feeds it each raw chunk.
+    /// </summary>
+    internal static IReadOnlyList<LiteRtStreamChunk> SplitMessageChunk(string messageJson)
     {
-        public readonly Channel<string> Channel = channel;
+        LiteRtResponse parsed = LiteRtResponse.Parse(messageJson);
+        var chunks = new List<LiteRtStreamChunk>(capacity: 2);
+        if (parsed.Thinking is { Length: > 0 } thinking)
+            chunks.Add(LiteRtStreamChunk.Thinking(thinking));
+        if (parsed.IsToolCall)
+            chunks.Add(LiteRtStreamChunk.Tools(parsed.ToolCalls));
+        else if (parsed.Text is { Length: > 0 } answer)
+            chunks.Add(LiteRtStreamChunk.Answer(answer));
+        return chunks;
+    }
+
+    private sealed class StreamState(Channel<LiteRtStreamChunk> channel)
+    {
+        public readonly Channel<LiteRtStreamChunk> Channel = channel;
     }
 
     public void Dispose()
@@ -309,4 +341,58 @@ public sealed class LiteRtConversation : IDisposable
         _config?.Dispose();
         _sessionConfig?.Dispose();
     }
+}
+
+/// <summary>What a <see cref="LiteRtStreamChunk"/> carries.</summary>
+public enum LiteRtStreamChunkKind
+{
+    /// <summary>A fragment of the answer text.</summary>
+    Answer,
+    /// <summary>A fragment of the reasoning ("thinking") trace.</summary>
+    Thinking,
+    /// <summary>One or more tool calls the model wants executed (only when the conversation has tools).</summary>
+    ToolCall,
+}
+
+/// <summary>
+/// One streamed piece of a reply from <see cref="LiteRtConversation.SendMessageStreamingAsync"/>.
+/// <see cref="Kind"/> says what it is: an <see cref="LiteRtStreamChunkKind.Answer"/> or
+/// <see cref="LiteRtStreamChunkKind.Thinking"/> text delta (concatenate same-kind chunks in order
+/// to rebuild each), or a <see cref="LiteRtStreamChunkKind.ToolCall"/> carrying the model's tool
+/// calls. <see cref="Text"/> is the delta for the text kinds (empty for tool calls);
+/// <see cref="ToolCalls"/> is populated only for the tool-call kind.
+/// </summary>
+public readonly record struct LiteRtStreamChunk
+{
+    // Stored nullable + coalesced in the getters so a default(LiteRtStreamChunk) (reachable on any
+    // public value type) still honors the non-null contract below instead of NRE-ing on Text/ToolCalls.
+    private readonly string? _text;
+    private readonly IReadOnlyList<LiteRtToolCall>? _toolCalls;
+
+    internal LiteRtStreamChunk(LiteRtStreamChunkKind kind, string text, IReadOnlyList<LiteRtToolCall> toolCalls)
+    {
+        Kind = kind;
+        _text = text;
+        _toolCalls = toolCalls;
+    }
+
+    /// <summary>Whether this chunk is answer text, reasoning text, or a tool call.</summary>
+    public LiteRtStreamChunkKind Kind { get; }
+
+    /// <summary>The text delta for <see cref="LiteRtStreamChunkKind.Answer"/> /
+    /// <see cref="LiteRtStreamChunkKind.Thinking"/> chunks; empty for tool-call chunks.</summary>
+    public string Text => _text ?? string.Empty;
+
+    /// <summary>The tool calls for a <see cref="LiteRtStreamChunkKind.ToolCall"/> chunk; empty otherwise.</summary>
+    public IReadOnlyList<LiteRtToolCall> ToolCalls => _toolCalls ?? [];
+
+    /// <summary>Shorthand for <c>Kind == <see cref="LiteRtStreamChunkKind.Thinking"/></c>. Note that a
+    /// chunk where this is <c>false</c> may be an <see cref="LiteRtStreamChunkKind.Answer"/> OR a
+    /// <see cref="LiteRtStreamChunkKind.ToolCall"/>; switch on <see cref="Kind"/> when the conversation
+    /// has tools.</summary>
+    public bool IsThinking => Kind == LiteRtStreamChunkKind.Thinking;
+
+    internal static LiteRtStreamChunk Answer(string text) => new(LiteRtStreamChunkKind.Answer, text, []);
+    internal static LiteRtStreamChunk Thinking(string text) => new(LiteRtStreamChunkKind.Thinking, text, []);
+    internal static LiteRtStreamChunk Tools(IReadOnlyList<LiteRtToolCall> toolCalls) => new(LiteRtStreamChunkKind.ToolCall, string.Empty, toolCalls);
 }

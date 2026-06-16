@@ -31,7 +31,14 @@
                                 BackgroundColor="{Binding Background}"
                                 HorizontalOptions="{Binding Alignment}"
                                 MaximumWidthRequest="540">
-                            <Label Text="{Binding Text}" FontSize="15" LineBreakMode="WordWrap" />
+                            <VerticalStackLayout Spacing="3">
+                                <!-- Reasoning trace (only when EnableThinking produced one), dimmed above the answer. -->
+                                <Label Text="💭 thinking" IsVisible="{Binding HasThinking}"
+                                       FontSize="11" TextColor="Gray" />
+                                <Label Text="{Binding ThinkingText}" IsVisible="{Binding HasThinking}"
+                                       FontSize="13" FontAttributes="Italic" TextColor="Gray" LineBreakMode="WordWrap" />
+                                <Label Text="{Binding Text}" FontSize="15" LineBreakMode="WordWrap" />
+                            </VerticalStackLayout>
                         </Border>
                     </DataTemplate>
                 </BindableLayout.ItemTemplate>

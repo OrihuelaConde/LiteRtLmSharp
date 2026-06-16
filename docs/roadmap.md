@@ -1,6 +1,6 @@
 # Project status and roadmap
 
-Last updated: 2026-06-15. Source of truth for "what's done and what's pending".
+Last updated: 2026-06-16. Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -34,6 +34,7 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Function calling / tools (constrained decoding, Gemma token sanitization) | ✅ |
 | System prompt, sampler params, max tokens, token count (context gauge) | ✅ |
 | Speculative decoding (MTP drafter) + benchmark API (decode/prefill tok/s, TTFT, init time) | ✅ |
+| Reasoning mode (`enable_thinking` via extra context) + KV-cache thinking filter | ✅ |
 | AOT/trim-friendly (`[LibraryImport]`, `[UnmanagedCallersOnly]`, no reflection) | ✅ |
 | Multimodal (image/audio), tokenize/detokenize | 🔜 see C API coverage below |
 
@@ -45,15 +46,15 @@ is the total context window; VC++ Redistributable required on win-x64; Android G
 
 ## C API coverage (audit 2026-06-12, header v0.13.1)
 
-**37 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
-drift). The remaining 52 group into six areas, in suggested priority order:
+**39 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
+drift). The remaining 50 group into six areas, in suggested priority order:
 
 ### High value (user-facing features)
 
 | Feature | Functions | Notes |
 |---|---|---|
 | Restore chat history | `conversation_config_set_messages` | Rebuild a conversation from persisted messages — pairs with context-window management (upstream #1878). |
-| Extra context | `conversation_config_set_extra_context` | e.g. `enable_thinking` for Gemma 4 reasoning mode. |
+| ✅ Extra context | `conversation_config_set_extra_context` | **Done 2026-06-16** (`LiteRtConversationOptions.EnableThinking` for Gemma reasoning mode + raw `ExtraContext` escape hatch). Both samples expose a thinking toggle; pairs with the KV-cache thinking filter below. |
 | Conversation clone | `conversation_clone` | Fork/branch a conversation reusing the KV cache. |
 | ✅ Engine cache dir | `engine_settings_set_cache_dir` | **Done 2026-06-15** (`LiteRtEngineOptions.CacheDir`, + `CacheDisabled`/`CacheInMemory` sentinels). Persistent compiled-shader/weight cache → faster GPU re-init; also the fix for speculative decoding on WebGPU (set `CacheDisabled`). |
 | ✅ Speculative decoding | `engine_settings_set_enable_speculative_decoding` | **Done 2026-06-15** (`EnableSpeculativeDecoding`). Measured (gemma-4-E2B): desktop CPU **regresses** (~0.78×); desktop **WebGPU works** with `CacheDir=CacheDisabled` but doesn't help here (0.85× in a fair cache-off A/B; CPU-sampling fallback) — the disk-cache requirement is an upstream issue, see watchlist; accelerators are the expected ~3× win. See [speculative-decoding.md](speculative-decoding.md). |
@@ -65,7 +66,7 @@ drift). The remaining 52 group into six areas, in suggested priority order:
 |---|---|---|
 | Tokenizer surface (16) | `engine_tokenize`, `engine_detokenize`, `engine_get_start_token`, `engine_get_stop_tokens`, `tokenize_result_*` (3), `detokenize_result_*` (2), `token_union_*` (4), `token_unions_*` (3) | Exact token counting / prompt budgeting without running inference. |
 | ✅ Benchmark API (11) | `engine_settings_enable_benchmark`, `conversation_get_benchmark_info`, `benchmark_info_*` (9) | **Done 2026-06-15** (`EnableBenchmark` → `LiteRtConversation.GetBenchmarkInfo()`). Prefill/decode tok/s, time-to-first-token, init time. Surfaced in both samples' gauges + the speculative-decoding A/B test. Per-turn getters guarded (the C wrapper does not bounds-check the turn index). |
-| KV-cache channel filter | `conversation_config_set_filter_channel_content_from_kv_cache` | Drop thinking-channel tokens from the KV cache. |
+| ✅ KV-cache thinking filter | `conversation_config_set_filter_channel_content_from_kv_cache` | **Done 2026-06-16** (`LiteRtConversationOptions.FilterThinkingFromKvCache`). Drops thinking-channel tokens from the KV cache so a long reasoning block does not consume the context window; companion to `EnableThinking`. |
 | Prompt debugging | `conversation_render_message_to_string` | See the rendered (templated) prompt for a message. |
 | Engine tuning | `engine_settings_set_prefill_chunk_size`, `set_parallel_file_section_loading`, `set_activation_data_type` | CPU prefill chunking, load parallelism, force-F32. |
 
@@ -163,7 +164,7 @@ drift). The remaining 52 group into six areas, in suggested priority order:
 5. **iOS app phase**: Apple Developer Program → xcframework + `.targets` NativeReference →
    MAUI `net10.0-ios` app → CI signing → TestFlight.
 6. **Optional**: binding coverage push per the "C API coverage" section above (start with the
-   high-value group: history restore, extra context, clone, cache dir, speculative decoding,
+   high-value group: history restore, clone, cache dir, speculative decoding,
    multimodal); `android-x64` for emulators; Desktop meta-package;
    ✅ ~~CONTRIBUTING + issue templates~~ (2026-06-11: CONTRIBUTING.md, issue forms, PR template,
    SECURITY.md, Discussions enabled); scheduled smoke-test workflow that consumes the published

@@ -94,4 +94,40 @@ public sealed record LiteRtConversationOptions
     /// with this set to <c>false</c>. The guard is removed once upstream ships a fixed binary.
     /// </remarks>
     public bool EnableConstrainedDecoding { get; init; }
+
+    /// <summary>
+    /// Toggles the model's reasoning ("thinking") mode by setting <c>enable_thinking</c> in the
+    /// conversation's <see cref="ExtraContext"/>. <c>null</c> (default) leaves it unset so the
+    /// model uses its own default; <c>true</c>/<c>false</c> force reasoning on/off.
+    /// </summary>
+    /// <remarks>
+    /// This is the canonical use of extra context for the Gemma reasoning builds: the chat
+    /// template branches on <c>{% if enable_thinking %}</c>. On a model whose template does not
+    /// reference the key it is a harmless no-op. Pair with <see cref="FilterThinkingFromKvCache"/>
+    /// to keep the (often long) reasoning out of the KV cache on later turns. When both this and
+    /// <see cref="ExtraContext"/> set <c>enable_thinking</c>, this flag wins.
+    /// </remarks>
+    public bool? EnableThinking { get; init; }
+
+    /// <summary>
+    /// Extra context merged into the conversation preface and passed to the prompt-template
+    /// renderer — a raw JSON <b>object</b> string, e.g. <c>{"user_name":"Alice"}</c>. Template
+    /// variables are referenced Jinja-style (<c>{{ user_name }}</c>). Null/empty = none.
+    /// </summary>
+    /// <remarks>
+    /// For the common <c>enable_thinking</c> toggle prefer the typed <see cref="EnableThinking"/>;
+    /// this is the general escape hatch for arbitrary template variables. Must be a JSON object —
+    /// <see cref="LiteRtEngine.CreateConversation"/> throws <see cref="ArgumentException"/> otherwise
+    /// (validated when the conversation is created, not when this property is set). Maps to the C API
+    /// <c>conversation_config_set_extra_context</c>.
+    /// </remarks>
+    public string? ExtraContext { get; init; }
+
+    /// <summary>
+    /// Drop channel content — in practice the thinking channel — from the KV cache, so a long
+    /// reasoning block does not eat into the context window on subsequent turns. Default
+    /// <c>false</c>. Only meaningful alongside <see cref="EnableThinking"/>.
+    /// </summary>
+    /// <remarks>Maps to the C API <c>conversation_config_set_filter_channel_content_from_kv_cache</c>.</remarks>
+    public bool FilterThinkingFromKvCache { get; init; }
 }

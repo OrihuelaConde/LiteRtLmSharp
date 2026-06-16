@@ -1,3 +1,4 @@
+using System.Text.Json;
 using LiteRtLmSharp;
 using Xunit;
 using Xunit.Abstractions;
@@ -23,6 +24,210 @@ public class NativeInteropTests
     {
         var options = new LiteRtEngineOptions { ModelPath = "does-not-exist.litertlm" };
         Assert.Throws<ArgumentException>(() => LiteRtEngine.Load(options));
+    }
+}
+
+/// <summary>
+/// Pure unit tests for the extra-context JSON builder (<see cref="LiteRtJson.ExtraContext"/>) that
+/// backs the EnableThinking / ExtraContext conversation options. No model required, so these always
+/// run in CI: they pin the merge rules (typed enable_thinking flag overrides any raw key), the
+/// null/empty fast paths, and the JSON-object validation.
+/// </summary>
+public class ExtraContextJsonTests
+{
+    [Fact]
+    public void ExtraContext_BothNull_ReturnsNull()
+        => Assert.Null(LiteRtJson.ExtraContext(null, null));
+
+    [Fact]
+    public void ExtraContext_WhitespaceRaw_ReturnsNull()
+        => Assert.Null(LiteRtJson.ExtraContext("   ", null));
+
+    [Fact]
+    public void ExtraContext_EnableThinkingTrue_SetsBooleanTrue()
+    {
+        using var doc = JsonDocument.Parse(LiteRtJson.ExtraContext(null, true)!);
+        Assert.Equal(JsonValueKind.True, doc.RootElement.GetProperty("enable_thinking").ValueKind);
+    }
+
+    [Fact]
+    public void ExtraContext_EnableThinkingFalse_SetsBooleanFalse()
+    {
+        using var doc = JsonDocument.Parse(LiteRtJson.ExtraContext(null, false)!);
+        Assert.Equal(JsonValueKind.False, doc.RootElement.GetProperty("enable_thinking").ValueKind);
+    }
+
+    [Fact]
+    public void ExtraContext_MergesRawKeysWithFlag()
+    {
+        using var doc = JsonDocument.Parse(LiteRtJson.ExtraContext("""{"user_name":"Alice"}""", true)!);
+        JsonElement root = doc.RootElement;
+        Assert.Equal("Alice", root.GetProperty("user_name").GetString());
+        Assert.True(root.GetProperty("enable_thinking").GetBoolean());
+    }
+
+    [Fact]
+    public void ExtraContext_TypedFlagOverridesRawKey()
+    {
+        // Raw says false, the typed flag says true — the flag wins.
+        using var doc = JsonDocument.Parse(LiteRtJson.ExtraContext("""{"enable_thinking":false}""", true)!);
+        Assert.True(doc.RootElement.GetProperty("enable_thinking").GetBoolean());
+    }
+
+    [Fact]
+    public void ExtraContext_NullFlag_PreservesRawValue()
+    {
+        // No typed flag → the raw enable_thinking value passes through unchanged.
+        using var doc = JsonDocument.Parse(LiteRtJson.ExtraContext("""{"enable_thinking":true}""", null)!);
+        Assert.True(doc.RootElement.GetProperty("enable_thinking").GetBoolean());
+    }
+
+    [Fact]
+    public void ExtraContext_InvalidJson_Throws()
+        => Assert.Throws<ArgumentException>(() => LiteRtJson.ExtraContext("not json", null));
+
+    [Fact]
+    public void ExtraContext_NonObjectJson_Throws()
+        => Assert.Throws<ArgumentException>(() => LiteRtJson.ExtraContext("[1,2,3]", null));
+
+    [Fact]
+    public void ExtraContext_PreservesRawValueBytesVerbatim()
+    {
+        // Raw object values pass through verbatim (matching the Tools/ToolResults builders) instead
+        // of being re-encoded by the default escaper, which would emit < > &.
+        const string raw = """{"note":"a & b <tag>"}""";
+        string merged = LiteRtJson.ExtraContext(raw, true)!;
+        Assert.Contains("a & b <tag>", merged);
+        Assert.DoesNotContain("\\u0026", merged);
+        // Still valid JSON with the flag merged in, and the value round-trips to the same string.
+        using var doc = JsonDocument.Parse(merged);
+        Assert.Equal("a & b <tag>", doc.RootElement.GetProperty("note").GetString());
+        Assert.True(doc.RootElement.GetProperty("enable_thinking").GetBoolean());
+    }
+}
+
+/// <summary>
+/// Parsing of the assistant response, focused on the reasoning ("thinking") channel: the model's
+/// thinking lands in a separate <c>"channels"</c> object, which <see cref="LiteRtResponse"/> exposes
+/// via <see cref="LiteRtResponse.Thinking"/> / <see cref="LiteRtResponse.Channels"/> separate from
+/// the <c>content</c> answer. Pure parsing — no model needed.
+/// </summary>
+public class ResponseChannelTests
+{
+    [Fact]
+    public void Parse_AnswerOnly_HasNoThinking()
+    {
+        var r = LiteRtResponse.Parse("""{"role":"assistant","content":[{"type":"text","text":"Paris"}]}""");
+        Assert.Equal("Paris", r.Text);
+        Assert.Null(r.Thinking);
+        Assert.Empty(r.Channels);
+    }
+
+    [Fact]
+    public void Parse_ContentAndThinkingChannel_SplitsThem()
+    {
+        var r = LiteRtResponse.Parse(
+            """{"role":"assistant","content":[{"type":"text","text":"Paris."}],"channels":{"thought":"The capital of France is Paris."}}""");
+        Assert.Equal("Paris.", r.Text);
+        Assert.Equal("The capital of France is Paris.", r.Thinking);
+        Assert.Equal("The capital of France is Paris.", r.Channels["thought"]);
+    }
+
+    [Fact]
+    public void Parse_ThinkingOnlyChunk_HasThinkingAndEmptyText()
+    {
+        // A streaming reasoning delta: channels populated, no content yet.
+        var r = LiteRtResponse.Parse("""{"role":"assistant","channels":{"thought":"Let me think"}}""");
+        Assert.True(string.IsNullOrEmpty(r.Text));
+        Assert.Equal("Let me think", r.Thinking);
+    }
+
+    [Fact]
+    public void Parse_EmptyChannelValues_AreDropped()
+    {
+        var r = LiteRtResponse.Parse("""{"role":"assistant","content":[{"type":"text","text":"Hi"}],"channels":{"thought":""}}""");
+        Assert.Null(r.Thinking);
+        Assert.Empty(r.Channels);
+    }
+}
+
+/// <summary>
+/// Streaming chunk splitting: <see cref="LiteRtConversation.SplitMessageChunk"/> turns one raw
+/// message-chunk JSON into the ordered, tagged <see cref="LiteRtStreamChunk"/> pieces the streaming
+/// callback writes. Pure parsing — no model needed.
+/// </summary>
+public class StreamChunkSplitTests
+{
+    [Fact]
+    public void Split_AnswerOnly_YieldsOneAnswerChunk()
+    {
+        var chunks = LiteRtConversation.SplitMessageChunk("""{"role":"assistant","content":[{"type":"text","text":"Paris"}]}""");
+        var c = Assert.Single(chunks);
+        Assert.Equal(LiteRtStreamChunkKind.Answer, c.Kind);
+        Assert.Equal("Paris", c.Text);
+        Assert.False(c.IsThinking);
+        Assert.Empty(c.ToolCalls);
+    }
+
+    [Fact]
+    public void Split_ThinkingOnly_YieldsOneThinkingChunk()
+    {
+        var chunks = LiteRtConversation.SplitMessageChunk("""{"role":"assistant","channels":{"thought":"Let me think"}}""");
+        var c = Assert.Single(chunks);
+        Assert.Equal(LiteRtStreamChunkKind.Thinking, c.Kind);
+        Assert.True(c.IsThinking);
+        Assert.Equal("Let me think", c.Text);
+    }
+
+    [Fact]
+    public void Split_ContentAndThinking_YieldsThinkingThenAnswer()
+    {
+        var chunks = LiteRtConversation.SplitMessageChunk(
+            """{"role":"assistant","content":[{"type":"text","text":"Paris."}],"channels":{"thought":"reasoning"}}""");
+        Assert.Equal(2, chunks.Count);
+        Assert.Equal(LiteRtStreamChunkKind.Thinking, chunks[0].Kind);
+        Assert.Equal("reasoning", chunks[0].Text);
+        Assert.Equal(LiteRtStreamChunkKind.Answer, chunks[1].Kind);
+        Assert.Equal("Paris.", chunks[1].Text);
+    }
+
+    [Fact]
+    public void Split_ToolCall_YieldsOneToolCallChunk()
+    {
+        var chunks = LiteRtConversation.SplitMessageChunk(
+            """{"role":"assistant","tool_calls":[{"function":{"name":"get_weather","arguments":{"location":"Tokyo"}}}]}""");
+        var c = Assert.Single(chunks);
+        Assert.Equal(LiteRtStreamChunkKind.ToolCall, c.Kind);
+        Assert.Equal("", c.Text);
+        var call = Assert.Single(c.ToolCalls);
+        Assert.Equal("get_weather", call.Name);
+    }
+
+    [Fact]
+    public void Split_ToolCallWithThinking_YieldsThinkingThenToolCall()
+    {
+        var chunks = LiteRtConversation.SplitMessageChunk(
+            """{"role":"assistant","channels":{"thought":"need the weather"},"tool_calls":[{"function":{"name":"get_weather","arguments":{}}}]}""");
+        Assert.Equal(2, chunks.Count);
+        Assert.Equal(LiteRtStreamChunkKind.Thinking, chunks[0].Kind);
+        Assert.Equal(LiteRtStreamChunkKind.ToolCall, chunks[1].Kind);
+    }
+
+    [Fact]
+    public void Split_EmptyContentNoChannels_YieldsNothing()
+    {
+        var chunks = LiteRtConversation.SplitMessageChunk("""{"role":"assistant","content":[]}""");
+        Assert.Empty(chunks);
+    }
+
+    [Fact]
+    public void DefaultChunk_HasNonNullTextAndToolCalls()
+    {
+        // A value type's default is always reachable; it must still honor the non-null contract.
+        LiteRtStreamChunk d = default;
+        Assert.Equal("", d.Text);
+        Assert.Empty(d.ToolCalls);
+        Assert.False(d.IsThinking);
     }
 }
 
@@ -72,6 +277,30 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
             $"Expected a non-empty blocking response. Raw: {response.RawJson}");
     }
 
+    /// <summary>Reasoning mode via extra context: a conversation created with EnableThinking = true and
+    /// the thinking channel filtered from the KV cache sends a message and gets a real response back,
+    /// proving the extra_context + filter_channel_content_from_kv_cache bindings wire through (Send
+    /// throws if the native call returns null). We assert on the raw response rather than the parsed
+    /// answer text on purpose: reasoning mode changes how much text the model emits (a thinking block
+    /// precedes the answer) and where it lands, so over-fitting to content[0].text would be flaky
+    /// under the shared 2048-token budget. The CI model (gemma-4-E2B-it) supports reasoning mode.
+    /// Skipped unless LITERTLM_TEST_MODEL is set.</summary>
+    [SkippableFact]
+    public void Chat_WithThinkingEnabled_ProducesResponse()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var conversation = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions
+        {
+            EnableThinking = true,
+            FilterThinkingFromKvCache = true,
+        });
+        var response = conversation.Send("Reply with one short sentence: what is the capital of France?");
+
+        Assert.False(string.IsNullOrWhiteSpace(response.RawJson),
+            "Expected a non-empty native response with thinking enabled.");
+    }
+
     /// <summary>End-to-end streaming generation. Skipped unless LITERTLM_TEST_MODEL is set.
     /// (Validated on v0.13.1; the async path crashed on the interim commit 032334d8.)</summary>
     [SkippableFact]
@@ -81,8 +310,9 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
 
         using var conversation = _fixture.Engine!.CreateConversation();
         var sb = new System.Text.StringBuilder();
-        await foreach (string chunk in conversation.SendMessageStreamingAsync("Count from 1 to 3."))
-            sb.Append(chunk);
+        await foreach (LiteRtStreamChunk chunk in conversation.SendMessageStreamingAsync("Count from 1 to 3."))
+            if (chunk.Kind == LiteRtStreamChunkKind.Answer)
+                sb.Append(chunk.Text);
 
         Assert.True(sb.Length > 0, "Expected a non-empty streamed response.");
     }

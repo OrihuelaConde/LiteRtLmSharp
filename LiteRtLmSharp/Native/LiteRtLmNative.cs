@@ -102,6 +102,20 @@ internal static unsafe partial class LiteRtLmNative
     internal static partial void litert_lm_conversation_config_set_enable_constrained_decoding(
         nint config, [MarshalAs(UnmanagedType.U1)] bool enable);
 
+    /// <summary>Sets the conversation-preface extra context (a JSON object string) passed to the
+    /// prompt-template renderer, e.g. <c>{"enable_thinking":true}</c> for Gemma reasoning mode.</summary>
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_conversation_config_set_extra_context(
+        nint config, string extra_context_json);
+
+    /// <summary>Whether to drop channel content (in practice the thinking channel) from the KV cache,
+    /// so a long reasoning block does not consume the context window on later turns.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_conversation_config_set_filter_channel_content_from_kv_cache(
+        nint config, [MarshalAs(UnmanagedType.U1)] bool filter);
+
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_conversation_config_delete(nint config);

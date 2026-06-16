@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.ObjectModel;
 using System.Text;
 using System.Text.Json;
 
@@ -23,15 +24,19 @@ public sealed record LiteRtToolCall(string Name, string ArgumentsJson);
 public sealed record LiteRtToolResult(string Name, string ResultJson);
 
 /// <summary>
-/// A model response: either plain <see cref="Text"/> or one or more <see cref="ToolCalls"/>.
+/// A model response: plain <see cref="Text"/> or one or more <see cref="ToolCalls"/>, plus — on
+/// reasoning models — a separate <see cref="Thinking"/> trace (see <see cref="Channels"/>).
 /// <see cref="RawJson"/> always holds the unparsed response (escape hatch).
 /// </summary>
 public sealed class LiteRtResponse
 {
-    internal LiteRtResponse(string? text, IReadOnlyList<LiteRtToolCall> toolCalls, string rawJson)
+    internal LiteRtResponse(
+        string? text, IReadOnlyList<LiteRtToolCall> toolCalls,
+        IReadOnlyDictionary<string, string> channels, string rawJson)
     {
         Text = text;
         ToolCalls = toolCalls;
+        Channels = channels;
         RawJson = rawJson;
     }
 
@@ -40,6 +45,21 @@ public sealed class LiteRtResponse
 
     /// <summary>Tool calls the model wants executed (empty for a plain text answer).</summary>
     public IReadOnlyList<LiteRtToolCall> ToolCalls { get; }
+
+    /// <summary>
+    /// Out-of-band channels the model emitted alongside the primary <see cref="Text"/>, keyed by
+    /// channel name (the reasoning build emits a "thinking"/"thought" channel). Empty for models
+    /// without channels, or when reasoning mode is off. See <see cref="Thinking"/> for the common case.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Channels { get; }
+
+    /// <summary>
+    /// The model's reasoning ("thinking") trace, separate from the final <see cref="Text"/> answer,
+    /// or <c>null</c> when there is none. Convenience over <see cref="Channels"/> (the concatenation
+    /// of all channel content). Populated only when the conversation was created with
+    /// <see cref="LiteRtConversationOptions.EnableThinking"/> = true on a reasoning model.
+    /// </summary>
+    public string? Thinking => Channels.Count == 0 ? null : string.Concat(Channels.Values);
 
     /// <summary>The raw response JSON from the engine.</summary>
     public string RawJson { get; }
@@ -56,12 +76,13 @@ public sealed class LiteRtResponse
     internal static LiteRtResponse Parse(string json)
     {
         if (string.IsNullOrEmpty(json))
-            return new LiteRtResponse(string.Empty, [], json);
+            return new LiteRtResponse(string.Empty, [], EmptyChannels, json);
 
         try
         {
             using var doc = JsonDocument.Parse(json);
             JsonElement root = doc.RootElement;
+            IReadOnlyDictionary<string, string> channels = ParseChannels(root);
 
             if (root.TryGetProperty("tool_calls", out var calls) && calls.ValueKind == JsonValueKind.Array && calls.GetArrayLength() > 0)
             {
@@ -78,15 +99,37 @@ public sealed class LiteRtResponse
                         list.Add(new LiteRtToolCall(name, args));
                 }
                 if (list.Count > 0)
-                    return new LiteRtResponse(null, list, json);
+                    return new LiteRtResponse(null, list, channels, json);
             }
 
-            return new LiteRtResponse(ExtractText(root), [], json);
+            return new LiteRtResponse(ExtractText(root), [], channels, json);
         }
         catch (JsonException)
         {
-            return new LiteRtResponse(json, [], json);
+            return new LiteRtResponse(json, [], EmptyChannels, json);
         }
+    }
+
+    private static readonly IReadOnlyDictionary<string, string> EmptyChannels =
+        ReadOnlyDictionary<string, string>.Empty;
+
+    /// <summary>Reads the optional <c>"channels"</c> object ({name: text}) — e.g. the thinking channel —
+    /// dropping empty entries. Returns a shared empty map when absent.</summary>
+    private static IReadOnlyDictionary<string, string> ParseChannels(JsonElement root)
+    {
+        if (!root.TryGetProperty("channels", out var channels) || channels.ValueKind != JsonValueKind.Object)
+            return EmptyChannels;
+
+        Dictionary<string, string>? map = null;
+        foreach (JsonProperty p in channels.EnumerateObject())
+        {
+            if (p.Value.ValueKind != JsonValueKind.String)
+                continue;
+            string value = p.Value.GetString() ?? string.Empty;
+            if (value.Length > 0)
+                (map ??= new Dictionary<string, string>(StringComparer.Ordinal))[p.Name] = value;
+        }
+        return map ?? EmptyChannels;
     }
 
     // Gemma's chat template uses special tokens (e.g. <|"|>) as string delimiters; with constrained
@@ -215,6 +258,69 @@ internal static class LiteRtJson
             w.WriteEndArray();
             w.WriteEndObject();
         });
+
+    /// <summary>
+    /// Builds the extra-context JSON object for <c>conversation_config_set_extra_context</c> by
+    /// merging an optional raw-JSON object string with the <c>enable_thinking</c> convenience flag
+    /// (the flag overrides any same-named key in the raw JSON). Returns <c>null</c> when there is
+    /// nothing to set. Throws <see cref="ArgumentException"/> when <paramref name="rawJson"/> is not
+    /// a JSON object.
+    /// </summary>
+    public static string? ExtraContext(string? rawJson, bool? enableThinking)
+    {
+        JsonDocument? doc = null;
+        if (!string.IsNullOrWhiteSpace(rawJson))
+        {
+            try { doc = JsonDocument.Parse(rawJson); }
+            catch (JsonException ex)
+            {
+                throw new ArgumentException(
+                    "LiteRtConversationOptions.ExtraContext must be a valid JSON object string " +
+                    "(e.g. {\"enable_thinking\":true}).", nameof(LiteRtConversationOptions.ExtraContext), ex);
+            }
+
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                JsonValueKind kind = doc.RootElement.ValueKind;
+                doc.Dispose();
+                throw new ArgumentException(
+                    $"LiteRtConversationOptions.ExtraContext must be a JSON object (got {kind}).",
+                    nameof(LiteRtConversationOptions.ExtraContext));
+            }
+        }
+
+        if (doc is null && enableThinking is null)
+            return null;
+
+        try
+        {
+            return Build(w =>
+            {
+                w.WriteStartObject();
+                if (doc is not null)
+                {
+                    foreach (JsonProperty p in doc.RootElement.EnumerateObject())
+                    {
+                        // The typed flag (when set) wins over a raw enable_thinking key.
+                        if (enableThinking is not null && p.NameEquals("enable_thinking"))
+                            continue;
+                        // Pass the caller's value through verbatim (like the Tools/ToolResults
+                        // builders) rather than re-encoding it through the default escaper, which
+                        // would turn < > & into \u00XX. Semantically equal, but keeps the bytes.
+                        w.WritePropertyName(p.Name);
+                        w.WriteRawValue(p.Value.GetRawText());
+                    }
+                }
+                if (enableThinking is { } t)
+                    w.WriteBoolean("enable_thinking", t);
+                w.WriteEndObject();
+            });
+        }
+        finally
+        {
+            doc?.Dispose();
+        }
+    }
 
     private static string Build(Action<Utf8JsonWriter> write)
     {

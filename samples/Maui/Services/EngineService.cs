@@ -15,10 +15,14 @@ public sealed class EngineService
     public ModelInfo? LoadedModel { get; private set; }
     public string? LoadedBackend { get; private set; }
     public bool LoadedSpeculative { get; private set; }
+    public bool LoadedThinking { get; private set; }
     public bool IsLoaded => Engine is not null;
 
     /// <summary>Shared "speculative on/off" label so every tab's header says it the same way.</summary>
     public string SpeculativeLabel => LoadedSpeculative ? "speculative on" : "speculative off";
+
+    /// <summary>Shared "thinking on/off" label so every tab's header says it the same way.</summary>
+    public string ThinkingLabel => LoadedThinking ? "thinking on" : "thinking off";
 
     /// <summary>Raised after a model finishes loading (on the thread that loaded it).</summary>
     public event Action? Loaded;
@@ -33,7 +37,7 @@ public sealed class EngineService
     private bool _switching;
 
     /// <summary>Loads a model, first unloading the current one if any.</summary>
-    public async Task LoadAsync(ModelInfo model, string modelPath, string backend, bool enableSpeculativeDecoding)
+    public async Task LoadAsync(ModelInfo model, string modelPath, string backend, bool enableSpeculativeDecoding, bool enableThinking)
     {
         if (_switching)
             throw new InvalidOperationException("Another model load is already in progress.");
@@ -60,6 +64,7 @@ public sealed class EngineService
             LoadedModel = model;
             LoadedBackend = backend;
             LoadedSpeculative = enableSpeculativeDecoding;
+            LoadedThinking = enableThinking;
             Loaded?.Invoke();
         }
         finally
@@ -82,6 +87,7 @@ public sealed class EngineService
         LoadedModel = null;
         LoadedBackend = null;
         LoadedSpeculative = false;
+        LoadedThinking = false;
         await Task.Run(engine.Dispose);
     }
 
@@ -90,6 +96,10 @@ public sealed class EngineService
         {
             SystemMessage = "You are a concise, helpful assistant.",
             Sampler = new SamplerParams { Type = SamplerType.TopP, TopK = 40, TopP = 0.95f, Temperature = 0.8f },
+            EnableThinking = LoadedThinking,
+            // The chat reuses one conversation across turns, so drop the (long) reasoning from the
+            // KV cache or it eats the context window on later turns.
+            FilterThinkingFromKvCache = LoadedThinking,
         })
         ?? throw new InvalidOperationException("No model loaded.");
 
@@ -99,8 +109,12 @@ public sealed class EngineService
         {
             SystemMessage = "You are a helpful assistant. Use the available tools when needed.",
             Tools = tools,
+            EnableThinking = LoadedThinking, // honor the loaded reasoning choice here too
+            FilterThinkingFromKvCache = LoadedThinking,
             EnableConstrainedDecoding = true,
-            MaxOutputTokens = 256,
+            // Reasoning emits a thinking block before the (constrained) tool call, so give it more
+            // room when thinking is on — 256 can be eaten by the trace before the call is produced.
+            MaxOutputTokens = LoadedThinking ? 1024 : 256,
         })
         ?? throw new InvalidOperationException("No model loaded.");
 }

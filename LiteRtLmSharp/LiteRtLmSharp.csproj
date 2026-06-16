@@ -18,6 +18,11 @@
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
   </PropertyGroup>
 
+  <!-- The test project unit-tests internal JSON builders (e.g. LiteRtJson.ExtraContext) directly. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="LiteRtLmSharp.Tests" />
+  </ItemGroup>
+
   <!--
     Local dev only: copy the native LiteRT-LM runtime next to the managed assembly so the sample
     and tests resolve it. These come from runtimes/<rid>/native/ (gitignored; produced by

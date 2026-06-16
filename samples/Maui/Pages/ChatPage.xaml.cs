@@ -32,7 +32,7 @@ public partial class ChatPage : ContentPage
         if (_engine.LoadedModel is { } model)
         {
             HeaderLabel.Text = $"{model.DisplayName} · {_engine.LoadedBackend} · context {EngineService.ContextTokens} tokens"
-                + $" · {_engine.SpeculativeLabel}";
+                + $" · {_engine.SpeculativeLabel} · {_engine.ThinkingLabel}";
             InputEntry.IsEnabled = true;
             SendButton.IsEnabled = true;
             _conversation ??= _engine.NewConversation();
@@ -87,9 +87,17 @@ public partial class ChatPage : ContentPage
         var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            await foreach (string chunk in _conversation!.SendMessageStreamingAsync(prompt, _replyCts.Token))
-                reply.Append(chunk);
-            if (reply.Text.Length == 0)
+            // Chunks are tagged as reasoning ("thinking", only with EnableThinking on) or answer;
+            // the chat conversation has no tools, so no tool-call chunks arrive. The thinking trace
+            // renders above the answer in the bubble.
+            await foreach (LiteRtStreamChunk chunk in _conversation!.SendMessageStreamingAsync(prompt, _replyCts.Token))
+            {
+                if (chunk.IsThinking)
+                    reply.AppendThinking(chunk.Text);
+                else
+                    reply.Append(chunk.Text);
+            }
+            if (reply.Text.Length == 0 && reply.ThinkingText.Length == 0)
                 reply.Append("(empty response)");
         }
         catch (OperationCanceledException)
@@ -173,8 +181,26 @@ public sealed class ChatMessage : INotifyPropertyChanged
         private set { _text = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Text))); }
     }
 
+    // The reasoning ("thinking") trace, shown dimmed above the answer when EnableThinking is on.
+    private string _thinkingText = "";
+    public string ThinkingText
+    {
+        get => _thinkingText;
+        private set
+        {
+            _thinkingText = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ThinkingText)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasThinking)));
+        }
+    }
+
+    public bool HasThinking => _thinkingText.Length > 0;
+
     public void Append(string chunk) =>
         MainThread.BeginInvokeOnMainThread(() => Text += chunk);
+
+    public void AppendThinking(string chunk) =>
+        MainThread.BeginInvokeOnMainThread(() => ThinkingText += chunk);
 
     public Color Background => Role == "user"
         ? (Application.Current?.RequestedTheme == AppTheme.Dark ? Color.FromArgb("#2A4365") : Color.FromArgb("#DBEAFE"))

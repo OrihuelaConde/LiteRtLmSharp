@@ -9,13 +9,13 @@ namespace LiteRtLmSharp.Sample;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// <summary>Parsed command-line arguments for the scripted (non-interactive) modes.</summary>
-record CliArgs(string? ModelPath, string Backend, string? OneShotPrompt, bool ToolsMode, int ContextTokens, bool Speculative, string? CacheDir)
+record CliArgs(string? ModelPath, string Backend, string? OneShotPrompt, bool ToolsMode, int ContextTokens, bool Speculative, bool Thinking, string? CacheDir)
 {
     public static CliArgs Parse(string[] args)
     {
         string? model = null, prompt = null, cacheDir = null;
         string backend = "cpu";
-        bool tools = false, spec = false;
+        bool tools = false, spec = false, thinking = false;
         int ctx = 4096;
         var rest = new List<string>();
 
@@ -25,6 +25,7 @@ record CliArgs(string? ModelPath, string Backend, string? OneShotPrompt, bool To
             {
                 case "--tools": tools = true; break;
                 case "--spec": spec = true; break;
+                case "--thinking": thinking = true; break;
                 case "--backend" when i + 1 < args.Length: backend = args[++i]; break;
                 case "--context" when i + 1 < args.Length && int.TryParse(args[i + 1], out int c): ctx = c; i++; break;
                 // --cache <disk|no|memory|PATH>: disk = default (next to model), no/memory map to the
@@ -34,7 +35,7 @@ record CliArgs(string? ModelPath, string Backend, string? OneShotPrompt, bool To
             }
         }
         if (rest.Count > 0) { model = rest[0]; if (rest.Count > 1) prompt = string.Join(' ', rest.Skip(1)); }
-        return new CliArgs(model, backend, prompt, tools, ctx, spec, cacheDir);
+        return new CliArgs(model, backend, prompt, tools, ctx, spec, thinking, cacheDir);
     }
 
     private static string? CacheArg(string v) => v.ToLowerInvariant() switch
@@ -146,6 +147,15 @@ static class Picker
         Ui.WriteLine("\nSpeculative decoding (needs an MTP-drafter model, e.g. Gemma 4 E2B/E4B):", ConsoleColor.White);
         Ui.WriteLine("  1) Off  (default)", ConsoleColor.Gray);
         Ui.WriteLine("  2) On   (faster decode on supported models)", ConsoleColor.Gray);
+        return Ui.Pick(1, 2) == 2;
+    }
+
+    /// <summary>Whether to enable the model's reasoning ("thinking") mode. Default off.</summary>
+    public static bool Thinking()
+    {
+        Ui.WriteLine("\nThinking / reasoning mode (Gemma reasoning builds; ignored by models without it):", ConsoleColor.White);
+        Ui.WriteLine("  1) Off  (default)", ConsoleColor.Gray);
+        Ui.WriteLine("  2) On   (the model reasons step-by-step before answering)", ConsoleColor.Gray);
         return Ui.Pick(1, 2) == 2;
     }
 

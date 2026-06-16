@@ -52,7 +52,7 @@ public partial class ToolsPage : ContentPage
     {
         if (_engine.LoadedModel is { } model)
         {
-            HeaderLabel.Text = $"{model.DisplayName} · {_engine.LoadedBackend} · {_engine.SpeculativeLabel}";
+            HeaderLabel.Text = $"{model.DisplayName} · {_engine.LoadedBackend} · {_engine.SpeculativeLabel} · {_engine.ThinkingLabel}";
             InputEntry.IsEnabled = true;
             SendButton.IsEnabled = true;
         }
@@ -101,6 +101,7 @@ public partial class ToolsPage : ContentPage
 
             // Generation is blocking native work — keep it off the UI thread.
             LiteRtResponse response = await Task.Run(() => conversation.Send(prompt));
+            LogThinking(response);
 
             if (response.IsToolCall)
             {
@@ -115,11 +116,20 @@ public partial class ToolsPage : ContentPage
 
                 // Feed the results back; the model writes the final answer.
                 response = await Task.Run(() => conversation.SendToolResults(results));
+                LogThinking(response);
                 Log.Add(ToolLogEntry.Model($"Model: {response.Text?.Trim()}"));
             }
             else
             {
                 Log.Add(ToolLogEntry.Model($"Model (no tool call): {response.Text?.Trim()}"));
+            }
+
+            // When reasoning mode is on, surface the thinking trace dimmed, separate from the answer.
+            void LogThinking(LiteRtResponse r)
+            {
+                string? thinking = r.Thinking;
+                if (!string.IsNullOrWhiteSpace(thinking))
+                    Log.Add(ToolLogEntry.Thinking($"💭 {thinking.Trim()}"));
             }
         }
         catch (Exception ex)
@@ -168,5 +178,6 @@ public sealed class ToolLogEntry
     public static ToolLogEntry User(string text) => new($"You: {text}", Dark ? Colors.White : Colors.Black);
     public static ToolLogEntry Call(string text) => new(text, Dark ? Colors.Plum : Colors.Purple);
     public static ToolLogEntry Result(string text) => new(text, Colors.Gray);
+    public static ToolLogEntry Thinking(string text) => new(text, Color.FromArgb("#888888"));
     public static ToolLogEntry Model(string text) => new(text, Dark ? Colors.LightGreen : Colors.DarkGreen);
 }

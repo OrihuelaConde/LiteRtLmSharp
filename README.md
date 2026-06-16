@@ -7,8 +7,8 @@
 inference (e.g. Gemma) for any .NET app, including MAUI. P/Invoke over LiteRT-LM's C API, with native
 binaries distributed per-RID as NuGet packages (LLamaSharp-style).
 
-> Status: **preview**. Chat, token streaming, function calling, speculative decoding and
-> benchmarking working.
+> Status: **preview**. Chat, token streaming, function calling, speculative decoding,
+> reasoning mode and benchmarking working.
 >
 > | Platform | Native | NuGet | CPU | GPU | Validated on |
 > |---|:---:|:---:|:---:|:---:|---|
@@ -55,9 +55,9 @@ using var chat = engine.CreateConversation();
 // Blocking:
 Console.WriteLine(chat.SendMessage("Hello!"));
 
-// Streaming:
+// Streaming: each piece is tagged (answer / thinking / tool call) — see Reasoning mode below.
 await foreach (var chunk in chat.SendMessageStreamingAsync("Tell me a joke"))
-    Console.Write(chunk);
+    Console.Write(chunk.Text);
 ```
 
 ### Function calling
@@ -105,10 +105,35 @@ an upstream issue that also affects Google's own CLI). Measured numbers, require
 root-cause are in
 [docs/speculative-decoding.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/speculative-decoding.md).
 
+### Reasoning mode (thinking)
+
+Models with a reasoning template (the Gemma builds) can be told to think before answering:
+
+```csharp
+using var chat = engine.CreateConversation(new LiteRtConversationOptions
+{
+    EnableThinking = true,             // Gemma reasoning mode (sets enable_thinking)
+    FilterThinkingFromKvCache = true,  // keep the (long) reasoning out of the context window
+});
+```
+
+The reasoning trace comes back **separate** from the answer — on the blocking `Send` via
+`response.Thinking` (and the full `response.Channels` map), and when streaming each
+`LiteRtStreamChunk` is tagged by `Kind` (`Answer` / `Thinking` / `ToolCall`):
+
+```csharp
+await foreach (var chunk in chat.SendMessageStreamingAsync("Why is the sky blue?"))
+    Console.Write(chunk.IsThinking ? $"\n[thinking] {chunk.Text}" : chunk.Text);
+```
+
+Reasoning mode is set per-conversation via extra context; for arbitrary template variables use the
+raw `ExtraContext` (a JSON-object string) escape hatch; on a model whose template does not use
+`enable_thinking` it is a harmless no-op.
+
 See [`samples/Console`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/Console)
-for a runnable demo (`--tools` for the function-calling loop, `--spec` for speculative decoding) and
+for a runnable demo (`--tools` for the function-calling loop, `--spec` for speculative decoding, `--thinking` for reasoning mode) and
 [`samples/Maui`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/Maui) for a
-full Android/Windows chat app with model download, streaming, tools and a speculative-decoding toggle.
+full Android/Windows chat app with model download, streaming, tools, plus speculative-decoding and reasoning-mode toggles.
 
 ## Why .NET 10 only?
 
