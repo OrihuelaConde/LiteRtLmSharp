@@ -53,9 +53,12 @@ storage on first run and pass its path to `LiteRtEngine.Load`.
    checksums; zero `sampler_factory` warnings → GPU sampling active; correct output). No
    perceptible speed gain yet: the big jump (~3×, #2211) additionally requires speculative
    decoding, now exposed as `LiteRtEngineOptions.EnableSpeculativeDecoding`
-   (`litert_lm_engine_settings_set_enable_speculative_decoding`). Measuring the ~3× on a real
-   Adreno device is the open follow-up — on desktop it doesn't help (CPU regresses; desktop WebGPU
-   needs the cache off and still doesn't speed up here). See [speculative-decoding.md](speculative-decoding.md).
+   (`litert_lm_engine_settings_set_enable_speculative_decoding`). ✅ Measured on this device
+   (Adreno 650, OpenCL, 2026-06-16): also neutral (~1.01×, 14.1 vs 13.9 tok/s). logcat confirms MTP
+   runs correctly on GPU (drafter compiles on OpenCL, GPU sampler active, no fallback), but draft
+   acceptance is only ~32% — too low to beat the drafter overhead on this older GPU. Same story on
+   desktop (CPU regresses; WebGPU needs the cache off and still doesn't speed up). A newer flagship
+   GPU is the remaining thing to try. See [speculative-decoding.md](speculative-decoding.md).
 
 ## Risks
 - Runner NDK version vs r28b+.

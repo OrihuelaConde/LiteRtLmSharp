@@ -93,9 +93,12 @@ drift). The remaining 52 group into six areas, in suggested priority order:
    and doesn't help there either (0.85× in a fair cache-off A/B, 35.5 vs 41.8 tok/s — our WebGPU
    sampler falls back to CPU; plain GPU with the cache is ~85 tok/s).
    The cache requirement is an upstream file-sharing bug confirmed against Google's own CLI (see
-   watchlist), fixed our side by binding `engine_settings_set_cache_dir`. The expected ~3× is on
-   accelerators (Android OpenCL/Adreno) — real-device validation is the open follow-up. Full
-   write-up: [speculative-decoding.md](speculative-decoding.md).
+   watchlist), fixed our side by binding `engine_settings_set_cache_dir`. ✅ Real-device check
+   (Moto G100 / Adreno 650 / OpenCL, 2026-06-16) is **also neutral (~1.01×)**: logcat confirms MTP
+   runs correctly (drafter compiles on OpenCL, GPU sampler loads via the patchelf, no CPU fallback),
+   but draft acceptance is only **~32%** (399 drafted / 126 verified — model/prompt-bound, same as
+   desktop's ~0.317), too low to beat the drafter overhead on this older GPU. A newer flagship GPU is
+   the remaining thing to try for the ~3×. Full write-up: [speculative-decoding.md](speculative-decoding.md).
 2. **macOS validation**: ✅ CI, CPU and GPU — `model-tests.yml` runs the full suite weekly on
    `macos-15` (Apple Silicon): CPU 6/6 and GPU 6/6 (run 27458626459, 2026-06-13), both
    including the real constrained-decoding loop. The GPU pass is now a REQUIRED check (no

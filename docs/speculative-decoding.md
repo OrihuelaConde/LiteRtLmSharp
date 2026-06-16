@@ -94,7 +94,7 @@ native benchmark API's `decode_tokens_per_sec` for the turn.
 | win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, 2026-06-15) | 41.8 tok/s | 35.5 tok/s | **0.85×** | A/B both with cache off; plain GPU *with* the disk cache ≈85 tok/s |
 | linux-x64 · CPU (CI) | _weekly_ | _weekly_ | _weekly_ | from `model-tests.yml` |
 | osx-arm64 · CPU (CI) | _weekly_ | _weekly_ | _weekly_ | from `model-tests.yml` |
-| android-arm64 · GPU OpenCL/Adreno | _TBD (real device)_ | _TBD_ | _TBD_ | where upstream reports ≈3× |
+| android-arm64 · GPU OpenCL, Adreno 650 (Moto G100, 2026-06-16) | 13.9 tok/s | 14.1 tok/s | **~1.01×** | runs correctly on GPU (drafter on OpenCL, GPU sampler active, no fallback); ~32% draft acceptance, too low to beat the drafter overhead on this older GPU |
 
 ### Findings
 
@@ -111,10 +111,17 @@ native benchmark API's `decode_tokens_per_sec` for the turn.
   fallback), which is expensive in the tight draft/verify loop; and disabling the disk cache itself
   costs throughput here (plain GPU *with* the cache runs ~85 tok/s). So the drafter's overhead isn't
   recovered on this desktop config.
-- **Accelerators are where it wins.** Upstream's ≈3× figure (LiteRT-LM#2211) is on
-  mobile/accelerator GPU (e.g. Android OpenCL/Adreno), where verification is cheap relative to the
-  drafter and the GPU sampler is available. Validating that on a real Android device is the
-  remaining open item.
+- **A real accelerator (Adreno 650) also shows no win here.** Validated on a Moto G100 (Android 12,
+  Adreno 650, OpenCL): MTP runs **correctly** — logcat confirms `enable_speculative_decoding: true`,
+  the drafter compiles on the **OpenCL delegate** (its `mtp_drafter` subgraph initializes on GPU
+  alongside decode/prefill/verify), and the **GPU sampler loads** (the Android `patchelf` works, so
+  there's no CPU-sampling fallback here, unlike desktop WebGPU). Yet throughput is flat: 14.1 (on)
+  vs 13.9 (off) tok/s, ~1.01×. The drafter's **acceptance rate is ~32%** (399 drafted, 126 verified)
+  — essentially identical to desktop (~0.317), so acceptance is **model/prompt-bound, not
+  hardware-bound**. At ~32% acceptance the per-step drafter cost roughly cancels its benefit on this
+  older GPU. Upstream's ≈3× (LiteRT-LM#2211) presumably needs a newer/faster accelerator (cheaper
+  verification relative to the drafter) and/or a higher-acceptance workload; a recent flagship GPU is
+  the remaining thing to try.
 
 ## Root cause: the disk cache
 
@@ -155,5 +162,6 @@ the closed `libLiteRtWebGpuAccelerator` (inferred `ERROR_SHARING_VIOLATION`).
   small (~3%), but it weighs more on the speculative draft/verify loop.
 
 In short: ship the flag; on CPU it works (default cache) but can be slower; on the desktop WebGPU GPU
-set `CacheDir = CacheDisabled`; reach for it on accelerators with an MTP-capable model. The samples
-apply the cache workaround automatically so the toggle just works.
+set `CacheDir = CacheDisabled`; reach for it on a modern/fast accelerator with an MTP-capable model
+(older mobile GPUs like the Adreno 650 show no win at ~32% acceptance). The samples apply the cache
+workaround automatically so the toggle just works.
