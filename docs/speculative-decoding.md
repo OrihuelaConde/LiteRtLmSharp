@@ -92,14 +92,15 @@ native benchmark API's `decode_tokens_per_sec` for the turn.
 |---|---:|---:|---:|---|
 | win-x64 · CPU (dev box, 2026-06-15) | 29.9 tok/s | 23.4 tok/s | **0.78×** | works, but slower — see below |
 | win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, 2026-06-15) | 41.8 tok/s | 35.5 tok/s | **0.85×** | A/B both with cache off; plain GPU *with* the disk cache ≈85 tok/s |
-| linux-x64 · CPU (CI) | _weekly_ | _weekly_ | _weekly_ | from `model-tests.yml` |
-| osx-arm64 · CPU (CI) | _weekly_ | _weekly_ | _weekly_ | from `model-tests.yml` |
+| linux-x64 · CPU (CI ubuntu-latest, 2026-06-16) | 16.7 tok/s | 12.2 tok/s | **0.73×** | from `model-tests.yml` |
+| osx-arm64 · CPU (CI macos-15, 2026-06-16) | 21.1 tok/s | 20.5 tok/s | **0.97×** | from `model-tests.yml` |
 | android-arm64 · GPU OpenCL, Adreno 650 (Moto G100, 2026-06-16) | 13.9 tok/s | 14.1 tok/s | **~1.01×** | runs correctly on GPU (drafter on OpenCL, GPU sampler active, no fallback); ~32% draft acceptance, too low to beat the drafter overhead on this older GPU |
 
 ### Findings
 
-- **CPU regresses.** On desktop CPU the drafter + verification overhead is not amortized, so
-  speculative decoding is a net loss for this model (≈0.78×). This matches the general result that
+- **CPU regresses (every platform).** The drafter + verification overhead is not amortized on CPU, so
+  speculative decoding is a net loss-to-neutral for this model: **0.73×** (linux-x64 CI), **0.78×**
+  (win-x64 dev box), **0.97×** (osx-arm64 CI). This matches the general result that
   speculative decoding helps memory-bandwidth-bound (accelerator) decode, not compute-bound CPU
   decode. Both outputs were coherent, full paragraphs, and the `*.mtp_drafter.xnnpack_cache_*` file
   produced alongside the model confirms the drafter was actually engaged.
