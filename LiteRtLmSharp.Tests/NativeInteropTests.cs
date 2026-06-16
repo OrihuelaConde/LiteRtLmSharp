@@ -198,12 +198,20 @@ public sealed class SpeculativeDecodingBenchmarkTests(ITestOutputHelper output)
 
         // Emit a Markdown row so the weekly CI log (and a copy/paste into docs/speculative-decoding.md)
         // captures the measured speedup per backend.
-        _output.WriteLine("| backend | spec off decode tok/s | spec on decode tok/s | speedup | TTFT off | TTFT on |");
-        _output.WriteLine("|---|---:|---:|---:|---:|---:|");
-        _output.WriteLine(
-            $"| {backend} | {baseline.DecodeTps:F1} | {spec.DecodeTps:F1} | {ratio:F2}x | {baseline.Ttft:F2}s | {spec.Ttft:F2}s |");
+        string table =
+            "| backend | spec off decode tok/s | spec on decode tok/s | speedup | TTFT off | TTFT on |\n"
+            + "|---|---:|---:|---:|---:|---:|\n"
+            + $"| {backend} | {baseline.DecodeTps:F1} | {spec.DecodeTps:F1} | {ratio:F2}x | {baseline.Ttft:F2}s | {spec.Ttft:F2}s |";
+        _output.WriteLine(table);
         _output.WriteLine($"spec OFF output: {baseline.Text}");
         _output.WriteLine($"spec ON  output: {spec.Text}");
+
+        // On GitHub Actions, also append the row to the job's step summary: the CI runs at
+        // verbosity=normal, which swallows ITestOutputHelper output for passing tests, so the numbers
+        // would otherwise be lost. This lands them on the run's Summary page instead.
+        string? stepSummary = Environment.GetEnvironmentVariable("GITHUB_STEP_SUMMARY");
+        if (!string.IsNullOrEmpty(stepSummary))
+            File.AppendAllText(stepSummary, $"### Speculative decoding A/B — {backend}\n\n{table}\n\n");
 
         // The benchmark API must actually report decode throughput on both runs (proves the binding
         // and that benchmark instrumentation is wired through engine creation).
