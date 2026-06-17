@@ -37,6 +37,13 @@ public class NativeInteropTests
     [Fact]
     public void OptionalArgs_NativeEntrypoints_Resolve()
     {
+        // Touch LiteRtEngine first so its static ctor runs NativeLibraryResolver.Initialize(): this
+        // test calls the native lib DIRECTLY (not via LiteRtEngine), and on Linux the .so lives in
+        // runtimes/<rid>/native and is only found once the resolver is registered. Without this the
+        // call fails with DllNotFoundException when it happens to run before any other LiteRtEngine
+        // use (real consumers always create an engine first, so this just mirrors that setup).
+        LiteRtEngine.SetMinLogLevel(3);
+
         nint args = LiteRtLmNative.litert_lm_conversation_optional_args_create();
         Assert.NotEqual(nint.Zero, args);
         // The only setter the C API exposes — must not throw on a version-matched binary.

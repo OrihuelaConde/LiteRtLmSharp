@@ -168,13 +168,13 @@ drift). The remaining 44 group into six areas, in suggested priority order:
 6. **Optional**: binding coverage push per the "C API coverage" section above. **The high-value group is
    now complete** — ✅ history restore + clone (2026-06-16), ✅ cache dir + ✅ speculative decoding
    (2026-06-15), ✅ multimodal image/audio (2026-06-17); next is the tokenizer surface (exact token
-   counting). Remaining multimodal follow-ups: validate the vision/audio path on **linux-x64 / osx-arm64**
-   (win-x64 checked locally on CPU **and** GPU; `model-tests.yml` runs the gated `LITERTLM_TEST_VISION`
-   tests on the CPU leg of all three, and on the **osx-arm64 GPU** leg). win-x64 GPU: vision runs on the
-   WebGPU backend; audio-on-GPU fails because **gemma-4's audio sub-model is CPU-constrained** (the model
-   declares "requires one of [cpu]"), so audio runs on CPU — a model property, not a platform limitation.
-   The macOS GPU leg's audio test should skip with the same "Audio backend constraint mismatch" message,
-   confirming it cross-platform; if it instead loads/passes, revisit (a model could allow GPU audio).
+   counting). **Multimodal is validated cross-platform** (`model-tests.yml` run 27712370474, 2026-06-17):
+   vision **and** audio pass on the CPU leg of **linux-x64, win-x64 and osx-arm64**, and vision passes on
+   the **osx-arm64 GPU** leg (WebGPU→Metal). Audio-on-GPU does NOT run because **gemma-4's audio sub-model
+   is CPU-constrained** (the model declares "requires one of [cpu]"); the macOS GPU leg's audio test skips
+   with the exact `Audio backend constraint mismatch` message — identical to win-x64 — confirming it's a
+   model property, not a platform limitation. So audio always runs on CPU (the sample falls it back). No
+   open multimodal follow-ups remain; next binding area is the tokenizer surface.
    `android-x64` for emulators; Desktop meta-package;
    ✅ ~~CONTRIBUTING + issue templates~~ (2026-06-11: CONTRIBUTING.md, issue forms, PR template,
    SECURITY.md, Discussions enabled); scheduled smoke-test workflow that consumes the published
