@@ -7,8 +7,8 @@
 inference (e.g. Gemma) for any .NET app, including MAUI. P/Invoke over LiteRT-LM's C API, with native
 binaries distributed per-RID as NuGet packages (LLamaSharp-style).
 
-> Status: **preview**. Chat, token streaming, function calling, speculative decoding,
-> reasoning mode and benchmarking working.
+> Status: **preview**. Chat, token streaming, function calling, multimodal (image/audio),
+> conversation restore/clone, reasoning mode, speculative decoding and benchmarking working.
 >
 > | Platform | Native | NuGet | CPU | GPU | Validated on |
 > |---|:---:|:---:|:---:|:---:|---|
@@ -23,13 +23,14 @@ binaries distributed per-RID as NuGet packages (LLamaSharp-style).
 > needs xcframework packaging.</sub>
 >
 > See the [roadmap](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md)
-> for the full status and pending work.
+> for the full status and pending work, and the
+> [changelog](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/CHANGELOG.md) for release history.
 
 ## Quick start
 
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="0.1.0-preview.1" />
-<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="0.1.0-preview.1" />
+<PackageReference Include="LiteRtLmSharp" Version="0.1.0-preview.2" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="0.1.0-preview.2" />
 <!-- or LiteRtLmSharp.runtime.linux-x64 / android-arm64 / osx-arm64, per target -->
 ```
 
@@ -38,6 +39,7 @@ version number**. Which LiteRT-LM native build each release wraps:
 
 | LiteRtLmSharp | LiteRT-LM native |
 |---|---|
+| 0.1.0-preview.2 | v0.13.1 |
 | 0.1.0-preview.1 | v0.13.1 |
 
 ```csharp
