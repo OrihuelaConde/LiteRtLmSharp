@@ -232,6 +232,153 @@ public class StreamChunkSplitTests
 }
 
 /// <summary>
+/// Pure unit tests for the conversation-history (restore) surface: the <see cref="LiteRtMessage"/>
+/// model, its wire serialization (<see cref="LiteRtJson.Messages"/>), the
+/// <see cref="LiteRtResponse.ToMessage"/> capture, the typed/raw resolution
+/// (<see cref="LiteRtJson.ResolveHistory"/>), and the persist/reload round-trip. No model needed, so
+/// these always run in CI and pin the wire format the native <c>conversation_config_set_messages</c>
+/// expects (roles, content parts, tool calls).
+/// </summary>
+public class HistoryMessageTests
+{
+    [Fact]
+    public void Serialize_UserAndModel_ProducesWireShape()
+    {
+        string json = LiteRtMessage.Serialize([LiteRtMessage.User("Hi"), LiteRtMessage.Model("Hello!")]);
+        using var doc = JsonDocument.Parse(json);
+        JsonElement root = doc.RootElement;
+
+        Assert.Equal(JsonValueKind.Array, root.ValueKind);
+        Assert.Equal(2, root.GetArrayLength());
+        Assert.Equal("user", root[0].GetProperty("role").GetString());
+        // Assistant turns serialize to the wire role "model" (not "assistant").
+        Assert.Equal("model", root[1].GetProperty("role").GetString());
+        JsonElement part = root[0].GetProperty("content")[0];
+        Assert.Equal("text", part.GetProperty("type").GetString());
+        Assert.Equal("Hi", part.GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public void Serialize_ModelToolCall_EmitsFunctionShape()
+    {
+        var msg = LiteRtMessage.Model("", [new LiteRtToolCall("get_weather", """{"location":"Tokyo"}""")]);
+        using var doc = JsonDocument.Parse(LiteRtMessage.Serialize([msg]));
+        JsonElement call = doc.RootElement[0].GetProperty("tool_calls")[0];
+
+        Assert.Equal("function", call.GetProperty("type").GetString());
+        Assert.Equal("get_weather", call.GetProperty("function").GetProperty("name").GetString());
+        // arguments is a raw JSON object, not a string.
+        Assert.Equal("Tokyo", call.GetProperty("function").GetProperty("arguments").GetProperty("location").GetString());
+        // An empty-text model turn omits the content array (matches the upstream Message.toJson).
+        Assert.False(doc.RootElement[0].TryGetProperty("content", out _));
+    }
+
+    [Fact]
+    public void Serialize_ToolResults_EmitsToolResponseParts()
+    {
+        var msg = LiteRtMessage.Tool(new LiteRtToolResult("get_weather", """{"temp":15}"""));
+        using var doc = JsonDocument.Parse(LiteRtMessage.Serialize([msg]));
+        JsonElement m = doc.RootElement[0];
+
+        Assert.Equal("tool", m.GetProperty("role").GetString());
+        JsonElement part = m.GetProperty("content")[0];
+        Assert.Equal("tool_response", part.GetProperty("type").GetString());
+        Assert.Equal("get_weather", part.GetProperty("name").GetString());
+        Assert.Equal(15, part.GetProperty("response").GetProperty("temp").GetInt32());
+    }
+
+    [Fact]
+    public void RoundTrip_PreservesRolesTextAndCalls()
+    {
+        IReadOnlyList<LiteRtMessage> original =
+        [
+            LiteRtMessage.System("Be terse."),
+            LiteRtMessage.User("Weather in Tokyo?"),
+            LiteRtMessage.Model("", [new LiteRtToolCall("get_weather", """{"location":"Tokyo"}""")]),
+            LiteRtMessage.Tool(new LiteRtToolResult("get_weather", """{"temp":15}""")),
+            LiteRtMessage.Model("It is 15 degrees."),
+        ];
+
+        IReadOnlyList<LiteRtMessage> restored = LiteRtMessage.Deserialize(LiteRtMessage.Serialize(original));
+
+        Assert.Equal(5, restored.Count);
+        Assert.Equal(LiteRtMessageRole.System, restored[0].Role);
+        Assert.Equal("Be terse.", restored[0].Text);
+        Assert.Equal(LiteRtMessageRole.User, restored[1].Role);
+        Assert.Equal(LiteRtMessageRole.Model, restored[2].Role);
+        Assert.Equal("get_weather", restored[2].ToolCalls[0].Name);
+        Assert.Equal(LiteRtMessageRole.Tool, restored[3].Role);
+        Assert.Equal("get_weather", restored[3].ToolResults[0].Name);
+        Assert.Equal("It is 15 degrees.", restored[4].Text);
+    }
+
+    [Fact]
+    public void Deserialize_AssistantRole_NormalizesToModel()
+    {
+        var restored = LiteRtMessage.Deserialize(
+            """[{"role":"assistant","content":[{"type":"text","text":"hi"}]}]""");
+        Assert.Equal(LiteRtMessageRole.Model, restored[0].Role);
+        Assert.Equal("hi", restored[0].Text);
+    }
+
+    [Fact]
+    public void ToMessage_CapturesTextAndCalls_DropsThinking()
+    {
+        var withThinking = LiteRtResponse.Parse(
+            """{"role":"assistant","content":[{"type":"text","text":"42"}],"channels":{"thinking":"let me compute"}}""");
+        LiteRtMessage captured = withThinking.ToMessage();
+
+        Assert.Equal(LiteRtMessageRole.Model, captured.Role);
+        Assert.Equal("42", captured.Text);
+        // The reasoning trace must NOT be replayed into the restored context.
+        Assert.DoesNotContain("compute", LiteRtMessage.Serialize([captured]));
+
+        var toolCall = LiteRtResponse.Parse(
+            """{"role":"assistant","tool_calls":[{"function":{"name":"f","arguments":{"x":1}}}]}""");
+        Assert.Single(toolCall.ToMessage().ToolCalls);
+        Assert.Empty(toolCall.ToMessage(includeToolCalls: false).ToolCalls);
+    }
+
+    [Fact]
+    public void ResolveHistory_TypedWinsOverRaw()
+    {
+        string? resolved = LiteRtJson.ResolveHistory([LiteRtMessage.User("typed")], """[{"role":"user"}]""");
+        Assert.Contains("typed", resolved);
+    }
+
+    [Fact]
+    public void ResolveHistory_RawArrayPassesThrough_AndBothEmptyIsNull()
+    {
+        Assert.Null(LiteRtJson.ResolveHistory(null, null));
+        Assert.Null(LiteRtJson.ResolveHistory([], "   "));
+        Assert.Equal("""[{"role":"user"}]""", LiteRtJson.ResolveHistory(null, """[{"role":"user"}]"""));
+    }
+
+    [Fact]
+    public void ResolveHistory_NonArrayRaw_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => LiteRtJson.ResolveHistory(null, """{"role":"user"}"""));
+        Assert.Throws<ArgumentException>(() => LiteRtJson.ResolveHistory(null, "not json"));
+    }
+
+    [Fact]
+    public void Deserialize_NonArray_Throws()
+        => Assert.Throws<ArgumentException>(() => LiteRtMessage.Deserialize("""{"role":"user"}"""));
+
+    [Fact]
+    public void Deserialize_StringOrObjectContent_PreservesText()
+    {
+        // Foreign clients (Kotlin/C++/hand-authored) and the C API's raw system message may send content
+        // as a bare string or a single object, not only an array — Deserialize must not drop the text.
+        var fromString = LiteRtMessage.Deserialize("""[{"role":"system","content":"Be terse."}]""");
+        Assert.Equal("Be terse.", fromString[0].Text);
+
+        var fromObject = LiteRtMessage.Deserialize("""[{"role":"user","content":{"type":"text","text":"hi"}}]""");
+        Assert.Equal("hi", fromObject[0].Text);
+    }
+}
+
+/// <summary>
 /// Loads the model engine ONCE for the whole test class. Only one engine may be ALIVE at a
 /// time (and engine creation is the expensive step), so engine-backed tests share a single
 /// <see cref="LiteRtEngine"/> and create per-test conversations from it.
@@ -315,6 +462,70 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
                 sb.Append(chunk.Text);
 
         Assert.True(sb.Length > 0, "Expected a non-empty streamed response.");
+    }
+
+    /// <summary>
+    /// Restore: a conversation created with <see cref="LiteRtConversationOptions.History"/> re-prefills
+    /// the prior turns, so it carries more context than a fresh one. Deterministic proof that the
+    /// history wires through native (<c>conversation_config_set_messages</c>): after sending the same
+    /// probe to a fresh conversation and to one seeded with a multi-turn history, the restored
+    /// conversation's KV cache holds strictly more tokens. Also asserts the restored reply is non-empty.
+    /// Skipped unless LITERTLM_TEST_MODEL is set.
+    /// </summary>
+    [SkippableFact]
+    public void Restore_History_PrefillsPriorTurns()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        const string probe = "Reply with one short sentence.";
+
+        using var fresh = _fixture.Engine!.CreateConversation();
+        fresh.SendMessage(probe);
+        int freshCount = fresh.TokenCount;
+
+        // A round-trip through Serialize/Deserialize, exactly as an app would persist and reload it.
+        IReadOnlyList<LiteRtMessage> history = LiteRtMessage.Deserialize(LiteRtMessage.Serialize(
+        [
+            LiteRtMessage.User("My name is Ada and I love astronomy."),
+            LiteRtMessage.Model("Nice to meet you, Ada. Astronomy is fascinating."),
+        ]));
+        using var restored = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions { History = history });
+        var response = restored.Send(probe);
+        int restoredCount = restored.TokenCount;
+
+        Assert.False(string.IsNullOrWhiteSpace(response.RawJson), "Expected a non-empty reply after restore.");
+        Assert.True(restoredCount > freshCount,
+            $"Restored conversation should hold the prefilled history (got {restoredCount} tokens vs {freshCount} fresh).");
+    }
+
+    /// <summary>
+    /// Clone: <see cref="LiteRtConversation.Clone"/> duplicates the prefilled KV-cache state into an
+    /// independent conversation. Deterministic checks: right after cloning the clone holds the same
+    /// token count as the parent; sending on the clone advances only the clone (the parent is
+    /// untouched). Skipped if the engine/backend does not implement cloning (the native call throws).
+    /// Skipped unless LITERTLM_TEST_MODEL is set.
+    /// </summary>
+    [SkippableFact]
+    public void Clone_Conversation_ForksIndependentState()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var baseConv = _fixture.Engine!.CreateConversation();
+        baseConv.SendMessage("Remember this secret word: banana.");
+        int baseCount = baseConv.TokenCount;
+
+        LiteRtConversation clone;
+        try { clone = baseConv.Clone(); }
+        catch (LiteRtException ex) { Skip.If(true, $"Clone not supported on this engine/backend: {ex.Message}"); return; }
+
+        using (clone)
+        {
+            Assert.Equal(baseCount, clone.TokenCount); // clone copied the parent's prefilled state
+
+            var reply = clone.Send("What was the secret word? Answer with one word.");
+            Assert.False(string.IsNullOrWhiteSpace(reply.RawJson), "Expected a non-empty reply from the clone.");
+            Assert.True(clone.TokenCount > baseCount, "Sending on the clone should advance its own KV cache.");
+            Assert.Equal(baseCount, baseConv.TokenCount); // the parent is untouched by the clone
+        }
     }
 
     /// <summary>

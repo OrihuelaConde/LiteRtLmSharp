@@ -35,6 +35,7 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | System prompt, sampler params, max tokens, token count (context gauge) | ✅ |
 | Speculative decoding (MTP drafter) + benchmark API (decode/prefill tok/s, TTFT, init time) | ✅ |
 | Reasoning mode (`enable_thinking` via extra context) + KV-cache thinking filter | ✅ |
+| Restore chat history (`History`/`HistoryJson`, `LiteRtMessage`) + conversation clone (`Clone()`) | ✅ |
 | AOT/trim-friendly (`[LibraryImport]`, `[UnmanagedCallersOnly]`, no reflection) | ✅ |
 | Multimodal (image/audio), tokenize/detokenize | 🔜 see C API coverage below |
 
@@ -46,16 +47,16 @@ is the total context window; VC++ Redistributable required on win-x64; Android G
 
 ## C API coverage (audit 2026-06-12, header v0.13.1)
 
-**39 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
-drift). The remaining 50 group into six areas, in suggested priority order:
+**41 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
+drift). The remaining 48 group into six areas, in suggested priority order:
 
 ### High value (user-facing features)
 
 | Feature | Functions | Notes |
 |---|---|---|
-| Restore chat history | `conversation_config_set_messages` | Rebuild a conversation from persisted messages — pairs with context-window management (upstream #1878). |
+| ✅ Restore chat history | `conversation_config_set_messages` | **Done 2026-06-16** (`LiteRtConversationOptions.History` typed `LiteRtMessage` list + raw `HistoryJson`; `LiteRtResponse.ToMessage()` + `LiteRtMessage.Serialize/Deserialize` for the caller-owned round-trip — the C API has no history getter). Replays the history through prefill (not a KV snapshot). Verified on gemma-4-E2B (CPU + win-x64 GPU/WebGPU): a restored conversation holds strictly more KV tokens than a fresh one. See [conversation-state.md](conversation-state.md). |
 | ✅ Extra context | `conversation_config_set_extra_context` | **Done 2026-06-16** (`LiteRtConversationOptions.EnableThinking` for Gemma reasoning mode + raw `ExtraContext` escape hatch). Both samples expose a thinking toggle; pairs with the KV-cache thinking filter below. |
-| Conversation clone | `conversation_clone` | Fork/branch a conversation reusing the KV cache. |
+| ✅ Conversation clone | `conversation_clone` | **Done 2026-06-16** (`LiteRtConversation.Clone()` → independent conversation duplicating the prefilled KV-cache state; throws `LiteRtException` when the engine/backend returns `Unimplemented`). NOT CPU-only — verified on gemma-4-E2B on both CPU and win-x64 GPU (WebGPU): the clone copies the parent's token count, advances on its own, and leaves the parent untouched. See [conversation-state.md](conversation-state.md). |
 | ✅ Engine cache dir | `engine_settings_set_cache_dir` | **Done 2026-06-15** (`LiteRtEngineOptions.CacheDir`, + `CacheDisabled`/`CacheInMemory` sentinels). Persistent compiled-shader/weight cache → faster GPU re-init; also the fix for speculative decoding on WebGPU (set `CacheDisabled`). |
 | ✅ Speculative decoding | `engine_settings_set_enable_speculative_decoding` | **Done 2026-06-15** (`EnableSpeculativeDecoding`). Measured (gemma-4-E2B): desktop CPU **regresses** (~0.78×); desktop **WebGPU works** with `CacheDir=CacheDisabled` but doesn't help here (0.85× in a fair cache-off A/B; CPU-sampling fallback) — the disk-cache requirement is an upstream issue, see watchlist; accelerators are the expected ~3× win. See [speculative-decoding.md](speculative-decoding.md). |
 | Multimodal messages | `engine_settings_set_max_num_images`, `conversation_optional_args_create/delete/set_visual_token_budget` | Image/audio content is mostly **wrapper work**: the bound `send_message` already accepts `{"type":"image","blob":<base64>}` content parts; vision/audio backends are parameters of the already-bound `engine_settings_create`. |
@@ -163,9 +164,10 @@ drift). The remaining 50 group into six areas, in suggested priority order:
    no consumer-side workaround for the missing `DT_NEEDED`.
 5. **iOS app phase**: Apple Developer Program → xcframework + `.targets` NativeReference →
    MAUI `net10.0-ios` app → CI signing → TestFlight.
-6. **Optional**: binding coverage push per the "C API coverage" section above (start with the
-   high-value group: history restore, clone, cache dir, speculative decoding,
-   multimodal); `android-x64` for emulators; Desktop meta-package;
+6. **Optional**: binding coverage push per the "C API coverage" section above. The high-value group is
+   now done except **multimodal** (image/audio) — ✅ history restore + clone (2026-06-16), ✅ cache dir +
+   ✅ speculative decoding (2026-06-15); next is multimodal, then the tokenizer surface.
+   `android-x64` for emulators; Desktop meta-package;
    ✅ ~~CONTRIBUTING + issue templates~~ (2026-06-11: CONTRIBUTING.md, issue forms, PR template,
    SECURITY.md, Discussions enabled); scheduled smoke-test workflow that consumes the published
    packages from nuget.org; PR upstream to be listed among the language bindings (planned right

@@ -135,6 +135,41 @@ for a runnable demo (`--tools` for the function-calling loop, `--spec` for specu
 [`samples/Maui`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/Maui) for a
 full Android/Windows chat app with model download, streaming, tools, plus speculative-decoding and reasoning-mode toggles.
 
+### Conversation state: restore & clone
+
+Resume a chat after a restart, or branch a live one. **Restore** rebuilds a conversation from messages
+you persisted; **clone** forks a live conversation's in-memory state without re-running the shared
+prefix.
+
+```csharp
+// Restore: record turns as they happen, persist, then reload into a new conversation.
+var history = new List<LiteRtMessage> { LiteRtMessage.User("My name is Ada.") };
+history.Add(chat.Send("My name is Ada.").ToMessage());   // capture the assistant turn (role "model")
+File.WriteAllText("chat.json", LiteRtMessage.Serialize(history));
+
+using var resumed = engine.CreateConversation(new LiteRtConversationOptions
+{
+    History = LiteRtMessage.Deserialize(File.ReadAllText("chat.json")),  // re-prefilled on create
+});
+resumed.SendMessage("What is my name?");                 // -> "Ada"
+```
+
+```csharp
+// Clone: branch into independent continuations that share the prefilled prefix.
+using var baseChat = engine.CreateConversation();
+baseChat.SendMessage("You are a travel agent. The user is going to Tokyo.");
+using var budget = baseChat.Clone();
+using var luxury = baseChat.Clone();
+budget.SendMessage("Suggest a budget itinerary.");
+luxury.SendMessage("Suggest a luxury itinerary.");       // baseChat stays untouched
+```
+
+Restoring replays the history through prefill (it counts against `MaxNumTokens`); cloning copies state
+in memory and is verified on CPU and GPU (an executor that does not implement it throws, so be ready to
+fall back to `History`). The C API has no history getter, so the message log is yours to keep. Full guide, the tools round-trip, and the raw
+`HistoryJson` escape hatch:
+[docs/conversation-state.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/conversation-state.md).
+
 ## Why .NET 10 only?
 
 .NET 10 is the current LTS (released November 2025; .NET 8 reaches end of support in November

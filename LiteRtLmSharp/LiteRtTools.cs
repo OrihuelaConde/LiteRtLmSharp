@@ -68,6 +68,18 @@ public sealed class LiteRtResponse
     public bool IsToolCall => ToolCalls.Count > 0;
 
     /// <summary>
+    /// Captures this reply as a <see cref="LiteRtMessage"/> (role <see cref="LiteRtMessageRole.Model"/>)
+    /// so it can be recorded in a history and later restored via
+    /// <see cref="LiteRtConversationOptions.History"/>. Preserves the answer <see cref="Text"/> and, when
+    /// <paramref name="includeToolCalls"/> is true, the <see cref="ToolCalls"/>. The reasoning
+    /// (<see cref="Channels"/>/<see cref="Thinking"/>) is intentionally dropped — replaying a thinking
+    /// trace would re-consume the context window (the same reason
+    /// <see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/> exists).
+    /// </summary>
+    public LiteRtMessage ToMessage(bool includeToolCalls = true)
+        => LiteRtMessage.ModelTurn(Text, includeToolCalls ? ToolCalls : []);
+
+    /// <summary>
     /// Parses an engine response JSON into a <see cref="LiteRtResponse"/>.
     /// Recognized shapes (tolerant):
     ///   tool call:  {"role":"assistant","tool_calls":[{"function":{"name","arguments"}}]}
@@ -239,6 +251,109 @@ internal static class LiteRtJson
             }
             w.WriteEndArray();
         });
+
+    /// <summary>
+    /// Resolves the conversation history to a messages-array JSON string for
+    /// <c>conversation_config_set_messages</c>, or <c>null</c> when there is none. The typed
+    /// <paramref name="messages"/> wins when non-empty; otherwise <paramref name="rawJson"/> is used
+    /// after validating it is a JSON <b>array</b> (throws <see cref="ArgumentException"/> otherwise).
+    /// </summary>
+    public static string? ResolveHistory(IReadOnlyList<LiteRtMessage>? messages, string? rawJson)
+    {
+        if (messages is { Count: > 0 })
+            return Messages(messages);
+
+        if (string.IsNullOrWhiteSpace(rawJson))
+            return null;
+
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(rawJson); }
+        catch (JsonException ex)
+        {
+            throw new ArgumentException(
+                "LiteRtConversationOptions.HistoryJson must be a valid JSON array of messages.",
+                nameof(LiteRtConversationOptions.HistoryJson), ex);
+        }
+
+        using (doc)
+        {
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                throw new ArgumentException(
+                    $"LiteRtConversationOptions.HistoryJson must be a JSON array (got {doc.RootElement.ValueKind}).",
+                    nameof(LiteRtConversationOptions.HistoryJson));
+        }
+        return rawJson;
+    }
+
+    /// <summary>
+    /// Builds the messages-array JSON for <c>conversation_config_set_messages</c>, mirroring the
+    /// upstream <c>Message.toJson</c> shape: each entry is
+    /// <c>{"role",[content],[tool_calls]}</c>. Roles map to <c>system/user/model/tool</c>; text content
+    /// is <c>{"type":"text","text"}</c>, tool outputs are <c>{"type":"tool_response","name","response"}</c>,
+    /// and assistant tool calls are <c>{"type":"function","function":{"name","arguments"}}</c>.
+    /// </summary>
+    public static string Messages(IReadOnlyList<LiteRtMessage> messages)
+        => Build(w =>
+        {
+            w.WriteStartArray();
+            foreach (LiteRtMessage m in messages)
+            {
+                w.WriteStartObject();
+                w.WriteString("role", WireRole(m.Role));
+
+                bool hasText = !string.IsNullOrEmpty(m.Text);
+                if (hasText || m.ToolResults.Count > 0)
+                {
+                    w.WriteStartArray("content");
+                    if (hasText)
+                    {
+                        w.WriteStartObject();
+                        w.WriteString("type", "text");
+                        w.WriteString("text", m.Text);
+                        w.WriteEndObject();
+                    }
+                    foreach (LiteRtToolResult r in m.ToolResults)
+                    {
+                        w.WriteStartObject();
+                        w.WriteString("type", "tool_response");
+                        w.WriteString("name", r.Name);
+                        w.WritePropertyName("response");
+                        w.WriteRawValue(string.IsNullOrWhiteSpace(r.ResultJson) ? "null" : r.ResultJson);
+                        w.WriteEndObject();
+                    }
+                    w.WriteEndArray();
+                }
+
+                if (m.ToolCalls.Count > 0)
+                {
+                    w.WriteStartArray("tool_calls");
+                    foreach (LiteRtToolCall c in m.ToolCalls)
+                    {
+                        w.WriteStartObject();
+                        w.WriteString("type", "function");
+                        w.WriteStartObject("function");
+                        w.WriteString("name", c.Name);
+                        w.WritePropertyName("arguments");
+                        w.WriteRawValue(string.IsNullOrWhiteSpace(c.ArgumentsJson) ? "{}" : c.ArgumentsJson);
+                        w.WriteEndObject();
+                        w.WriteEndObject();
+                    }
+                    w.WriteEndArray();
+                }
+
+                w.WriteEndObject();
+            }
+            w.WriteEndArray();
+        });
+
+    private static string WireRole(LiteRtMessageRole role) => role switch
+    {
+        LiteRtMessageRole.System => "system",
+        LiteRtMessageRole.User => "user",
+        LiteRtMessageRole.Model => "model",
+        LiteRtMessageRole.Tool => "tool",
+        _ => "user",
+    };
 
     /// <summary>{"role":"tool","content":[{"name":...,"response":&lt;result&gt;}]}</summary>
     public static string ToolResults(IEnumerable<LiteRtToolResult> results)

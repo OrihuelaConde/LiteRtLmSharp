@@ -84,6 +84,33 @@ public sealed record LiteRtConversationOptions
     public IReadOnlyList<LiteRtTool>? Tools { get; init; }
 
     /// <summary>
+    /// Conversation history to restore (or a few-shot preface) — the prior turns are re-prefilled into
+    /// the KV cache when the conversation is created, so the model continues as if they had just
+    /// happened. Build the list with <see cref="LiteRtMessage"/> factories and capture assistant turns
+    /// with <see cref="LiteRtResponse.ToMessage"/>; persist and reload via
+    /// <see cref="LiteRtMessage.Serialize"/> / <see cref="LiteRtMessage.Deserialize"/>.
+    /// </summary>
+    /// <remarks>
+    /// The C API has no history getter, so the round-trip is caller-owned: record each turn yourself.
+    /// Restoring is a <i>replay through prefill</i>, not a zero-cost snapshot — it costs a prefill of the
+    /// history and counts against <see cref="LiteRtEngineOptions.MaxNumTokens"/>. Keep the system prompt
+    /// in <see cref="SystemMessage"/> OR as a leading <see cref="LiteRtMessageRole.System"/> message, not
+    /// both (the native side prepends <see cref="SystemMessage"/> before the history). Takes precedence
+    /// over <see cref="HistoryJson"/> when it is non-empty. Maps to the C API
+    /// <c>conversation_config_set_messages</c>.
+    /// </remarks>
+    public IReadOnlyList<LiteRtMessage>? History { get; init; }
+
+    /// <summary>
+    /// Raw escape hatch for <see cref="History"/>: the messages as a JSON <b>array</b> string (the format
+    /// <see cref="LiteRtMessage.Serialize"/> produces). Use it to pass persisted history verbatim without
+    /// re-parsing into typed messages, or to include content the typed model does not cover yet (e.g.
+    /// image/audio parts). Validated as a JSON array when the conversation is created — throws
+    /// <see cref="ArgumentException"/> otherwise. Ignored when <see cref="History"/> is non-empty.
+    /// </summary>
+    public string? HistoryJson { get; init; }
+
+    /// <summary>
     /// Force the model to emit valid (schema-constrained) output. Strongly recommended when
     /// <see cref="Tools"/> are set so tool-call arguments parse reliably.
     /// </summary>

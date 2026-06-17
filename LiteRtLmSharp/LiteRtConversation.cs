@@ -54,10 +54,15 @@ public sealed class LiteRtConversation : IDisposable
             string? extraContext = options is null
                 ? null
                 : LiteRtJson.ExtraContext(options.ExtraContext, options.EnableThinking);
+            // Resolves the typed History (wins) or the raw HistoryJson into a messages-array string;
+            // validates HistoryJson is an array before touching native.
+            string? historyJson = options is null
+                ? null
+                : LiteRtJson.ResolveHistory(options.History, options.HistoryJson);
             bool needsConfig = options is not null &&
                 (options.SystemMessage is not null || options.Sampler is not null ||
                  options.MaxOutputTokens > 0 || hasTools || options.EnableConstrainedDecoding ||
-                 extraContext is not null || options.FilterThinkingFromKvCache);
+                 extraContext is not null || options.FilterThinkingFromKvCache || historyJson is not null);
 
             if (needsConfig)
             {
@@ -106,6 +111,9 @@ public sealed class LiteRtConversation : IDisposable
 
                 if (options.FilterThinkingFromKvCache)
                     LiteRtLmNative.litert_lm_conversation_config_set_filter_channel_content_from_kv_cache(configPtr, true);
+
+                if (historyJson is not null)
+                    LiteRtLmNative.litert_lm_conversation_config_set_messages(configPtr, historyJson);
             }
 
             nint convPtr = LiteRtLmNative.litert_lm_conversation_create(engine.Ptr, configPtr);
@@ -174,6 +182,40 @@ public sealed class LiteRtConversation : IDisposable
             LastDecodeTokensPerSecond = decodeTurns > 0
                 ? LiteRtLmNative.litert_lm_benchmark_info_get_decode_tokens_per_sec_at(info.Ptr, decodeTurns - 1) : 0,
         };
+    }
+
+    /// <summary>
+    /// Forks this conversation into a new, independent one that starts from a copy of the current
+    /// prefilled (KV-cache) state — branch a conversation to explore several continuations without
+    /// re-prefilling the shared prefix. The clone advances on its own; this conversation is untouched.
+    /// </summary>
+    /// <remarks>
+    /// Call this only when the conversation is idle (no in-flight <see cref="SendMessageStreamingAsync"/>) —
+    /// conversations are not thread-safe. Dispose the clone like any conversation, before the engine.
+    /// Cloning duplicates state in memory; to persist a conversation across process restarts use
+    /// <see cref="LiteRtConversationOptions.History"/> instead.
+    /// </remarks>
+    /// <exception cref="LiteRtException">
+    /// The native clone failed. The usual cause is an engine/backend whose executor does not implement
+    /// cloning (the native layer returns <c>Unimplemented</c>). The standard executors do — cloning is
+    /// verified on both CPU and GPU (win-x64 WebGPU).
+    /// </exception>
+    public LiteRtConversation Clone()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        nint clonedPtr = LiteRtLmNative.litert_lm_conversation_clone(_conversation.Ptr);
+        if (clonedPtr == nint.Zero)
+            throw new LiteRtException(
+                "litert_lm_conversation_clone returned null. Cloning duplicates the conversation's " +
+                "prefilled KV-cache state into a new conversation, but some engines/backends do not " +
+                "implement it (the native layer returns 'Unimplemented'). To restore a conversation " +
+                "from persisted messages instead, create one with LiteRtConversationOptions.History.");
+
+        // The clone is a fully independent native conversation; it does not share or need the parent's
+        // config handles (those are only read at create time). Each conversation frees its own native
+        // object on Dispose, so the clone outlives a disposed parent as long as the engine is alive.
+        return new LiteRtConversation(new ConversationHandle(clonedPtr), config: null, sessionConfig: null);
     }
 
     /// <summary>Sends a user message and returns only the text answer (blocking).

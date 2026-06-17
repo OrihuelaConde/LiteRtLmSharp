@@ -97,6 +97,13 @@ internal static unsafe partial class LiteRtLmNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_conversation_config_set_tools(nint config, string tools_json);
 
+    /// <summary>Sets the initial messages (conversation history / few-shot preface) as a JSON
+    /// <b>array</b>. Consumed at <c>conversation_create</c>: parsed and appended to the preface after
+    /// the system message, then prefilled into the KV cache.</summary>
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_conversation_config_set_messages(nint config, string messages_json);
+
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_conversation_config_set_enable_constrained_decoding(
@@ -129,6 +136,14 @@ internal static unsafe partial class LiteRtLmNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_conversation_delete(nint conversation);
+
+    /// <summary>Clones a conversation, duplicating its prefilled (KV-cache) state into a new,
+    /// independent conversation. Returns null on failure, including when the engine/backend does
+    /// not implement cloning (the native layer returns <c>Unimplemented</c>). The caller owns the
+    /// returned pointer and frees it with <see cref="litert_lm_conversation_delete"/>.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_conversation_clone(nint conversation);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
