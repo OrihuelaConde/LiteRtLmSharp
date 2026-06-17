@@ -30,6 +30,13 @@ internal static unsafe partial class LiteRtLmNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_engine_settings_set_max_num_tokens(nint settings, int max_num_tokens);
 
+    /// <summary>Sets the maximum number of images the engine accepts. Per the header this only
+    /// affects the <i>legacy</i> engine implementation; the current path ignores it. Bound for
+    /// completeness — the per-conversation knob is <c>optional_args_set_visual_token_budget</c>.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_max_num_images(nint settings, int max_num_images);
+
     /// <summary>Enables speculative decoding (MTP drafter); requires a model that ships a drafter.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -126,6 +133,24 @@ internal static unsafe partial class LiteRtLmNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_conversation_config_delete(nint config);
+
+    // --- Conversation optional args (multimodal) -------------------------
+    // Per-send overrides passed as the last argument to send_message / send_message_stream.
+    // The only setter the C API exposes is the visual token budget (image prefill budget).
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_conversation_optional_args_create();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_conversation_optional_args_delete(nint optional_args);
+
+    /// <summary>Sets the visual token budget (number of tokens images may consume during prefill).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_conversation_optional_args_set_visual_token_budget(
+        nint optional_args, int visual_token_budget);
 
     // --- Conversation ----------------------------------------------------
 

@@ -7,6 +7,9 @@ namespace LiteRtLmSharp.SampleMaui.Services;
 /// <paramref name="SupportsSpeculativeDecoding"/>: the model ships an MTP drafter, so speculative
 /// decoding gives a real decode speedup (all the Gemma 4 builds do). The Models page defaults the
 /// speculative toggle ON for these and hides it for the rest.
+/// <paramref name="SupportsVision"/> / <paramref name="SupportsAudio"/>: the model can take image /
+/// audio attachments (the Gemma 4 E-series are full text+vision+audio). When set, the engine is loaded
+/// with the matching vision/audio backend and the Chat tab shows the attach buttons.
 /// </remarks>
 public sealed record ModelInfo(
     string Id,
@@ -17,7 +20,9 @@ public sealed record ModelInfo(
     string RamHint,
     bool MobileFriendly,
     bool GpuOnly = false,
-    bool SupportsSpeculativeDecoding = true);
+    bool SupportsSpeculativeDecoding = true,
+    bool SupportsVision = false,
+    bool SupportsAudio = false);
 
 /// <summary>
 /// Gemma models published as ready-to-run <c>.litertlm</c> files by the
@@ -36,7 +41,9 @@ public static class ModelCatalog
             DownloadUrl: $"{Hf}/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm",
             ApproxSize: "~2.5 GB",
             RamHint: "Needs ~3 GB free RAM — high-end phones",
-            MobileFriendly: true),
+            MobileFriendly: true,
+            SupportsVision: true,
+            SupportsAudio: true),
         new(
             Id: "gemma-4-E4B-it",
             DisplayName: "Gemma 4 E4B (instruct)",
@@ -44,7 +51,9 @@ public static class ModelCatalog
             DownloadUrl: $"{Hf}/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm",
             ApproxSize: "~4 GB",
             RamHint: "Needs ~5 GB free RAM — flagship phones / desktop",
-            MobileFriendly: true),
+            MobileFriendly: true,
+            SupportsVision: true,
+            SupportsAudio: true),
         new(
             Id: "gemma-4-12B-it",
             DisplayName: "Gemma 4 12B (instruct)",
@@ -53,6 +62,8 @@ public static class ModelCatalog
             ApproxSize: "~6.5 GB",
             RamHint: "Needs ~8 GB free RAM — GPU only, desktop-class",
             MobileFriendly: false,
-            GpuOnly: true),
+            GpuOnly: true,
+            SupportsVision: true,
+            SupportsAudio: true),
     ];
 }

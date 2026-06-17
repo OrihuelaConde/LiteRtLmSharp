@@ -62,6 +62,15 @@ internal sealed class ConversationHandle(nint handle) : LiteRtLmHandle(handle)
     }
 }
 
+internal sealed class ConversationOptionalArgsHandle(nint handle) : LiteRtLmHandle(handle)
+{
+    protected override bool ReleaseHandle()
+    {
+        LiteRtLmNative.litert_lm_conversation_optional_args_delete(handle);
+        return true;
+    }
+}
+
 internal sealed class JsonResponseHandle(nint handle) : LiteRtLmHandle(handle)
 {
     protected override bool ReleaseHandle()

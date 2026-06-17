@@ -32,12 +32,23 @@
                                 HorizontalOptions="{Binding Alignment}"
                                 MaximumWidthRequest="540">
                             <VerticalStackLayout Spacing="3">
+                                <!-- Attached image (user turns), shown above the text. Fixed height +
+                                     AspectFit scales it down to a thumbnail preserving aspect ratio
+                                     (a MaximumHeightRequest alone is not honored reliably, leaving the
+                                     image huge/clipped); the bubble's MaximumWidthRequest bounds the width. -->
+                                <Image Source="{Binding AttachmentImage}" IsVisible="{Binding HasImage}"
+                                       Aspect="AspectFit" HeightRequest="160"
+                                       HorizontalOptions="Start" />
+                                <!-- Attached audio (or a file with no thumbnail): a small chip. -->
+                                <Label Text="{Binding AttachmentLabel}" IsVisible="{Binding HasAttachmentLabel}"
+                                       FontSize="12" TextColor="Gray" />
                                 <!-- Reasoning trace (only when EnableThinking produced one), dimmed above the answer. -->
                                 <Label Text="💭 thinking" IsVisible="{Binding HasThinking}"
                                        FontSize="11" TextColor="Gray" />
                                 <Label Text="{Binding ThinkingText}" IsVisible="{Binding HasThinking}"
                                        FontSize="13" FontAttributes="Italic" TextColor="Gray" LineBreakMode="WordWrap" />
-                                <Label Text="{Binding Text}" FontSize="15" LineBreakMode="WordWrap" />
+                                <Label Text="{Binding Text}" IsVisible="{Binding HasText}"
+                                       FontSize="15" LineBreakMode="WordWrap" />
                             </VerticalStackLayout>
                         </Border>
                     </DataTemplate>
@@ -47,14 +58,34 @@
 
         <Label x:Name="GaugeLabel" Grid.Row="2" FontSize="11" TextColor="Gray" IsVisible="False" />
 
-        <Grid Grid.Row="3" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
-            <Entry x:Name="InputEntry"
-                   Placeholder="Type a message…"
-                   IsEnabled="False"
-                   Completed="OnSend" />
-            <Button x:Name="SendButton" Grid.Column="1" Text="Send" IsEnabled="False" Clicked="OnSend" />
-            <Button x:Name="StopButton" Grid.Column="2" Text="Stop" IsVisible="False" Clicked="OnStop" />
-        </Grid>
+        <VerticalStackLayout Grid.Row="3" Spacing="6">
+            <!-- Pending attachment preview: a thumbnail (image) or a chip (audio), with a remove button.
+                 Hidden until the user attaches something. -->
+            <Border x:Name="AttachmentPreview" IsVisible="False" Padding="6" StrokeThickness="0"
+                    StrokeShape="RoundRectangle 8" BackgroundColor="{AppThemeBinding Light=#F1F1F1, Dark=#333333}"
+                    HorizontalOptions="Start">
+                <HorizontalStackLayout Spacing="8">
+                    <Image x:Name="AttachThumb" IsVisible="False" HeightRequest="40" WidthRequest="40" Aspect="AspectFill" />
+                    <Label x:Name="AttachLabel" VerticalOptions="Center" FontSize="13" TextColor="Gray" />
+                    <Button Text="✕" Clicked="OnClearAttachment" Padding="0" WidthRequest="32" HeightRequest="32"
+                            BackgroundColor="Transparent" TextColor="Gray" FontSize="14" VerticalOptions="Center" />
+                </HorizontalStackLayout>
+            </Border>
+
+            <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto" ColumnSpacing="6">
+                <!-- Attach buttons; shown only when the loaded model supports that modality. -->
+                <Button x:Name="AttachImageButton" Grid.Column="0" Text="📷" IsVisible="False" IsEnabled="False"
+                        Clicked="OnAttachImage" WidthRequest="44" Padding="0" />
+                <Button x:Name="AttachAudioButton" Grid.Column="1" Text="🎵" IsVisible="False" IsEnabled="False"
+                        Clicked="OnAttachAudio" WidthRequest="44" Padding="0" />
+                <Entry x:Name="InputEntry" Grid.Column="2"
+                       Placeholder="Type a message…"
+                       IsEnabled="False"
+                       Completed="OnSend" />
+                <Button x:Name="SendButton" Grid.Column="3" Text="Send" IsEnabled="False" Clicked="OnSend" />
+                <Button x:Name="StopButton" Grid.Column="4" Text="Stop" IsVisible="False" Clicked="OnStop" />
+            </Grid>
+        </VerticalStackLayout>
 
     </Grid>
 </ContentPage>

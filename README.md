@@ -170,6 +170,43 @@ fall back to `History`). The C API has no history getter, so the message log is 
 `HistoryJson` escape hatch:
 [docs/conversation-state.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/conversation-state.md).
 
+### Multimodal messages (image / audio)
+
+On a multimodal model (the Gemma 4 E-series are text + vision + audio), enable the encoder backends at
+load time and attach images or audio clips to a turn. The model decodes the bytes — no format hint is
+sent.
+
+```csharp
+using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+{
+    ModelPath = "gemma-4-E2B-it.litertlm",
+    Backend = "cpu",
+    VisionBackend = "cpu",   // enables image input; null = off
+    AudioBackend = "cpu",    // enables audio input; null = off
+});
+using var chat = engine.CreateConversation();
+
+// Attach in-memory bytes (sent as a base64 blob) ...
+byte[] png = File.ReadAllBytes("cat.png");
+var reply = chat.Send("What is in this image?", [LiteRtAttachment.Image(png)]);
+
+// ... or a file on disk (memory-mapped natively, no base64 — desktop):
+chat.Send("Describe this photo.", [LiteRtAttachment.ImageFile("/photos/sunset.jpg")]);
+
+// Audio works the same way; streaming has matching attachment overloads:
+await foreach (var chunk in chat.SendMessageStreamingAsync(
+                  "Transcribe this.", [LiteRtAttachment.Audio(wavBytes)]))
+    Console.Write(chunk.Text);
+```
+
+Attachments follow the text in content-part order; pass several to interleave them. Cap how much of the
+context window an image consumes with `LiteRtConversationOptions.VisualTokenBudget`. Vision runs on CPU
+or GPU; some models constrain their audio backend (Gemma 4's audio sub-model requires CPU, so
+`AudioBackend = "gpu"` fails engine creation for it on any platform) — keep audio on CPU when the main
+backend is GPU. The MAUI sample's Chat tab exposes 📷 / 🎵 attach buttons (and a modality indicator) for
+capable models. Wire-format and validation details:
+[docs/native-abi.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/native-abi.md#multimodal-messages-image--audio--verified-wire-format).
+
 ## Why .NET 10 only?
 
 .NET 10 is the current LTS (released November 2025; .NET 8 reaches end of support in November

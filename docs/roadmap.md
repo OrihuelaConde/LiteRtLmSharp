@@ -1,6 +1,6 @@
 # Project status and roadmap
 
-Last updated: 2026-06-16. Source of truth for "what's done and what's pending".
+Last updated: 2026-06-17. Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -37,7 +37,8 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Reasoning mode (`enable_thinking` via extra context) + KV-cache thinking filter | ✅ |
 | Restore chat history (`History`/`HistoryJson`, `LiteRtMessage`) + conversation clone (`Clone()`) | ✅ |
 | AOT/trim-friendly (`[LibraryImport]`, `[UnmanagedCallersOnly]`, no reflection) | ✅ |
-| Multimodal (image/audio), tokenize/detokenize | 🔜 see C API coverage below |
+| Multimodal messages (image/audio attachments, vision/audio backend, visual token budget) | ✅ |
+| Tokenize/detokenize (exact token counting) | 🔜 see C API coverage below |
 
 Known constraints (documented in the README): one engine ALIVE at a time (reloading after
 `Dispose` works — verified on win-x64 cpu→cpu and cpu→gpu; this is Edge Gallery's pattern for
@@ -47,8 +48,8 @@ is the total context window; VC++ Redistributable required on win-x64; Android G
 
 ## C API coverage (audit 2026-06-12, header v0.13.1)
 
-**41 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
-drift). The remaining 48 group into six areas, in suggested priority order:
+**45 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
+drift). The remaining 44 group into six areas, in suggested priority order:
 
 ### High value (user-facing features)
 
@@ -59,7 +60,7 @@ drift). The remaining 48 group into six areas, in suggested priority order:
 | ✅ Conversation clone | `conversation_clone` | **Done 2026-06-16** (`LiteRtConversation.Clone()` → independent conversation duplicating the prefilled KV-cache state; throws `LiteRtException` when the engine/backend returns `Unimplemented`). NOT CPU-only — verified on gemma-4-E2B on both CPU and win-x64 GPU (WebGPU): the clone copies the parent's token count, advances on its own, and leaves the parent untouched. See [conversation-state.md](conversation-state.md). |
 | ✅ Engine cache dir | `engine_settings_set_cache_dir` | **Done 2026-06-15** (`LiteRtEngineOptions.CacheDir`, + `CacheDisabled`/`CacheInMemory` sentinels). Persistent compiled-shader/weight cache → faster GPU re-init; also the fix for speculative decoding on WebGPU (set `CacheDisabled`). |
 | ✅ Speculative decoding | `engine_settings_set_enable_speculative_decoding` | **Done 2026-06-15** (`EnableSpeculativeDecoding`). Measured (gemma-4-E2B): desktop CPU **regresses** (~0.78×); desktop **WebGPU works** with `CacheDir=CacheDisabled` but doesn't help here (0.85× in a fair cache-off A/B; CPU-sampling fallback) — the disk-cache requirement is an upstream issue, see watchlist; accelerators are the expected ~3× win. See [speculative-decoding.md](speculative-decoding.md). |
-| Multimodal messages | `engine_settings_set_max_num_images`, `conversation_optional_args_create/delete/set_visual_token_budget` | Image/audio content is mostly **wrapper work**: the bound `send_message` already accepts `{"type":"image","blob":<base64>}` content parts; vision/audio backends are parameters of the already-bound `engine_settings_create`. |
+| ✅ Multimodal messages | `engine_settings_set_max_num_images`, `conversation_optional_args_create/delete/set_visual_token_budget` | **Done 2026-06-17.** `LiteRtAttachment` (`Image`/`ImageFile`/`Audio`/`AudioFile`) + `Send`/`SendMessage`/`SendMessageStreamingAsync` attachment overloads build the content-part wire format (`{"type":"image"\|"audio","blob":<base64>\|"path":<file>}`, byte-verified against `runtime/conversation/.../data_utils.cc`); `LiteRtEngineOptions.VisionBackend`/`AudioBackend` enable the encoders via the already-bound `engine_settings_create`; `LiteRtConversationOptions.VisualTokenBudget` → `optional_args`. **Validated on win-x64 against gemma-4-E2B-it (2026-06-17), CPU + GPU:** an image adds a ~261-token vision block (28 → 289) and the model answered "…a solid, vibrant **red** color"; a real spoken 5→0 countdown adds ~130 audio tokens (35 → 165) and the model transcribed "Five, four, three, two, one, zero." Vision runs on GPU. **Gemma 4's audio sub-model is CPU-constrained** (`audio_backend="gpu"` → `engine_create` fails with "Audio backend constraint mismatch. Model requires one of [cpu]") — a model property, not a platform one (the model-tests macOS GPU leg confirms the same skip), so MAUI runs audio on CPU when the main backend is GPU. MAUI Chat tab gains 📷/🎵 attach buttons + a modality label (gated on model capability). `set_max_num_images` is bound for Kotlin-binding parity but legacy-only per the header. |
 
 ### Medium value (developer utilities)
 
@@ -164,9 +165,16 @@ drift). The remaining 48 group into six areas, in suggested priority order:
    no consumer-side workaround for the missing `DT_NEEDED`.
 5. **iOS app phase**: Apple Developer Program → xcframework + `.targets` NativeReference →
    MAUI `net10.0-ios` app → CI signing → TestFlight.
-6. **Optional**: binding coverage push per the "C API coverage" section above. The high-value group is
-   now done except **multimodal** (image/audio) — ✅ history restore + clone (2026-06-16), ✅ cache dir +
-   ✅ speculative decoding (2026-06-15); next is multimodal, then the tokenizer surface.
+6. **Optional**: binding coverage push per the "C API coverage" section above. **The high-value group is
+   now complete** — ✅ history restore + clone (2026-06-16), ✅ cache dir + ✅ speculative decoding
+   (2026-06-15), ✅ multimodal image/audio (2026-06-17); next is the tokenizer surface (exact token
+   counting). Remaining multimodal follow-ups: validate the vision/audio path on **linux-x64 / osx-arm64**
+   (win-x64 checked locally on CPU **and** GPU; `model-tests.yml` runs the gated `LITERTLM_TEST_VISION`
+   tests on the CPU leg of all three, and on the **osx-arm64 GPU** leg). win-x64 GPU: vision runs on the
+   WebGPU backend; audio-on-GPU fails because **gemma-4's audio sub-model is CPU-constrained** (the model
+   declares "requires one of [cpu]"), so audio runs on CPU — a model property, not a platform limitation.
+   The macOS GPU leg's audio test should skip with the same "Audio backend constraint mismatch" message,
+   confirming it cross-platform; if it instead loads/passes, revisit (a model could allow GPU audio).
    `android-x64` for emulators; Desktop meta-package;
    ✅ ~~CONTRIBUTING + issue templates~~ (2026-06-11: CONTRIBUTING.md, issue forms, PR template,
    SECURITY.md, Discussions enabled); scheduled smoke-test workflow that consumes the published

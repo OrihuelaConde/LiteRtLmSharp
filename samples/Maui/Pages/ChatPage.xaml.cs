@@ -12,6 +12,12 @@ public partial class ChatPage : ContentPage
     private CancellationTokenSource? _replyCts;
     private Task? _replyTask;
 
+    // The single pending attachment (image OR audio) staged for the next send. The binding accepts
+    // several attachments per message; the sample keeps one at a time to keep the UI simple.
+    private byte[]? _pendingBytes;
+    private LiteRtAttachmentKind _pendingKind;
+    private string? _pendingFileName;
+
     public ObservableCollection<ChatMessage> Messages { get; } = [];
 
     public ChatPage(EngineService engine)
@@ -32,9 +38,12 @@ public partial class ChatPage : ContentPage
         if (_engine.LoadedModel is { } model)
         {
             HeaderLabel.Text = $"{model.DisplayName} · {_engine.LoadedBackend} · context {EngineService.ContextTokens} tokens"
-                + $" · {_engine.SpeculativeLabel} · {_engine.ThinkingLabel}";
+                + $" · {_engine.SpeculativeLabel} · {_engine.ThinkingLabel} · {_engine.ModalityLabel}";
             InputEntry.IsEnabled = true;
             SendButton.IsEnabled = true;
+            // Offer the attach buttons only for modalities the loaded model actually supports.
+            AttachImageButton.IsVisible = AttachImageButton.IsEnabled = model.SupportsVision;
+            AttachAudioButton.IsVisible = AttachAudioButton.IsEnabled = model.SupportsAudio;
             _conversation ??= _engine.NewConversation();
         }
     }
@@ -52,10 +61,12 @@ public partial class ChatPage : ContentPage
         _conversation = null;
 
         Messages.Clear();
+        ClearPending();
         GaugeLabel.IsVisible = false;
         HeaderLabel.Text = "Loading…";
         InputEntry.IsEnabled = false;
         SendButton.IsEnabled = false;
+        AttachImageButton.IsVisible = AttachAudioButton.IsVisible = false;
     }
 
     private void OnNewConversation(object? sender, EventArgs e)
@@ -64,21 +75,123 @@ public partial class ChatPage : ContentPage
         _conversation?.Dispose();
         _conversation = _engine.NewConversation();
         Messages.Clear();
+        ClearPending();
         GaugeLabel.IsVisible = false;
+    }
+
+    private async void OnAttachImage(object? sender, EventArgs e)
+    {
+        try
+        {
+            // PickPhotoAsync is the simplest single-select photo picker; the newer PickPhotosAsync is
+            // multi-select, which this one-attachment-at-a-time sample does not need.
+#pragma warning disable CS0618 // Type or member is obsolete
+            FileResult? file = await MediaPicker.Default.PickPhotoAsync();
+#pragma warning restore CS0618
+            if (file is not null)
+                await SetPendingAsync(file, LiteRtAttachmentKind.Image);
+        }
+        catch (Exception ex)
+        {
+            await DisplayAlertAsync("Attach image failed", ex.Message, "OK");
+        }
+    }
+
+    private async void OnAttachAudio(object? sender, EventArgs e)
+    {
+        try
+        {
+            FileResult? file = await FilePicker.Default.PickAsync(new PickOptions { PickerTitle = "Pick an audio file" });
+            if (file is not null)
+                await SetPendingAsync(file, LiteRtAttachmentKind.Audio);
+        }
+        catch (Exception ex)
+        {
+            await DisplayAlertAsync("Attach audio failed", ex.Message, "OK");
+        }
+    }
+
+    private async Task SetPendingAsync(FileResult file, LiteRtAttachmentKind kind)
+    {
+        await using var stream = await file.OpenReadAsync();
+        using var ms = new MemoryStream();
+        await stream.CopyToAsync(ms);
+        _pendingBytes = ms.ToArray();
+        _pendingKind = kind;
+        _pendingFileName = file.FileName;
+        ShowAttachmentPreview();
+    }
+
+    private void ShowAttachmentPreview()
+    {
+        if (_pendingBytes is null) { AttachmentPreview.IsVisible = false; return; }
+
+        if (_pendingKind == LiteRtAttachmentKind.Image)
+        {
+            byte[] bytes = _pendingBytes; // ImageSource.FromStream needs a fresh stream per request
+            AttachThumb.Source = ImageSource.FromStream(() => new MemoryStream(bytes));
+            AttachThumb.IsVisible = true;
+            AttachLabel.Text = _pendingFileName ?? "image";
+        }
+        else
+        {
+            AttachThumb.IsVisible = false;
+            AttachThumb.Source = null;
+            AttachLabel.Text = $"🎵 {_pendingFileName ?? "audio"}";
+        }
+        AttachmentPreview.IsVisible = true;
+    }
+
+    private void OnClearAttachment(object? sender, EventArgs e) => ClearPending();
+
+    private void ClearPending()
+    {
+        _pendingBytes = null;
+        _pendingFileName = null;
+        AttachThumb.Source = null;
+        AttachmentPreview.IsVisible = false;
     }
 
     private void OnSend(object? sender, EventArgs e)
     {
         string prompt = InputEntry.Text?.Trim() ?? "";
-        if (prompt.Length == 0 || _conversation is null || _replyCts is not null)
+        // Allow sending an attachment with no text (a bare "describe this image" turn).
+        if ((prompt.Length == 0 && _pendingBytes is null) || _conversation is null || _replyCts is not null)
             return;
         InputEntry.Text = "";
-        _replyTask = StreamReplyAsync(prompt);
+
+        byte[]? bytes = _pendingBytes;
+        LiteRtAttachmentKind kind = _pendingKind;
+        string? fileName = _pendingFileName;
+        ClearPending();
+
+        _replyTask = StreamReplyAsync(prompt, bytes, kind, fileName);
     }
 
-    private async Task StreamReplyAsync(string prompt)
+    private async Task StreamReplyAsync(string prompt, byte[]? attachmentBytes, LiteRtAttachmentKind kind, string? fileName)
     {
-        Messages.Add(ChatMessage.User(prompt));
+        // User bubble: show the attachment thumbnail (image) or a chip (audio) above the text.
+        IReadOnlyList<LiteRtAttachment> attachments = [];
+        ChatMessage userMsg;
+        if (attachmentBytes is { } bytes)
+        {
+            if (kind == LiteRtAttachmentKind.Image)
+            {
+                userMsg = ChatMessage.User(prompt, ImageSource.FromStream(() => new MemoryStream(bytes)), null);
+                attachments = [LiteRtAttachment.Image(bytes)];
+            }
+            else
+            {
+                userMsg = ChatMessage.User(prompt, null, $"🎵 {fileName ?? "audio"}");
+                attachments = [LiteRtAttachment.Audio(bytes)];
+            }
+        }
+        else
+        {
+            userMsg = ChatMessage.User(prompt);
+        }
+        Messages.Add(userMsg);
+
         var reply = ChatMessage.Assistant();
         Messages.Add(reply);
 
@@ -88,9 +201,9 @@ public partial class ChatPage : ContentPage
         try
         {
             // Chunks are tagged as reasoning ("thinking", only with EnableThinking on) or answer;
-            // the chat conversation has no tools, so no tool-call chunks arrive. The thinking trace
-            // renders above the answer in the bubble.
-            await foreach (LiteRtStreamChunk chunk in _conversation!.SendMessageStreamingAsync(prompt, _replyCts.Token))
+            // the chat conversation has no tools, so no tool-call chunks arrive. The image/audio
+            // attachments ride along in the user message and are encoded into vision/audio tokens.
+            await foreach (LiteRtStreamChunk chunk in _conversation!.SendMessageStreamingAsync(prompt, attachments, _replyCts.Token))
             {
                 if (chunk.IsThinking)
                     reply.AppendThinking(chunk.Text);
@@ -125,6 +238,9 @@ public partial class ChatPage : ContentPage
     {
         SendButton.IsEnabled = !busy;
         StopButton.IsVisible = busy;
+        // Block staging a new attachment mid-reply (the buttons exist only for capable models).
+        if (AttachImageButton.IsVisible) AttachImageButton.IsEnabled = !busy;
+        if (AttachAudioButton.IsVisible) AttachAudioButton.IsEnabled = !busy;
     }
 
     private void UpdateGauge(TimeSpan elapsed)
@@ -160,26 +276,48 @@ public partial class ChatPage : ContentPage
     }
 }
 
-/// <summary>A chat bubble. Assistant text grows as streaming chunks arrive.</summary>
+/// <summary>A chat bubble. Assistant text grows as streaming chunks arrive; user bubbles may carry
+/// an attached image thumbnail or an audio chip.</summary>
 public sealed class ChatMessage : INotifyPropertyChanged
 {
-    private ChatMessage(string role, string text)
+    private ChatMessage(string role, string text, ImageSource? attachmentImage = null, string? attachmentLabel = null)
     {
         Role = role;
-        Text = text;
+        _text = text;
+        AttachmentImage = attachmentImage;
+        AttachmentLabel = attachmentLabel ?? "";
     }
 
     public static ChatMessage User(string text) => new("user", text);
+    public static ChatMessage User(string text, ImageSource? attachmentImage, string? attachmentLabel)
+        => new("user", text, attachmentImage, attachmentLabel);
     public static ChatMessage Assistant() => new("assistant", "");
 
     public string Role { get; }
+
+    /// <summary>An attached image to render in the bubble, or <c>null</c>.</summary>
+    public ImageSource? AttachmentImage { get; }
+    public bool HasImage => AttachmentImage is not null;
+
+    /// <summary>A chip for a non-image attachment (e.g. "🎵 clip.wav"), or empty.</summary>
+    public string AttachmentLabel { get; }
+    public bool HasAttachmentLabel => AttachmentLabel.Length > 0;
 
     private string _text = "";
     public string Text
     {
         get => _text;
-        private set { _text = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Text))); }
+        private set
+        {
+            _text = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Text)));
+            // The text Label hides when empty (image-only user turns); it must reappear as the
+            // assistant's streamed answer grows from "".
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasText)));
+        }
     }
+
+    public bool HasText => _text.Length > 0;
 
     // The reasoning ("thinking") trace, shown dimmed above the answer when EnableThinking is on.
     private string _thinkingText = "";

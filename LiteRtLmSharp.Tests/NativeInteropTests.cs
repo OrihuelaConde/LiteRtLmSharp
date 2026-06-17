@@ -1,5 +1,6 @@
 using System.Text.Json;
 using LiteRtLmSharp;
+using LiteRtLmSharp.Native;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -24,6 +25,114 @@ public class NativeInteropTests
     {
         var options = new LiteRtEngineOptions { ModelPath = "does-not-exist.litertlm" };
         Assert.Throws<ArgumentException>(() => LiteRtEngine.Load(options));
+    }
+
+    /// <summary>
+    /// Proves the multimodal conversation optional-args C ABI functions resolve and are callable
+    /// without a model (create → set visual token budget → delete) — the native plumbing behind
+    /// <see cref="LiteRtConversationOptions.VisualTokenBudget"/>. Mirrors
+    /// <see cref="NativeLibrary_Loads_And_LogLevelCallSucceeds"/>; throws
+    /// <see cref="EntryPointNotFoundException"/> on a native binary predating the multimodal API.
+    /// </summary>
+    [Fact]
+    public void OptionalArgs_NativeEntrypoints_Resolve()
+    {
+        nint args = LiteRtLmNative.litert_lm_conversation_optional_args_create();
+        Assert.NotEqual(nint.Zero, args);
+        // The only setter the C API exposes — must not throw on a version-matched binary.
+        LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget(args, 128);
+        LiteRtLmNative.litert_lm_conversation_optional_args_delete(args);
+    }
+}
+
+/// <summary>
+/// Pure unit tests for the multimodal user-message JSON builder
+/// (<see cref="LiteRtJson.UserMessage(string, System.Collections.Generic.IReadOnlyList{LiteRtAttachment})"/>),
+/// which backs the attachment <c>Send</c> overloads. No model needed, so these always run in CI and
+/// pin the exact content-part wire format the native parser expects (verified against
+/// <c>runtime/conversation/model_data_processor/data_utils.cc</c>): text part first, then each
+/// attachment as <c>{"type":"image"|"audio","blob":&lt;base64&gt;}</c> or <c>{… ,"path":…}</c>, in order.
+/// </summary>
+public class MultimodalMessageJsonTests
+{
+    private static readonly byte[] Bytes = [0xDE, 0xAD, 0xBE, 0xEF];
+    private static readonly string Base64 = Convert.ToBase64String(Bytes);
+
+    private static JsonElement Content(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        Assert.Equal("user", doc.RootElement.GetProperty("role").GetString());
+        return doc.RootElement.GetProperty("content").Clone();
+    }
+
+    [Fact]
+    public void UserMessage_NullAttachments_FallsBackToTextOnly()
+    {
+        JsonElement content = Content(LiteRtJson.UserMessage("Hi", null));
+        Assert.Equal(1, content.GetArrayLength());
+        Assert.Equal("text", content[0].GetProperty("type").GetString());
+        Assert.Equal("Hi", content[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public void UserMessage_EmptyAttachments_FallsBackToTextOnly()
+    {
+        JsonElement content = Content(LiteRtJson.UserMessage("Hi", []));
+        Assert.Equal(1, content.GetArrayLength());
+        Assert.Equal("text", content[0].GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void UserMessage_ImageBytes_EmitsBase64Blob_AfterText()
+    {
+        JsonElement content = Content(LiteRtJson.UserMessage("Describe:", [LiteRtAttachment.Image(Bytes)]));
+        Assert.Equal(2, content.GetArrayLength());
+        // Text part first, then the image part — order is preserved and significant.
+        Assert.Equal("text", content[0].GetProperty("type").GetString());
+        Assert.Equal("image", content[1].GetProperty("type").GetString());
+        Assert.Equal(Base64, content[1].GetProperty("blob").GetString());
+        Assert.False(content[1].TryGetProperty("path", out _));
+        // The blob round-trips back to the original bytes (it is base64, not raw).
+        Assert.Equal(Bytes, Convert.FromBase64String(content[1].GetProperty("blob").GetString()!));
+    }
+
+    [Fact]
+    public void UserMessage_AudioBytes_EmitsAudioBlob()
+    {
+        JsonElement content = Content(LiteRtJson.UserMessage("Transcribe:", [LiteRtAttachment.Audio(Bytes)]));
+        Assert.Equal("audio", content[1].GetProperty("type").GetString());
+        Assert.Equal(Base64, content[1].GetProperty("blob").GetString());
+    }
+
+    [Fact]
+    public void UserMessage_ImageFile_EmitsPath_NotBlob()
+    {
+        JsonElement content = Content(
+            LiteRtJson.UserMessage("Describe:", [LiteRtAttachment.ImageFile("/tmp/pic.jpg")]));
+        Assert.Equal("image", content[1].GetProperty("type").GetString());
+        Assert.Equal("/tmp/pic.jpg", content[1].GetProperty("path").GetString());
+        Assert.False(content[1].TryGetProperty("blob", out _));
+    }
+
+    [Fact]
+    public void UserMessage_EmptyText_OmitsTextPart()
+    {
+        // No text → the content array carries only the attachment part (matches the upstream shape:
+        // an empty text part is not emitted).
+        JsonElement content = Content(LiteRtJson.UserMessage("", [LiteRtAttachment.Image(Bytes)]));
+        Assert.Equal(1, content.GetArrayLength());
+        Assert.Equal("image", content[0].GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void UserMessage_MultipleAttachments_PreserveOrder()
+    {
+        JsonElement content = Content(LiteRtJson.UserMessage("Both:",
+            [LiteRtAttachment.Image(Bytes), LiteRtAttachment.Audio(Bytes)]));
+        Assert.Equal(3, content.GetArrayLength());
+        Assert.Equal("text", content[0].GetProperty("type").GetString());
+        Assert.Equal("image", content[1].GetProperty("type").GetString());
+        Assert.Equal("audio", content[2].GetProperty("type").GetString());
     }
 }
 
@@ -713,4 +822,158 @@ public sealed class SpeculativeDecodingBenchmarkTests(ITestOutputHelper output)
     }
 
     private readonly record struct Result(string Text, double DecodeTps, double Ttft);
+}
+
+/// <summary>
+/// Model-backed multimodal tests: send an image (and, gated separately, audio) attachment through the
+/// high-level conversation API and prove it is actually ingested by the model's vision/audio encoder.
+/// <para>
+/// The proof is <b>deterministic and model-agnostic</b>: an image/audio attachment expands to a block
+/// of encoder tokens, so a turn that carries one prefills strictly more tokens than the same text-only
+/// prompt. We cap <see cref="LiteRtConversationOptions.MaxOutputTokens"/> small so decode can't mask
+/// the difference, and we assert on the token delta + a non-empty reply rather than on the model's
+/// exact words (a tiny model's description is not reliable enough to hard-assert). The actual reply is
+/// logged for the record.
+/// </para>
+/// <para>
+/// Loads its OWN engine (with the vision/audio backend enabled), like
+/// <see cref="SpeculativeDecodingBenchmarkTests"/> — the shared <see cref="EngineFixture"/> has no
+/// modality configured, and only one engine may be alive at a time (the assembly disables test
+/// parallelization, so this never races the fixture engine). Gated on <c>LITERTLM_TEST_VISION=1</c> (in
+/// addition to <c>LITERTLM_TEST_MODEL</c>) because it needs a vision/audio-capable model such as
+/// gemma-4-E2B-it; on a text-only model the engine load would not configure the encoder.
+/// </para>
+/// </summary>
+public sealed class MultimodalModelTests(ITestOutputHelper output)
+{
+    private readonly ITestOutputHelper _output = output;
+
+    // A 64x64 solid red PNG (246 bytes), generated once and embedded so the test is self-contained
+    // and runs cross-platform in CI with no fixture file.
+    private const string RedPngBase64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJ" +
+        "cEhZcwAADsMAAA7DAcdvqGQAAACLSURBVHhe7dAhAQBADIDAJVn/UN9l76kA4gySebtnNgw2DWCwaQCDTQMYbBrA" +
+        "YNMABpsGMNg0gMGmAQw2DWCwaQCDTQMYbBrAYNMABpsGMNg0gMGmAQw2DWCwaQCDTQMYbBrAYNMABpsGMNg0gMGm" +
+        "AQw2DWCwaQCDTQMYbBrAYNMABpsGMNg0gMHmA+xncfBUukEyAAAAAElFTkSuQmCC";
+
+    private const string Prompt = "What is the main color of this image? Answer with a single word.";
+
+    [SkippableFact]
+    public void Vision_ImageAttachment_IsIngestedByTheEncoder()
+    {
+        string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
+        Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model)
+                || Environment.GetEnvironmentVariable("LITERTLM_TEST_VISION") != "1",
+            "Set LITERTLM_TEST_VISION=1 and LITERTLM_TEST_MODEL to a vision-capable .litertlm (e.g. gemma-4-E2B-it) to run.");
+
+        byte[] image = Convert.FromBase64String(RedPngBase64);
+        (int textTokens, int mediaTokens, string reply) =
+            RunModalityProbe(model!, vision: true, audio: false, "Describe this. ", LiteRtAttachment.Image(image));
+
+        _output.WriteLine($"vision: text-only prefill={textTokens} tokens, with-image={mediaTokens} tokens");
+        _output.WriteLine($"vision reply: {reply}");
+        if (reply.Contains("red", StringComparison.OrdinalIgnoreCase))
+            _output.WriteLine("vision reply correctly identified the color (informational).");
+
+        Assert.True(mediaTokens > textTokens,
+            $"Expected the image to add vision tokens (text {textTokens} vs image {mediaTokens}). " +
+            "If equal, the image did not reach the vision encoder — check VisionBackend / the native build.");
+    }
+
+    [SkippableFact]
+    public void Audio_AudioAttachment_IsIngestedByTheEncoder()
+    {
+        string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
+        Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model)
+                || Environment.GetEnvironmentVariable("LITERTLM_TEST_VISION") != "1",
+            "Set LITERTLM_TEST_VISION=1 and LITERTLM_TEST_MODEL to an audio-capable .litertlm (e.g. gemma-4-E2B-it) to run.");
+
+        byte[] mp3 = LoadEmbedded("countdown.mp3"); // a real spoken 5->0 countdown (embedded resource)
+        string backend = Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu";
+
+        int textTokens, mediaTokens;
+        string reply;
+        try
+        {
+            (textTokens, mediaTokens, reply) = RunModalityProbe(model!, vision: false, audio: true,
+                "Transcribe the spoken words in this audio clip.", LiteRtAttachment.Audio(mp3));
+        }
+        catch (LiteRtException ex) when (backend == "gpu")
+        {
+            // gemma-4's audio sub-model is CPU-constrained ("Audio backend constraint mismatch. Model
+            // requires one of [cpu]"), so audio=gpu fails engine creation on any platform. Record it as a
+            // skip rather than failing the GPU leg; the macOS GPU leg confirms the same model constraint.
+            Skip.If(true, $"audio on the GPU backend did not initialize (expected — model audio is CPU-constrained): {ex.Message}");
+            return;
+        }
+
+        _output.WriteLine($"audio (backend={backend}): text-only prefill={textTokens} tokens, with-audio={mediaTokens} tokens");
+        _output.WriteLine($"audio reply: {reply}");
+        bool referencesCountdown =
+            new[] { "5", "4", "3", "2", "1", "0", "five", "four", "three", "two", "one", "zero", "count" }
+                .Any(t => reply.Contains(t, StringComparison.OrdinalIgnoreCase));
+        _output.WriteLine(referencesCountdown
+            ? "audio reply references the spoken countdown (informational)."
+            : "audio reply did not clearly transcribe the countdown (informational).");
+
+        Assert.True(mediaTokens > textTokens,
+            $"Expected the audio to add encoder tokens (text {textTokens} vs audio {mediaTokens}). " +
+            "If equal, the audio did not reach the audio encoder — check AudioBackend / the native build.");
+    }
+
+    /// <summary>
+    /// Loads an engine with the requested modality enabled, then prefills the same prompt twice in two
+    /// fresh conversations — once text-only, once with the media attachment — and returns each turn's
+    /// accumulated token count plus the multimodal reply. Output is capped so decode cannot mask the
+    /// encoder-token delta. The engine is disposed before returning (one engine alive at a time).
+    /// </summary>
+    private static (int textTokens, int mediaTokens, string reply) RunModalityProbe(
+        string model, bool vision, bool audio, string prompt, LiteRtAttachment attachment)
+    {
+        string backend = Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu";
+
+        LiteRtEngine.SetMinLogLevel(3);
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = model,
+            Backend = backend,
+            // Both encoders follow the main backend so a GPU run actually exercises vision/audio on GPU.
+            // Vision on GPU works. Audio on GPU fails for gemma-4: the model's audio sub-model declares a
+            // CPU backend constraint ("Audio backend constraint mismatch. Model requires one of [cpu]"),
+            // so engine_create returns null with audio=gpu — on ANY platform, not just win-x64. The audio
+            // test treats that GPU-load failure as a recorded skip; the macOS GPU CI leg confirms the
+            // constraint is the model's, not platform-specific.
+            VisionBackend = vision ? backend : null,
+            AudioBackend = audio ? backend : null,
+            MaxNumTokens = 4096,
+            // Desktop GPU + multimodal: keep the disk cache off (same shared-cache family as the MTP
+            // weight-cache bug); harmless on CPU.
+            CacheDir = backend == "gpu" ? LiteRtEngineOptions.CacheDisabled : null,
+        });
+
+        // Small output cap so the attachment's encoder-token block dominates any decode-length
+        // difference between the two replies.
+        var opts = new LiteRtConversationOptions { MaxOutputTokens = 16 };
+
+        int textTokens;
+        using (var textOnly = engine.CreateConversation(opts))
+        {
+            textOnly.Send(prompt);
+            textTokens = textOnly.TokenCount;
+        }
+
+        using var withMedia = engine.CreateConversation(opts);
+        LiteRtResponse reply = withMedia.Send(prompt, [attachment]);
+        return (textTokens, withMedia.TokenCount, reply.Text ?? string.Empty);
+    }
+
+    /// <summary>Reads an embedded test resource (by its <c>LogicalName</c>) into a byte array.</summary>
+    private static byte[] LoadEmbedded(string logicalName)
+    {
+        using Stream s = typeof(MultimodalModelTests).Assembly.GetManifestResourceStream(logicalName)
+            ?? throw new InvalidOperationException($"Embedded resource '{logicalName}' not found.");
+        using var ms = new MemoryStream();
+        s.CopyTo(ms);
+        return ms.ToArray();
+    }
 }

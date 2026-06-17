@@ -66,3 +66,8 @@
 # LiteRtLmSharp: shell scripts must stay LF so bash works in CI on all platforms.
 ###############################################################################
 *.sh text eol=lf
+
+###############################################################################
+# LiteRtLmSharp: binary test fixtures (audio clip embedded in the Tests project).
+###############################################################################
+*.mp3 binary

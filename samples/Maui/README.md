@@ -10,7 +10,9 @@ all running locally via LiteRtLmSharp.
   cache is turned off automatically, which that combo requires — see `docs/speculative-decoding.md`).
 - **Chat tab** — streaming chat with Stop (cancellation), New conversation, and a gauge showing
   context usage, elapsed time and (when available) decode tokens/sec · time-to-first-token. The
-  header shows the loaded model, backend and speculative on/off.
+  header shows the loaded model, backend and speculative on/off. On a multimodal model (the Gemma 4
+  E-series do image + audio) the input row shows 📷 / 🎵 attach buttons — pick an image or audio file
+  and it rides along with your next message (shown as a thumbnail/chip in the bubble).
 - **Tools tab** — function-calling demo: the model can call real device APIs (battery status,
   device info via MAUI essentials) and a mock weather service. Each question runs in a fresh
   conversation, so Chat and Tools never share context.

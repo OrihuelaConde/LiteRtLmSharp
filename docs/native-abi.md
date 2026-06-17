@@ -9,8 +9,10 @@
 > **HISTORICAL** — all resolved by compiling our own binaries from the `v0.13.1` tag with the
 > matching header. Today config/system-prompt/sampler, tools, streaming and token count work on
 > all 5 platforms. Speculative decoding, the benchmark API, and the engine cache-dir setting were
-> bound on 2026-06-15 (see [`roadmap.md`](roadmap.md) for the C-API coverage count, now 37/89). The
-> notes below are kept as a diagnostic record.
+> bound on 2026-06-15; multimodal image/audio messages on 2026-06-17 (see
+> [`roadmap.md`](roadmap.md) for the C-API coverage count, now 45/89, and the
+> [multimodal section](#multimodal-messages-image--audio--verified-wire-format) below). The notes
+> below are kept as a diagnostic record.
 >
 > Caveat (2026-06-12): "all 5 platforms" for **tools** was validated by hand on win-x64/Android;
 > on desktop Linux the tools + constrained-decoding path had never actually run in CI (regular CI
@@ -172,6 +174,68 @@ no longer crashes (matched header+binary).
 > Gemma template quirk: with constrained decoding the arguments arrive with `<|"|>` tokens as
 > quotes (`<|"|>Tokyo<|"|>`). The parser **sanitizes** them (`StripControlTokens`/`CleanJson`)
 > → `"Tokyo"`.
+
+## Multimodal messages (image / audio) — verified wire format
+
+Multimodal works on the **high-level Conversation API** — no need for the low-level Session/InputData
+path. Two layers:
+
+1. **Engine** — enable the encoders at `engine_settings_create(model, backend, vision_backend, audio_backend)`.
+   The two trailing args are `const char*`: `"cpu"`/`"gpu"` to enable that modality, `NULL` to leave it
+   off (the documented sentinel — pass a real C# `null`, not `""`). Confirmed by upstream
+   `engine_test.cc` `CreateSettingsWithVisionAndAudioBackend` (`vision="gpu"`, `audio="cpu"`).
+   **A model can constrain its audio backend.** Gemma 4's audio sub-model requires **CPU**:
+   `audio_backend="gpu"` makes `engine_create` fail with `INVALID_ARGUMENT: Audio backend constraint
+   mismatch. Model requires one of [cpu] but Audio backend is GPU` — on **any platform**, not a win-x64
+   quirk (verified 2026-06-17; the model-tests macOS GPU leg confirms the same skip). Run audio on CPU for
+   such models even when the main backend is GPU; the vision encoder is unconstrained and runs on GPU.
+   (Upstream's own test pairs `vision="gpu"` with `audio="cpu"`.)
+   `engine_settings_set_max_num_images(settings, int)` exists but the header says it is **legacy-only**
+   (the current engine path ignores it) — bound for completeness; the real per-turn knob is the visual
+   token budget below.
+2. **Message** — attach media as extra **content parts** in the same `message_json` the text path uses:
+   ```json
+   {"role":"user","content":[
+     {"type":"text","text":"Describe this image: "},
+     {"type":"image","blob":"<BASE64 image bytes>"}
+   ]}
+   ```
+   Image and audio parts are interchangeable in two forms (byte-verified against
+   `runtime/conversation/model_data_processor/data_utils.cc` `LoadItemData`):
+   - `{"type":"image"|"audio","blob":"<base64>"}` — `blob` is **base64** (decoded with
+     `absl::Base64Unescape`; a bad string → `InvalidArgumentError("Failed to decode base64 blob.")`).
+     The .NET side must `Convert.ToBase64String(bytes)`.
+   - `{"type":"image"|"audio","path":"/abs/path"}` — memory-mapped natively (`MemoryMappedFile::Create`),
+     no base64 round-trip. Desktop only; the path must be readable by the native process.
+   - **No `mime_type`/`mime`/`data`/`image_url` field** exists or is read — the media kind is the `"type"`
+     string alone. Content-part **order is preserved and significant** (interleave text/media as seen).
+3. **Visual token budget** — optional per-send override created via
+   `conversation_optional_args_create()` → `conversation_optional_args_set_visual_token_budget(args, int)`
+   → passed as the last arg of `send_message`/`send_message_stream` → `conversation_optional_args_delete(args)`.
+   For streaming the args must outlive the whole stream (the native decode thread reads them during
+   prefill), so the binding frees them in the iterator's `finally`, alongside the callback `GCHandle`.
+
+> The v0.13.1 `c/engine_test.cc` exercises only **text** messages through the Conversation API (and
+> `set_visual_token_budget(args, 100)` with a text-only message), so the image/audio JSON shape is taken
+> from the **parser source** (`data_utils.cc`) and the model-specific data processors
+> (`gemma4_data_processor.cc` uses an image *and* an audio preprocessor), not from the test file.
+
+Wrapper surface: `LiteRtAttachment.Image/ImageFile/Audio/AudioFile`,
+`LiteRtConversation.Send(text, attachments)` / `SendMessage(text, attachments)` /
+`SendMessageStreamingAsync(text, attachments, ct)`, `LiteRtEngineOptions.VisionBackend`/`AudioBackend`/
+`MaxNumImages`, `LiteRtConversationOptions.VisualTokenBudget`.
+
+**VALIDATED** with our own win-x64 binary + `gemma-4-E2B-it` (2026-06-17): the self-built lib links the
+vision/audio executors. **CPU:** a red PNG expanded to a ~261-token vision block (text-only prefill 28 →
+with-image 289) and the model answered *"…a solid, vibrant **red** color"*; a real spoken 5→0 countdown
+(`countdown.mp3`) added ~130 audio tokens (35 → 165) and the model transcribed *"Five, four, three, two,
+one, zero."* **win-x64 GPU:** vision runs on the WebGPU/D3D12 backend (same red result, 28 → 289); audio
+runs on CPU (35 → 164, *"5 4 3 2 1 0"*) because the model's audio sub-model is CPU-constrained
+(`audio_backend="gpu"` → "Audio backend constraint mismatch. Model requires one of [cpu]"), which is a
+model property, not a platform one (the macOS GPU leg confirms the same). The model-backed tests assert
+the **token delta** (deterministic proof the encoder ran) and log the transcription. (An earlier synthetic
+sine tone yielded a canned "I cannot process audio"; a real clip transcribes correctly, so the fixture is
+an embedded `countdown.mp3`.)
 
 ### Streaming: regression in `032334d8`, RESOLVED in `v0.13.1`
 `SendMessageStreamingAsync` segfaulted (exit 139) with the interim-commit binary `032334d8` —

@@ -47,14 +47,18 @@ public sealed class LiteRtEngine : IDisposable
 
         try
         {
+            // Passing null for vision/audio leaves that modality unconfigured (NULL = "not set" per
+            // the C API). Set them to "cpu"/"gpu" on a multimodal model to enable image/audio input.
             nint settingsPtr = LiteRtLmNative.litert_lm_engine_settings_create(
-                options.ModelPath, options.Backend, null, null);
+                options.ModelPath, options.Backend, options.VisionBackend, options.AudioBackend);
             if (settingsPtr == nint.Zero)
                 throw new LiteRtException("litert_lm_engine_settings_create returned null.");
 
             using var settings = new EngineSettingsHandle(settingsPtr);
             if (options.MaxNumTokens > 0)
                 LiteRtLmNative.litert_lm_engine_settings_set_max_num_tokens(settings.Ptr, options.MaxNumTokens);
+            if (options.MaxNumImages > 0)
+                LiteRtLmNative.litert_lm_engine_settings_set_max_num_images(settings.Ptr, options.MaxNumImages);
             if (!string.IsNullOrEmpty(options.CacheDir))
                 LiteRtLmNative.litert_lm_engine_settings_set_cache_dir(settings.Ptr, options.CacheDir);
             if (options.EnableBenchmark)

@@ -16,8 +16,46 @@ public sealed record LiteRtEngineOptions
     /// <summary>Backend to run on: <c>"cpu"</c> or <c>"gpu"</c>. Defaults to CPU.</summary>
     public string Backend { get; init; } = "cpu";
 
+    /// <summary>
+    /// Backend for the vision encoder (<c>"cpu"</c> or <c>"gpu"</c>), enabling <b>image</b> input.
+    /// <c>null</c> (default) leaves vision unconfigured — image attachments will not work. Requires a
+    /// multimodal model (e.g. the Gemma 4 E-series); on a text-only model setting this has no effect.
+    /// </summary>
+    /// <remarks>
+    /// Maps to the <c>vision_backend_str</c> parameter of the C API <c>engine_settings_create</c>.
+    /// May differ from <see cref="Backend"/> (e.g. main on GPU, vision on CPU). Pair with image
+    /// attachments via <see cref="LiteRtAttachment.Image(System.ReadOnlySpan{byte})"/> and tune the
+    /// image prefill budget with <see cref="LiteRtConversationOptions.VisualTokenBudget"/>.
+    /// </remarks>
+    public string? VisionBackend { get; init; }
+
+    /// <summary>
+    /// Backend for the audio encoder, enabling <b>audio</b> input. <c>null</c> (default) leaves audio
+    /// unconfigured — audio attachments will not work. Requires a model with audio support (e.g. the
+    /// Gemma 4 E-series); a no-op on models without it.
+    /// </summary>
+    /// <remarks>
+    /// A model may constrain which backend its audio encoder accepts. The Gemma 4 audio sub-model
+    /// requires <b>CPU</b>: passing <c>"gpu"</c> makes <c>litert_lm_engine_create</c> fail with
+    /// "Audio backend constraint mismatch. Model requires one of [cpu]" even when <see cref="Backend"/>
+    /// is GPU — on any platform, not a win-x64 quirk (verified 2026-06-17). Use <c>"cpu"</c> for such
+    /// models; the vision encoder has no such constraint and runs on GPU. Maps to the
+    /// <c>audio_backend_str</c> parameter of the C API <c>engine_settings_create</c>.
+    /// </remarks>
+    public string? AudioBackend { get; init; }
+
     /// <summary>Maximum context tokens for the engine. 0 = engine default.</summary>
     public int MaxNumTokens { get; init; }
+
+    /// <summary>
+    /// Maximum number of images the engine accepts per turn. 0 = engine default. Kept for parity with
+    /// the reference Kotlin binding, which exposes the same <c>maxNumImages</c> setting (mapping a null
+    /// to the <c>-1</c> "use default" sentinel). Per the C API header this only affects the
+    /// <i>legacy</i> engine implementation, so the current path ignores it — prefer
+    /// <see cref="LiteRtConversationOptions.VisualTokenBudget"/> to bound image cost. Maps to
+    /// <c>engine_settings_set_max_num_images</c>.
+    /// </summary>
+    public int MaxNumImages { get; init; }
 
     /// <summary>
     /// Directory for the engine's compiled-artifact cache (GPU shaders / converted weights),
@@ -157,4 +195,12 @@ public sealed record LiteRtConversationOptions
     /// </summary>
     /// <remarks>Maps to the C API <c>conversation_config_set_filter_channel_content_from_kv_cache</c>.</remarks>
     public bool FilterThinkingFromKvCache { get; init; }
+
+    /// <summary>
+    /// Budget (in tokens) that <b>image</b> attachments may consume during prefill. 0 (default) =
+    /// engine default. Lower it to cap how much of the context window an image eats on a vision model;
+    /// only meaningful when sending image attachments. Applied per send via the C API
+    /// <c>conversation_optional_args_set_visual_token_budget</c>.
+    /// </summary>
+    public int VisualTokenBudget { get; init; }
 }

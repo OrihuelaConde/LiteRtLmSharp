@@ -16,6 +16,10 @@ public sealed class EngineService
     public string? LoadedBackend { get; private set; }
     public bool LoadedSpeculative { get; private set; }
     public bool LoadedThinking { get; private set; }
+    /// <summary>Whether the engine was loaded with the image encoder enabled.</summary>
+    public bool LoadedVision { get; private set; }
+    /// <summary>Whether the engine was loaded with the audio encoder enabled.</summary>
+    public bool LoadedAudio { get; private set; }
     public bool IsLoaded => Engine is not null;
 
     /// <summary>Shared "speculative on/off" label so every tab's header says it the same way.</summary>
@@ -23,6 +27,16 @@ public sealed class EngineService
 
     /// <summary>Shared "thinking on/off" label so every tab's header says it the same way.</summary>
     public string ThinkingLabel => LoadedThinking ? "thinking on" : "thinking off";
+
+    /// <summary>Which input modalities the loaded engine actually accepts — shown in the chat header so
+    /// it is obvious whether image/audio attachments will work on this load.</summary>
+    public string ModalityLabel => (LoadedVision, LoadedAudio) switch
+    {
+        (true, true) => "vision+audio",
+        (true, false) => "vision",
+        (false, true) => "audio",
+        _ => "text only",
+    };
 
     /// <summary>Raised after a model finishes loading (on the thread that loaded it).</summary>
     public event Action? Loaded;
@@ -46,12 +60,22 @@ public sealed class EngineService
         {
             await UnloadAsync();
 
+            // Enable the image/audio encoders when the model is multimodal (the Gemma 4 E-series are);
+            // null leaves the modality off (text-only models). Vision runs on the main backend (GPU
+            // works). Gemma 4's audio sub-model is CPU-constrained — the model declares "requires one of
+            // [cpu]", so audio=gpu fails engine creation on any platform (verified 2026-06-17) — so run
+            // audio on CPU whenever the main backend is GPU.
+            string? visionBackend = model.SupportsVision ? backend : null;
+            string? audioBackend = model.SupportsAudio ? (backend == "gpu" ? "cpu" : backend) : null;
+
             LiteRtEngine.SetMinLogLevel(3);
             // Engine creation is heavy (GBs of weights) — never on the UI thread.
             Engine = await Task.Run(() => LiteRtEngine.Load(new LiteRtEngineOptions
             {
                 ModelPath = modelPath,
                 Backend = backend,
+                VisionBackend = visionBackend,
+                AudioBackend = audioBackend,
                 MaxNumTokens = ContextTokens,
                 EnableSpeculativeDecoding = enableSpeculativeDecoding, // MTP drafter → faster decode
                 EnableBenchmark = true,                                // gauge shows decode tok/s
@@ -65,6 +89,8 @@ public sealed class EngineService
             LoadedBackend = backend;
             LoadedSpeculative = enableSpeculativeDecoding;
             LoadedThinking = enableThinking;
+            LoadedVision = visionBackend is not null;
+            LoadedAudio = audioBackend is not null;
             Loaded?.Invoke();
         }
         finally
@@ -88,6 +114,8 @@ public sealed class EngineService
         LoadedBackend = null;
         LoadedSpeculative = false;
         LoadedThinking = false;
+        LoadedVision = false;
+        LoadedAudio = false;
         await Task.Run(engine.Dispose);
     }
 

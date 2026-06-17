@@ -221,6 +221,48 @@ internal static class LiteRtJson
             w.WriteEndObject();
         });
 
+    /// <summary>
+    /// A user message with optional image/audio attachments:
+    /// <c>{"role":"user","content":[{"type":"text","text":…},{"type":"image","blob":&lt;base64&gt;}, …]}</c>.
+    /// The text part comes first (omitted when empty), then each attachment in order — content-part
+    /// order is preserved and the model sees the media where it appears. Inline bytes are emitted as a
+    /// base64 <c>"blob"</c>; a file-backed attachment as a <c>"path"</c> the native layer memory-maps.
+    /// Falls back to the text-only <see cref="UserMessage(string)"/> when there are no attachments.
+    /// </summary>
+    public static string UserMessage(string text, IReadOnlyList<LiteRtAttachment>? attachments)
+    {
+        if (attachments is not { Count: > 0 })
+            return UserMessage(text);
+
+        return Build(w =>
+        {
+            w.WriteStartObject();
+            w.WriteString("role", "user");
+            w.WriteStartArray("content");
+            if (!string.IsNullOrEmpty(text))
+            {
+                w.WriteStartObject();
+                w.WriteString("type", "text");
+                w.WriteString("text", text);
+                w.WriteEndObject();
+            }
+            foreach (LiteRtAttachment a in attachments)
+            {
+                w.WriteStartObject();
+                w.WriteString("type", a.Kind == LiteRtAttachmentKind.Image ? "image" : "audio");
+                // A path is memory-mapped natively; inline bytes go as a base64 "blob" the engine
+                // decodes with absl::Base64Unescape (runtime/conversation/.../data_utils.cc).
+                if (a.Path is { } path)
+                    w.WriteString("path", path);
+                else
+                    w.WriteString("blob", Convert.ToBase64String(a.Bytes ?? []));
+                w.WriteEndObject();
+            }
+            w.WriteEndArray();
+            w.WriteEndObject();
+        });
+    }
+
     /// <summary>{"type":"text","text":...} — for the system message config.</summary>
     public static string SystemMessage(string text)
         => Build(w =>
