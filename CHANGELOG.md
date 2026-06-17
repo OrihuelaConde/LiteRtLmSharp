@@ -33,11 +33,6 @@ sample and CI work).
 
 ### Changed
 
-- **macOS (osx-arm64) validated in CI** on CPU and GPU (the WebGPU / Dawn→Metal delegate); the GPU pass
-  is a required check.
-- **Weekly model-tests matrix** across linux-x64 / win-x64 / osx-arm64 covering blocking chat, streaming,
-  tool calling (with and without constrained decoding), a speculative-decoding A/B benchmark, and
-  multimodal image/audio.
 - **MAUI sample:** tools page, in-app model/backend switching, reasoning and speculative toggles,
   image/audio attach buttons with a modality indicator, and a context/benchmark gauge. **Console sample:**
   streaming, tools, speculative and thinking flags.
@@ -49,6 +44,16 @@ sample and CI work).
   shipped with LiteRT-LM v0.13.1 returns broken constraints
   ([LiteRT-LM#2149](https://github.com/google-ai-edge/LiteRT-LM/issues/2149)). Tools still work with
   constrained decoding off. The guard is removed once upstream ships a fixed binary.
+
+### Testing & CI
+
+_Repository changes, not part of the shipped library._
+
+- **macOS (osx-arm64) validated in CI** on CPU and GPU (the WebGPU / Dawn→Metal delegate); the GPU pass
+  is a required check.
+- **Weekly model-tests matrix** across linux-x64 / win-x64 / osx-arm64 covering blocking chat, streaming,
+  tool calling (with and without constrained decoding), a speculative-decoding A/B benchmark, and
+  multimodal image/audio.
 
 ### Known issues
 

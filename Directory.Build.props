@@ -12,7 +12,7 @@
     <!-- LiteRT-LM release tag the native binaries are built from (build-native.yml input). -->
     <LiteRtLmVersion>v0.13.1</LiteRtLmVersion>
     <!-- Shown on the nuget.org version page; update each release. Full history in CHANGELOG.md. -->
-    <PackageReleaseNotes>preview.2: multimodal image/audio attachments; conversation restore + clone; reasoning ("thinking") mode; speculative decoding + benchmark API + engine cache-dir control; macOS validated in CI (CPU + GPU). Built against LiteRT-LM $(LiteRtLmVersion). Full notes: https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/CHANGELOG.md</PackageReleaseNotes>
+    <PackageReleaseNotes>preview.2: multimodal image/audio attachments; conversation restore + clone; reasoning ("thinking") mode; speculative decoding + benchmark API + engine cache-dir control. Built against LiteRT-LM $(LiteRtLmVersion). Full notes: https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/CHANGELOG.md</PackageReleaseNotes>
 
     <Authors>LiteRtLmSharp contributors</Authors>
     <Company>LiteRtLmSharp</Company>
