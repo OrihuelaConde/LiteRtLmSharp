@@ -45,6 +45,12 @@ public sealed record LiteRtEngineOptions
     public string? AudioBackend { get; init; }
 
     /// <summary>Maximum context tokens for the engine. 0 = engine default.</summary>
+    /// <remarks>
+    /// For <b>multimodal</b> input give the engine room for the media tokens: an image expands to a
+    /// block of vision tokens (~256 for Gemma 4), so set this to <b>4096 or more</b>. A small window
+    /// such as 2048 can fail to load the vision encoder — the first image send then throws
+    /// "Vision executor should not be null" (validated 2026-06-17).
+    /// </remarks>
     public int MaxNumTokens { get; init; }
 
     /// <summary>

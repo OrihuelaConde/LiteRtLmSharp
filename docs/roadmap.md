@@ -173,8 +173,12 @@ drift). The remaining 44 group into six areas, in suggested priority order:
    the **osx-arm64 GPU** leg (WebGPU→Metal). Audio-on-GPU does NOT run because **gemma-4's audio sub-model
    is CPU-constrained** (the model declares "requires one of [cpu]"); the macOS GPU leg's audio test skips
    with the exact `Audio backend constraint mismatch` message — identical to win-x64 — confirming it's a
-   model property, not a platform limitation. So audio always runs on CPU (the sample falls it back). No
-   open multimodal follow-ups remain; next binding area is the tokenizer surface.
+   model property, not a platform limitation. So audio always runs on CPU (the sample falls it back).
+   **Multimodal follow-up (TODO, not yet done):** wrap the native "Vision executor should not be null"
+   failure in a clearer managed error that names the likely causes (model not multimodal, `VisionBackend`
+   unset, or `MaxNumTokens` too small — needs ≥4096). Found via the preview.2 consumer smoke test
+   (2026-06-17); the docs already note the `MaxNumTokens` requirement, this is the code-side hint and
+   would ship in the next preview. Next binding area after that is the tokenizer surface.
    `android-x64` for emulators; Desktop meta-package;
    ✅ ~~CONTRIBUTING + issue templates~~ (2026-06-11: CONTRIBUTING.md, issue forms, PR template,
    SECURITY.md, Discussions enabled); scheduled smoke-test workflow that consumes the published

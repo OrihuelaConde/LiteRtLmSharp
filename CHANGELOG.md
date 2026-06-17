@@ -57,6 +57,9 @@ _Repository changes, not part of the shipped library._
 
 ### Known issues
 
+- Multimodal needs a sufficient context window: set `LiteRtEngineOptions.MaxNumTokens` to **4096 or
+  more**. A small window (e.g. 2048) cannot fit the image's vision tokens and the first image send fails
+  with "Vision executor should not be null".
 - The Gemma 4 audio sub-model is **CPU-only** — `AudioBackend = "gpu"` fails engine creation ("Audio
   backend constraint mismatch. Model requires one of [cpu]") on every platform; run audio on CPU. Vision
   runs on GPU.

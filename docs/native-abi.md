@@ -225,6 +225,11 @@ Wrapper surface: `LiteRtAttachment.Image/ImageFile/Audio/AudioFile`,
 `SendMessageStreamingAsync(text, attachments, ct)`, `LiteRtEngineOptions.VisionBackend`/`AudioBackend`/
 `MaxNumImages`, `LiteRtConversationOptions.VisualTokenBudget`.
 
+> **Context window:** multimodal needs `MaxNumTokens` large enough for the media tokens (an image is
+> ~256 vision tokens). Use **≥ 4096**; with `MaxNumTokens = 2048` the vision encoder fails to load and
+> the first image send throws `INVALID_ARGUMENT: Vision executor should not be null, please
+> TryLoadingVisionExecutor() first` (found via the preview.2 consumer smoke test, 2026-06-17).
+
 **VALIDATED** with our own win-x64 binary + `gemma-4-E2B-it` (2026-06-17): the self-built lib links the
 vision/audio executors. **CPU:** a red PNG expanded to a ~261-token vision block (text-only prefill 28 →
 with-image 289) and the model answered *"…a solid, vibrant **red** color"*; a real spoken 5→0 countdown
