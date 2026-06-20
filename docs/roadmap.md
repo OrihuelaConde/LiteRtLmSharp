@@ -38,7 +38,7 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Restore chat history (`History`/`HistoryJson`, `LiteRtMessage`) + conversation clone (`Clone()`) | ✅ |
 | AOT/trim-friendly (`[LibraryImport]`, `[UnmanagedCallersOnly]`, no reflection) | ✅ |
 | Multimodal messages (image/audio attachments, vision/audio backend, visual token budget) | ✅ |
-| Tokenize/detokenize (exact token counting) | 🔜 see C API coverage below |
+| Tokenize/detokenize + start/stop tokens (exact token counting, no inference) | ✅ |
 
 Known constraints (documented in the README): one engine ALIVE at a time (reloading after
 `Dispose` works — verified on win-x64 cpu→cpu and cpu→gpu; this is Edge Gallery's pattern for
@@ -48,8 +48,8 @@ is the total context window; VC++ Redistributable required on win-x64; Android G
 
 ## C API coverage (audit 2026-06-12, header v0.13.1)
 
-**45 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
-drift). The remaining 44 group into six areas, in suggested priority order:
+**61 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
+drift). The remaining 28 group into the areas below, in suggested priority order:
 
 ### High value (user-facing features)
 
@@ -66,7 +66,7 @@ drift). The remaining 44 group into six areas, in suggested priority order:
 
 | Feature | Functions | Notes |
 |---|---|---|
-| Tokenizer surface (16) | `engine_tokenize`, `engine_detokenize`, `engine_get_start_token`, `engine_get_stop_tokens`, `tokenize_result_*` (3), `detokenize_result_*` (2), `token_union_*` (4), `token_unions_*` (3) | Exact token counting / prompt budgeting without running inference. |
+| ✅ Tokenizer surface (16) | `engine_tokenize`, `engine_detokenize`, `engine_get_start_token`, `engine_get_stop_tokens`, `tokenize_result_*` (3), `detokenize_result_*` (2), `token_union_*` (4), `token_unions_*` (3) | **Done 2026-06-19.** `LiteRtEngine.Tokenize(text)` → `int[]` and `Detokenize(ReadOnlySpan<int>)` → `string` run the model's own tokenizer with no inference (exact prompt budgeting against `MaxNumTokens`); `GetStartToken()`/`GetStopTokens()` expose the configured BOS/EOS tokens as `LiteRtTokenUnion` (a literal `Text` string or a sequence of `Ids`, per `Kind`). All 16 functions bound; result/union objects wrapped in SafeHandles, the `const int*`/`char*` views copied out before disposal. Validated on win-x64 CPU with gemma-4-E2B-it (round-trip, deterministic+monotone counts, non-empty stop tokens). |
 | ✅ Benchmark API (11) | `engine_settings_enable_benchmark`, `conversation_get_benchmark_info`, `benchmark_info_*` (9) | **Done 2026-06-15** (`EnableBenchmark` → `LiteRtConversation.GetBenchmarkInfo()`). Prefill/decode tok/s, time-to-first-token, init time. Surfaced in both samples' gauges + the speculative-decoding A/B test. Per-turn getters guarded (the C wrapper does not bounds-check the turn index). |
 | ✅ KV-cache thinking filter | `conversation_config_set_filter_channel_content_from_kv_cache` | **Done 2026-06-16** (`LiteRtConversationOptions.FilterThinkingFromKvCache`). Drops thinking-channel tokens from the KV cache so a long reasoning block does not consume the context window; companion to `EnableThinking`. |
 | Prompt debugging | `conversation_render_message_to_string` | See the rendered (templated) prompt for a message. |
@@ -167,8 +167,8 @@ drift). The remaining 44 group into six areas, in suggested priority order:
    MAUI `net10.0-ios` app → CI signing → TestFlight.
 6. **Optional**: binding coverage push per the "C API coverage" section above. **The high-value group is
    now complete** — ✅ history restore + clone (2026-06-16), ✅ cache dir + ✅ speculative decoding
-   (2026-06-15), ✅ multimodal image/audio (2026-06-17); next is the tokenizer surface (exact token
-   counting). **Multimodal is validated cross-platform** (`model-tests.yml` run 27712370474, 2026-06-17):
+   (2026-06-15), ✅ multimodal image/audio (2026-06-17), ✅ tokenizer surface (exact token counting,
+   2026-06-19; 61/89 bound). **Multimodal is validated cross-platform** (`model-tests.yml` run 27712370474, 2026-06-17):
    vision **and** audio pass on the CPU leg of **linux-x64, win-x64 and osx-arm64**, and vision passes on
    the **osx-arm64 GPU** leg (WebGPU→Metal). Audio-on-GPU does NOT run because **gemma-4's audio sub-model
    is CPU-constrained** (the model declares "requires one of [cpu]"); the macOS GPU leg's audio test skips
@@ -178,7 +178,10 @@ drift). The remaining 44 group into six areas, in suggested priority order:
    failure in a clearer managed error that names the likely causes (model not multimodal, `VisionBackend`
    unset, or `MaxNumTokens` too small — needs ≥4096). Found via the preview.2 consumer smoke test
    (2026-06-17); the docs already note the `MaxNumTokens` requirement, this is the code-side hint and
-   would ship in the next preview. Next binding area after that is the tokenizer surface.
+   would ship in the next preview. The remaining binding areas are the smaller medium-value utilities
+   (prompt rendering for debugging; engine tuning knobs: prefill chunk size, parallel file loading,
+   activation dtype) and — once a stable v0.14.x lands — the new C-API surface (LoRA adapters,
+   request-level max-output-tokens, FD-based load; see the watchlist).
    `android-x64` for emulators; Desktop meta-package;
    ✅ ~~CONTRIBUTING + issue templates~~ (2026-06-11: CONTRIBUTING.md, issue forms, PR template,
    SECURITY.md, Discussions enabled); scheduled smoke-test workflow that consumes the published

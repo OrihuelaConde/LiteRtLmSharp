@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using LiteRtLmSharp.Native;
 
 namespace LiteRtLmSharp;
@@ -89,6 +90,112 @@ public sealed class LiteRtEngine : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         return LiteRtConversation.Create(_engine, options);
+    }
+
+    /// <summary>
+    /// Tokenizes <paramref name="text"/> with the model's own tokenizer and returns the token ids,
+    /// without running inference. Use it to measure a prompt's exact token cost or to budget a
+    /// conversation against <see cref="LiteRtEngineOptions.MaxNumTokens"/> before sending. The ids are
+    /// the raw tokenizer output (no chat template is applied); pair with <see cref="Detokenize"/> for
+    /// the round trip.
+    /// </summary>
+    /// <exception cref="LiteRtException">The native tokenizer call failed.</exception>
+    /// <exception cref="EntryPointNotFoundException">The native binary predates the tokenizer API.</exception>
+    public int[] Tokenize(string text)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(text);
+
+        nint resultPtr = LiteRtLmNative.litert_lm_engine_tokenize(_engine.Ptr, text);
+        if (resultPtr == nint.Zero)
+            throw new LiteRtException("litert_lm_engine_tokenize returned null.");
+
+        using var result = new TokenizeResultHandle(resultPtr);
+        nuint count = LiteRtLmNative.litert_lm_tokenize_result_get_num_tokens(result.Ptr);
+        if (count == 0)
+            return [];
+
+        nint tokensPtr = LiteRtLmNative.litert_lm_tokenize_result_get_tokens(result.Ptr);
+        if (tokensPtr == nint.Zero)
+            return [];
+
+        var tokens = new int[count];
+        // The pointer is into the result's internal buffer; copy out before the handle disposes it.
+        Marshal.Copy(tokensPtr, tokens, 0, checked((int)count));
+        return tokens;
+    }
+
+    /// <summary>
+    /// Detokenizes token ids back to text with the model's tokenizer — the inverse of
+    /// <see cref="Tokenize"/>. An empty span returns the empty string without calling native.
+    /// </summary>
+    /// <exception cref="LiteRtException">The native detokenizer call failed (e.g. an out-of-range id).</exception>
+    /// <exception cref="EntryPointNotFoundException">The native binary predates the tokenizer API.</exception>
+    public string Detokenize(ReadOnlySpan<int> tokens)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (tokens.IsEmpty)
+            return string.Empty;
+
+        nint resultPtr;
+        unsafe
+        {
+            fixed (int* p = tokens)
+                resultPtr = LiteRtLmNative.litert_lm_engine_detokenize(_engine.Ptr, p, (nuint)tokens.Length);
+        }
+        if (resultPtr == nint.Zero)
+            throw new LiteRtException("litert_lm_engine_detokenize returned null.");
+
+        using var result = new DetokenizeResultHandle(resultPtr);
+        nint strPtr = LiteRtLmNative.litert_lm_detokenize_result_get_string(result.Ptr);
+        return Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
+    }
+
+    /// <summary>
+    /// The model's configured start (BOS) token, or <c>null</c> when the model declares none. Reported
+    /// either as a literal string or a token-id sequence — see <see cref="LiteRtTokenUnion.Kind"/>.
+    /// </summary>
+    public LiteRtTokenUnion? GetStartToken()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        nint ptr = LiteRtLmNative.litert_lm_engine_get_start_token(_engine.Ptr);
+        if (ptr == nint.Zero)
+            return null;
+
+        using var handle = new TokenUnionHandle(ptr);
+        return LiteRtTokenUnion.FromNative(handle.Ptr);
+    }
+
+    /// <summary>
+    /// The model's configured stop (EOS) tokens, or an empty list when none. Generation halts when the
+    /// model emits any of these; each is a literal string or a token-id sequence — see
+    /// <see cref="LiteRtTokenUnion.Kind"/>.
+    /// </summary>
+    public IReadOnlyList<LiteRtTokenUnion> GetStopTokens()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        nint ptr = LiteRtLmNative.litert_lm_engine_get_stop_tokens(_engine.Ptr);
+        if (ptr == nint.Zero)
+            return [];
+
+        using var handle = new TokenUnionsHandle(ptr);
+        nuint count = LiteRtLmNative.litert_lm_token_unions_get_num_tokens(handle.Ptr);
+        if (count == 0)
+            return [];
+
+        var stops = new List<LiteRtTokenUnion>(checked((int)count));
+        for (nuint i = 0; i < count; i++)
+        {
+            nint unionPtr = LiteRtLmNative.litert_lm_token_unions_get_token_at(handle.Ptr, i);
+            if (unionPtr == nint.Zero)
+                continue;
+            // get_token_at hands back a NEW token union that the caller must delete.
+            using var unionHandle = new TokenUnionHandle(unionPtr);
+            stops.Add(LiteRtTokenUnion.FromNative(unionHandle.Ptr));
+        }
+        return stops;
     }
 
     public void Dispose()

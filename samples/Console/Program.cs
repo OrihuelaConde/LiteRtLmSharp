@@ -127,18 +127,20 @@ static async Task<bool> MainMenuAsync(
             Ui.Menu("Main menu",
                 "Chat (streaming)",
                 "Function-calling demo",
+                "Tokenizer (count tokens)",
                 "New conversation",
                 "Switch model / backend / speculative / thinking",
                 "Info",
                 "Quit");
-            switch (Ui.Pick(1, 6))
+            switch (Ui.Pick(1, 7))
             {
                 case 1: await ChatLoopAsync(chat, contextTokens); break;
                 case 2: RunToolsDemo(engine); break;
-                case 3: chat.Dispose(); chat = NewChat(engine, thinking); Ui.Success("Started a fresh conversation."); break;
-                case 4: return true;
-                case 5: PrintInfo(modelPath, backend, contextTokens, speculative, thinking, chat); break;
-                case 6: return false;
+                case 3: RunTokenizerDemo(engine); break;
+                case 4: chat.Dispose(); chat = NewChat(engine, thinking); Ui.Success("Started a fresh conversation."); break;
+                case 5: return true;
+                case 6: PrintInfo(modelPath, backend, contextTokens, speculative, thinking, chat); break;
+                case 7: return false;
             }
         }
     }
@@ -307,6 +309,48 @@ static string ExecuteTool(LiteRtToolCall call) => call.Name switch
     "get_current_weather" => """{"temperature":15,"unit":"celsius","conditions":"sunny"}""",
     _ => """{"error":"unknown tool"}""",
 };
+
+// ─────────────────── Tokenizer (count tokens) ───────────────────
+
+// The engine exposes the model's own tokenizer, so you can measure a prompt's exact token cost
+// (and what its stop tokens are) without running inference.
+static void RunTokenizerDemo(LiteRtEngine engine)
+{
+    Ui.Info("\nTokenizer demo — turns text into token ids and back with no inference; handy to measure a\n"
+        + "prompt's exact token cost before sending.\n");
+
+    Ui.Prompt("Text to tokenize (Enter for a sample): ");
+    string text = Console.ReadLine() is { Length: > 0 } typed
+        ? typed
+        : "The quick brown fox jumps over the lazy dog.";
+
+    // 1. Text → token ids (exact count, no generation).
+    int[] ids = engine.Tokenize(text);
+    Ui.WriteLine($"  {ids.Length} tokens", ConsoleColor.White);
+    Ui.WriteLine($"  ids: {PreviewIds(ids)}", ConsoleColor.DarkGray);
+
+    // 2. Token ids → text (round-trips back through the tokenizer). Detokenize returns the tokenizer's
+    //    surface form: Gemma's SentencePiece marks word boundaries with ▁ (the chat path renders spaces).
+    string detok = engine.Detokenize(ids);
+    Ui.WriteLine($"  detokenized: {detok}", ConsoleColor.DarkGray);
+    if (detok.Contains('▁'))
+        Ui.WriteLine("  (▁ is this model's SentencePiece space marker)", ConsoleColor.DarkGray);
+
+    // 3. The model's configured start (BOS) / stop (EOS) tokens — generation halts on a stop token.
+    if (engine.GetStartToken() is { } start)
+        Ui.WriteLine($"  start token: {start}", ConsoleColor.Gray);
+    string stops = string.Join(", ", engine.GetStopTokens());
+    Ui.WriteLine($"  stop tokens: {(stops.Length > 0 ? stops : "(none)")}", ConsoleColor.Gray);
+}
+
+// First few token ids, abbreviated so a long input stays readable.
+static string PreviewIds(int[] ids)
+{
+    const int max = 16;
+    return ids.Length <= max
+        ? string.Join(", ", ids)
+        : string.Join(", ", ids[..max]) + $", … (+{ids.Length - max} more)";
+}
 
 // ───────────────────────────── Info ─────────────────────────────
 

@@ -9,8 +9,9 @@
 > **HISTORICAL** — all resolved by compiling our own binaries from the `v0.13.1` tag with the
 > matching header. Today config/system-prompt/sampler, tools, streaming and token count work on
 > all 5 platforms. Speculative decoding, the benchmark API, and the engine cache-dir setting were
-> bound on 2026-06-15; multimodal image/audio messages on 2026-06-17 (see
-> [`roadmap.md`](roadmap.md) for the C-API coverage count, now 45/89, and the
+> bound on 2026-06-15; multimodal image/audio messages on 2026-06-17; the tokenizer surface
+> (tokenize/detokenize + start/stop tokens) on 2026-06-19 (see
+> [`roadmap.md`](roadmap.md) for the C-API coverage count, now 61/89, and the
 > [multimodal section](#multimodal-messages-image--audio--verified-wire-format) below). The notes
 > below are kept as a diagnostic record.
 >
@@ -253,6 +254,41 @@ It was not managed code (worked on `0.12.0-a`), not the WebGPU sampler (#2073), 
 
 > Lesson: pin to a **release tag**, never an arbitrary commit — more stable and it is the sync
 > target with Google. `build-native.yml` uses `v0.13.1` by default.
+
+## Tokenizer (tokenize / detokenize / start-stop tokens) — verified
+
+The engine exposes the model's own tokenizer, so exact token counts can be computed without running
+inference (16 functions, all bound). The shape is opaque-pointer + getters, freed by the matching
+`*_delete`; the `const int*` / `const char*` getters point INTO the owning object, so the .NET side
+copies the data out before disposing the handle.
+
+```c
+LiteRtLmTokenizeResult* t = litert_lm_engine_tokenize(engine, "Hello");      // NULL on failure
+size_t n = litert_lm_tokenize_result_get_num_tokens(t);
+const int* ids = litert_lm_tokenize_result_get_tokens(t);                    // valid while t lives
+litert_lm_tokenize_result_delete(t);
+LiteRtLmDetokenizeResult* d = litert_lm_engine_detokenize(engine, ids, n);   // inverse
+const char* text = litert_lm_detokenize_result_get_string(d);               // UTF-8, owned by d
+litert_lm_detokenize_result_delete(d);
+```
+
+- **Start (BOS) / stop (EOS) tokens.** `litert_lm_engine_get_start_token` returns a `LiteRtLmTokenUnion*`
+  (or NULL); `litert_lm_engine_get_stop_tokens` returns a `LiteRtLmTokenUnions*` collection. A
+  `TokenUnion` is a tagged value: `litert_lm_token_union_get_type` is `kLiteRtLmTokenUnionTypeString`
+  (read `..._get_string`) or `kLiteRtLmTokenUnionTypeIds` (read `..._get_ids(out_tokens, out_num)` →
+  returns 0 on success). **Ownership trap:** `litert_lm_token_unions_get_token_at` returns a NEW union
+  the caller must `litert_lm_token_union_delete` — unlike the `const`-view getters above, it is not owned
+  by the collection.
+- .NET surface: `LiteRtEngine.Tokenize(string) → int[]`, `Detokenize(ReadOnlySpan<int>) → string`,
+  `GetStartToken() → LiteRtTokenUnion?`, `GetStopTokens() → IReadOnlyList<LiteRtTokenUnion>`
+  (`LiteRtTokenUnion.Kind`/`Text`/`Ids`). **VALIDATED** on win-x64 CPU with `gemma-4-E2B-it` (2026-06-19):
+  text round-trips through ids, counts are deterministic and monotone, and the model reports a non-empty
+  set of stop tokens (start = id `[2]`, stops = ids `[1]`/`[50]`/`[106]`).
+- **Detokenize returns the tokenizer's surface form, not post-processed text.** For Gemma's SentencePiece
+  tokenizer, `litert_lm_engine_detokenize` joins the pieces with the ▁ (U+2581) space meta-symbol —
+  e.g. ids for "The quick brown fox." come back as `The▁quick▁brown▁fox.`. The chat/response path renders
+  ▁ as spaces; the raw tokenizer surface does not. The binding passes the native string through verbatim
+  (post-processing it would be wrong for non-SentencePiece tokenizers and would corrupt literal ▁).
 
 ## Desktop GPU backend (WebGPU) — expected behavior
 

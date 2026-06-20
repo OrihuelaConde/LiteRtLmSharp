@@ -6,6 +6,18 @@ LiteRT-LM native version it wraps (see the compatibility table in the [README](R
 managed `LiteRtLmSharp` package and every `LiteRtLmSharp.runtime.<rid>` package share one version and
 are published together.
 
+## [Unreleased]
+
+Built against **LiteRT-LM v0.13.1**.
+
+### Added
+
+- **Token counting (tokenizer surface).** `LiteRtEngine.Tokenize(text)` and `Detokenize(ids)` run the
+  model's own tokenizer with no inference (exact prompt budgeting against `MaxNumTokens`), and
+  `GetStartToken()` / `GetStopTokens()` expose the model's configured start (BOS) / stop (EOS) tokens as
+  `LiteRtTokenUnion` values, each a literal string or a token-id sequence. Binds 16 more C-API functions
+  (now 61 of 89). Validated on win-x64 CPU with gemma-4-E2B-it.
+
 ## [0.1.0-preview.2] — 2026-06-17
 
 Built against **LiteRT-LM v0.13.1** (same native binaries as preview.1 — this release is binding,

@@ -212,6 +212,38 @@ sample's Chat tab exposes 📷 / 🎵 attach buttons (and a modality indicator) 
 Wire-format and validation details:
 [docs/native-abi.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/native-abi.md#multimodal-messages-image--audio--verified-wire-format).
 
+### Token counting (tokenize / detokenize)
+
+Measure a prompt's exact token cost, or convert between text and token ids, without running
+inference. Useful for budgeting against `MaxNumTokens` before sending.
+
+```csharp
+int[] ids = engine.Tokenize("How many tokens is this?");
+Console.WriteLine($"{ids.Length} tokens");      // exact count, no generation
+string text = engine.Detokenize(ids);           // back to text (surface form)
+
+// The model's start (BOS) and stop (EOS) tokens, each a literal string or a sequence of ids:
+foreach (var stop in engine.GetStopTokens())
+    Console.WriteLine(stop);                     // e.g. an EOS token id like [1]
+```
+
+These call the model's own tokenizer, so the counts match what generation sees. `Tokenize` returns the
+raw ids (no chat template); `Detokenize` returns the tokenizer's surface form, so SentencePiece models
+(the Gemma builds) render word boundaries as ▁. A start/stop token is a `LiteRtTokenUnion` carrying
+either `Text` or `Ids` (its `Kind` says which).
+
+A common use is keeping a conversation inside its context window. The window holds the whole chat
+(prompt plus replies, across turns), and overflowing it degrades output, so measure the next turn in
+real tokens and react before sending instead of guessing by string length:
+
+```csharp
+// contextWindow is the MaxNumTokens you loaded with; leave headroom for the reply.
+int next = engine.Tokenize(message).Length;
+if (chat.TokenCount + next > contextWindow - replyHeadroom)
+    // won't fit: warn the user, shorten the message, or drop old turns and reload via History.
+    Warn("Context almost full — shorten the message or start a new chat.");
+```
+
 ## Why .NET 10 only?
 
 .NET 10 is the current LTS (released November 2025; .NET 8 reaches end of support in November

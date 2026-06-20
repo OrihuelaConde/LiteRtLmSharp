@@ -247,6 +247,93 @@ internal static unsafe partial class LiteRtLmNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial double litert_lm_benchmark_info_get_decode_tokens_per_sec_at(nint info, int index);
+
+    // --- Tokenizer -------------------------------------------------------
+    // Exact tokenization / detokenization without running inference, plus the model's configured
+    // start (BOS) and stop (EOS) tokens. Each tokenize/detokenize/token-union object is caller-owned
+    // and freed by its matching *_delete (see the handles in Handles.cs); the const int*/char* getters
+    // point INTO the owning object, so callers copy the data out before disposing it.
+
+    /// <summary>Tokenizes UTF-8 <paramref name="text"/> with the engine's tokenizer. Returns a result
+    /// object (caller frees with <see cref="litert_lm_tokenize_result_delete"/>), or null on failure.</summary>
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_engine_tokenize(nint engine, string text);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_tokenize_result_delete(nint result);
+
+    /// <summary>Pointer to the result's internal token-id array (valid only while the result lives).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_tokenize_result_get_tokens(nint result);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nuint litert_lm_tokenize_result_get_num_tokens(nint result);
+
+    /// <summary>Detokenizes a token-id array back to UTF-8. Returns a result object (caller frees with
+    /// <see cref="litert_lm_detokenize_result_delete"/>), or null on failure.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_engine_detokenize(nint engine, int* tokens, nuint num_tokens);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_detokenize_result_delete(nint result);
+
+    /// <summary>The detokenized UTF-8 string (owned by the result; valid only while it lives).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_detokenize_result_get_string(nint result);
+
+    // A TokenUnion is one start/stop token: either a literal string or a sequence of ids (see the type).
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_token_union_delete(nint token_union);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial LiteRtLmTokenUnionType litert_lm_token_union_get_type(nint token_union);
+
+    /// <summary>The string value, or null when the type is not <see cref="LiteRtLmTokenUnionType.String"/>.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_token_union_get_string(nint token_union);
+
+    /// <summary>Receives the internal id array + count. Returns 0 on success, non-zero when the type is
+    /// not <see cref="LiteRtLmTokenUnionType.Ids"/>.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial int litert_lm_token_union_get_ids(nint token_union, int** out_tokens, nuint* out_num_tokens);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_token_unions_delete(nint tokens);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nuint litert_lm_token_unions_get_num_tokens(nint tokens);
+
+    /// <summary>The token union at <paramref name="index"/> — a NEW caller-owned object freed with
+    /// <see cref="litert_lm_token_union_delete"/>; null when out of bounds.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_token_unions_get_token_at(nint tokens, nuint index);
+
+    /// <summary>The model's configured start (BOS) token, or null if none — caller frees with
+    /// <see cref="litert_lm_token_union_delete"/>.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_engine_get_start_token(nint engine);
+
+    /// <summary>The model's configured stop (EOS) tokens, or null if none — caller frees with
+    /// <see cref="litert_lm_token_unions_delete"/>.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_engine_get_stop_tokens(nint engine);
 }
 
 /// <summary>Mirrors <c>LiteRtLmSamplerType</c> in engine.h.</summary>
@@ -256,6 +343,14 @@ internal enum LiteRtLmSamplerType
     TopK = 1,
     TopP = 2,
     Greedy = 3,
+}
+
+/// <summary>Mirrors <c>LiteRtLmTokenUnionType</c> in engine.h: a start/stop token is either a
+/// literal string or a sequence of token ids.</summary>
+internal enum LiteRtLmTokenUnionType
+{
+    String = 0,
+    Ids = 1,
 }
 
 /// <summary>Mirrors the <c>LiteRtLmSamplerParams</c> struct in engine.h.</summary>

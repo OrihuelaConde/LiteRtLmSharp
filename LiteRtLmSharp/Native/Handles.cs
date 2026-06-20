@@ -88,3 +88,39 @@ internal sealed class BenchmarkInfoHandle(nint handle) : LiteRtLmHandle(handle)
         return true;
     }
 }
+
+internal sealed class TokenizeResultHandle(nint handle) : LiteRtLmHandle(handle)
+{
+    protected override bool ReleaseHandle()
+    {
+        LiteRtLmNative.litert_lm_tokenize_result_delete(handle);
+        return true;
+    }
+}
+
+internal sealed class DetokenizeResultHandle(nint handle) : LiteRtLmHandle(handle)
+{
+    protected override bool ReleaseHandle()
+    {
+        LiteRtLmNative.litert_lm_detokenize_result_delete(handle);
+        return true;
+    }
+}
+
+internal sealed class TokenUnionHandle(nint handle) : LiteRtLmHandle(handle)
+{
+    protected override bool ReleaseHandle()
+    {
+        LiteRtLmNative.litert_lm_token_union_delete(handle);
+        return true;
+    }
+}
+
+internal sealed class TokenUnionsHandle(nint handle) : LiteRtLmHandle(handle)
+{
+    protected override bool ReleaseHandle()
+    {
+        LiteRtLmNative.litert_lm_token_unions_delete(handle);
+        return true;
+    }
+}

@@ -645,6 +645,81 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     }
 
     /// <summary>
+    /// Tokenizer round-trip: the engine's tokenizer turns text into ids and back. Asserts a non-empty
+    /// id set for real text and that detokenizing those ids recovers the words — the tokenizer may add
+    /// or normalize whitespace/special markers, so we check containment, not byte-equality. Proves the
+    /// engine_tokenize / engine_detokenize / tokenize_result_* bindings wire through.
+    /// Skipped unless LITERTLM_TEST_MODEL is set.
+    /// </summary>
+    [SkippableFact]
+    public void Tokenizer_RoundTrips_TextToIdsAndBack()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        const string text = "The quick brown fox.";
+
+        int[] ids = _fixture.Engine!.Tokenize(text);
+        Assert.NotEmpty(ids);
+
+        string restored = _fixture.Engine!.Detokenize(ids);
+        // SentencePiece-style tokenizers normalize leading-space markers, so assert the words survive
+        // rather than exact equality. "quick" and "fox" are common single tokens.
+        Assert.Contains("quick", restored, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("fox", restored, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Token counting is pure and monotone: the same text always tokenizes to the same ids, a longer
+    /// prompt yields at least as many ids as a strict prefix, and the empty string tokenizes without
+    /// error. This is the prompt-budgeting use case — measure a prompt's token cost before sending,
+    /// no inference required. Skipped unless LITERTLM_TEST_MODEL is set.
+    /// </summary>
+    [SkippableFact]
+    public void Tokenizer_TokenCount_IsDeterministicAndMonotone()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        LiteRtEngine engine = _fixture.Engine!;
+
+        int[] shortIds = engine.Tokenize("Hello");
+        int[] longIds = engine.Tokenize("Hello, world, this is a longer sentence.");
+
+        Assert.NotEmpty(shortIds);
+        Assert.Equal(shortIds, engine.Tokenize("Hello")); // pure: same input → same ids
+        Assert.True(longIds.Length > shortIds.Length,
+            $"A longer prompt should not tokenize to fewer ids (short {shortIds.Length}, long {longIds.Length}).");
+
+        // The empty string must not throw; it yields zero or only special tokens.
+        int[] empty = engine.Tokenize("");
+        Assert.True(empty.Length >= 0);
+    }
+
+    /// <summary>
+    /// Start/stop tokens: a chat model reports its stop (EOS / end-of-turn) tokens, each carrying a
+    /// non-empty value (a literal string or a token-id sequence). The start (BOS) token is optional;
+    /// the call must not throw and, when present, must also carry a value. Proves the
+    /// engine_get_start_token / engine_get_stop_tokens / token_union(s)_* bindings wire through.
+    /// Skipped unless LITERTLM_TEST_MODEL is set.
+    /// </summary>
+    [SkippableFact]
+    public void Tokenizer_StopTokens_AreReported()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        LiteRtEngine engine = _fixture.Engine!;
+
+        IReadOnlyList<LiteRtTokenUnion> stops = engine.GetStopTokens();
+        Assert.NotEmpty(stops);
+        Assert.All(stops, s => Assert.True(HasValue(s), $"A stop token should carry a non-empty value (kind={s.Kind})."));
+
+        // The start token is optional; the call must not throw and, if present, must carry a value.
+        LiteRtTokenUnion? start = engine.GetStartToken();
+        if (start is not null)
+            Assert.True(HasValue(start), $"A reported start token should carry a value (kind={start.Kind}).");
+
+        static bool HasValue(LiteRtTokenUnion t) =>
+            (t.Kind == LiteRtTokenKind.String && !string.IsNullOrEmpty(t.Text)) ||
+            (t.Kind == LiteRtTokenKind.Ids && t.Ids.Count > 0);
+    }
+
+    /// <summary>
     /// Function-calling loop WITHOUT constrained decoding — works on every platform (this is
     /// the documented workaround while the linux-x64 constrained-decoding guard is in place).
     /// </summary>
