@@ -247,6 +247,10 @@ if (chat.TokenCount + next > contextWindow - replyHeadroom)
     Warn("Context almost full — shorten the message or start a new chat.");
 ```
 
+`Tokenize` counts the raw text; for the exact per-turn cost with the chat template included, render the
+message first with `chat.RenderMessage(text)` (it returns the templated prompt without sending), then
+tokenize that: `engine.Tokenize(chat.RenderMessage(text)).Length`.
+
 ## Why .NET 10 only?
 
 .NET 10 is the current LTS (released November 2025; .NET 8 reaches end of support in November

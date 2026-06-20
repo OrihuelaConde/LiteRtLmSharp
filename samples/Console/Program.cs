@@ -341,6 +341,13 @@ static void RunTokenizerDemo(LiteRtEngine engine)
         Ui.WriteLine($"  start token: {start}", ConsoleColor.Gray);
     string stops = string.Join(", ", engine.GetStopTokens());
     Ui.WriteLine($"  stop tokens: {(stops.Length > 0 ? stops : "(none)")}", ConsoleColor.Gray);
+
+    // 4. The model never sees the raw text — it sees it wrapped in the chat template. Render the same
+    //    text (without sending) and tokenize THAT for the real per-turn cost, template included.
+    using var conv = engine.CreateConversation();
+    string templated = conv.RenderMessage(text);
+    Ui.WriteLine($"  templated prompt — {engine.Tokenize(templated).Length} tokens (what the model actually sees):", ConsoleColor.White);
+    Ui.WriteLine("  " + templated.TrimEnd().Replace("\n", "\n  "), ConsoleColor.DarkGray);
 }
 
 // First few token ids, abbreviated so a long input stays readable.

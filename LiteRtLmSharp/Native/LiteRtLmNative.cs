@@ -191,6 +191,13 @@ internal static unsafe partial class LiteRtLmNative
         nint conversation, string message_json, string? extra_context, nint optional_args,
         delegate* unmanaged[Cdecl]<nint, nint, byte, nint, void> callback, nint callback_data);
 
+    /// <summary>Renders a message JSON to its templated prompt string (does not send). The returned
+    /// pointer is owned by the conversation and valid only until the next render call or the
+    /// conversation's deletion — copy it out immediately. Null on failure.</summary>
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_conversation_render_message_to_string(nint conversation, string message_json);
+
     // --- JSON response ---------------------------------------------------
 
     [LibraryImport(Library)]

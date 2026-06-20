@@ -314,6 +314,36 @@ public sealed class LiteRtConversation : IDisposable
     }
 
     /// <summary>
+    /// Renders the user message <paramref name="text"/> to the exact templated prompt string the model
+    /// would receive, <b>without sending it</b> (conversation state is unchanged). Pair with
+    /// <see cref="LiteRtEngine.Tokenize"/> to measure a turn's real token cost with the chat template
+    /// included, or to inspect how a system prompt / history shape the rendered turn.
+    /// </summary>
+    public string RenderMessage(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        return RenderMessageRaw(LiteRtJson.UserMessage(text));
+    }
+
+    /// <summary>
+    /// Low-level escape hatch: renders a raw message JSON to its templated prompt string. Use when you
+    /// need full control over the wire format; otherwise use <see cref="RenderMessage(string)"/>. Does
+    /// not send or change conversation state.
+    /// </summary>
+    public string RenderMessageRaw(string messageJson)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(messageJson);
+
+        // The returned pointer is owned by the conversation and only valid until the next render call;
+        // PtrToStringUTF8 copies it out here, so the managed string outlives that window.
+        nint strPtr = LiteRtLmNative.litert_lm_conversation_render_message_to_string(_conversation.Ptr, messageJson);
+        if (strPtr == nint.Zero)
+            throw new LiteRtException("litert_lm_conversation_render_message_to_string returned null.");
+        return Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
+    }
+
+    /// <summary>
     /// Guidance appended when a send carrying an image/audio attachment fails the way an unconfigured
     /// multimodal engine does (the native layer reports "Vision/Audio executor should not be null").
     /// Names the usual causes so the caller does not have to dig through native stderr.

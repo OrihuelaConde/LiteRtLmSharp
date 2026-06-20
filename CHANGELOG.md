@@ -17,6 +17,10 @@ Built against **LiteRT-LM v0.13.1**.
   `GetStartToken()` / `GetStopTokens()` expose the model's configured start (BOS) / stop (EOS) tokens as
   `LiteRtTokenUnion` values, each a literal string or a token-id sequence. Binds 16 more C-API functions
   (now 61 of 89). Validated on win-x64 CPU with gemma-4-E2B-it.
+- **Prompt rendering.** `LiteRtConversation.RenderMessage(text)` (and raw `RenderMessageRaw(json)`)
+  returns the exact templated prompt a message would produce, without sending it (the KV cache is
+  untouched). Pairs with the tokenizer to measure a turn's real token cost, chat template included; the
+  Console sample's tokenizer demo shows the raw-vs-templated token contrast.
 
 ### Fixed
 

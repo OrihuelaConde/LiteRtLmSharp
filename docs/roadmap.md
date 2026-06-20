@@ -39,6 +39,7 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | AOT/trim-friendly (`[LibraryImport]`, `[UnmanagedCallersOnly]`, no reflection) | ✅ |
 | Multimodal messages (image/audio attachments, vision/audio backend, visual token budget) | ✅ |
 | Tokenize/detokenize + start/stop tokens (exact token counting, no inference) | ✅ |
+| Render a message to its templated prompt (`RenderMessage`) for debugging / exact-cost budgeting | ✅ |
 
 Known constraints (documented in the README): one engine ALIVE at a time (reloading after
 `Dispose` works — verified on win-x64 cpu→cpu and cpu→gpu; this is Edge Gallery's pattern for
@@ -48,8 +49,8 @@ is the total context window; VC++ Redistributable required on win-x64; Android G
 
 ## C API coverage (audit 2026-06-12, header v0.13.1)
 
-**61 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
-drift). The remaining 28 group into the areas below, in suggested priority order:
+**62 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
+drift). The remaining 27 group into the areas below, in suggested priority order:
 
 ### High value (user-facing features)
 
@@ -69,7 +70,7 @@ drift). The remaining 28 group into the areas below, in suggested priority order
 | ✅ Tokenizer surface (16) | `engine_tokenize`, `engine_detokenize`, `engine_get_start_token`, `engine_get_stop_tokens`, `tokenize_result_*` (3), `detokenize_result_*` (2), `token_union_*` (4), `token_unions_*` (3) | **Done 2026-06-19.** `LiteRtEngine.Tokenize(text)` → `int[]` and `Detokenize(ReadOnlySpan<int>)` → `string` run the model's own tokenizer with no inference (exact prompt budgeting against `MaxNumTokens`); `GetStartToken()`/`GetStopTokens()` expose the configured BOS/EOS tokens as `LiteRtTokenUnion` (a literal `Text` string or a sequence of `Ids`, per `Kind`). All 16 functions bound; result/union objects wrapped in SafeHandles, the `const int*`/`char*` views copied out before disposal. Validated on win-x64 CPU with gemma-4-E2B-it (round-trip, deterministic+monotone counts, non-empty stop tokens). |
 | ✅ Benchmark API (11) | `engine_settings_enable_benchmark`, `conversation_get_benchmark_info`, `benchmark_info_*` (9) | **Done 2026-06-15** (`EnableBenchmark` → `LiteRtConversation.GetBenchmarkInfo()`). Prefill/decode tok/s, time-to-first-token, init time. Surfaced in both samples' gauges + the speculative-decoding A/B test. Per-turn getters guarded (the C wrapper does not bounds-check the turn index). |
 | ✅ KV-cache thinking filter | `conversation_config_set_filter_channel_content_from_kv_cache` | **Done 2026-06-16** (`LiteRtConversationOptions.FilterThinkingFromKvCache`). Drops thinking-channel tokens from the KV cache so a long reasoning block does not consume the context window; companion to `EnableThinking`. |
-| Prompt debugging | `conversation_render_message_to_string` | See the rendered (templated) prompt for a message. |
+| ✅ Prompt debugging | `conversation_render_message_to_string` | **Done 2026-06-20** (`LiteRtConversation.RenderMessage(text)` + raw `RenderMessageRaw(json)`). Returns the exact templated prompt a message would produce, without sending (KV cache untouched). Pairs with the tokenizer: render → `Tokenize` → exact per-turn cost including the chat template. The returned native string is conversation-owned (valid until the next render), copied out immediately. Validated on win-x64 CPU with gemma-4-E2B-it. |
 | Engine tuning | `engine_settings_set_prefill_chunk_size`, `set_parallel_file_section_loading`, `set_activation_data_type` | CPU prefill chunking, load parallelism, force-F32. |
 
 ### Low priority (advanced / niche)

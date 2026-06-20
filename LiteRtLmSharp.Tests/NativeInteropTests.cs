@@ -730,6 +730,30 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     }
 
     /// <summary>
+    /// Prompt rendering: <see cref="LiteRtConversation.RenderMessage"/> returns the exact templated
+    /// prompt for a message without sending it (conversation state is unchanged), and the rendered text
+    /// contains the user's words. Tokenizing the rendered prompt then gives its exact cost — the
+    /// render + tokenize combo for prompt budgeting. Skipped unless LITERTLM_TEST_MODEL is set.
+    /// </summary>
+    [SkippableFact]
+    public void RenderMessage_ReturnsTemplatedPrompt_WithoutSending()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var conv = _fixture.Engine!.CreateConversation();
+        int before = conv.TokenCount;
+
+        string rendered = conv.RenderMessage("Hello, world!");
+        Assert.False(string.IsNullOrEmpty(rendered));
+        Assert.Contains("Hello, world!", rendered);
+        // Rendering only templates the message; it does not prefill, so the KV cache is untouched.
+        Assert.Equal(before, conv.TokenCount);
+
+        // The render + tokenize combo measures the exact templated cost (chat template included).
+        Assert.NotEmpty(_fixture.Engine!.Tokenize(rendered));
+    }
+
+    /// <summary>
     /// Sending an image to an engine that was NOT loaded with a vision backend fails with a clear,
     /// actionable managed error instead of the bare native "Vision executor should not be null". The
     /// shared fixture engine has no vision backend (and a small context), so this is the exact misuse a
