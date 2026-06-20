@@ -54,6 +54,32 @@ internal static unsafe partial class LiteRtLmNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_engine_settings_set_cache_dir(nint settings, string cache_dir);
 
+    /// <summary>Whether to load the <c>.litertlm</c> file sections in parallel. Defaults to true.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_parallel_file_section_loading(
+        nint settings, [MarshalAs(UnmanagedType.U1)] bool parallel_file_section_loading);
+
+    /// <summary>Activation tensor precision (0=F32, 1=F16, 2=I16, 3=I8 per <c>ActivationDataType</c>).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_activation_data_type(nint settings, int activation_data_type_int);
+
+    /// <summary>Prefill chunk size. Only applicable to the CPU backend with dynamic models.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_prefill_chunk_size(nint settings, int prefill_chunk_size);
+
+    /// <summary>Number of synthetic prefill tokens for benchmarking (read by the benchmark path).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_num_prefill_tokens(nint settings, int num_prefill_tokens);
+
+    /// <summary>Number of synthetic decode tokens for benchmarking (read by the benchmark path).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_num_decode_tokens(nint settings, int num_decode_tokens);
+
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_engine_settings_delete(nint settings);

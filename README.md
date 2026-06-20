@@ -107,6 +107,10 @@ an upstream issue that also affects Google's own CLI). Measured numbers, require
 root-cause are in
 [docs/speculative-decoding.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/speculative-decoding.md).
 
+Other engine-level performance knobs — activation precision, prefill chunking, parallel file loading,
+and a synthetic content-independent throughput benchmark — are covered in
+[docs/engine-tuning.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/engine-tuning.md).
+
 ### Reasoning mode (thinking)
 
 Models with a reasoning template (the Gemma builds) can be told to think before answering:

@@ -74,6 +74,16 @@ public sealed class LiteRtEngine : IDisposable
                 LiteRtLmNative.litert_lm_engine_settings_enable_benchmark(settings.Ptr);
             if (options.EnableSpeculativeDecoding)
                 LiteRtLmNative.litert_lm_engine_settings_set_enable_speculative_decoding(settings.Ptr, true);
+            if (options.ParallelFileSectionLoading is { } parallelLoading)
+                LiteRtLmNative.litert_lm_engine_settings_set_parallel_file_section_loading(settings.Ptr, parallelLoading);
+            if (options.ActivationDataType is { } activationType)
+                LiteRtLmNative.litert_lm_engine_settings_set_activation_data_type(settings.Ptr, (int)activationType);
+            if (options.PrefillChunkSize > 0)
+                LiteRtLmNative.litert_lm_engine_settings_set_prefill_chunk_size(settings.Ptr, options.PrefillChunkSize);
+            if (options.BenchmarkPrefillTokens > 0)
+                LiteRtLmNative.litert_lm_engine_settings_set_num_prefill_tokens(settings.Ptr, options.BenchmarkPrefillTokens);
+            if (options.BenchmarkDecodeTokens > 0)
+                LiteRtLmNative.litert_lm_engine_settings_set_num_decode_tokens(settings.Ptr, options.BenchmarkDecodeTokens);
 
             nint enginePtr = LiteRtLmNative.litert_lm_engine_create(settings.Ptr);
             if (enginePtr == nint.Zero)

@@ -49,8 +49,8 @@ is the total context window; VC++ Redistributable required on win-x64; Android G
 
 ## C API coverage (audit 2026-06-12, header v0.13.1)
 
-**62 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
-drift). The remaining 27 group into the areas below, in suggested priority order:
+**67 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
+drift). The remaining 22 group into the areas below, in suggested priority order:
 
 ### High value (user-facing features)
 
@@ -71,7 +71,7 @@ drift). The remaining 27 group into the areas below, in suggested priority order
 | ✅ Benchmark API (11) | `engine_settings_enable_benchmark`, `conversation_get_benchmark_info`, `benchmark_info_*` (9) | **Done 2026-06-15** (`EnableBenchmark` → `LiteRtConversation.GetBenchmarkInfo()`). Prefill/decode tok/s, time-to-first-token, init time. Surfaced in both samples' gauges + the speculative-decoding A/B test. Per-turn getters guarded (the C wrapper does not bounds-check the turn index). |
 | ✅ KV-cache thinking filter | `conversation_config_set_filter_channel_content_from_kv_cache` | **Done 2026-06-16** (`LiteRtConversationOptions.FilterThinkingFromKvCache`). Drops thinking-channel tokens from the KV cache so a long reasoning block does not consume the context window; companion to `EnableThinking`. |
 | ✅ Prompt debugging | `conversation_render_message_to_string` | **Done 2026-06-20** (`LiteRtConversation.RenderMessage(text)` + raw `RenderMessageRaw(json)`). Returns the exact templated prompt a message would produce, without sending (KV cache untouched). Pairs with the tokenizer: render → `Tokenize` → exact per-turn cost including the chat template. The returned native string is conversation-owned (valid until the next render), copied out immediately. Validated on win-x64 CPU with gemma-4-E2B-it. |
-| Engine tuning | `engine_settings_set_prefill_chunk_size`, `set_parallel_file_section_loading`, `set_activation_data_type` | CPU prefill chunking, load parallelism, force-F32. |
+| ✅ Engine tuning | `engine_settings_set_prefill_chunk_size`, `set_parallel_file_section_loading`, `set_activation_data_type` | **Done 2026-06-20** (`LiteRtEngineOptions.PrefillChunkSize` (CPU/dynamic), `ParallelFileSectionLoading` (bool?, default on), `ActivationDataType` (`LiteRtActivationDataType` F32/F16/I16/I8)). CPU prefill chunking, load parallelism, activation precision. Smoke-tested on win-x64 CPU (engine loads + generates with all three applied). |
 
 ### Low priority (advanced / niche)
 
@@ -79,7 +79,7 @@ drift). The remaining 27 group into the areas below, in suggested priority order
 |---|---|---|
 | Raw Session API (11) | `engine_create_session`, `session_run_prefill`, `session_run_decode(_async)`, `session_generate_content(_stream)`, `session_run_text_scoring`, `session_cancel_process`, `session_config_set_apply_prompt_template`, `session_delete`, `session_get_benchmark_info` | Low-level prefill/decode bypassing chat templates; includes text scoring (log-prob ranking) and the raw no-template mode. |
 | Responses introspection (10) | `responses_*` | Candidates, scores, per-token logits — only meaningful with the Session API. |
-| Benchmark fake tokens | `engine_settings_set_num_prefill_tokens`, `set_num_decode_tokens` | Synthetic-token benchmarking. |
+| ✅ Benchmark fake tokens | `engine_settings_set_num_prefill_tokens`, `set_num_decode_tokens` | **Done 2026-06-20** (`LiteRtEngineOptions.BenchmarkPrefillTokens` / `BenchmarkDecodeTokens`). Synthetic-token benchmarking: the prompt is padded/truncated to the prefill count and decode runs exactly the decode count (ignoring the stop token), so `GetBenchmarkInfo` reports throughput at FIXED counts — content-independent device benchmarking. **Confirmed observable through the Conversation API** (not a benchmark-main-only path): both fields feed `EngineSettings::benchmark_params_`, read by the default `EngineAdvancedImpl`/`SessionAdvanced` (source trace + win-x64 probe: a tiny "Hi" reports 256/64). Setting either also flips benchmark mode on; the reply is not a real answer. |
 | NPU dispatch dir | `engine_settings_set_litert_dispatch_lib_dir` | Qualcomm/Intel NPU dispatch library location. |
 
 > Note: the C API has **no embeddings functions** at v0.13.1 (flutter_gemma implements

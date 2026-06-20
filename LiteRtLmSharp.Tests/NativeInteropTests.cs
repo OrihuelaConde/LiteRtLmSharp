@@ -1151,3 +1151,75 @@ public sealed class MultimodalModelTests(ITestOutputHelper output)
         return ms.ToArray();
     }
 }
+
+/// <summary>
+/// Engine tuning settings (`LiteRtEngineOptions.ParallelFileSectionLoading` / `ActivationDataType` /
+/// `PrefillChunkSize`) wire through engine creation and the model still loads and generates coherent
+/// text with them applied. The effects (load speed, prefill memory, precision) are not deterministically
+/// assertable, so this is a smoke test that the bindings are correct and harmless. Loads its OWN engine
+/// (one engine alive at a time; the assembly disables parallelization). Skipped unless
+/// LITERTLM_TEST_MODEL is set.
+/// </summary>
+public sealed class EngineTuningTests
+{
+    [SkippableFact]
+    public void TuningSettings_Apply_AndInferenceStillWorks()
+    {
+        string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
+        Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        LiteRtEngine.SetMinLogLevel(3);
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = model!,
+            Backend = "cpu",
+            MaxNumTokens = 2048,
+            ParallelFileSectionLoading = false,                 // load sections sequentially
+            PrefillChunkSize = 128,                             // CPU prefill chunking
+            ActivationDataType = LiteRtActivationDataType.Float32,
+        });
+
+        using var conv = engine.CreateConversation();
+        var reply = conv.Send("Reply with one short sentence: what is the capital of France?");
+        Assert.False(string.IsNullOrWhiteSpace(reply.Text),
+            $"Expected a non-empty reply with tuning settings applied. Raw: {reply.RawJson}");
+    }
+
+    /// <summary>
+    /// Synthetic benchmark: <see cref="LiteRtEngineOptions.BenchmarkPrefillTokens"/> /
+    /// <see cref="LiteRtEngineOptions.BenchmarkDecodeTokens"/> make a send measure throughput at FIXED
+    /// token counts (the prompt is padded/truncated to the prefill count; decode runs exactly the decode
+    /// count, ignoring the stop token), so <see cref="LiteRtConversation.GetBenchmarkInfo"/> reports those
+    /// counts regardless of the prompt — a content-independent device benchmark. The reply is not a real
+    /// answer. Loads its own engine. Skipped unless LITERTLM_TEST_MODEL is set.
+    /// </summary>
+    [SkippableFact]
+    public void SyntheticBenchmark_FakeTokens_DriveFixedCounts()
+    {
+        string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
+        Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        LiteRtEngine.SetMinLogLevel(3);
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = model!,
+            Backend = "cpu",
+            MaxNumTokens = 2048,
+            EnableBenchmark = true,
+            BenchmarkPrefillTokens = 256,   // the prompt is padded/truncated to 256 tokens for prefill
+            BenchmarkDecodeTokens = 64,     // decode exactly 64 tokens (ignores the stop token)
+        });
+
+        using var conv = engine.CreateConversation();
+        conv.Send("Hi"); // a synthetic benchmark run, not a real reply
+
+        LiteRtBenchmarkInfo? bench = conv.GetBenchmarkInfo();
+        Assert.NotNull(bench);
+        // The benchmark reflects the fixed synthetic counts, not the tiny "Hi" prompt.
+        Assert.Equal(256, bench!.LastPrefillTokenCount);
+        Assert.Equal(64, bench.LastDecodeTokenCount);
+        Assert.True(bench.LastDecodeTokensPerSecond > 0, "Expected a decode throughput measurement.");
+    }
+}

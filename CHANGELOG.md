@@ -21,6 +21,13 @@ Built against **LiteRT-LM v0.13.1**.
   returns the exact templated prompt a message would produce, without sending it (the KV cache is
   untouched). Pairs with the tokenizer to measure a turn's real token cost, chat template included; the
   Console sample's tokenizer demo shows the raw-vs-templated token contrast.
+- **Engine tuning settings.** `LiteRtEngineOptions.PrefillChunkSize` (CPU/dynamic models),
+  `ParallelFileSectionLoading` (parallel `.litertlm` load, on by default), and `ActivationDataType`
+  (`LiteRtActivationDataType`: F32 / F16 / I16 / I8) for activation precision.
+- **Synthetic benchmark.** `LiteRtEngineOptions.BenchmarkPrefillTokens` / `BenchmarkDecodeTokens` run a
+  content-independent throughput benchmark — the prompt is padded/truncated to the prefill count and
+  decode runs exactly the decode count, so `GetBenchmarkInfo` reports timings at fixed token counts (the
+  reply is not a real answer; setting either also enables benchmark mode).
 
 ### Fixed
 

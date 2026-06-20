@@ -44,12 +44,20 @@ public sealed record LiteRtEngineOptions
     /// </remarks>
     public string? AudioBackend { get; init; }
 
-    /// <summary>Maximum context tokens for the engine. 0 = engine default.</summary>
+    /// <summary>
+    /// The total context window in tokens: prompt + generated replies, accumulated across every turn of
+    /// a conversation. 0 = engine default.
+    /// </summary>
     /// <remarks>
-    /// For <b>multimodal</b> input give the engine room for the media tokens: an image expands to a
-    /// block of vision tokens (~256 for Gemma 4), so set this to <b>4096 or more</b>. A small window
-    /// such as 2048 can fail to load the vision encoder — the first image send then throws
-    /// "Vision executor should not be null" (validated 2026-06-17).
+    /// This is the hard ceiling for a conversation's KV cache. Size it for the longest exchange you
+    /// expect — the system prompt, any restored <see cref="LiteRtConversationOptions.History"/>, and each
+    /// user turn and reply all count against it and accumulate. As the running total
+    /// (<see cref="LiteRtConversation.TokenCount"/>) nears the limit, generation degrades, so manage the
+    /// conversation before then: trim history, cap replies with
+    /// <see cref="LiteRtConversationOptions.MaxOutputTokens"/>, or start a fresh conversation. A larger
+    /// window costs more memory and a slower prefill, so prefer the smallest that fits your use case. For
+    /// <b>multimodal</b> input leave room for the media on top of the text — an image expands to roughly
+    /// 256 vision tokens — for which 4096 is a comfortable starting point.
     /// </remarks>
     public int MaxNumTokens { get; init; }
 
@@ -106,6 +114,83 @@ public sealed record LiteRtEngineOptions
     /// engine creation; the overhead is timing bookkeeping only.
     /// </summary>
     public bool EnableBenchmark { get; init; }
+
+    /// <summary>
+    /// Whether the engine loads the <c>.litertlm</c> file's sections in parallel during startup.
+    /// <c>null</c> (default) leaves the engine default (on). When on, the tokenizer section is parsed on
+    /// a background thread while the model is built, shortening cold-start init; set <c>false</c> to load
+    /// it serially on the calling thread (single-threaded environments, or to avoid the brief concurrent
+    /// init peak, at the cost of a slower start). Maps to
+    /// <c>engine_settings_set_parallel_file_section_loading</c>. See <c>docs/engine-tuning.md</c>.
+    /// </summary>
+    public bool? ParallelFileSectionLoading { get; init; }
+
+    /// <summary>
+    /// Activation tensor precision. <c>null</c> (default) uses the engine default (F16 for the text
+    /// executor on GPU). <b>Only the GPU backend honors this, and only as F32 vs F16</b>:
+    /// <see cref="LiteRtActivationDataType.Float32"/> is higher precision at more memory and lower speed,
+    /// <see cref="LiteRtActivationDataType.Float16"/> is the faster default. On CPU it is a <b>no-op</b>,
+    /// and <see cref="LiteRtActivationDataType.Int16"/> / <see cref="LiteRtActivationDataType.Int8"/> are
+    /// accepted by the native API but not distinctly implemented by the shipped executors (folded to F16
+    /// on GPU). Maps to <c>engine_settings_set_activation_data_type</c>. See <c>docs/engine-tuning.md</c>.
+    /// </summary>
+    public LiteRtActivationDataType? ActivationDataType { get; init; }
+
+    /// <summary>
+    /// Maximum prompt tokens prefilled per step. 0 (default) = no chunking (the whole prompt is
+    /// prefilled at once). <b>CPU + dynamic models only</b> — ignored on GPU and on static models. A
+    /// smaller chunk lowers peak memory during prefill and allows more timely cancellation of a long
+    /// prompt, at the cost of more prefill iterations (potentially slower). Maps to
+    /// <c>engine_settings_set_prefill_chunk_size</c>. See <c>docs/engine-tuning.md</c>.
+    /// </summary>
+    public int PrefillChunkSize { get; init; }
+
+    /// <summary>
+    /// Synthetic prefill token count for benchmarking. 0 (default) = off (normal inference).
+    /// </summary>
+    /// <remarks>
+    /// When &gt; 0 the engine runs a <b>synthetic benchmark</b> instead of answering: the real prompt is
+    /// truncated or padded to exactly this many tokens for prefill, and decoding runs exactly
+    /// <see cref="BenchmarkDecodeTokens"/> tokens (ignoring the stop token). So
+    /// <see cref="LiteRtConversation.GetBenchmarkInfo"/> reports prefill/decode throughput at FIXED token
+    /// counts — independent of the prompt — which is useful for device throughput benchmarking and for
+    /// measuring the effect of the tuning settings reproducibly. The reply text is <b>not</b> a real
+    /// answer. Setting either this or <see cref="BenchmarkDecodeTokens"/> also turns benchmark mode on
+    /// (the same switch as <see cref="EnableBenchmark"/>). Use a dedicated engine instance — do not reuse
+    /// it for real chat. Verified observable through the Conversation API on win-x64 CPU (the default
+    /// engine reads these during prefill/decode). Maps to <c>engine_settings_set_num_prefill_tokens</c>.
+    /// </remarks>
+    public int BenchmarkPrefillTokens { get; init; }
+
+    /// <summary>
+    /// Synthetic decode token count for benchmarking — the decode half of
+    /// <see cref="BenchmarkPrefillTokens"/>. 0 (default) = off. See <see cref="BenchmarkPrefillTokens"/>
+    /// for the full behavior. Maps to <c>engine_settings_set_num_decode_tokens</c>.
+    /// </summary>
+    public int BenchmarkDecodeTokens { get; init; }
+}
+
+/// <summary>
+/// Activation tensor precision for <see cref="LiteRtEngineOptions.ActivationDataType"/>, mirroring
+/// upstream's <c>ActivationDataType</c> enum. Only <see cref="Float32"/> and <see cref="Float16"/> are
+/// distinctly honored, and only on the GPU backend (see
+/// <see cref="LiteRtEngineOptions.ActivationDataType"/>).
+/// </summary>
+public enum LiteRtActivationDataType
+{
+    /// <summary>32-bit float — higher precision, more memory, slower (GPU).</summary>
+    Float32 = 0,
+
+    /// <summary>16-bit float — the faster GPU default for the text executor.</summary>
+    Float16 = 1,
+
+    /// <summary>16-bit integer — present for parity with the native enum, but not distinctly implemented
+    /// by the shipped executors (folded to F16 on GPU, ignored on CPU).</summary>
+    Int16 = 2,
+
+    /// <summary>8-bit integer — present for parity with the native enum, but not distinctly implemented
+    /// by the shipped executors (folded to F16 on GPU, ignored on CPU).</summary>
+    Int8 = 3,
 }
 
 /// <summary>
