@@ -8,11 +8,11 @@
     the README compatibility table maps each release to the LiteRT-LM tag it was built against.
   -->
   <PropertyGroup>
-    <Version>0.1.0-preview.2</Version>
+    <Version>0.1.0-preview.3</Version>
     <!-- LiteRT-LM release tag the native binaries are built from (build-native.yml input). -->
     <LiteRtLmVersion>v0.13.1</LiteRtLmVersion>
     <!-- Shown on the nuget.org version page; update each release. Full history in CHANGELOG.md. -->
-    <PackageReleaseNotes>preview.2: multimodal image/audio attachments; conversation restore + clone; reasoning ("thinking") mode; speculative decoding + benchmark API + engine cache-dir control. Built against LiteRT-LM $(LiteRtLmVersion). Full notes: https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/CHANGELOG.md</PackageReleaseNotes>
+    <PackageReleaseNotes>preview.3: tokenizer surface (tokenize/detokenize, start/stop tokens) + prompt rendering; engine tuning (prefill chunk size, parallel load, activation precision) + a synthetic throughput benchmark; multimodal sends now work from a plain conversation, with a clearer setup error. Built against LiteRT-LM $(LiteRtLmVersion). Full notes: https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/CHANGELOG.md</PackageReleaseNotes>
 
     <Authors>LiteRtLmSharp contributors</Authors>
     <Company>LiteRtLmSharp</Company>

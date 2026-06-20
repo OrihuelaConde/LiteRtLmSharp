@@ -6,9 +6,10 @@ LiteRT-LM native version it wraps (see the compatibility table in the [README](R
 managed `LiteRtLmSharp` package and every `LiteRtLmSharp.runtime.<rid>` package share one version and
 are published together.
 
-## [Unreleased]
+## [0.1.0-preview.3] — 2026-06-20
 
-Built against **LiteRT-LM v0.13.1**.
+Built against **LiteRT-LM v0.13.1** (same native binaries as preview.2 — this release is binding
+and CI work).
 
 ### Added
 
@@ -45,6 +46,15 @@ Built against **LiteRT-LM v0.13.1**.
   process it (model not multimodal, `VisionBackend` / `AudioBackend` not set, or `MaxNumTokens` cannot
   hold the media), the binding now throws a `LiteRtException` naming those causes, instead of the bare
   native "Vision/Audio executor should not be null". Applies to both the blocking and streaming paths.
+
+### Testing & CI
+
+_Repository changes, not part of the shipped library._
+
+- **Model-backed tests now run on every push/PR** across linux-x64 / win-x64 / osx-arm64 (CPU, plus
+  macOS GPU), instead of weekly: `model-tests.yml` became a reusable workflow that `ci.yml` calls, and
+  the no-model build matrix also gained macOS. `model-tests.yml` stays dispatchable for a single OS on
+  demand.
 
 ## [0.1.0-preview.2] — 2026-06-17
 
