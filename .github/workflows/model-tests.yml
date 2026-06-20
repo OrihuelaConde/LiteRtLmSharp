@@ -2,7 +2,8 @@ name: Model tests
 
 # Runs the model-backed interop tests with a real .litertlm model — the path the regular CI job
 # skips (no LITERTLM_TEST_MODEL). Matrix over linux-x64 / win-x64 / osx-arm64 (choose via the
-# platforms input, like build-native.yml; the weekly schedule tests all). Scenarios per OS:
+# platforms input, like build-native.yml; ci.yml calls it with all platforms, a manual run can pick
+# a single OS). Scenarios per OS:
 # blocking chat, streaming, tool calling without constrained decoding, tool calling WITH
 # constrained decoding, a speculative-decoding A/B benchmark (decode tok/s, drafter off vs on), and
 # multimodal image/audio attachments (gemma-4-E2B-it is text+vision+audio; the gated tests assert the
@@ -12,9 +13,9 @@ name: Model tests
 # the real end-to-end loop) and on win-x64/osx-arm64 runs the real constrained loop.
 # osx-arm64 (macos-15 = Apple Silicon) validates the macOS natives on CPU and GPU; the GPU pass
 # runs WebGPU (Dawn->Metal), not the native Metal delegate — see that step's comment for why.
-# Weekly + on demand; the ~2.6 GB model is cached between runs (repo cache, 10 GB limit, free
-# for public repos — no account storage/billing impact) and shared across OSes via
-# enableCrossOsArchive so the three legs reuse one blob.
+# Reusable (called by ci.yml on each push/PR for all platforms) + on demand for a single OS; the
+# ~2.6 GB model is cached between runs (repo cache, 10 GB limit, free for public repos — no account
+# storage/billing impact) and shared across OSes via enableCrossOsArchive so the legs reuse one blob.
 #
 # Model choice: gemma-4-E2B-it (litert-community, ungated) — deliberately NOT a smaller one:
 #  - the small Gemma .litertlm repos (gemma-3-270m-it, Gemma3-1B-IT, functiongemma-*) are
@@ -24,8 +25,15 @@ name: Model tests
 #    cannot exercise the tool-calling path. Both verified 2026-06-12.
 
 on:
-  schedule:
-    - cron: '0 7 * * 1' # Mon 07:00 UTC
+  # Reusable: ci.yml calls this on every push/PR with platforms=all for per-commit model validation
+  # across linux/win/macOS. Also runnable on demand to test a single OS.
+  workflow_call:
+    inputs:
+      platforms:
+        description: 'Platforms to test (comma-separated: linux-x64,win-x64,osx-arm64) or "all"'
+        type: string
+        required: false
+        default: 'all'
   workflow_dispatch:
     inputs:
       platforms:
@@ -172,7 +180,7 @@ jobs:
       # (Virtualization.framework), on which the NATIVE Metal delegate garbles output — but the
       # WebGPU delegate (Dawn->Metal) is correct, and upstream gpu_registry prefers WebGpu over
       # Metal on macOS desktop, so with both shipped (build-native.yml) the engine runs WebGPU
-      # here. Root-caused with Google's own CLI (mac-gpu-cli-probe.yml) and confirmed 6/6 below,
+      # here. Root-caused with Google's own CLI on the runner (see docs/roadmap.md) and confirmed 6/6 below,
       # so this is a REQUIRED check now, not experimental. Real Apple Silicon (where the native
       # Metal delegate also works, per flutter_gemma) is still unvalidated by us — see roadmap.
       - name: Test with model (GPU — WebGPU/Metal — incl. multimodal on GPU)

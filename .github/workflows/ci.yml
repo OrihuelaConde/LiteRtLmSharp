@@ -1,15 +1,20 @@
 name: CI
 
-# Build + tests on Linux and Windows. Restores the native binaries from the native-<ref> release
-# so the interop tests actually load LiteRtLm (this is also how we validate the linux-x64 runtime).
-# Model/tools tests auto-skip here (no LITERTLM_TEST_MODEL); model-tests.yml runs them on
-# linux-x64 with a real model, weekly and on demand.
+# Build + no-model tests (the interop tests load the native lib, so this also validates the runtimes;
+# model/tools tests auto-skip without LITERTLM_TEST_MODEL) AND the model-backed tests against a real
+# model, both across linux-x64 / win-x64 / osx-arm64. The model leg reuses model-tests.yml, which also
+# stays runnable on demand for a single OS.
 
 on:
   push:
     branches: [main, master]
   pull_request:
   workflow_dispatch:
+
+# A newer push to the same branch/PR cancels an in-progress run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   # Keep in sync with Directory.Build.props <LiteRtLmVersion>.
@@ -27,6 +32,9 @@ jobs:
           - os: windows-latest
             rid: win-x64
             asset: litertlm-windows_x86_64.tar.gz
+          - os: macos-15
+            rid: osx-arm64
+            asset: litertlm-macos_arm64.tar.gz
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -64,3 +72,14 @@ jobs:
 
       - name: Test (interop tests load the native lib; model tests auto-skip)
         run: dotnet test LiteRtLmSharp.Tests/LiteRtLmSharp.Tests.csproj -c Release --no-build --logger "console;verbosity=normal"
+
+  # Model-backed tests against a real .litertlm model across all three OSes (linux/win/macOS CPU, plus
+  # macOS GPU). Reuses model-tests.yml, which also stays runnable on demand for a single OS. Runs in
+  # parallel with build-test; the ~2.6 GB model is cached across runs.
+  model-tests:
+    name: Model tests
+    uses: ./.github/workflows/model-tests.yml
+    permissions:
+      contents: read
+    with:
+      platforms: all

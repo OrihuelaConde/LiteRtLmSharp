@@ -273,7 +273,7 @@ jobs:
         # WebGPU pair (+ the generic accelerator stub) — not Metal only. Why: on GitHub's
         # paravirtual Metal runner the native Metal delegate garbles output regardless of the
         # sampler, while WebGPU (Dawn->Metal) is correct and ~3x faster — verified with Google's
-        # OWN litert_lm_main CLI in mac-gpu-cli-probe.yml (4 passes: WebGPU clean on cpu+gpu;
+        # OWN litert_lm_main CLI on the runner (see docs/roadmap.md; 4 passes: WebGPU clean on cpu+gpu;
         # Metal compute garbled with the Metal sampler AND with CPU sampling). Upstream
         # gpu_registry's desktop load order is WebGpu -> OpenCL -> Metal, so with both present
         # the engine runs WebGPU and falls back to Metal only if WebGPU fails to load (e.g. a

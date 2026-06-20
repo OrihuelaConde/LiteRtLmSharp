@@ -19,8 +19,9 @@
 > on desktop Linux the tools + constrained-decoding path had never actually run in CI (regular CI
 > has no model), and a Linux Mint user reported the process dying silently with tools enabled —
 > matches upstream [LiteRT-LM#2149](https://github.com/google-ai-edge/LiteRT-LM/issues/2149)
-> (C-API shared lib segfaults/hangs in decode on Ubuntu 24.04; static CLI works). The scheduled
-> `model-tests.yml` workflow now exercises streaming + tools on linux-x64 with gemma-4-E2B-it.
+> (C-API shared lib segfaults/hangs in decode on Ubuntu 24.04; static CLI works). The
+> `model-tests.yml` workflow now exercises streaming + tools on linux-x64 with gemma-4-E2B-it (on
+> each push, via ci.yml).
 
 ## Viability summary (verified)
 

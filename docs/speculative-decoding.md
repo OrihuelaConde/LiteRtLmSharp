@@ -75,8 +75,8 @@ dotnet test LiteRtLmSharp.Tests/LiteRtLmSharp.Tests.csproj -c Release `
   --filter "FullyQualifiedName~SpeculativeDecodingBenchmarkTests" --logger "console;verbosity=detailed"
 ```
 
-In CI it runs weekly on the CPU leg of `model-tests.yml` (linux-x64 / win-x64 / osx-arm64); the
-printed row lands in that job's console log.
+In CI it runs on the CPU leg of `model-tests.yml` on each push via ci.yml (linux-x64 / win-x64 /
+osx-arm64); the printed row lands in that job's console log.
 
 > Sampler note: the v0.13.1 native build only implements the **TopP** sampler (Greedy and TopK
 > return *"not implemented yet"*). Speculative decoding preserves the output *distribution*, not the

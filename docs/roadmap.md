@@ -12,8 +12,9 @@ Last updated: 2026-06-17. Source of truth for "what's done and what's pending".
 | osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI only (macos-15; GPU via WebGPU) |
 | ios-arm64 | ✅ | ⏳ | — | — | pending (needs xcframework) |
 
-<sub>**CPU / GPU** = inference validated on that backend. **CI** = weekly `model-tests.yml` (real
-model, incl. constrained decoding); real-hardware results are from dev machines/devices. macOS GPU
+<sub>**CPU / GPU** = inference validated on that backend. **CI** = the `model-tests.yml` model leg
+(all three OSes on each push via ci.yml; also runnable on demand) with a real model, incl. constrained
+decoding; real-hardware results are from dev machines/devices. macOS GPU
 specifics and dates are in [§macOS validation](#actionable-next-steps-suggested-order) below.</sub>
 
 Native binaries are pinned to **LiteRT-LM v0.13.1**.
@@ -103,8 +104,8 @@ drift). The remaining 22 group into the areas below, in suggested priority order
    but draft acceptance is only **~32%** (399 drafted / 126 verified — model/prompt-bound, same as
    desktop's ~0.317), too low to beat the drafter overhead on this older GPU. A newer flagship GPU is
    the remaining thing to try for the ~3×. Full write-up: [speculative-decoding.md](speculative-decoding.md).
-2. **macOS validation**: ✅ CI, CPU and GPU — `model-tests.yml` runs the full suite weekly on
-   `macos-15` (Apple Silicon): CPU 6/6 and GPU 6/6 (run 27458626459, 2026-06-13), both
+2. **macOS validation**: ✅ CI, CPU and GPU — `model-tests.yml` runs the full suite on each push (and
+   on demand) on `macos-15` (Apple Silicon): CPU 6/6 and GPU 6/6 (run 27458626459, 2026-06-13), both
    including the real constrained-decoding loop. The GPU pass is now a REQUIRED check (no
    longer `continue-on-error`) and runs the WebGPU delegate, not the native Metal one (why
    below). Real-hardware validation still pending (no Apple Silicon machine on hand).
@@ -123,8 +124,8 @@ drift). The remaining 22 group into the areas below, in suggested priority order
    - `ToolCalling_Unconstrained` failed on backend=gpu with a malformed tool call
      (`call:get_current_weather{location}`, unparseable) — **root-caused 2026-06-12 to the
      upstream native METAL delegate on the paravirtual runner, NOT our binding and NOT the
-     sampler**, via `mac-gpu-cli-probe.yml` (manual workflow that runs Google's own
-     litert_lm_main on the runner). Four passes, same runner/model:
+     sampler**, via a manual workflow that ran Google's own litert_lm_main on the runner
+     (`mac-gpu-cli-probe.yml`, removed once the question was settled — see git history). Four passes, same runner/model:
      | Compute | Sampler | Output | Decode |
      |---|---|---|---|
      | WebGPU (Dawn→Metal) | CPU-fallback | ✅ byte-perfect | 30 tok/s |
@@ -216,7 +217,8 @@ drift). The remaining 22 group into the areas below, in suggested priority order
   **When Google republishes a fixed linux prebuilt: rebuild natives, re-run the Docker
   repro (scripts in `%TEMP%\litert-repro`), and REMOVE the guard + the `<remarks>` on
   `LiteRtConversationOptions.EnableConstrainedDecoding`.** Meanwhile the real constrained
-  loop IS exercised weekly in CI on win-x64 and osx-arm64 (`model-tests.yml` matrix). Android is NOT affected
+  loop IS exercised on each push in CI on win-x64 and osx-arm64 (`model-tests.yml` matrix); linux-x64
+  asserts the guard throws. Android is NOT affected
   (tools validated on physical device, CPU and GPU; upstream #1859 looks like a
   custom-model issue, discarded).
 - **Speculative decoding + WebGPU needs the disk cache off** (root-caused 2026-06-15) — on the
