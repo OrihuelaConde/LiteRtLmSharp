@@ -18,6 +18,23 @@ Built against **LiteRT-LM v0.13.1**.
   `LiteRtTokenUnion` values, each a literal string or a token-id sequence. Binds 16 more C-API functions
   (now 61 of 89). Validated on win-x64 CPU with gemma-4-E2B-it.
 
+### Fixed
+
+- **Multimodal works from a plain conversation.** A conversation created with `CreateConversation()`
+  (no options) on an engine loaded with `VisionBackend` / `AudioBackend` can now send image/audio
+  attachments. The vision/audio executor only loads when the conversation carries a session config; the
+  binding now attaches one automatically when the engine is multimodal. Previously a bare conversation
+  failed with "Vision executor should not be null" unless you also set `MaxOutputTokens` or a sampler.
+  This also corrects earlier guidance that blamed a too-small `MaxNumTokens`: the real cause was the
+  missing session config; `MaxNumTokens` only needs room for the media's tokens (~256 for an image).
+
+### Changed
+
+- **Clearer multimodal setup error.** When an image or audio send still fails because the engine cannot
+  process it (model not multimodal, `VisionBackend` / `AudioBackend` not set, or `MaxNumTokens` cannot
+  hold the media), the binding now throws a `LiteRtException` naming those causes, instead of the bare
+  native "Vision/Audio executor should not be null". Applies to both the blocking and streaming paths.
+
 ## [0.1.0-preview.2] — 2026-06-17
 
 Built against **LiteRT-LM v0.13.1** (same native binaries as preview.1 — this release is binding,

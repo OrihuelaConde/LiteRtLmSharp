@@ -174,11 +174,17 @@ drift). The remaining 28 group into the areas below, in suggested priority order
    is CPU-constrained** (the model declares "requires one of [cpu]"); the macOS GPU leg's audio test skips
    with the exact `Audio backend constraint mismatch` message — identical to win-x64 — confirming it's a
    model property, not a platform limitation. So audio always runs on CPU (the sample falls it back).
-   **Multimodal follow-up (TODO, not yet done):** wrap the native "Vision executor should not be null"
-   failure in a clearer managed error that names the likely causes (model not multimodal, `VisionBackend`
-   unset, or `MaxNumTokens` too small — needs ≥4096). Found via the preview.2 consumer smoke test
-   (2026-06-17); the docs already note the `MaxNumTokens` requirement, this is the code-side hint and
-   would ship in the next preview. The remaining binding areas are the smaller medium-value utilities
+   **Multimodal robustness ✅ DONE 2026-06-20:** root-caused and fixed the "Vision/Audio executor should
+   not be null" footgun. The encoder executor only loads when the conversation carries a session config;
+   the binding now attaches one automatically when the engine was loaded with `VisionBackend` /
+   `AudioBackend`, so a plain `CreateConversation()` can send attachments (a bare session config is
+   enough, verified). This corrects the 2026-06-17 mis-diagnosis that blamed `MaxNumTokens`: it was a
+   confound (the failing case used a bare conversation, the working one set `MaxOutputTokens`); the real
+   `MaxNumTokens` floor is just the media's token count (~256/image — fails at 256, works at 384), not
+   4096. When a send still fails (not multimodal / backend unset / context can't hold the media) the
+   binding wraps it in a managed `LiteRtException` naming those causes on both the blocking and streaming
+   paths. See [native-abi.md](native-abi.md#multimodal-messages-image--audio--verified-wire-format).
+   The remaining binding areas are the smaller medium-value utilities
    (prompt rendering for debugging; engine tuning knobs: prefill chunk size, parallel file loading,
    activation dtype) and — once a stable v0.14.x lands — the new C-API surface (LoRA adapters,
    request-level max-output-tokens, FD-based load; see the watchlist).

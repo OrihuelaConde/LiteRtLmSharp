@@ -185,9 +185,9 @@ using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
     Backend = "cpu",
     VisionBackend = "cpu",   // enables image input; null = off
     AudioBackend = "cpu",    // enables audio input; null = off
-    MaxNumTokens = 4096,     // room for the image tokens — too small (e.g. 2048) can't load vision
+    MaxNumTokens = 4096,     // leave room for the media's tokens (an image is ~256)
 });
-using var chat = engine.CreateConversation();
+using var chat = engine.CreateConversation();   // a plain conversation can send attachments
 
 // Attach in-memory bytes (sent as a base64 blob) ...
 byte[] png = File.ReadAllBytes("cat.png");
@@ -206,9 +206,12 @@ Attachments follow the text in content-part order; pass several to interleave th
 context window an image consumes with `LiteRtConversationOptions.VisualTokenBudget`. Vision runs on CPU
 or GPU; some models constrain their audio backend (Gemma 4's audio sub-model requires CPU, so
 `AudioBackend = "gpu"` fails engine creation for it on any platform) — keep audio on CPU when the main
-backend is GPU. Set `MaxNumTokens` to **4096 or more** for multimodal: a small window like 2048 can't
-fit the image tokens and the first image send fails with "Vision executor should not be null". The MAUI
-sample's Chat tab exposes 📷 / 🎵 attach buttons (and a modality indicator) for capable models.
+backend is GPU. A plain `CreateConversation()` can send attachments: the binding configures the
+conversation for the engine's encoders automatically, so you don't have to set a sampler or output cap.
+Just give `MaxNumTokens` room for the media's tokens (an image is ~256). If a send still hits a
+multimodal-setup problem the binding throws a `LiteRtException` naming the likely causes (model not
+multimodal, `VisionBackend` / `AudioBackend` unset, or `MaxNumTokens` too small). The MAUI sample's Chat
+tab exposes 📷 / 🎵 attach buttons (and a modality indicator) for capable models.
 Wire-format and validation details:
 [docs/native-abi.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/native-abi.md#multimodal-messages-image--audio--verified-wire-format).
 

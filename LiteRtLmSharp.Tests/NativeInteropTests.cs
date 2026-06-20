@@ -141,6 +141,16 @@ public class MultimodalMessageJsonTests
         Assert.Equal("image", content[1].GetProperty("type").GetString());
         Assert.Equal("audio", content[2].GetProperty("type").GetString());
     }
+
+    [Fact]
+    public void MessageHasMedia_DetectsImageAndAudio_NotTextOnly()
+    {
+        // Backs the multimodal hint on a send failure: true only when a media content part is present.
+        Assert.True(LiteRtConversation.MessageHasMedia(LiteRtJson.UserMessage("hi", [LiteRtAttachment.Image(Bytes)])));
+        Assert.True(LiteRtConversation.MessageHasMedia(LiteRtJson.UserMessage("hi", [LiteRtAttachment.Audio(Bytes)])));
+        Assert.False(LiteRtConversation.MessageHasMedia(LiteRtJson.UserMessage("hi", null)));
+        Assert.False(LiteRtConversation.MessageHasMedia("not valid json")); // tolerant of malformed input
+    }
 }
 
 /// <summary>
@@ -720,6 +730,26 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     }
 
     /// <summary>
+    /// Sending an image to an engine that was NOT loaded with a vision backend fails with a clear,
+    /// actionable managed error instead of the bare native "Vision executor should not be null". The
+    /// shared fixture engine has no vision backend (and a small context), so this is the exact misuse a
+    /// developer hits first; the message must name the likely causes (VisionBackend, MaxNumTokens).
+    /// Skipped unless LITERTLM_TEST_MODEL is set.
+    /// </summary>
+    [SkippableFact]
+    public void Multimodal_SendWithoutVisionBackend_ThrowsHelpfulError()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var conv = _fixture.Engine!.CreateConversation();
+        var ex = Assert.Throws<LiteRtException>(
+            () => conv.Send("Describe this image.", [LiteRtAttachment.Image(new byte[] { 1, 2, 3, 4 })]));
+
+        Assert.Contains("VisionBackend", ex.Message);
+        Assert.Contains("MaxNumTokens", ex.Message);
+    }
+
+    /// <summary>
     /// Function-calling loop WITHOUT constrained decoding — works on every platform (this is
     /// the documented workaround while the linux-x64 constrained-decoding guard is in place).
     /// </summary>
@@ -1001,6 +1031,44 @@ public sealed class MultimodalModelTests(ITestOutputHelper output)
         Assert.True(mediaTokens > textTokens,
             $"Expected the audio to add encoder tokens (text {textTokens} vs audio {mediaTokens}). " +
             "If equal, the audio did not reach the audio encoder — check AudioBackend / the native build.");
+    }
+
+    /// <summary>
+    /// Regression guard for the multimodal footgun: a conversation created with NO options
+    /// (<c>CreateConversation()</c>) on a vision-enabled engine must still ingest an image. The binding
+    /// auto-attaches a session config when the engine is multimodal (the vision executor only loads when
+    /// one is present), so a plain conversation can send an image without the caller setting
+    /// <see cref="LiteRtConversationOptions.MaxOutputTokens"/> or a sampler. Before the fix this threw
+    /// "Vision executor should not be null". Asserts a non-empty reply and that the image's ~256 vision
+    /// tokens reached the KV cache. Gated on LITERTLM_TEST_VISION=1.
+    /// </summary>
+    [SkippableFact]
+    public void Vision_BareConversation_AutoAttachesSessionConfig()
+    {
+        string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
+        Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model)
+                || Environment.GetEnvironmentVariable("LITERTLM_TEST_VISION") != "1",
+            "Set LITERTLM_TEST_VISION=1 and LITERTLM_TEST_MODEL to a vision-capable .litertlm to run.");
+
+        string backend = Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu";
+        byte[] image = Convert.FromBase64String(RedPngBase64);
+
+        LiteRtEngine.SetMinLogLevel(3);
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = model!,
+            Backend = backend,
+            VisionBackend = backend,
+            MaxNumTokens = 4096,
+            CacheDir = backend == "gpu" ? LiteRtEngineOptions.CacheDisabled : null,
+        });
+
+        using var conv = engine.CreateConversation(); // NO options — would have thrown before the fix
+        LiteRtResponse reply = conv.Send("What is the main color? Answer with one word.", [LiteRtAttachment.Image(image)]);
+
+        Assert.False(string.IsNullOrWhiteSpace(reply.Text), $"Expected a reply. Raw: {reply.RawJson}");
+        Assert.True(conv.TokenCount > 100,
+            $"Expected the image's vision tokens in the KV cache (got {conv.TokenCount}); the encoder did not run.");
     }
 
     /// <summary>

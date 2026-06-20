@@ -10,6 +10,10 @@ namespace LiteRtLmSharp;
 public sealed class LiteRtEngine : IDisposable
 {
     private readonly EngineHandle _engine;
+    // Whether the engine was loaded with a vision/audio encoder enabled. Conversations spawned from a
+    // multimodal engine get a session config attached automatically (the encoder executor only loads
+    // when one is present), so a plain CreateConversation() can send image/audio without extra setup.
+    private readonly bool _isMultimodal;
     private bool _disposed;
 
     static LiteRtEngine() => NativeLibraryResolver.Initialize();
@@ -21,7 +25,11 @@ public sealed class LiteRtEngine : IDisposable
     // instead of a hang.
     private static int s_liveEngines;
 
-    private LiteRtEngine(EngineHandle engine) => _engine = engine;
+    private LiteRtEngine(EngineHandle engine, bool isMultimodal)
+    {
+        _engine = engine;
+        _isMultimodal = isMultimodal;
+    }
 
     /// <summary>Sets the global minimum log level (0=VERBOSE … 5=FATAL, 1000=SILENT).</summary>
     public static void SetMinLogLevel(int level) => LiteRtLmNative.litert_lm_set_min_log_level(level);
@@ -75,7 +83,9 @@ public sealed class LiteRtEngine : IDisposable
                     "file, or a backend the model does not support — some published .litertlm " +
                     "files carry a backend constraint (e.g. GPU-only) and refuse to load on CPU.");
 
-            return new LiteRtEngine(new EngineHandle(enginePtr));
+            return new LiteRtEngine(
+                new EngineHandle(enginePtr),
+                isMultimodal: options.VisionBackend is not null || options.AudioBackend is not null);
         }
         catch
         {
@@ -89,7 +99,7 @@ public sealed class LiteRtEngine : IDisposable
     public LiteRtConversation CreateConversation(LiteRtConversationOptions? options = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return LiteRtConversation.Create(_engine, options);
+        return LiteRtConversation.Create(_engine, options, _isMultimodal);
     }
 
     /// <summary>

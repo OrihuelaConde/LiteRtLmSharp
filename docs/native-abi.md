@@ -226,10 +226,28 @@ Wrapper surface: `LiteRtAttachment.Image/ImageFile/Audio/AudioFile`,
 `SendMessageStreamingAsync(text, attachments, ct)`, `LiteRtEngineOptions.VisionBackend`/`AudioBackend`/
 `MaxNumImages`, `LiteRtConversationOptions.VisualTokenBudget`.
 
-> **Context window:** multimodal needs `MaxNumTokens` large enough for the media tokens (an image is
-> ~256 vision tokens). Use **≥ 4096**; with `MaxNumTokens = 2048` the vision encoder fails to load and
-> the first image send throws `INVALID_ARGUMENT: Vision executor should not be null, please
-> TryLoadingVisionExecutor() first` (found via the preview.2 consumer smoke test, 2026-06-17).
+> **The vision/audio executor needs a session config on the conversation.** The encoder executor only
+> loads (`TryLoadingVisionExecutor`) when the conversation was created with a session config; without
+> one a first image/audio send fails with `INVALID_ARGUMENT: Vision executor should not be null, please
+> TryLoadingVisionExecutor() first`. A **bare** session config (nothing set on it) is enough — verified
+> by driving the C API directly. The binding now attaches one automatically whenever the engine was
+> loaded with `VisionBackend`/`AudioBackend` (`LiteRtConversation.Create` is passed an
+> `engineIsMultimodal` flag), so a plain `CreateConversation()` can send attachments. Setting
+> `MaxOutputTokens` or a `Sampler` also creates a session config, which is why the model-backed tests
+> (which set `MaxOutputTokens = 16`) never hit this.
+>
+> **Earlier mis-diagnosis (corrected 2026-06-20).** The 2026-06-17 smoke test blamed `MaxNumTokens`
+> ("use ≥ 4096; 2048 fails"). That was a confound — the failing case used a bare conversation (no session
+> config) while the working case used the sample's `MaxOutputTokens` cap. A 2×2 over `{2048,4096} ×
+> {default, capped}` showed `MaxNumTokens` is irrelevant: 2048 works with a session config, 4096 fails
+> without one. The **real** `MaxNumTokens` floor is just enough to hold the media's tokens: for a 64×64
+> image (~283 tokens) it fails at `MaxNumTokens = 256` and works at `384`.
+>
+> **Wrapped error.** When a send still fails this way (e.g. the model is not multimodal, or
+> `VisionBackend`/`AudioBackend` was left unset, or `MaxNumTokens` cannot hold the media), the binding
+> throws a managed `LiteRtException` naming those causes, on both the blocking and streaming send paths.
+> It flags the message as media-bearing by parsing the content parts only when a send fails, so a normal
+> send pays nothing.
 
 **VALIDATED** with our own win-x64 binary + `gemma-4-E2B-it` (2026-06-17): the self-built lib links the
 vision/audio executors. **CPU:** a red PNG expanded to a ~261-token vision block (text-only prefill 28 →

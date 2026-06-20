@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Threading.Channels;
 using LiteRtLmSharp.Native;
 
@@ -29,7 +30,8 @@ public sealed class LiteRtConversation : IDisposable
         _visualTokenBudget = visualTokenBudget;
     }
 
-    internal static unsafe LiteRtConversation Create(EngineHandle engine, LiteRtConversationOptions? options)
+    internal static unsafe LiteRtConversation Create(
+        EngineHandle engine, LiteRtConversationOptions? options, bool engineIsMultimodal = false)
     {
         // TEMPORARY GUARD — remove when upstream republishes a fixed linux prebuilt.
         // The linux-x64 libGemmaModelConstraintProvider.so shipped with LiteRT-LM v0.13.1
@@ -64,10 +66,19 @@ public sealed class LiteRtConversation : IDisposable
             string? historyJson = options is null
                 ? null
                 : LiteRtJson.ResolveHistory(options.History, options.HistoryJson);
-            bool needsConfig = options is not null &&
-                (options.SystemMessage is not null || options.Sampler is not null ||
-                 options.MaxOutputTokens > 0 || hasTools || options.EnableConstrainedDecoding ||
-                 extraContext is not null || options.FilterThinkingFromKvCache || historyJson is not null);
+
+            // A multimodal engine needs the conversation to carry a session config, otherwise the
+            // vision/audio executor never loads and the first attachment send fails with "Vision/Audio
+            // executor should not be null". A BARE session config is enough (verified) and is neutral for
+            // text, so attach one whenever the engine has an encoder enabled — even if the caller passed
+            // no sampler/output cap (e.g. a plain CreateConversation()). This removes the footgun where a
+            // default conversation could not send images.
+            bool needsSessionConfig =
+                options?.Sampler is not null || options?.MaxOutputTokens > 0 || engineIsMultimodal;
+            bool needsConfig = needsSessionConfig ||
+                (options is not null &&
+                 (options.SystemMessage is not null || hasTools || options.EnableConstrainedDecoding ||
+                  extraContext is not null || options.FilterThinkingFromKvCache || historyJson is not null));
 
             if (needsConfig)
             {
@@ -76,17 +87,17 @@ public sealed class LiteRtConversation : IDisposable
                     throw new LiteRtException("litert_lm_conversation_config_create returned null.");
                 config = new ConversationConfigHandle(configPtr);
 
-                if (options!.Sampler is not null || options.MaxOutputTokens > 0)
+                if (needsSessionConfig)
                 {
                     nint sessionPtr = LiteRtLmNative.litert_lm_session_config_create();
                     if (sessionPtr == nint.Zero)
                         throw new LiteRtException("litert_lm_session_config_create returned null.");
                     sessionConfig = new SessionConfigHandle(sessionPtr);
 
-                    if (options.MaxOutputTokens > 0)
+                    if (options?.MaxOutputTokens > 0)
                         LiteRtLmNative.litert_lm_session_config_set_max_output_tokens(sessionPtr, options.MaxOutputTokens);
 
-                    if (options.Sampler is { } s)
+                    if (options?.Sampler is { } s)
                     {
                         var native = new LiteRtLmSamplerParams
                         {
@@ -98,23 +109,25 @@ public sealed class LiteRtConversation : IDisposable
                         };
                         LiteRtLmNative.litert_lm_session_config_set_sampler_params(sessionPtr, &native);
                     }
+                    // Multimodal-only (no sampler/output cap): the session config stays bare — its mere
+                    // presence is what lets the encoder executor load.
 
                     LiteRtLmNative.litert_lm_conversation_config_set_session_config(configPtr, sessionPtr);
                 }
 
-                if (options.SystemMessage is not null)
+                if (options?.SystemMessage is not null)
                     LiteRtLmNative.litert_lm_conversation_config_set_system_message(configPtr, LiteRtJson.SystemMessage(options.SystemMessage));
 
                 if (hasTools)
-                    LiteRtLmNative.litert_lm_conversation_config_set_tools(configPtr, LiteRtJson.Tools(options.Tools!));
+                    LiteRtLmNative.litert_lm_conversation_config_set_tools(configPtr, LiteRtJson.Tools(options!.Tools!));
 
-                if (options.EnableConstrainedDecoding)
+                if (options?.EnableConstrainedDecoding == true)
                     LiteRtLmNative.litert_lm_conversation_config_set_enable_constrained_decoding(configPtr, true);
 
                 if (extraContext is not null)
                     LiteRtLmNative.litert_lm_conversation_config_set_extra_context(configPtr, extraContext);
 
-                if (options.FilterThinkingFromKvCache)
+                if (options?.FilterThinkingFromKvCache == true)
                     LiteRtLmNative.litert_lm_conversation_config_set_filter_channel_content_from_kv_cache(configPtr, true);
 
                 if (historyJson is not null)
@@ -286,11 +299,58 @@ public sealed class LiteRtConversation : IDisposable
         nint responsePtr = LiteRtLmNative.litert_lm_conversation_send_message(
             _conversation.Ptr, messageJson, extraContext, optionalArgs?.Ptr ?? nint.Zero);
         if (responsePtr == nint.Zero)
-            throw new LiteRtException("litert_lm_conversation_send_message returned null.");
+        {
+            // The blocking send returns null with no error string (the native reason goes to stderr).
+            // When the message carried media, the usual cause is a multimodal-setup problem, so name it.
+            string msg = "litert_lm_conversation_send_message returned null.";
+            if (MessageHasMedia(messageJson))
+                msg += " " + MultimodalSendHint;
+            throw new LiteRtException(msg);
+        }
 
         using var response = new JsonResponseHandle(responsePtr);
         nint strPtr = LiteRtLmNative.litert_lm_json_response_get_string(response.Ptr);
         return Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
+    }
+
+    /// <summary>
+    /// Guidance appended when a send carrying an image/audio attachment fails the way an unconfigured
+    /// multimodal engine does (the native layer reports "Vision/Audio executor should not be null").
+    /// Names the usual causes so the caller does not have to dig through native stderr.
+    /// </summary>
+    internal const string MultimodalSendHint =
+        "The engine could not process the image/audio in this message. Check that " +
+        "(1) the model is multimodal (e.g. a gemma-4 E-series build), " +
+        "(2) the engine was loaded with LiteRtEngineOptions.VisionBackend / AudioBackend set " +
+        "(null leaves that modality off), and " +
+        "(3) LiteRtEngineOptions.MaxNumTokens leaves room for the media's tokens " +
+        "(an image is roughly 256 tokens).";
+
+    /// <summary>
+    /// Whether a user-message JSON carries an image/audio content part. Used only on a send-failure path
+    /// to decide whether to attach <see cref="MultimodalSendHint"/>, so the JSON parse never costs a
+    /// normal send. Tolerant of malformed input (returns false).
+    /// </summary>
+    internal static bool MessageHasMedia(string messageJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(messageJson);
+            if (!doc.RootElement.TryGetProperty("content", out JsonElement content)
+                || content.ValueKind != JsonValueKind.Array)
+                return false;
+
+            foreach (JsonElement part in content.EnumerateArray())
+                if (part.TryGetProperty("type", out JsonElement type)
+                    && type.ValueKind == JsonValueKind.String
+                    && type.GetString() is "image" or "audio")
+                    return true;
+            return false;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -405,6 +465,10 @@ public sealed class LiteRtConversation : IDisposable
         if (errorMsg != nint.Zero)
         {
             string msg = Marshal.PtrToStringUTF8(errorMsg) ?? "unknown error";
+            // The streaming path DOES surface the native string; when it is the unconfigured-multimodal
+            // failure ("Vision/Audio executor should not be null"), append the same setup guidance.
+            if (msg.Contains("executor should not be null", StringComparison.OrdinalIgnoreCase))
+                msg += " " + MultimodalSendHint;
             state.Channel.Writer.TryComplete(new LiteRtException(msg));
         }
         else if (chunk != nint.Zero)
