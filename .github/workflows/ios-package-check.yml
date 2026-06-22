@@ -30,7 +30,9 @@ on:
 jobs:
   ios-check:
     name: ios-arm64 package + link
-    runs-on: macos-15
+    # macos-26 ships Xcode 26.5 as default, matching the current .NET-for-iOS workload (26.5).
+    # macos-15 tops out at Xcode 26.3, which the workload rejects ("requires Xcode 26.5").
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
