@@ -50,8 +50,10 @@ jobs:
           echo "Using native ref: $ref"
           echo "NATIVE_REF=$ref" >> "$GITHUB_ENV"
 
-      - name: Install MAUI (iOS) workload
-        run: dotnet workload install maui-ios
+      - name: Install MAUI workload
+        # Full maui (covers the sample's android+ios TFMs); the workload check evaluates every TFM
+        # the multi-target sample declares, even when -f selects only the iOS slice to build.
+        run: dotnet workload install maui
 
       - name: Restore ios-arm64 natives from release native-${{ env.NATIVE_REF }}
         env:
@@ -91,9 +93,10 @@ jobs:
       - name: Build + link the MAUI sample for net10.0-ios (no signing)
         run: |
           set -euo pipefail
-          # Build ONLY the iOS TFM: override TargetFrameworks so the multi-target sample does not
-          # also evaluate the net10.0-android TFM (whose workload we deliberately don't install here).
+          # -f selects the iOS slice to compile/link. Do NOT override TargetFrameworks globally:
+          # that property propagates into the referenced managed lib (net10.0) and corrupts its
+          # restore (NETSDK1005). The full maui workload above covers the sample's android TFM check.
           dotnet build samples/Maui/LiteRtLmSharp.SampleMaui.csproj \
-            -c Release -p:TargetFrameworks=net10.0-ios \
+            -c Release -f net10.0-ios \
             -p:RuntimeIdentifier=ios-arm64 -p:EnableCodeSigning=false
           echo "OK: a net10.0-ios consumer compiled + linked against the embedded frameworks."
