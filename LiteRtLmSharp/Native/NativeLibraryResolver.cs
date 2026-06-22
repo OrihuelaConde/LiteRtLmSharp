@@ -27,6 +27,21 @@ internal static partial class NativeLibraryResolver
         if (libraryName != LiteRtLmNative.Library)
             return nint.Zero;
 
+        // iOS: the natives ship as embedded dynamic .frameworks (NativeReference Kind=Framework),
+        // placed by the build at <app>/Frameworks/<Name>.framework/<Name> — not the desktop
+        // runtimes/<rid>/native layout. Load the main framework binary directly; the companions are
+        // dlopen'd by the native engine through the OS loader. (Desktop macOS / osx-arm64 is NOT
+        // this case — it falls through to the directory probing below. MacCatalyst is out of scope.)
+        // The runtime path is hardware-untested at the package's first release — CI validates
+        // build/link + the exported-symbol surface, not execution.
+        if (OperatingSystem.IsIOS())
+        {
+            string fw = Path.Combine(AppContext.BaseDirectory, "Frameworks", libraryName + ".framework", libraryName);
+            if (NativeLibrary.TryLoad(fw, out nint fwHandle))
+                return fwHandle;
+            return NativeLibrary.TryLoad(libraryName, assembly, searchPath, out nint def0) ? def0 : nint.Zero;
+        }
+
         string fileName = GetPlatformFileName(libraryName);
 
         foreach (string dir in CandidateDirectories())

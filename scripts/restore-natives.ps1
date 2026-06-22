@@ -13,7 +13,7 @@ Usage:
 #>
 param(
     [string]$Version = 'v0.13.1',
-    [ValidateSet('win-x64', 'linux-x64', 'android-arm64', 'osx-arm64')]
+    [ValidateSet('win-x64', 'linux-x64', 'android-arm64', 'osx-arm64', 'ios-arm64')]
     [string[]]$Rid,
     [switch]$All
 )
@@ -26,6 +26,7 @@ $assets = @{
     'linux-x64'     = 'litertlm-linux_x86_64.tar.gz'
     'android-arm64' = 'litertlm-android_arm64.tar.gz'
     'osx-arm64'     = 'litertlm-macos_arm64.tar.gz'
+    'ios-arm64'     = 'litertlm-ios_arm64.tar.gz'
 }
 
 if ($All) { $Rid = @($assets.Keys) }
@@ -60,11 +61,18 @@ foreach ($r in $Rid) {
         throw "Checksum mismatch for ${asset}: expected $($checksums[$asset]), got $actual"
     }
 
-    $dest = Join-Path $repoRoot "runtimes/$r/native"
+    # iOS ships .xcframeworks (not a runtimes/<rid>/native dlopen layout); extract at the rid root.
+    $dest = if ($r -eq 'ios-arm64') { Join-Path $repoRoot "runtimes/$r" } else { Join-Path $repoRoot "runtimes/$r/native" }
     New-Item -ItemType Directory -Force $dest | Out-Null
     tar -xzf $file -C $dest
     Get-ChildItem $dest -Filter '._*' | Remove-Item -Force   # macOS AppleDouble metadata
-    Write-Host "  -> $((Get-ChildItem $dest -File).Count) files in runtimes/$r/native"
+    if ($r -eq 'ios-arm64') {
+        Get-ChildItem $dest -Filter '*.dylib' -File | Remove-Item -Force   # the tar also carries raw dylibs; keep only xcframeworks/
+        Write-Host "  -> restored runtimes/$r/xcframeworks"
+    }
+    else {
+        Write-Host "  -> $((Get-ChildItem $dest -File).Count) files in runtimes/$r/native"
+    }
 }
 
 Write-Host 'Done.'

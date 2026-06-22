@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Native-only NuGet package: LiteRT-LM ios-arm64 (physical devices). Unlike desktop, iOS does
+    not honor runtimes/<rid>/native; the natives ship as dynamic .framework xcframeworks
+    (libLiteRtLm + the 3 prebuilt companions, LiteRt static inside libLiteRtLm) and are injected
+    into net10.0-ios consumers as NativeReference Kind=Framework by the buildTransitive .targets
+    below. The .NET-for-iOS build embeds + code-signs them into the app bundle; NativeLibraryResolver
+    (managed package) resolves them at runtime. Device-arm64 only — no simulator slice.
+    Pair with the managed LiteRtLmSharp package (same version).
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IncludeSymbols>false</IncludeSymbols>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+
+    <PackageId>LiteRtLmSharp.runtime.ios-arm64</PackageId>
+    <Description>Native LiteRT-LM runtime (ios-arm64, physical devices) for LiteRtLmSharp. Ships dynamic .framework xcframeworks injected via NativeReference. PREVIEW: build/link is validated in CI, but on-device execution is not yet validated — not for production until a hardware-validated release. Built from LiteRT-LM $(LiteRtLmVersion). $(LiteRtLmDisclaimer)</Description>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Auto-imported by all consumers (TFM-agnostic buildTransitive root); the .targets itself
+         gates the NativeReference items on the iOS platform, so it is a no-op elsewhere. Placed at
+         the root rather than buildTransitive/net10.0-ios/ to avoid NU1012 (a platform-versioned
+         TFM folder would be required for net10.0-ios). -->
+    <None Include="buildTransitive\LiteRtLmSharp.runtime.ios-arm64.targets"
+          Pack="true"
+          PackagePath="buildTransitive\LiteRtLmSharp.runtime.ios-arm64.targets" />
+
+    <!-- The xcframeworks, packed next to the .targets (which references them via $(MSBuildThisFileDirectory)).
+         Produced by build-native.yml into runtimes/ios-arm64/xcframeworks/ (gitignored, restored before pack). -->
+    <None Include="..\..\runtimes\ios-arm64\xcframeworks\**\*"
+          Pack="true"
+          PackagePath="buildTransitive\xcframeworks\%(RecursiveDir)" />
+  </ItemGroup>
+
+</Project>

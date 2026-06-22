@@ -7,4 +7,5 @@
   <Project Path="packaging/LiteRtLmSharp.runtime.linux-x64/LiteRtLmSharp.runtime.linux-x64.csproj" />
   <Project Path="packaging/LiteRtLmSharp.runtime.android-arm64/LiteRtLmSharp.runtime.android-arm64.csproj" />
   <Project Path="packaging/LiteRtLmSharp.runtime.osx-arm64/LiteRtLmSharp.runtime.osx-arm64.csproj" />
+  <Project Path="packaging/LiteRtLmSharp.runtime.ios-arm64/LiteRtLmSharp.runtime.ios-arm64.csproj" />
 </Solution>

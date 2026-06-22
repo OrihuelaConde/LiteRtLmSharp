@@ -10,13 +10,13 @@ on:
   workflow_dispatch:
     inputs:
       package_version:
-        description: 'NuGet package version (e.g. 0.1.0-preview.1; independent of the native ref)'
-        required: true
-        default: '0.1.0-preview.1'
+        description: 'NuGet package version (independent of the native ref). Empty = Version in Directory.Build.props.'
+        required: false
+        default: ''
       native_ref:
-        description: 'LiteRT-LM ref whose native release to consume (release tag = native-<ref>)'
-        required: true
-        default: 'v0.13.1'
+        description: 'LiteRT-LM ref whose native release to consume (release tag = native-<ref>). Empty = LiteRtLmVersion in Directory.Build.props.'
+        required: false
+        default: ''
       push:
         description: 'Push packages to nuget.org (via Trusted Publishing — OIDC, no secret needed)'
         type: boolean
@@ -35,12 +35,24 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Download native binaries from release native-${{ inputs.native_ref }}
+      - name: Resolve versions
+        # Inputs if given, else the single source of truth in Directory.Build.props.
+        run: |
+          set -euo pipefail
+          pkg="${{ inputs.package_version }}"
+          ref="${{ inputs.native_ref }}"
+          [ -n "$pkg" ] || pkg=$(grep -oE '<Version>[^<]+' Directory.Build.props | head -1 | sed 's/<Version>//')
+          [ -n "$ref" ] || ref=$(grep -oE '<LiteRtLmVersion>[^<]+' Directory.Build.props | sed 's/<LiteRtLmVersion>//')
+          echo "package_version=$pkg / native_ref=$ref"
+          echo "PKG_VERSION=$pkg" >> "$GITHUB_ENV"
+          echo "NATIVE_REF=$ref" >> "$GITHUB_ENV"
+
+      - name: Download native binaries from release native-${{ env.NATIVE_REF }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p natives
-          gh release download "native-${{ inputs.native_ref }}" \
+          gh release download "native-${NATIVE_REF}" \
             --repo "${{ github.repository }}" \
             --pattern 'litertlm-*.tar.gz' \
             --dir natives
@@ -68,9 +80,21 @@ jobs:
             fi
           done
 
+          # iOS is special: it ships .xcframeworks (not a runtimes/<rid>/native dlopen layout),
+          # so extract at the rid ROOT — the tar carries an xcframeworks/ dir at its top level.
+          if [ -f "natives/litertlm-ios_arm64.tar.gz" ]; then
+            mkdir -p "runtimes/ios-arm64"
+            tar -xzf "natives/litertlm-ios_arm64.tar.gz" -C "runtimes/ios-arm64"
+            find "runtimes/ios-arm64" -name '._*' -delete
+            rm -f "runtimes/ios-arm64"/*.dylib   # the tar also carries the raw dylibs; the package only ships the xcframeworks
+            echo "ios-arm64:"; ls -R "runtimes/ios-arm64/xcframeworks" 2>/dev/null || echo "  (no xcframeworks/)"
+          else
+            echo "ios-arm64: no asset — its runtime package will be skipped"
+          fi
+
       - name: Pack
         run: |
-          common="-c Release -o artifacts -p:Version=${{ inputs.package_version }} -p:LiteRtLmVersion=${{ inputs.native_ref }} -p:ContinuousIntegrationBuild=true"
+          common="-c Release -o artifacts -p:Version=${PKG_VERSION} -p:LiteRtLmVersion=${NATIVE_REF} -p:ContinuousIntegrationBuild=true"
           dotnet pack LiteRtLmSharp/LiteRtLmSharp.csproj $common
           for rid in win-x64 linux-x64 android-arm64 osx-arm64; do
             if [ -n "$(ls runtimes/$rid/native 2>/dev/null)" ]; then
@@ -79,11 +103,17 @@ jobs:
               echo "skip LiteRtLmSharp.runtime.$rid (no natives)"
             fi
           done
+          # iOS: packs the .xcframeworks restored above (netstandard2.0 project, no Mac needed to pack).
+          if [ -n "$(ls runtimes/ios-arm64/xcframeworks 2>/dev/null)" ]; then
+            dotnet pack "packaging/LiteRtLmSharp.runtime.ios-arm64/LiteRtLmSharp.runtime.ios-arm64.csproj" $common
+          else
+            echo "skip LiteRtLmSharp.runtime.ios-arm64 (no xcframeworks)"
+          fi
           ls -lh artifacts/*.nupkg
 
       - uses: actions/upload-artifact@v4
         with:
-          name: nupkgs-${{ inputs.package_version }}
+          name: nupkgs-${{ env.PKG_VERSION }}
           path: |
             artifacts/*.nupkg
             artifacts/*.snupkg

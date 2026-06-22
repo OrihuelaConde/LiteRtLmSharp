@@ -1,0 +1,97 @@
+name: iOS package check
+
+# Build/link validation of the ios-arm64 native package WITHOUT a device or a paid Apple Developer
+# account: a GitHub-hosted macOS runner is a cloud Mac, and an unsigned device build reaches the
+# native-link stage with no certificate/profile. Two checks:
+#   1. Pack LiteRtLmSharp.runtime.ios-arm64 and assert the .nupkg carries the buildTransitive
+#      .targets + the xcframeworks at the expected paths (package layout is correct).
+#   2. Build the MAUI sample for net10.0-ios with EnableCodeSigning=false — exercises the
+#      NativeReference Kind=Framework embedding and the native link of a real consumer.
+# It does NOT execute on hardware (that needs a paid Apple Developer account + TestFlight — see
+# docs/roadmap.md). The exported C-API symbol surface is asserted in build-native.yml.
+#
+# Prerequisite: the native release native-<ref> must already contain the ios-arm64 asset WITH the
+# xcframeworks (re-run build-native.yml for ios-arm64 first if it predates that step).
+
+on:
+  workflow_dispatch:
+    inputs:
+      native_ref:
+        description: 'LiteRT-LM ref whose native release to consume (release tag = native-<ref>). Empty = LiteRtLmVersion in Directory.Build.props.'
+        required: false
+        default: ''
+  pull_request:
+    paths:
+      - 'packaging/LiteRtLmSharp.runtime.ios-arm64/**'
+      - 'LiteRtLmSharp/Native/NativeLibraryResolver.cs'
+      - 'samples/Maui/LiteRtLmSharp.SampleMaui.csproj'
+      - '.github/workflows/ios-package-check.yml'
+
+jobs:
+  ios-check:
+    name: ios-arm64 package + link
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Resolve native ref
+        # The dispatch input if given, else the single source of truth in Directory.Build.props.
+        run: |
+          set -euo pipefail
+          ref="${{ inputs.native_ref }}"
+          if [ -z "$ref" ]; then
+            ref=$(grep -oE '<LiteRtLmVersion>[^<]+' Directory.Build.props | sed 's/<LiteRtLmVersion>//')
+          fi
+          echo "Using native ref: $ref"
+          echo "NATIVE_REF=$ref" >> "$GITHUB_ENV"
+
+      - name: Install MAUI (iOS) workload
+        run: dotnet workload install maui-ios
+
+      - name: Restore ios-arm64 natives from release native-${{ env.NATIVE_REF }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p natives runtimes/ios-arm64
+          gh release download "native-${NATIVE_REF}" \
+            --repo "${{ github.repository }}" \
+            --pattern 'litertlm-ios_arm64.tar.gz' \
+            --dir natives
+          tar -xzf natives/litertlm-ios_arm64.tar.gz -C runtimes/ios-arm64
+          find runtimes/ios-arm64 -name '._*' -delete
+          echo "--- xcframeworks ---"
+          ls -R runtimes/ios-arm64/xcframeworks
+
+      - name: Pack + assert package layout
+        run: |
+          set -euo pipefail
+          dotnet pack packaging/LiteRtLmSharp.runtime.ios-arm64/LiteRtLmSharp.runtime.ios-arm64.csproj \
+            -c Release -o localfeed -p:Version=0.0.0-iostest
+          nupkg=$(ls localfeed/LiteRtLmSharp.runtime.ios-arm64.*.nupkg)
+          echo "Contents of $nupkg:"
+          unzip -l "$nupkg"
+          for must in \
+            "buildTransitive/LiteRtLmSharp.runtime.ios-arm64.targets" \
+            "buildTransitive/xcframeworks/LiteRtLm.xcframework/" \
+            "buildTransitive/xcframeworks/GemmaModelConstraintProvider.xcframework/" \
+            "buildTransitive/xcframeworks/LiteRtMetalAccelerator.xcframework/" \
+            "buildTransitive/xcframeworks/LiteRtTopKMetalSampler.xcframework/"; do
+            if ! unzip -l "$nupkg" | grep -q "$must"; then
+              echo "ERROR: package is missing $must"; exit 1
+            fi
+          done
+          echo "OK: package carries the .targets + all 4 xcframeworks."
+
+      - name: Build + link the MAUI sample for net10.0-ios (no signing)
+        run: |
+          set -euo pipefail
+          dotnet build samples/Maui/LiteRtLmSharp.SampleMaui.csproj \
+            -c Release -f net10.0-ios \
+            -p:RuntimeIdentifier=ios-arm64 -p:EnableCodeSigning=false
+          echo "OK: a net10.0-ios consumer compiled + linked against the embedded frameworks."

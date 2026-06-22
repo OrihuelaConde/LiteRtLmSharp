@@ -369,8 +369,25 @@ jobs:
           done
 
           ls -lh artifacts/
-          echo "--- exported litert_lm_* symbols ---"
-          nm -gU artifacts/libLiteRtLm.dylib | grep -c litert_lm_ || true
+          echo "--- exported litert_lm_* symbols (C-API export surface) ---"
+          cnt=$(nm -gU artifacts/libLiteRtLm.dylib | grep -c litert_lm_ || true)
+          echo "exported litert_lm_* symbols: $cnt"
+          if [ "$cnt" -lt 60 ]; then
+            echo "ERROR: expected >=60 exported litert_lm_* symbols in libLiteRtLm.dylib, got $cnt"
+            exit 1
+          fi
+          echo "--- iOS sampler contract: every LiteRt* the sampler imports must be exported by libLiteRtLm ---"
+          # The iOS TopK Metal sampler resolves its LiteRt* imports via DYNAMIC_LOOKUP (flat namespace)
+          # against libLiteRtLm at dlopen. Assert that import set is fully covered by our exports.
+          missing=$(comm -23 \
+            <(nm -u artifacts/libLiteRtTopKMetalSampler.dylib | awk '{print $NF}' | grep -E '^_LiteRt' | sort -u) \
+            <(nm -gU artifacts/libLiteRtLm.dylib | awk '{print $NF}' | grep -E '^_LiteRt' | sort -u))
+          if [ -n "$missing" ]; then
+            echo "ERROR: the iOS sampler imports LiteRt* symbols NOT exported by libLiteRtLm.dylib:"
+            echo "$missing"
+            exit 1
+          fi
+          echo "OK: all sampler LiteRt* imports are covered by libLiteRtLm.dylib exports."
           echo "--- libLiteRtLm.dylib load commands (no @rpath/libLiteRt.dylib: static) ---"
           otool -L artifacts/libLiteRtLm.dylib
           echo "--- platform/min-OS of each dylib (post-patch) ---"
@@ -378,6 +395,54 @@ jobs:
             echo "== $f"
             otool -l "$f" | grep -A4 -E "LC_BUILD_VERSION|LC_VERSION_MIN" | head -8
           done
+
+      - name: Wrap natives as dynamic frameworks + xcframeworks
+        # iOS consumes the natives as embedded dynamic .frameworks (NativeReference Kind=Framework,
+        # see docs/roadmap.md "Architecture decisions"). Wrap each libX.dylib as X.framework (flat
+        # iOS layout: binary + Info.plist), set its framework install_name, ad-hoc codesign, then
+        # xcodebuild -create-xcframework. The net10.0-ios app build embeds + re-signs them.
+        # Device-arm64 only (no simulator slice upstream).
+        #
+        # RUNTIME / HARDWARE-PHASE TODO (does NOT affect build/link or this CI): the engine's
+        # internal dlopen of the Metal accelerator/sampler must be pointed at the framework layout
+        # (@executable_path/Frameworks/<X>.framework/<X>) for on-device execution — mirror
+        # flutter_gemma's gpu_registry.cc/sampler_factory.cc patch (their patch_c_api.sh §10b,
+        # ITMS-90432). Deferred to the device-validation phase; left unpatched here on purpose.
+        run: |
+          set -euo pipefail
+          cd artifacts
+          mkdir -p xcframeworks
+          for dylib in libLiteRtLm.dylib libGemmaModelConstraintProvider.dylib libLiteRtMetalAccelerator.dylib libLiteRtTopKMetalSampler.dylib; do
+            [ -f "$dylib" ] || { echo "missing $dylib, skipping"; continue; }
+            name="${dylib#lib}"; name="${name%.dylib}"   # libLiteRtLm.dylib -> LiteRtLm
+            fw="${name}.framework"
+            rm -rf "$fw" "xcframeworks/${name}.xcframework"
+            mkdir -p "$fw"
+            cp "$dylib" "$fw/${name}"
+            install_name_tool -id "@rpath/${fw}/${name}" "$fw/${name}"
+            minos=$(otool -l "$fw/${name}" | awk '/LC_BUILD_VERSION|LC_VERSION_MIN_IPHONEOS/{v=1} v && /(minos|version)/{print $2; exit}')
+            : "${minos:=16.0}"   # guard: empty if neither load command matched
+            printf '%s\n' \
+              '<?xml version="1.0" encoding="UTF-8"?>' \
+              '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+              '<plist version="1.0"><dict>' \
+              "<key>CFBundleExecutable</key><string>${name}</string>" \
+              "<key>CFBundleIdentifier</key><string>org.litertlmsharp.${name}</string>" \
+              '<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>' \
+              "<key>CFBundleName</key><string>${name}</string>" \
+              '<key>CFBundlePackageType</key><string>FMWK</string>' \
+              '<key>CFBundleShortVersionString</key><string>1.0</string>' \
+              '<key>CFBundleVersion</key><string>1</string>' \
+              "<key>MinimumOSVersion</key><string>${minos}</string>" \
+              '<key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>' \
+              '<key>DTPlatformName</key><string>iphoneos</string>' \
+              '</dict></plist>' > "$fw/Info.plist"
+            codesign --force --sign - "$fw"
+            xcodebuild -create-xcframework -framework "$fw" -output "xcframeworks/${name}.xcframework"
+            rm -rf "$fw"
+          done
+          echo "--- xcframeworks (packed into LiteRtLmSharp.runtime.ios-arm64) ---"
+          ls -lR xcframeworks
 
       - uses: actions/upload-artifact@v4
         with:
@@ -425,7 +490,7 @@ jobs:
           name: LiteRT-LM native ${{ env.LITERTLM_VERSION }}
           body: |
             LiteRT-LM C API shared libraries built from source `${{ env.LITERTLM_VERSION }}`
-            via `native/patch_c_api.sh`. Platforms: linux-x64, win-x64, android-arm64, macos-arm64
+            via `native/patch_c_api.sh`. Platforms: linux-x64, win-x64, android-arm64, macos-arm64, ios-arm64
             (assets accumulate across platform-filtered runs).
 
             Consume with `scripts/restore-natives.ps1` (update its `$version` to match).

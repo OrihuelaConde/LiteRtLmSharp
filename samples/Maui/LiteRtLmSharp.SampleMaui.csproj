@@ -2,13 +2,17 @@
 
 	<PropertyGroup>
 		<!--
-		  Primary target today: Android (physical arm64 device). Windows is included so the same
-		  app runs on desktop. iOS/MacCatalyst will be added in the Apple phase (needs the
-		  macOS/iOS native binaries + a Mac build host):
-		    <TargetFrameworks>$(TargetFrameworks);net10.0-ios;net10.0-maccatalyst</TargetFrameworks>
+		  Primary target: Android (physical arm64 device). Windows is included so the same app
+		  runs on desktop. iOS (net10.0-ios) is gated to macOS hosts ONLY: building the iOS TFM
+		  requires a paired Mac, so listing it on Windows would break the build — on Windows this
+		  project stays Android + Windows exactly as before. iOS is device-arm64 only (the native
+		  companions have no simulator slice). MacCatalyst is out of scope — upstream ships no
+		  maccatalyst (-macabi) native slice; macOS is served by the osx-arm64 package (console /
+		  net*-macos apps), which MAUI cannot consume.
 		-->
 		<TargetFrameworks>net10.0-android</TargetFrameworks>
 		<TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">$(TargetFrameworks);net10.0-windows10.0.19041.0</TargetFrameworks>
+		<TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('osx'))">$(TargetFrameworks);net10.0-ios</TargetFrameworks>
 
 		<OutputType>Exe</OutputType>
 		<RootNamespace>LiteRtLmSharp.SampleMaui</RootNamespace>
@@ -28,11 +32,14 @@
 
 		<!-- LiteRT-LM requires Android API 24+ (and targetSdk 35 per Google's checklist). -->
 		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">24.0</SupportedOSPlatformVersion>
+		<!-- iOS min OS matches the native binaries (companions vtool'd to minos 16.0). Device-arm64 only. -->
+		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">16.0</SupportedOSPlatformVersion>
 		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</SupportedOSPlatformVersion>
 		<TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
 
 		<!-- We only ship arm64 native binaries (physical devices). -->
 		<RuntimeIdentifiers Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">android-arm64</RuntimeIdentifiers>
+		<RuntimeIdentifiers Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">ios-arm64</RuntimeIdentifiers>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -74,6 +81,21 @@
 		-->
 		<AndroidNativeLibrary Include="..\..\runtimes\android-arm64\native\*.so"
 		                      Abi="arm64-v8a" />
+	</ItemGroup>
+
+	<!--
+	  iOS: the natives ship as embedded dynamic .frameworks (NativeReference Kind=Framework). The
+	  sample references the lib by project, so it injects the NativeReferences here directly (the
+	  published LiteRtLmSharp.runtime.ios-arm64 package does the same via a buildTransitive
+	  .targets). Restore the xcframeworks first (the native-v* release / restore-natives.ps1).
+	  RUNTIME NOTE: on-device companion dlopen resolution is pending the hardware-validation phase
+	  (see build-native.yml); build/link works without it.
+	-->
+	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios' And Exists('..\..\runtimes\ios-arm64\xcframeworks')">
+		<NativeReference Include="..\..\runtimes\ios-arm64\xcframeworks\LiteRtLm.xcframework"><Kind>Framework</Kind><SmartLink>False</SmartLink></NativeReference>
+		<NativeReference Include="..\..\runtimes\ios-arm64\xcframeworks\GemmaModelConstraintProvider.xcframework"><Kind>Framework</Kind><SmartLink>False</SmartLink></NativeReference>
+		<NativeReference Include="..\..\runtimes\ios-arm64\xcframeworks\LiteRtMetalAccelerator.xcframework"><Kind>Framework</Kind><SmartLink>False</SmartLink></NativeReference>
+		<NativeReference Include="..\..\runtimes\ios-arm64\xcframeworks\LiteRtTopKMetalSampler.xcframework"><Kind>Framework</Kind><SmartLink>False</SmartLink></NativeReference>
 	</ItemGroup>
 
 	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
