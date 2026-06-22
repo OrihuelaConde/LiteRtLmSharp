@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\LiteRtLmSharp\LiteRtLmSharp.csproj" />
+    <ProjectReference Include="..\LiteRtLmSharp.SemanticKernel\LiteRtLmSharp.SemanticKernel.csproj" />
   </ItemGroup>
 
   <!-- A real 5->0 spoken countdown, embedded so the gated audio model test has a meaningful clip

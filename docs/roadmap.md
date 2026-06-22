@@ -1,6 +1,6 @@
 # Project status and roadmap
 
-Last updated: 2026-06-17. Source of truth for "what's done and what's pending".
+Last updated: 2026-06-22. Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -41,6 +41,7 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Multimodal messages (image/audio attachments, vision/audio backend, visual token budget) | ✅ |
 | Tokenize/detokenize + start/stop tokens (exact token counting, no inference) | ✅ |
 | Render a message to its templated prompt (`RenderMessage`) for debugging / exact-cost budgeting | ✅ |
+| Semantic Kernel connectors (`IChatCompletionService` / `ITextGenerationService`, separate package) | ✅ |
 
 Known constraints (documented in the README): one engine ALIVE at a time (reloading after
 `Dispose` works — verified on win-x64 cpu→cpu and cpu→gpu; this is Edge Gallery's pattern for
@@ -211,6 +212,35 @@ drift). The remaining 22 group into the areas below, in suggested priority order
    SECURITY.md, Discussions enabled); scheduled smoke-test workflow that consumes the published
    packages from nuget.org; PR upstream to be listed among the language bindings (planned right
    after the nuget.org release).
+
+## Ecosystem integrations
+
+- **Semantic Kernel** ✅ (2026-06-22). Separate companion package `LiteRtLmSharp.SemanticKernel`
+  (managed-only, deps: `LiteRtLmSharp` + `Microsoft.SemanticKernel.Abstractions` 1.77.0), mirroring
+  `LLamaSharp.semantic-kernel`. Implements `IChatCompletionService` (`LiteRtChatCompletionService`) and
+  `ITextGenerationService` (`LiteRtTextGenerationService`), blocking + streaming, with
+  `AddLiteRtChatCompletion`/`AddLiteRtTextGeneration` kernel/DI extensions and a typed
+  `LiteRtPromptExecutionSettings`. **Stateless mapping**: each SK call rebuilds a fresh
+  `LiteRtConversation` (prior turns → `History` via prefill, final user turn → `Send`); serialized with a
+  `SemaphoreSlim` (one engine/process, conversations not thread-safe). **Engine lifecycle, two styles**:
+  pass a `LiteRtEngine` you own (you dispose it), or a `LiteRtEngineOptions` so the container loads/owns/
+  disposes a single shared engine (`AddLiteRtEngine` registers it idempotently — chat + text share one
+  engine, respecting the one-per-process rule; `eager:true` loads at registration, else lazy on first use).
+  Wired into `LiteRtLmSharp.slnx`, `ci.yml` (build + the model-free mapping/settings/options-mapping/DI
+  registration unit tests), `pack-nuget.yml` (packs alongside), and `samples/LiteRtLmSharp.Samples.slnx`.
+  Gated model-backed tests (`LITERTLM_TEST_MODEL`) cover blocking chat, multi-turn streaming history replay,
+  and text generation (blocking + streaming).
+  Console sample `samples/SemanticKernel` **validated end-to-end on win-x64 CPU and GPU/WebGPU with
+  gemma-4-E2B-it** (prompt function, streaming prompt, multi-turn streaming chat — the 2nd turn correctly
+  carried 1st-turn context, proving history replay). Guide: [semantic-kernel.md](semantic-kernel.md).
+  **Planned next (priority): bridge SK function calling** — wire `FunctionChoiceBehavior`'s auto-invoke
+  loop into the connector so the kernel calls `KernelFunction`s automatically. Function calling already
+  works through the native tools API (constrained decoding + tool-call round-trip); this connects it to
+  SK's loop. It's the library's headline capability, so this is the top connector follow-up. Other
+  follow-ups: an `ITextEmbeddingGenerationService` (blocked — the C API has no embeddings at v0.13.1, same
+  reason as the core binding); the thinking trace is intentionally excluded from SK content. **Not
+  AOT/trim-clean** (SK isn't; settings round-trip uses reflection JSON) — the core package keeps its AOT
+  guarantee, this companion does not.
 
 ## Watchlist (re-check periodically)
 

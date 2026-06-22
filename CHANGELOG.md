@@ -6,6 +6,32 @@ LiteRT-LM native version it wraps (see the compatibility table in the [README](R
 managed `LiteRtLmSharp` package and every `LiteRtLmSharp.runtime.<rid>` package share one version and
 are published together.
 
+## [Unreleased]
+
+### Added
+
+- **Semantic Kernel integration.** A new optional companion package, **`LiteRtLmSharp.SemanticKernel`**,
+  plugs an on-device model into [Microsoft Semantic Kernel](https://learn.microsoft.com/semantic-kernel/overview/)
+  as a standard `IChatCompletionService` (`LiteRtChatCompletionService`) and `ITextGenerationService`
+  (`LiteRtTextGenerationService`), with `IKernelBuilder` / `IServiceCollection` registration
+  (`AddLiteRtChatCompletion` / `AddLiteRtTextGeneration` / `AddLiteRtEngine`) — either over an engine you
+  own, or from a `LiteRtEngineOptions` so the container loads/owns/disposes a single shared engine (with an
+  `eager` flag to load at registration) — and a typed `LiteRtPromptExecutionSettings`
+  (temperature / top-p / top-k / max-tokens / seed / thinking) with a `Clone` override that preserves those
+  knobs through Semantic Kernel's internal settings cloning. Managed-only, depends just on
+  `Microsoft.SemanticKernel.Abstractions` (+ the core `LiteRtLmSharp` package, same version), so apps that
+  don't use Semantic Kernel don't pull it in — the same separate-package approach LLamaSharp uses. The
+  connector is stateless (it rebuilds a fresh conversation from Semantic Kernel's `ChatHistory` each call,
+  restoring prior turns via prefill) and serializes calls (one live engine per process). A dedicated
+  console sample lives in [`samples/SemanticKernel`](samples/SemanticKernel); design, usage and the
+  function-calling plan are in [docs/semantic-kernel.md](docs/semantic-kernel.md). This first cut covers
+  chat and text completion; **bridging Semantic Kernel function calling is a priority follow-up** (function
+  calling already works through the native tools API — what's pending is wiring it into SK's auto-invoke
+  loop). Embeddings remain unavailable while the C API exposes none (v0.13.1). Validated end-to-end on
+  win-x64 CPU and GPU/WebGPU with gemma-4-E2B-it; the mapping/settings/registration logic is unit-tested
+  model-free in CI, and gated model-backed tests (blocking chat + multi-turn streaming history replay) run
+  under `LITERTLM_TEST_MODEL`.
+
 ## [0.1.0-preview.3] — 2026-06-20
 
 Built against **LiteRT-LM v0.13.1** (same native binaries as preview.2 — this release is binding

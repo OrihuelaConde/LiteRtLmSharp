@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>LiteRtLmSharp.Sample.SemanticKernel</RootNamespace>
+    <AssemblyName>LiteRtLmSharp.Sample.SemanticKernel</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The full Semantic Kernel SDK (Kernel, KernelBuilder, prompt functions). The connector itself
+         only needs Microsoft.SemanticKernel.Abstractions. -->
+    <PackageReference Include="Microsoft.SemanticKernel" Version="1.77.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The connector → the managed LiteRtLmSharp library; the native binaries are copied to the
+         output transitively (runtimes/<rid>/native, same mechanism as the other samples). -->
+    <ProjectReference Include="..\..\LiteRtLmSharp.SemanticKernel\LiteRtLmSharp.SemanticKernel.csproj" />
+  </ItemGroup>
+
+</Project>

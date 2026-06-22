@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+
+    <!--
+      Microsoft Semantic Kernel connectors for LiteRtLmSharp. Pure managed: depends on the managed
+      LiteRtLmSharp package (add a LiteRtLmSharp.runtime.<rid> package for the native binaries) plus
+      Semantic Kernel's abstractions. NOT marked AOT/trim-clean: Semantic Kernel itself is not, and the
+      execution-settings round-trip uses reflection-based JSON. The core LiteRtLmSharp package stays AOT.
+    -->
+    <PackageId>LiteRtLmSharp.SemanticKernel</PackageId>
+    <Description>Microsoft Semantic Kernel connectors (IChatCompletionService and ITextGenerationService) for LiteRtLmSharp on-device LLM inference. Companion to the LiteRtLmSharp package. $(LiteRtLmDisclaimer)</Description>
+    <PackageTags>litert;litert-lm;semantic-kernel;llm;gemma;on-device;inference;ai</PackageTags>
+
+    <!-- Debugger source mapping for the published package (SourceLink ships with the SDK). -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SemanticKernel.Abstractions" Version="1.77.0" />
+  </ItemGroup>
+
+  <!-- Project reference within the repo; becomes a NuGet dependency on the LiteRtLmSharp package
+       (same version, via Directory.Build.props) when this project is packed. -->
+  <ItemGroup>
+    <ProjectReference Include="..\LiteRtLmSharp\LiteRtLmSharp.csproj" />
+  </ItemGroup>
+
+  <!-- Unit tests exercise the internal ChatHistory/settings mapping directly. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="LiteRtLmSharp.Tests" />
+  </ItemGroup>
+
+</Project>

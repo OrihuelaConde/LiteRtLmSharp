@@ -138,7 +138,9 @@ raw `ExtraContext` (a JSON-object string) escape hatch; on a model whose templat
 `enable_thinking` it is a harmless no-op.
 
 See [`samples/Console`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/Console)
-for a runnable demo (`--tools` for the function-calling loop, `--spec` for speculative decoding, `--thinking` for reasoning mode) and
+for a runnable demo (`--tools` for the function-calling loop, `--spec` for speculative decoding, `--thinking` for reasoning mode),
+[`samples/SemanticKernel`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/SemanticKernel)
+for the [Semantic Kernel](#semantic-kernel) integration, and
 [`samples/Maui`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/Maui) for a
 full Android/Windows chat app with model download, streaming, tools, plus speculative-decoding and reasoning-mode toggles.
 
@@ -255,6 +257,44 @@ if (chat.TokenCount + next > contextWindow - replyHeadroom)
 `Tokenize` counts the raw text; for the exact per-turn cost with the chat template included, render the
 message first with `chat.RenderMessage(text)` (it returns the templated prompt without sending), then
 tokenize that: `engine.Tokenize(chat.RenderMessage(text)).Length`.
+
+### Semantic Kernel
+
+The optional **`LiteRtLmSharp.SemanticKernel`** companion package plugs an on-device model into
+[Microsoft Semantic Kernel](https://learn.microsoft.com/semantic-kernel/overview/) as a standard
+`IChatCompletionService` / `ITextGenerationService` (the same separate-package approach LLamaSharp uses).
+It depends only on `Microsoft.SemanticKernel.Abstractions`, so apps that don't use Semantic Kernel never
+pull it in.
+
+```xml
+<PackageReference Include="LiteRtLmSharp.SemanticKernel" Version="0.1.0-preview.3" />
+```
+
+```csharp
+using LiteRtLmSharp;
+using Microsoft.SemanticKernel;
+
+using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+{
+    ModelPath = "gemma-4-E2B-it.litertlm", Backend = "cpu", MaxNumTokens = 4096,
+});
+
+var builder = Kernel.CreateBuilder();
+builder.AddLiteRtChatCompletion(engine);     // the whole integration
+Kernel kernel = builder.Build();
+
+Console.WriteLine(await kernel.InvokePromptAsync("Write one upbeat sentence about on-device AI."));
+```
+
+The connector is **stateless** (it rebuilds a fresh conversation from Semantic Kernel's `ChatHistory`
+each call), serializes calls (one engine per process), and maps `temperature` / `top_p` / `top_k` /
+`max_tokens` / `seed` through `LiteRtPromptExecutionSettings`. Bridging Semantic Kernel **function
+calling** is a priority on the roadmap (LiteRtLmSharp already does function calling through its native
+[tools API](#function-calling); this connector will grow the SK auto-invoke path). Embeddings aren't
+available yet (the C API exposes none). Design, the function-calling plan, and a runnable
+[`samples/SemanticKernel`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/SemanticKernel)
+console demo:
+[docs/semantic-kernel.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/semantic-kernel.md).
 
 ## Why .NET 10 only?
 
