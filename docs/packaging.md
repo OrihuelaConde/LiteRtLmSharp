@@ -9,13 +9,20 @@ LLamaSharp-style model: **one pure managed package + per-RID native runtime pack
 | `LiteRtLmSharp.runtime.linux-x64` | `runtimes/linux-x64/native/*.so`. No lib. | (native-only) |
 | `LiteRtLmSharp.runtime.android-arm64` | `runtimes/android-arm64/native/*.so` (packed into the APK as `lib/arm64-v8a/`). | (native-only) |
 | `LiteRtLmSharp.runtime.osx-arm64` | `runtimes/osx-arm64/native/*.dylib` (Apple Silicon). | (native-only) |
+| `LiteRtLmSharp.runtime.ios-arm64` | Dynamic `.framework` xcframeworks injected via `NativeReference` (buildTransitive `.targets`); device-arm64. No lib. | (native-only) |
 
-> iOS has no runtime package yet: on iOS a nupkg `runtimes/` folder is not auto-embedded — it
-> needs an xcframework + a `.targets` file with `NativeReference`; planned together with the
-> iOS app phase. Every package ships `README.md`, `LICENSE.txt`, `NOTICE` and
+> **iOS (`ios-arm64`).** Unlike desktop, a nupkg
+> `runtimes/` folder is not auto-embedded on iOS; the natives ship as an **xcframework consumed
+> via `NativeReference Kind=Framework`** from a `buildTransitive` `.targets` conditioned on the
+> `net10.0-ios` TFM — `libLiteRtLm.dylib` + the prebuilt companions wrapped as dynamic
+> `.framework`s, embedded and code-signed into the app bundle and resolved at runtime by
+> `NativeLibraryResolver` (see the iOS linking decision in `docs/roadmap.md`). Device-arm64 only
+> (the companions have no simulator slice). Build/link is validated in CI
+> (`ios-package-check.yml`); on-device runtime is pending hardware validation (see
+> `docs/roadmap.md`). Every package ships `README.md`, `LICENSE.txt`, `NOTICE` and
 > `THIRD-PARTY-NOTICES.md` at its root.
 
-**All five packages share one version per release** (enforced by the single `Version` in
+**All six packages share one version per release** (enforced by the single `Version` in
 `Directory.Build.props`) and that version is **independent of the LiteRT-LM native version**,
 which is pinned via `LiteRtLmVersion` and surfaced in the package release notes and the README
 compatibility table. Install the managed and runtime packages with the same version number.
@@ -53,7 +60,7 @@ the projects under `packaging/` (these need the natives already present in
 - **MSVC runtime**: `LiteRtLm.dll` (win-x64) imports `MSVCP140/VCRUNTIME140*`; it relies on the
   VC++ Redistributable being installed on the user's machine. Documented as a prerequisite in
   the README; shipping it is a future packaging decision.
-- Possible future RIDs: `linux-arm64`, `android-x64` (emulators), `ios-arm64` (via xcframework).
+- Possible future RIDs: `linux-arm64`, `android-x64` (emulators).
 - Optional future: a `LiteRtLmSharp.Backend.Desktop` meta-package depending on the win/linux
   runtime packages.
 - Android GPU: consumers must declare `<uses-native-library>` in their manifest (see the README

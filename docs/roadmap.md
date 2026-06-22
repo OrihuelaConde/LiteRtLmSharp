@@ -10,7 +10,7 @@ Last updated: 2026-06-17. Source of truth for "what's done and what's pending".
 | linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware (+ CI, CPU) |
 | android-arm64 | ✅ | ✅ | ✅ | ✅ | real device (Adreno 650) |
 | osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI only (macos-15; GPU via WebGPU) |
-| ios-arm64 | ✅ | ⏳ | — | — | pending (needs xcframework) |
+| ios-arm64 | ✅ | ⏳ | — | — | CI build/link only (no device); on-device runtime + publish pending |
 
 <sub>**CPU / GPU** = inference validated on that backend. **CI** = the `model-tests.yml` model leg
 (all three OSes on each push via ci.yml; also runnable on demand) with a real model, incl. constrained
@@ -165,8 +165,24 @@ drift). The remaining 22 group into the areas below, in suggested priority order
    `uses-native-library` requirement is documented in upstream's Kotlin getting-started docs;
    (c) ✅ posted to #2211 — bionic ignores `RTLD_NOLOAD|RTLD_GLOBAL` flag promotion, so there is
    no consumer-side workaround for the missing `DT_NEEDED`.
-5. **iOS app phase**: Apple Developer Program → xcframework + `.targets` NativeReference →
-   MAUI `net10.0-ios` app → CI signing → TestFlight.
+5. **iOS app phase**. ✅ Done: the `LiteRtLmSharp.runtime.ios-arm64` package (dynamic `.framework`
+   xcframeworks via `NativeReference Kind=Framework` + buildTransitive `.targets`), the resolver's
+   iOS branch, the xcframework build in `build-native.yml`, the MAUI sample's macOS-gated
+   `net10.0-ios` target, and a build/link CI check (`ios-package-check.yml`).
+   **Deferred to the device-validation phase** (needs a paid Apple Developer account + a physical
+   iPhone; the package is NOT device-functional until these land — do not publish it to nuget.org
+   before then):
+   - **Companion `dlopen` patch** — point the engine's internal dlopen of the Metal accelerator /
+     constraint provider at the framework layout (`@executable_path/Frameworks/<X>.framework/<X>`),
+     mirroring flutter_gemma (their `gpu_registry.cc`/`sampler_factory.cc` patch, `patch_c_api.sh` §10b,
+     ITMS-90432). Without it the app links green but the engine fails to load the companions at runtime.
+   - **Resolver runtime robustness** — the iOS branch must load `libLiteRtLm` with global visibility
+     (RTLD_GLOBAL-equivalent) and eagerly preload the companions in dependency order, so the sampler's
+     flat-namespace (DYNAMIC_LOOKUP) imports resolve. Currently it loads only the main framework; this
+     is hardware-untested and intentionally not guessed at until a device is available.
+   - **Device validation** — TestFlight (paid account + cloud macOS CI, no Mac of your own needed):
+     build+sign+upload via fastlane with an App Store Connect **Team** API key, internal tester, install
+     via the TestFlight app. This is the only path that gives real-hardware validation.
 6. **Optional**: binding coverage push per the "C API coverage" section above. **The high-value group is
    now complete** — ✅ history restore + clone (2026-06-16), ✅ cache dir + ✅ speculative decoding
    (2026-06-15), ✅ multimodal image/audio (2026-06-17), ✅ tokenizer surface (exact token counting,
@@ -278,3 +294,8 @@ drift). The remaining 22 group into the areas below, in suggested priority order
   `@rpath/libLiteRt.dylib` and could not dlopen against the static build (CPU-sampling fallback).
 - Separate solutions: `LiteRtLmSharp.slnx` (lib+tests+packaging, bare SDK, CI) and
   `samples/LiteRtLmSharp.Samples.slnx` (console + MAUI, needs workloads).
+- iOS consumes the natives as **dynamic `.framework`s** (`NativeReference Kind=Framework`,
+  embedded + code-signed in the app bundle), resolved at runtime by the existing
+  `[LibraryImport("LiteRtLm")]` + `NativeLibraryResolver` — the same managed model as every
+  other RID, since the prebuilt companions are dynamic dylibs with no static archives.
+  Decided 2026-06-21.
