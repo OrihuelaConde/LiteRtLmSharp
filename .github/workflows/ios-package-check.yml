@@ -91,7 +91,9 @@ jobs:
       - name: Build + link the MAUI sample for net10.0-ios (no signing)
         run: |
           set -euo pipefail
+          # Build ONLY the iOS TFM: override TargetFrameworks so the multi-target sample does not
+          # also evaluate the net10.0-android TFM (whose workload we deliberately don't install here).
           dotnet build samples/Maui/LiteRtLmSharp.SampleMaui.csproj \
-            -c Release -f net10.0-ios \
+            -c Release -p:TargetFrameworks=net10.0-ios \
             -p:RuntimeIdentifier=ios-arm64 -p:EnableCodeSigning=false
           echo "OK: a net10.0-ios consumer compiled + linked against the embedded frameworks."
