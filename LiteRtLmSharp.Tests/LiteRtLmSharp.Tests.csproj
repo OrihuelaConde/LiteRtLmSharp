@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\LiteRtLmSharp\LiteRtLmSharp.csproj" />
+    <ProjectReference Include="..\LiteRtLmSharp.Extensions.AI\LiteRtLmSharp.Extensions.AI.csproj" />
     <ProjectReference Include="..\LiteRtLmSharp.SemanticKernel\LiteRtLmSharp.SemanticKernel.csproj" />
   </ItemGroup>
 

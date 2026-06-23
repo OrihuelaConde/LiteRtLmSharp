@@ -140,7 +140,7 @@ raw `ExtraContext` (a JSON-object string) escape hatch; on a model whose templat
 See [`samples/Console`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/Console)
 for a runnable demo (`--tools` for the function-calling loop, `--spec` for speculative decoding, `--thinking` for reasoning mode),
 [`samples/SemanticKernel`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/SemanticKernel)
-for the [Semantic Kernel](#semantic-kernel) integration, and
+for the [.NET AI integrations](#net-ai-integrations-microsoftextensionsai-semantic-kernel-agent-framework), and
 [`samples/Maui`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/Maui) for a
 full Android/Windows chat app with model download, streaming, tools, plus speculative-decoding and reasoning-mode toggles.
 
@@ -258,42 +258,50 @@ if (chat.TokenCount + next > contextWindow - replyHeadroom)
 message first with `chat.RenderMessage(text)` (it returns the templated prompt without sending), then
 tokenize that: `engine.Tokenize(chat.RenderMessage(text)).Length`.
 
-### Semantic Kernel
+### .NET AI integrations (Microsoft.Extensions.AI, Semantic Kernel, Agent Framework)
 
-The optional **`LiteRtLmSharp.SemanticKernel`** companion package plugs an on-device model into
-[Microsoft Semantic Kernel](https://learn.microsoft.com/semantic-kernel/overview/) as a standard
-`IChatCompletionService` / `ITextGenerationService` (the same separate-package approach LLamaSharp uses).
-It depends only on `Microsoft.SemanticKernel.Abstractions`, so apps that don't use Semantic Kernel never
-pull it in.
+Two optional companion packages plug an on-device model into the .NET AI ecosystem. Each depends only on the
+relevant abstractions, so apps that don't use them never pull them in.
 
-```xml
-<PackageReference Include="LiteRtLmSharp.SemanticKernel" Version="0.1.0-preview.3" />
-```
+| Package | Exposes the model as | Works with |
+|---|---|---|
+| **`LiteRtLmSharp.Extensions.AI`** | `Microsoft.Extensions.AI.IChatClient` | Microsoft Agent Framework, Semantic Kernel, plain MEAI (middleware/DI) |
+| **`LiteRtLmSharp.SemanticKernel`** | `IChatCompletionService` (a thin layer over the `IChatClient`) | Semantic Kernel |
+
+`IChatClient` is the .NET ecosystem's provider-agnostic chat abstraction (the foundation under both Semantic
+Kernel and the [Microsoft Agent Framework](https://learn.microsoft.com/agent-framework/)), so the
+Extensions.AI package is the broadest integration; the Semantic Kernel package builds on it.
 
 ```csharp
-using LiteRtLmSharp;
-using Microsoft.SemanticKernel;
-
+// Microsoft.Extensions.AI — works with Agent Framework, Semantic Kernel and MEAI:
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 {
     ModelPath = "gemma-4-E2B-it.litertlm", Backend = "cpu", MaxNumTokens = 4096,
 });
+using IChatClient client = new LiteRtChatClient(engine);
+Console.WriteLine((await client.GetResponseAsync("Write one upbeat sentence about on-device AI.")).Text);
 
+// var agent = new ChatClientAgent(client, "You are helpful.");   // Microsoft Agent Framework
+```
+
+```csharp
+// Semantic Kernel — one call registers the model (and the underlying IChatClient):
 var builder = Kernel.CreateBuilder();
-builder.AddLiteRtChatCompletion(engine);     // the whole integration
+builder.AddLiteRtChatCompletion(new LiteRtEngineOptions
+{
+    ModelPath = "gemma-4-E2B-it.litertlm", Backend = "cpu", MaxNumTokens = 4096,
+});
 Kernel kernel = builder.Build();
-
 Console.WriteLine(await kernel.InvokePromptAsync("Write one upbeat sentence about on-device AI."));
 ```
 
-The connector is **stateless** (it rebuilds a fresh conversation from Semantic Kernel's `ChatHistory`
-each call), serializes calls (one engine per process), and maps `temperature` / `top_p` / `top_k` /
-`max_tokens` / `seed` through `LiteRtPromptExecutionSettings`. Bridging Semantic Kernel **function
-calling** is a priority on the roadmap (LiteRtLmSharp already does function calling through its native
-[tools API](#function-calling); this connector will grow the SK auto-invoke path). Embeddings aren't
-available yet (the C API exposes none). Design, the function-calling plan, and a runnable
-[`samples/SemanticKernel`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/SemanticKernel)
-console demo:
+Both connectors are **stateless** (a fresh conversation is rebuilt from the supplied history each call) and
+serialize calls (one engine per process). Reasoning ("thinking") is surfaced via `TextReasoningContent` on
+the `IChatClient`. Bridging **function calling** is a priority on the roadmap (the native
+[tools API](#function-calling) already works; what's pending is surfacing tool calls into the chat client so
+SK's `FunctionChoiceBehavior` / MEAI's `UseFunctionInvocation()` can drive them). Embeddings aren't available
+(the C API exposes none). Full guides:
+[docs/extensions-ai.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/extensions-ai.md) and
 [docs/semantic-kernel.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/semantic-kernel.md).
 
 ## Why .NET 10 only?

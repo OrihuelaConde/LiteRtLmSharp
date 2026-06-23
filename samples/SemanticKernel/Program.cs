@@ -7,8 +7,8 @@ using Microsoft.SemanticKernel.ChatCompletion;
 //
 // Shows the LiteRtLmSharp.SemanticKernel connector plugging an on-device LiteRT-LM model into Semantic
 // Kernel as a standard IChatCompletionService. Everything here is plain Semantic Kernel — the only
-// LiteRtLmSharp-specific lines are the `AddLiteRtEngine(options)` + `AddLiteRtChatCompletion()` calls on
-// the kernel builder: the container loads the on-device engine from the options and owns its lifetime.
+// LiteRtLmSharp-specific line is the `AddLiteRtChatCompletion(options)` call on the kernel builder: the
+// container loads the on-device engine from the options and owns its lifetime.
 //
 // The connector is STATELESS: each Semantic Kernel call rebuilds a fresh conversation from the supplied
 // ChatHistory (prior turns replayed through prefill, the final user turn sent). See docs/semantic-kernel.md.
@@ -44,20 +44,21 @@ Banner();
 Console.WriteLine($"Loading model ({Path.GetFileName(modelPath)}, {backend}) — this loads the weights, please wait …\n");
 
 // ── Build a Semantic Kernel whose chat-completion service is the on-device model ──────────────────────
-//    AddLiteRtEngine(options) registers the on-device engine: the connector loads it from the options and
-//    the container owns its lifetime (no LiteRtEngine to load or dispose by hand). AddLiteRtChatCompletion()
-//    then adds the chat service over that registered engine. `eager: true` loads the weights now, so a bad
-//    model path or backend surfaces here rather than on the first call.
+//    AddLiteRtChatCompletion(options) is the whole integration: the connector loads the engine from the
+//    options, the container owns its lifetime (no LiteRtEngine to load or dispose by hand), and the model is
+//    exposed as an IChatCompletionService (and, underneath, as a Microsoft.Extensions.AI IChatClient — so the
+//    same model is usable from Microsoft Agent Framework / MEAI too). `eager: true` loads the weights now, so
+//    a bad model path or backend surfaces here rather than on the first call.
 IKernelBuilder builder = Kernel.CreateBuilder();
-builder.AddLiteRtEngine(
+builder.AddLiteRtChatCompletion(
     new LiteRtEngineOptions
     {
         ModelPath = modelPath,
         Backend = backend,
         MaxNumTokens = 4096, // total context window (prompt + replies, accumulated across turns)
     },
+    modelId: Path.GetFileNameWithoutExtension(modelPath),
     eager: true);
-builder.AddLiteRtChatCompletion(modelId: Path.GetFileNameWithoutExtension(modelPath));
 Kernel kernel = builder.Build();
 
 Console.WriteLine("Engine loaded and Semantic Kernel built.\n");
@@ -92,7 +93,7 @@ static async Task DemoPromptFunctionAsync(Kernel kernel)
     var settings = new LiteRtLmSharp.SemanticKernel.LiteRtPromptExecutionSettings
     {
         Temperature = 0.7f,
-        MaxTokens = 200,
+        MaxTokens = 200        
     };
 
     KernelArguments arguments = new(settings) { ["topic"] = "on-device AI" };

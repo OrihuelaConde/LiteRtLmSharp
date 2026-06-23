@@ -96,8 +96,12 @@ jobs:
         run: |
           common="-c Release -o artifacts -p:Version=${PKG_VERSION} -p:LiteRtLmVersion=${NATIVE_REF} -p:ContinuousIntegrationBuild=true"
           dotnet pack LiteRtLmSharp/LiteRtLmSharp.csproj $common
-          # Semantic Kernel connector: pure managed, no natives — packs anywhere. Depends on the
-          # LiteRtLmSharp package (same version) + Microsoft.SemanticKernel.Abstractions.
+          # Microsoft.Extensions.AI (IChatClient) integration: pure managed, no natives. Depends on the
+          # LiteRtLmSharp package (same version) + Microsoft.Extensions.AI.Abstractions. This is the
+          # foundation the Semantic Kernel connector builds on.
+          dotnet pack LiteRtLmSharp.Extensions.AI/LiteRtLmSharp.Extensions.AI.csproj $common
+          # Semantic Kernel connector: pure managed, no natives. Depends on the LiteRtLmSharp +
+          # LiteRtLmSharp.Extensions.AI packages (same version) + Microsoft.SemanticKernel.Abstractions.
           dotnet pack LiteRtLmSharp.SemanticKernel/LiteRtLmSharp.SemanticKernel.csproj $common
           for rid in win-x64 linux-x64 android-arm64 osx-arm64; do
             if [ -n "$(ls runtimes/$rid/native 2>/dev/null)" ]; then

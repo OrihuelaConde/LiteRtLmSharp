@@ -41,7 +41,7 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Multimodal messages (image/audio attachments, vision/audio backend, visual token budget) | ✅ |
 | Tokenize/detokenize + start/stop tokens (exact token counting, no inference) | ✅ |
 | Render a message to its templated prompt (`RenderMessage`) for debugging / exact-cost budgeting | ✅ |
-| Semantic Kernel connectors (`IChatCompletionService` / `ITextGenerationService`, separate package) | ✅ |
+| .NET AI integrations: `Microsoft.Extensions.AI` `IChatClient` (+ Agent Framework) and a Semantic Kernel connector (separate packages) | ✅ |
 
 Known constraints (documented in the README): one engine ALIVE at a time (reloading after
 `Dispose` works — verified on win-x64 cpu→cpu and cpu→gpu; this is Edge Gallery's pattern for
@@ -213,34 +213,48 @@ drift). The remaining 22 group into the areas below, in suggested priority order
    packages from nuget.org; PR upstream to be listed among the language bindings (planned right
    after the nuget.org release).
 
-## Ecosystem integrations
+## Ecosystem integrations (.NET AI: MEAI / Semantic Kernel / Agent Framework)
 
-- **Semantic Kernel** ✅ (2026-06-22). Separate companion package `LiteRtLmSharp.SemanticKernel`
-  (managed-only, deps: `LiteRtLmSharp` + `Microsoft.SemanticKernel.Abstractions` 1.77.0), mirroring
-  `LLamaSharp.semantic-kernel`. Implements `IChatCompletionService` (`LiteRtChatCompletionService`) and
-  `ITextGenerationService` (`LiteRtTextGenerationService`), blocking + streaming, with
-  `AddLiteRtChatCompletion`/`AddLiteRtTextGeneration` kernel/DI extensions and a typed
-  `LiteRtPromptExecutionSettings`. **Stateless mapping**: each SK call rebuilds a fresh
-  `LiteRtConversation` (prior turns → `History` via prefill, final user turn → `Send`); serialized with a
-  `SemaphoreSlim` (one engine/process, conversations not thread-safe). **Engine lifecycle, two styles**:
-  pass a `LiteRtEngine` you own (you dispose it), or a `LiteRtEngineOptions` so the container loads/owns/
-  disposes a single shared engine (`AddLiteRtEngine` registers it idempotently — chat + text share one
-  engine, respecting the one-per-process rule; `eager:true` loads at registration, else lazy on first use).
-  Wired into `LiteRtLmSharp.slnx`, `ci.yml` (build + the model-free mapping/settings/options-mapping/DI
-  registration unit tests), `pack-nuget.yml` (packs alongside), and `samples/LiteRtLmSharp.Samples.slnx`.
-  Gated model-backed tests (`LITERTLM_TEST_MODEL`) cover blocking chat, multi-turn streaming history replay,
-  and text generation (blocking + streaming).
-  Console sample `samples/SemanticKernel` **validated end-to-end on win-x64 CPU and GPU/WebGPU with
-  gemma-4-E2B-it** (prompt function, streaming prompt, multi-turn streaming chat — the 2nd turn correctly
-  carried 1st-turn context, proving history replay). Guide: [semantic-kernel.md](semantic-kernel.md).
-  **Planned next (priority): bridge SK function calling** — wire `FunctionChoiceBehavior`'s auto-invoke
-  loop into the connector so the kernel calls `KernelFunction`s automatically. Function calling already
-  works through the native tools API (constrained decoding + tool-call round-trip); this connects it to
-  SK's loop. It's the library's headline capability, so this is the top connector follow-up. Other
-  follow-ups: an `ITextEmbeddingGenerationService` (blocked — the C API has no embeddings at v0.13.1, same
-  reason as the core binding); the thinking trace is intentionally excluded from SK content. **Not
-  AOT/trim-clean** (SK isn't; settings round-trip uses reflection JSON) — the core package keeps its AOT
-  guarantee, this companion does not.
+✅ (2026-06-22, IN WORKING TREE on `feature/semantic-kernel`, NOT committed yet). **Architecture pivot**:
+after research (Microsoft extracted the chat/embedding abstractions OUT of Semantic Kernel into
+`Microsoft.Extensions.AI` (MEAI); SK is now succeeded by the **Microsoft Agent Framework (MAF)**, and BOTH SK
+and MAF consume MEAI's `IChatClient` — MAF has NO own provider abstraction, it uses `IChatClient`). So the
+durable integration for a model provider is `IChatClient`, not an SK-specific connector. Two packages:
+
+- **`LiteRtLmSharp.Extensions.AI`** (the foundation; deps: `LiteRtLmSharp` +
+  `Microsoft.Extensions.AI.Abstractions` 10.7.0 + `Microsoft.Extensions.DependencyInjection.Abstractions`).
+  `LiteRtChatClient : IChatClient` (`GetResponseAsync`/`GetStreamingResponseAsync`/`GetService`), blocking +
+  streaming. Works directly with MAF (`new ChatClientAgent(client)`), MEAI middleware (`UseFunctionInvocation`
+  etc.), and SK. DI: `AddLiteRtChatClient(engine | options[, eager])` registers a shared `IChatClient`
+  (TryAdd, idempotent — one engine/process). **Reasoning surfaced as `TextReasoningContent`** (excluded from
+  `ChatResponse.Text`); **truncation signal**: empty answer + reasoning ⇒ `FinishReason = Length` (reasoning
+  shares the `MaxOutputTokens` budget — small budget + thinking = empty answer, symmetric blocking/streaming).
+- **`LiteRtLmSharp.SemanticKernel`** (thin over the above; deps: `LiteRtLmSharp` + `LiteRtLmSharp.Extensions.AI`
+  + `Microsoft.SemanticKernel.Abstractions` 1.77.0). `AddLiteRtChatCompletion(engine | options[, modelId,
+  serviceId, eager])` on `IKernelBuilder`/`IServiceCollection`: registers the `IChatClient` and exposes it as
+  `IChatCompletionService` via SK's `AsChatCompletionService` adapter. `LiteRtPromptExecutionSettings`
+  (temperature/top_p/top_k/max_tokens/seed/enable_thinking) stores its knobs in `ExtensionData` under the keys
+  SK's `PES→ChatOptions` converter reads (confirmed against SK source), so they flow through the adapter.
+  **ITextGenerationService DROPPED** (legacy; chat-centric stack). **SK-adapter caveat (verified): the SK
+  adapter does NOT surface `TextReasoningContent` or `FinishReason`** — only `ChatMessageContent.InnerContent`
+  carries the native `LiteRtResponse`. So rich reasoning/truncation handling is done via the `IChatClient`
+  (resolve `kernel.Services.GetRequiredService<IChatClient>()`).
+
+**Stateless mapping** (both): each call rebuilds a fresh `LiteRtConversation` (prior turns → `History` prefill,
+final user turn → `Send`); `SemaphoreSlim`-serialized. Wired into `LiteRtLmSharp.slnx`, `ci.yml` (builds the
+sample + model-free tests), `pack-nuget.yml` (packs both), `samples/LiteRtLmSharp.Samples.slnx`. Console sample
+`samples/SemanticKernel` (pure SK — InvokePrompt + streaming + multi-turn) validated end-to-end on win-x64 CPU
+and GPU/WebGPU. Gated model-backed tests (`LITERTLM_TEST_MODEL`): chat blocking/streaming + multi-turn history
+replay (both MEAI and SK paths), reasoning surfacing + truncation. Guides:
+[extensions-ai.md](extensions-ai.md), [semantic-kernel.md](semantic-kernel.md).
+
+**Planned next (priority): function calling.** Surface the model's native tool calls (the binding already does
+constrained decoding + the tool-result round-trip) into the `IChatClient` as `FunctionCallContent` + map
+`ChatOptions.Tools` (AIFunction) → `LiteRtTool`; then MEAI's `FunctionInvokingChatClient` and SK's
+`FunctionChoiceBehavior` auto-invoke loop drive it — implemented ONCE in the `IChatClient`, inherited by SK and
+MAF. It's the library's headline capability. Deferred to a future session (left at this point 2026-06-22).
+Other follow-ups: embeddings blocked (no C-API embeddings at v0.13.1). **Neither companion is AOT/trim-clean**
+(MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AOT guarantee.
 
 ## Watchlist (re-check periodically)
 

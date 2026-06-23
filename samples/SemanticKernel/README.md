@@ -3,10 +3,11 @@
 Demonstrates the [`LiteRtLmSharp.SemanticKernel`](../../docs/semantic-kernel.md) connector: an on-device
 LiteRT-LM model used through Microsoft Semantic Kernel as a standard `IChatCompletionService`.
 
-The only LiteRtLmSharp-specific lines are the registration on the kernel builder —
-`builder.AddLiteRtEngine(options)` (the connector loads the on-device engine from the options and the
-container owns its lifetime) followed by `builder.AddLiteRtChatCompletion()` — everything else is ordinary
-Semantic Kernel. [`Program.cs`](Program.cs) is the file worth reading.
+The only LiteRtLmSharp-specific line is the registration on the kernel builder —
+`builder.AddLiteRtChatCompletion(options)` — which loads the on-device engine from the options (the container
+owns its lifetime) and exposes it as an `IChatCompletionService`. Everything else is ordinary Semantic Kernel.
+[`Program.cs`](Program.cs) is the file worth reading. For the underlying Microsoft.Extensions.AI / Agent
+Framework story, see [docs/extensions-ai.md](../../docs/extensions-ai.md).
 
 ## What it shows
 

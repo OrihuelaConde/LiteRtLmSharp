@@ -5,122 +5,94 @@ using Microsoft.SemanticKernel;
 namespace LiteRtLmSharp.SemanticKernel;
 
 /// <summary>
-/// Typed <see cref="PromptExecutionSettings"/> for the LiteRtLmSharp Semantic Kernel connectors. Set
-/// any subset; unset values fall back to the engine/model defaults. Pass an instance directly to
-/// <c>GetChatMessageContentsAsync</c> / <c>kernel.InvokePromptAsync</c>, or let the connector recover
-/// these from a generic <see cref="PromptExecutionSettings"/> (e.g. one declared in a prompt template's
-/// YAML/JSON) via <see cref="FromExecutionSettings"/> — the JSON keys are the snake_case names below.
+/// Convenience <see cref="PromptExecutionSettings"/> for the LiteRtLmSharp Semantic Kernel connector. The
+/// connector exposes the on-device model through Semantic Kernel's <c>IChatClient</c> adapter
+/// (<c>AsChatCompletionService</c>), which converts a <see cref="PromptExecutionSettings"/> into a
+/// Microsoft.Extensions.AI <c>ChatOptions</c> using well-known <see cref="PromptExecutionSettings.ExtensionData"/>
+/// keys. So this type simply stores its knobs in <c>ExtensionData</c> under those keys — they flow straight
+/// through to the engine's sampler. You can equally pass a plain <see cref="PromptExecutionSettings"/> whose
+/// <c>ExtensionData</c> holds the same keys (e.g. from a prompt template's YAML).
 /// </summary>
 public sealed class LiteRtPromptExecutionSettings : PromptExecutionSettings
 {
-    /// <summary>Sampling temperature. Higher = more random. Maps to <see cref="SamplerParams.Temperature"/>.</summary>
-    [JsonPropertyName("temperature")]
-    public float? Temperature { get; set; }
+    /// <summary>Sampling temperature (<c>"temperature"</c>). Higher = more random.</summary>
+    [JsonIgnore]
+    public float? Temperature { get => GetSingle("temperature"); set => Set("temperature", value); }
 
-    /// <summary>Nucleus (top-p) cutoff. Maps to <see cref="SamplerParams.TopP"/>; selects the TopP sampler.</summary>
-    [JsonPropertyName("top_p")]
-    public float? TopP { get; set; }
+    /// <summary>Nucleus (top-p) cutoff (<c>"top_p"</c>).</summary>
+    [JsonIgnore]
+    public float? TopP { get => GetSingle("top_p"); set => Set("top_p", value); }
 
-    /// <summary>Top-k cutoff. Maps to <see cref="SamplerParams.TopK"/>.</summary>
-    [JsonPropertyName("top_k")]
-    public int? TopK { get; set; }
+    /// <summary>Top-k cutoff (<c>"top_k"</c>).</summary>
+    [JsonIgnore]
+    public int? TopK { get => GetInt32("top_k"); set => Set("top_k", value); }
 
-    /// <summary>Maximum tokens to generate for the reply. Maps to
-    /// <see cref="LiteRtConversationOptions.MaxOutputTokens"/>. Null = engine default.</summary>
-    [JsonPropertyName("max_tokens")]
-    public int? MaxTokens { get; set; }
+    /// <summary>Maximum tokens to generate for the reply (<c>"max_tokens"</c>).</summary>
+    [JsonIgnore]
+    public int? MaxTokens { get => GetInt32("max_tokens"); set => Set("max_tokens", value); }
 
-    /// <summary>Sampler RNG seed for reproducible output. Maps to <see cref="SamplerParams.Seed"/>.</summary>
-    [JsonPropertyName("seed")]
-    public int? Seed { get; set; }
+    /// <summary>Sampler RNG seed for reproducible output (<c>"seed"</c>).</summary>
+    [JsonIgnore]
+    public int? Seed { get => GetInt32("seed"); set => Set("seed", value); }
 
-    /// <summary>
-    /// Toggle the model's reasoning ("thinking") mode (Gemma reasoning builds). Maps to
-    /// <see cref="LiteRtConversationOptions.EnableThinking"/>. The reasoning trace is intentionally NOT
-    /// included in the returned content — it changes how the model answers, the trace stays internal.
-    /// </summary>
-    [JsonPropertyName("enable_thinking")]
-    public bool? EnableThinking { get; set; }
+    /// <summary>Toggle the model's reasoning ("thinking") mode (<c>"enable_thinking"</c>). The reasoning trace
+    /// is not included in the returned content — it only changes how the model answers.</summary>
+    [JsonIgnore]
+    public bool? EnableThinking { get => GetBoolean("enable_thinking"); set => Set("enable_thinking", value); }
 
-    /// <summary>
-    /// System prompt for <b>text generation</b> (<see cref="LiteRtTextGenerationService"/>), which has no
-    /// chat roles. Ignored by the chat-completion service — there the system prompt travels as a
-    /// <c>System</c>-role message in the <c>ChatHistory</c>.
-    /// </summary>
-    [JsonPropertyName("system_prompt")]
-    public string? SystemPrompt { get; set; }
+    // ── ExtensionData backing ─────────────────────────────────────────────────────────────────────────
+    // The knobs live in ExtensionData (the typed properties are [JsonIgnore] so only the lower-case keys
+    // serialize). Semantic Kernel's IChatClient adapter reads these keys to build the MEAI ChatOptions, and
+    // the LiteRtChatClient maps that ChatOptions onto the engine's sampler. Getters tolerate both the boxed
+    // values we store and the JsonElement values that arrive when settings are deserialized from JSON/YAML.
 
-    // Reused for the FromExecutionSettings round-trip. Case-insensitive so PascalCase ExtensionData keys
-    // (e.g. "MaxTokens") still bind in addition to the snake_case JSON names above.
-    private static readonly JsonSerializerOptions s_serializerOptions = new()
+    private void Set(string key, object? value)
     {
-        PropertyNameCaseInsensitive = true,
-        AllowTrailingCommas = true,
-        ReadCommentHandling = JsonCommentHandling.Skip,
-    };
-
-    /// <summary>
-    /// Returns <paramref name="settings"/> as a <see cref="LiteRtPromptExecutionSettings"/>: the instance
-    /// itself when it already is one, a fresh default when it is <c>null</c>, otherwise a typed copy
-    /// recovered by serializing the generic settings (whose <c>[JsonExtensionData]</c> surfaces keys such
-    /// as <c>temperature</c> / <c>max_tokens</c>) and deserializing into this type. Mirrors the pattern
-    /// the official Semantic Kernel connectors use to accept settings declared in prompt templates.
-    /// </summary>
-    public static LiteRtPromptExecutionSettings FromExecutionSettings(PromptExecutionSettings? settings)
-    {
-        switch (settings)
-        {
-            case null:
-                return new LiteRtPromptExecutionSettings();
-            case LiteRtPromptExecutionSettings typed:
-                return typed;
-            default:
-                string json = JsonSerializer.Serialize(settings, s_serializerOptions);
-                return JsonSerializer.Deserialize<LiteRtPromptExecutionSettings>(json, s_serializerOptions)
-                       ?? new LiteRtPromptExecutionSettings();
-        }
+        ExtensionData ??= new Dictionary<string, object>();
+        if (value is null)
+            ExtensionData.Remove(key);
+        else
+            ExtensionData[key] = value;
     }
 
-    /// <summary>
-    /// Deep-copies these settings, preserving the typed sampler/output knobs. Overriding the base
-    /// <see cref="PromptExecutionSettings.Clone"/> is required: the base implementation builds a plain
-    /// <see cref="PromptExecutionSettings"/> and would drop the typed properties below (so the clone would
-    /// yield a null sampler) when Semantic Kernel clones settings internally — e.g. those declared in a
-    /// prompt-template config.
-    /// </summary>
-    public override PromptExecutionSettings Clone() => new LiteRtPromptExecutionSettings
+    private bool TryGet(string key, out object? value)
     {
-        ModelId = ModelId,
-        ServiceId = ServiceId,
-        FunctionChoiceBehavior = FunctionChoiceBehavior,
-        ExtensionData = ExtensionData is not null ? new Dictionary<string, object>(ExtensionData) : null,
-        Temperature = Temperature,
-        TopP = TopP,
-        TopK = TopK,
-        MaxTokens = MaxTokens,
-        Seed = Seed,
-        EnableThinking = EnableThinking,
-        SystemPrompt = SystemPrompt,
+        value = null;
+        return ExtensionData is { } data && data.TryGetValue(key, out value);
+    }
+
+    private float? GetSingle(string key) => TryGet(key, out object? v) ? ToSingle(v) : null;
+    private int? GetInt32(string key) => TryGet(key, out object? v) ? ToInt32(v) : null;
+    private bool? GetBoolean(string key) => TryGet(key, out object? v) ? ToBoolean(v) : null;
+
+    private static float? ToSingle(object? v) => v switch
+    {
+        float f => f,
+        double d => (float)d,
+        int i => i,
+        long l => l,
+        string s when float.TryParse(s, System.Globalization.CultureInfo.InvariantCulture, out float r) => r,
+        JsonElement { ValueKind: JsonValueKind.Number } e => e.GetSingle(),
+        _ => null,
     };
 
-    /// <summary>
-    /// Builds the <see cref="SamplerParams"/> for these settings, or <c>null</c> when none of the sampler
-    /// knobs were set (so the engine default sampler is used). Any set knob selects the TopP sampler and
-    /// fills the unset knobs from <see cref="SamplerParams"/>' own defaults.
-    /// </summary>
-    internal SamplerParams? ToSamplerParams()
+    private static int? ToInt32(object? v) => v switch
     {
-        if (Temperature is null && TopP is null && TopK is null && Seed is null)
-            return null;
+        int i => i,
+        long l => (int)l,
+        float f => (int)f,
+        double d => (int)d,
+        string s when int.TryParse(s, System.Globalization.CultureInfo.InvariantCulture, out int r) => r,
+        JsonElement { ValueKind: JsonValueKind.Number } e => e.GetInt32(),
+        _ => null,
+    };
 
-        var defaults = new SamplerParams();
-        return new SamplerParams
-        {
-            Type = global::LiteRtLmSharp.SamplerType.TopP,
-            TopK = TopK ?? defaults.TopK,
-            TopP = TopP ?? defaults.TopP,
-            Temperature = Temperature ?? defaults.Temperature,
-            Seed = Seed ?? defaults.Seed,
-        };
-    }
+    private static bool? ToBoolean(object? v) => v switch
+    {
+        bool b => b,
+        string s when bool.TryParse(s, out bool r) => r,
+        JsonElement { ValueKind: JsonValueKind.True } => true,
+        JsonElement { ValueKind: JsonValueKind.False } => false,
+        _ => null,
+    };
 }
