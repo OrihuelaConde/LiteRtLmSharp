@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Text;
 using LiteRtLmSharp;
 using Microsoft.SemanticKernel;
@@ -71,6 +72,9 @@ await DemoStreamingPromptAsync(kernel);
 
 // ── Demo C: direct multi-turn chat through IChatCompletionService, streaming ──────────────────────────
 await DemoMultiTurnChatAsync(kernel);
+
+// ── Demo D: function calling — a [KernelFunction] plugin the model calls, SK auto-invokes ─────────────
+await DemoFunctionCallingAsync(kernel);
 
 if (interactive)
     await InteractiveChatAsync(kernel);
@@ -147,6 +151,32 @@ static async Task DemoMultiTurnChatAsync(Kernel kernel)
     }
 }
 
+static async Task DemoFunctionCallingAsync(Kernel kernel)
+{
+    Rule("Demo D — function calling (FunctionChoiceBehavior.Auto)");
+    Console.WriteLine("A [KernelFunction] the model can call; Semantic Kernel auto-invokes it and feeds the\n" +
+                      "result back so the model answers from real data. Plain Semantic Kernel.\n");
+
+    // Register a plugin the model may call. The connector surfaces the model's tool calls and Semantic
+    // Kernel's function-invocation runs them — no LiteRtLmSharp-specific code here.
+    if (!kernel.Plugins.Any(p => p.Name == "Weather"))
+        kernel.Plugins.AddFromObject(new WeatherPlugin(), "Weather");
+
+    var settings = new LiteRtLmSharp.SemanticKernel.LiteRtPromptExecutionSettings
+    {
+        FunctionChoiceBehavior = FunctionChoiceBehavior.Auto(),
+        MaxTokens = 256,
+        // Constrained decoding makes the small on-device model emit valid tool-call arguments. It is blocked
+        // on linux-x64 (a temporary upstream bug), so only enable it elsewhere — tools work without it too.
+        EnableConstrainedDecoding = !OperatingSystem.IsLinux(),
+    };
+
+    const string question = "What's the weather in Paris? Use the weather tool.";
+    Console.WriteLine($"You    : {question}");
+    FunctionResult result = await kernel.InvokePromptAsync(question, new KernelArguments(settings));
+    Console.WriteLine($"Model  : {result}\n");
+}
+
 static async Task InteractiveChatAsync(Kernel kernel)
 {
     Rule("Interactive chat — empty line to quit");
@@ -199,4 +229,12 @@ static void Rule(string title)
     Console.WriteLine(new string('─', 64));
     Console.WriteLine(title);
     Console.WriteLine(new string('─', 64));
+}
+
+// ── A Semantic Kernel plugin: a function the model may call (Demo D) ───────────────────────────────────
+sealed class WeatherPlugin
+{
+    [KernelFunction("get_weather"), Description("Gets the current weather for a city.")]
+    public string GetWeather([Description("The city to get the weather for.")] string city)
+        => $"22°C and sunny in {city}.";
 }

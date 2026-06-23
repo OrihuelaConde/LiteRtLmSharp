@@ -297,10 +297,10 @@ Console.WriteLine(await kernel.InvokePromptAsync("Write one upbeat sentence abou
 
 Both connectors are **stateless** (a fresh conversation is rebuilt from the supplied history each call) and
 serialize calls (one engine per process). Reasoning ("thinking") is surfaced via `TextReasoningContent` on
-the `IChatClient`. Bridging **function calling** is a priority on the roadmap (the native
-[tools API](#function-calling) already works; what's pending is surfacing tool calls into the chat client so
-SK's `FunctionChoiceBehavior` / MEAI's `UseFunctionInvocation()` can drive them). Embeddings aren't available
-(the C API exposes none). Full guides:
+the `IChatClient`. **Function calling** is supported on both: the model's tool calls surface as
+`FunctionCallContent`, so MEAI's `UseFunctionInvocation()` and SK's `FunctionChoiceBehavior` auto-invoke your
+functions (enable `EnableConstrainedDecoding` for reliable arguments on small models). Embeddings aren't
+available (the C API exposes none). Full guides:
 [docs/extensions-ai.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/extensions-ai.md) and
 [docs/semantic-kernel.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/semantic-kernel.md).
 

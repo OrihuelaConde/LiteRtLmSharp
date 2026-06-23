@@ -12,6 +12,10 @@
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
     <PackageReference Include="Xunit.SkippableFact" Version="1.5.23" />
+    <!-- AIFunctionFactory / UseFunctionInvocation (MEAI impl) for the tool tests, and Semantic Kernel Core
+         (Kernel.Build, plugins, FunctionChoiceBehavior) for the gated SK function-calling test. -->
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.7.0" />
+    <PackageReference Include="Microsoft.SemanticKernel" Version="1.77.0" />
   </ItemGroup>
 
   <ItemGroup>

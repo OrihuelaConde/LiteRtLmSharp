@@ -28,7 +28,12 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// budget with the answer, so give thinking models a generous budget — otherwise the reasoning can consume
 /// it and leave the answer empty.
 /// </para>
-/// <para><b>Scope.</b> Tool calling is not bridged yet (the message list must end with a user message); it is planned.</para>
+/// <para>
+/// <b>Tool calling.</b> Function tools in <see cref="ChatOptions.Tools"/> are passed to the model, and the
+/// model's tool calls are surfaced as <see cref="FunctionCallContent"/> (with <see cref="ChatFinishReason.ToolCalls"/>).
+/// Compose <c>UseFunctionInvocation()</c> (or, in Semantic Kernel, set a <c>FunctionChoiceBehavior</c>) to
+/// auto-invoke them; the executed results come back as a tool message which the client returns to the model.
+/// </para>
 /// </remarks>
 public sealed class LiteRtChatClient : IChatClient
 {
@@ -59,36 +64,49 @@ public sealed class LiteRtChatClient : IChatClient
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(messages);
-        (IReadOnlyList<LiteRtMessage> history, string userText) = LiteRtChatMapping.Split(messages);
+        (IReadOnlyList<LiteRtMessage> history, LiteRtChatMapping.SendTrigger trigger) = LiteRtChatMapping.Split(messages);
         LiteRtConversationOptions? convOptions = LiteRtChatMapping.ToConversationOptions(history, options);
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             using LiteRtConversation conv = _engine.CreateConversation(convOptions);
-            // Send is a blocking native call; offload it so the async contract holds and the gate wait +
-            // pre-call cancellation are honored (it does not interrupt generation mid-flight — use the
-            // streaming overload for cooperative mid-generation cancellation).
-            LiteRtResponse response = await Task.Run(() => conv.Send(userText), cancellationToken).ConfigureAwait(false);
+            // Send / SendToolResults are blocking native calls; offload so the async contract holds and the gate
+            // wait + pre-call cancellation are honored (they do not interrupt generation mid-flight — use the
+            // streaming overload for cooperative mid-generation cancellation). A tool-results trigger is the
+            // function-calling continuation: the assistant tool-call turn was restored as history above.
+            LiteRtResponse response = await Task.Run(
+                () => trigger.IsToolResults ? conv.SendToolResults(trigger.ToolResults!) : conv.Send(trigger.UserText!),
+                cancellationToken).ConfigureAwait(false);
 
-            // The answer becomes TextContent; any reasoning ("thinking") trace becomes TextReasoningContent,
-            // which ChatResponse.Text excludes (so the answer stays clean) but Contents keeps (so a thinking
-            // response is never empty when there is reasoning).
+            // Reasoning ("thinking") becomes TextReasoningContent (excluded from ChatResponse.Text but kept on
+            // Contents). The reply is then either tool calls (FunctionCallContent) or the answer text.
             var contents = new List<AIContent>(2);
             if (response.Thinking is { Length: > 0 } reasoning)
                 contents.Add(new TextReasoningContent(reasoning));
-            if (response.Text is { Length: > 0 } answer)
+
+            ChatFinishReason? finishReason = null;
+            if (response.IsToolCall)
+            {
+                for (int i = 0; i < response.ToolCalls.Count; i++)
+                    contents.Add(LiteRtChatMapping.ToFunctionCall(response.ToolCalls[i], i));
+                finishReason = ChatFinishReason.ToolCalls;
+            }
+            else if (response.Text is { Length: > 0 } answer)
+            {
                 contents.Add(new TextContent(answer));
+            }
 
             var chatResponse = new ChatResponse(new ChatMessage(ChatRole.Assistant, contents))
             {
                 ModelId = ModelId,
                 RawRepresentation = response,
+                FinishReason = finishReason,
             };
             // Reasoning shares the output budget with the answer. When the model produced a reasoning trace but
-            // no answer text, generation was truncated by MaxOutputTokens before the answer began — surface that
-            // as a Length finish reason so callers can detect it (and raise the budget) instead of a silent empty.
-            if (string.IsNullOrEmpty(response.Text) && response.Thinking is { Length: > 0 })
+            // no answer (and no tool call), generation was truncated by MaxOutputTokens before the answer began —
+            // surface a Length finish reason so callers can detect it (and raise the budget) instead of a silent empty.
+            if (finishReason is null && string.IsNullOrEmpty(response.Text) && response.Thinking is { Length: > 0 })
                 chatResponse.FinishReason = ChatFinishReason.Length;
             return chatResponse;
         }
@@ -106,7 +124,7 @@ public sealed class LiteRtChatClient : IChatClient
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(messages);
-        (IReadOnlyList<LiteRtMessage> history, string userText) = LiteRtChatMapping.Split(messages);
+        (IReadOnlyList<LiteRtMessage> history, LiteRtChatMapping.SendTrigger trigger) = LiteRtChatMapping.Split(messages);
         LiteRtConversationOptions? convOptions = LiteRtChatMapping.ToConversationOptions(history, options);
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -114,11 +132,40 @@ public sealed class LiteRtChatClient : IChatClient
         try
         {
             conv = _engine.CreateConversation(convOptions);
-            await foreach (LiteRtStreamChunk chunk in conv.SendMessageStreamingAsync(userText, cancellationToken).ConfigureAwait(false))
+
+            if (trigger.IsToolResults)
             {
-                // Answer deltas become text; reasoning ("thinking") deltas become TextReasoningContent — kept
-                // out of the assistant message's .Text but surfaced for consumers that show reasoning, so a
-                // thinking model never streams "nothing". Tool-call chunks are handled in a later phase.
+                // The native API has no streaming tool-results call, so the function-calling continuation is a
+                // single blocking send surfaced as updates (the answer after a tool round is typically short).
+                LiteRtResponse continuation = await Task.Run(
+                    () => conv.SendToolResults(trigger.ToolResults!), cancellationToken).ConfigureAwait(false);
+                foreach (ChatResponseUpdate update in ToUpdates(continuation))
+                    yield return update;
+                yield break;
+            }
+
+            int toolCallIndex = 0;   // monotonic across the whole stream so synthesized call ids stay unique
+            await foreach (LiteRtStreamChunk chunk in conv.SendMessageStreamingAsync(trigger.UserText!, cancellationToken).ConfigureAwait(false))
+            {
+                // Answer deltas become text; reasoning ("thinking") deltas become TextReasoningContent (kept out
+                // of .Text but surfaced); a tool-call chunk becomes FunctionCallContent(s) so a function-invoking
+                // pipeline can drive it. Same-kind text deltas are concatenated downstream.
+                if (chunk.Kind == LiteRtStreamChunkKind.ToolCall)
+                {
+                    var calls = new List<AIContent>(chunk.ToolCalls.Count);
+                    foreach (LiteRtToolCall call in chunk.ToolCalls)
+                        calls.Add(LiteRtChatMapping.ToFunctionCall(call, toolCallIndex++));
+                    yield return new ChatResponseUpdate
+                    {
+                        Role = ChatRole.Assistant,
+                        Contents = calls,
+                        ModelId = ModelId,
+                        RawRepresentation = chunk,
+                        FinishReason = ChatFinishReason.ToolCalls,
+                    };
+                    continue;
+                }
+
                 AIContent? content = chunk.Kind switch
                 {
                     LiteRtStreamChunkKind.Answer when chunk.Text.Length > 0 => new TextContent(chunk.Text),
@@ -139,6 +186,45 @@ public sealed class LiteRtChatClient : IChatClient
         {
             conv?.Dispose();
             _gate.Release();
+        }
+    }
+
+    /// <summary>Surfaces a blocking response (used for the function-calling continuation, which has no native
+    /// streaming call) as the streaming updates a caller expects: reasoning, then tool calls or the answer.</summary>
+    private IEnumerable<ChatResponseUpdate> ToUpdates(LiteRtResponse response)
+    {
+        if (response.Thinking is { Length: > 0 } reasoning)
+            yield return new ChatResponseUpdate
+            {
+                Role = ChatRole.Assistant,
+                Contents = [new TextReasoningContent(reasoning)],
+                ModelId = ModelId,
+                RawRepresentation = response,
+            };
+
+        if (response.IsToolCall)
+        {
+            var calls = new List<AIContent>(response.ToolCalls.Count);
+            for (int i = 0; i < response.ToolCalls.Count; i++)
+                calls.Add(LiteRtChatMapping.ToFunctionCall(response.ToolCalls[i], i));
+            yield return new ChatResponseUpdate
+            {
+                Role = ChatRole.Assistant,
+                Contents = calls,
+                ModelId = ModelId,
+                RawRepresentation = response,
+                FinishReason = ChatFinishReason.ToolCalls,
+            };
+        }
+        else if (response.Text is { Length: > 0 } answer)
+        {
+            yield return new ChatResponseUpdate
+            {
+                Role = ChatRole.Assistant,
+                Contents = [new TextContent(answer)],
+                ModelId = ModelId,
+                RawRepresentation = response,
+            };
         }
     }
 

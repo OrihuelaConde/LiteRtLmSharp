@@ -40,6 +40,13 @@ public sealed class LiteRtPromptExecutionSettings : PromptExecutionSettings
     [JsonIgnore]
     public bool? EnableThinking { get => GetBoolean("enable_thinking"); set => Set("enable_thinking", value); }
 
+    /// <summary>Force schema-constrained output so function-call arguments parse reliably
+    /// (<c>"enable_constrained_decoding"</c>). Off by default; only meaningful with a
+    /// <see cref="PromptExecutionSettings.FunctionChoiceBehavior"/>. The core throws on linux-x64 when on
+    /// (a temporary upstream constraint-provider bug) — leave it off there; tools work without it.</summary>
+    [JsonIgnore]
+    public bool? EnableConstrainedDecoding { get => GetBoolean("enable_constrained_decoding"); set => Set("enable_constrained_decoding", value); }
+
     // ── ExtensionData backing ─────────────────────────────────────────────────────────────────────────
     // The knobs live in ExtensionData (the typed properties are [JsonIgnore] so only the lower-case keys
     // serialize). Semantic Kernel's IChatClient adapter reads these keys to build the MEAI ChatOptions, and

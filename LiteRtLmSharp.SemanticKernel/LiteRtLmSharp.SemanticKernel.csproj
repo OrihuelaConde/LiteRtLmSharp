@@ -23,6 +23,10 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.SemanticKernel.Abstractions" Version="1.77.0" />
+    <!-- For FunctionInvokingChatClient (UseFunctionInvocation): Semantic Kernel's AsChatCompletionService
+         adapter does NOT auto-invoke functions, so the connector wraps the IChatClient with MEAI's
+         function-invocation middleware to make FunctionChoiceBehavior work. -->
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.7.0" />
   </ItemGroup>
 
   <!-- Project references within the repo; become NuGet dependencies (same version, via Directory.Build.props)

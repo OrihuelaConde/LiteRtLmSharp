@@ -16,6 +16,9 @@ Framework story, see [docs/extensions-ai.md](../../docs/extensions-ai.md).
 2. **Demo B** — a streaming prompt (`kernel.InvokePromptStreamingAsync`).
 3. **Demo C** — a multi-turn streaming chat through `IChatCompletionService` with a `ChatHistory`
    (system prompt + two user turns; the second turn builds on the first, proving history replay works).
+4. **Demo D** — function calling: a `[KernelFunction]` plugin the model can call, with
+   `FunctionChoiceBehavior.Auto()`. Semantic Kernel auto-invokes the function and feeds the result back so
+   the model answers from real data.
 
 Pass `--interactive` (or `-i`) for a chat loop after the demos.
 
@@ -54,6 +57,10 @@ You need a `.litertlm` model and the native binaries for your platform.
   supplied `ChatHistory`. Record each assistant turn back into the history so the next call sees the full
   conversation (the sample does this with a `StringBuilder`). See
   [docs/semantic-kernel.md](../../docs/semantic-kernel.md) for the design.
+- **Function calling** (Demo D) turns on `EnableConstrainedDecoding` so the small model emits valid
+  tool-call arguments. That is blocked on linux-x64 (a temporary upstream bug), so the sample only enables
+  it off-Linux; tools still work without it, just with less reliable argument formatting. See
+  [docs/semantic-kernel.md](../../docs/semantic-kernel.md#function-calling).
 - Native `WARNING: … npu_registry` / `mel_filterbank` lines on startup are harmless — the NPU probe and
   the multimodal model's audio sub-model initializing on CPU.
 - win-x64 needs the Microsoft Visual C++ Redistributable (the native DLLs import `VCRUNTIME140`).

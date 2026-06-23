@@ -116,4 +116,76 @@ public sealed class ExtensionsAiModelTests
         if (string.IsNullOrEmpty(truncated.Text))
             Assert.Equal(ChatFinishReason.Length, truncated.FinishReason);
     }
+
+    [SkippableFact]
+    public async Task ChatClient_FunctionInvocation_CallsToolAndAnswersFromResult()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+
+        int invocations = 0;
+        string? cityArg = null;
+        AIFunction weather = AIFunctionFactory.Create(
+            (string city) => { invocations++; cityArg = city; return $"22 degrees and sunny in {city}"; },
+            name: "get_weather", description: "Gets the current weather for a given city.");
+
+        // UseFunctionInvocation runs the tool loop: model emits a call -> the AIFunction is invoked -> the
+        // result is sent back -> the model answers. Constrained decoding makes the small model emit valid
+        // tool-call arguments (it is blocked on linux-x64, so only enable it elsewhere).
+        using IChatClient client = new LiteRtChatClient(engine).AsBuilder().UseFunctionInvocation().Build();
+        var options = new LiteRtChatOptions
+        {
+            Tools = [weather],
+            MaxOutputTokens = 256,
+            EnableConstrainedDecoding = !OperatingSystem.IsLinux(),
+        };
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.User, "What is the weather in Paris? Use the get_weather tool."),
+        };
+
+        ChatResponse response = await client.GetResponseAsync(messages, options);
+
+        Assert.True(invocations >= 1, "Expected the model to call the get_weather tool.");
+        Assert.Contains("paris", (cityArg ?? string.Empty).ToLowerInvariant());
+        Assert.False(string.IsNullOrWhiteSpace(response.Text), "Expected a final answer after the tool ran.");
+    }
+
+    [SkippableFact]
+    public async Task ChatClient_FunctionInvocation_Streaming_CallsToolAndAnswers()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+
+        int invocations = 0;
+        AIFunction weather = AIFunctionFactory.Create(
+            (string city) => { invocations++; return $"22 degrees and sunny in {city}"; },
+            name: "get_weather", description: "Gets the current weather for a given city.");
+
+        // Streaming exercises a distinct path: the tool call arrives as a streamed FunctionCallContent update,
+        // and the post-tool answer comes back through the blocking SendToolResults fallback (there is no native
+        // streaming tool-results call) surfaced as updates.
+        using IChatClient client = new LiteRtChatClient(engine).AsBuilder().UseFunctionInvocation().Build();
+        var options = new LiteRtChatOptions
+        {
+            Tools = [weather],
+            MaxOutputTokens = 256,
+            EnableConstrainedDecoding = !OperatingSystem.IsLinux(),
+        };
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.User, "What is the weather in Paris? Use the get_weather tool."),
+        };
+
+        var sb = new StringBuilder();
+        await foreach (ChatResponseUpdate update in client.GetStreamingResponseAsync(messages, options))
+            sb.Append(update.Text);
+
+        Assert.True(invocations >= 1, "Expected the model to call the get_weather tool while streaming.");
+        Assert.False(string.IsNullOrWhiteSpace(sb.ToString()), "Expected a streamed final answer after the tool ran.");
+    }
 }

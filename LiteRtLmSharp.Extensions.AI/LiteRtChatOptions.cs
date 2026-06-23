@@ -33,4 +33,21 @@ public sealed class LiteRtChatOptions : ChatOptions
         get => AdditionalProperties?.TryGetValue("enable_thinking", out object? v) == true && v is true;
         set => (AdditionalProperties ??= new AdditionalPropertiesDictionary())["enable_thinking"] = value;
     }
+
+    /// <summary>
+    /// Forces the model to emit schema-constrained output so tool-call arguments parse reliably (function
+    /// calling). Off by default. Only meaningful when <see cref="ChatOptions.Tools"/> are set.
+    /// </summary>
+    /// <remarks>
+    /// Backed by the <c>enable_constrained_decoding</c> key in <see cref="ChatOptions.AdditionalProperties"/>.
+    /// Tools work without it (arguments are simply not grammar-constrained). The core throws
+    /// <see cref="System.PlatformNotSupportedException"/> when this is on under linux-x64 (a temporary upstream
+    /// constraint-provider bug, google-ai-edge/LiteRT-LM#2149) — leave it off there.
+    /// </remarks>
+    [JsonIgnore]
+    public bool EnableConstrainedDecoding
+    {
+        get => AdditionalProperties?.TryGetValue("enable_constrained_decoding", out object? v) == true && v is true;
+        set => (AdditionalProperties ??= new AdditionalPropertiesDictionary())["enable_constrained_decoding"] = value;
+    }
 }

@@ -23,7 +23,8 @@ public class SemanticKernelMappingTests
     {
         var s = new LiteRtPromptExecutionSettings
         {
-            Temperature = 0.3f, TopP = 0.8f, TopK = 20, MaxTokens = 128, Seed = 7, EnableThinking = true,
+            Temperature = 0.3f, TopP = 0.8f, TopK = 20, MaxTokens = 128, Seed = 7,
+            EnableThinking = true, EnableConstrainedDecoding = true,
         };
 
         Assert.NotNull(s.ExtensionData);
@@ -33,6 +34,7 @@ public class SemanticKernelMappingTests
         Assert.Equal(128, Assert.IsType<int>(s.ExtensionData["max_tokens"]));
         Assert.Equal(7, Assert.IsType<int>(s.ExtensionData["seed"]));
         Assert.True(Assert.IsType<bool>(s.ExtensionData["enable_thinking"]));
+        Assert.True(Assert.IsType<bool>(s.ExtensionData["enable_constrained_decoding"]));
     }
 
     [Fact]

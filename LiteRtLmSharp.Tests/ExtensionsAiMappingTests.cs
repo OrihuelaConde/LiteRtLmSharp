@@ -1,3 +1,4 @@
+using System.Text.Json;
 using LiteRtLmSharp.Extensions.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,9 +37,10 @@ public class ExtensionsAiMappingTests
             new(ChatRole.User, "second"),
         };
 
-        (IReadOnlyList<LiteRtMessage> history, string userText) = LiteRtChatMapping.Split(msgs);
+        (IReadOnlyList<LiteRtMessage> history, LiteRtChatMapping.SendTrigger trigger) = LiteRtChatMapping.Split(msgs);
 
-        Assert.Equal("second", userText);
+        Assert.False(trigger.IsToolResults);
+        Assert.Equal("second", trigger.UserText);
         Assert.Equal(3, history.Count);
         Assert.Equal(LiteRtMessageRole.System, history[0].Role);
         Assert.Equal("sys", history[0].Text);
@@ -109,5 +111,113 @@ public class ExtensionsAiMappingTests
         Assert.True(conv!.EnableThinking);
 
         Assert.False(new LiteRtChatOptions().EnableThinking);   // unset reads false
+    }
+
+    // ─────────────────────── Function calling (tools) ───────────────────────
+
+    [Fact]
+    public void ToConversationOptions_MapsFunctionToolsToNativeTools()
+    {
+        AIFunction fn = AIFunctionFactory.Create(
+            (string city) => $"sunny in {city}", name: "get_weather", description: "Gets the weather.");
+        var opts = new ChatOptions { Tools = [fn] };
+
+        LiteRtConversationOptions? conv = LiteRtChatMapping.ToConversationOptions([], opts);
+
+        Assert.NotNull(conv);
+        LiteRtTool tool = Assert.Single(conv!.Tools!);
+        Assert.Equal("get_weather", tool.Name);
+        Assert.Equal("Gets the weather.", tool.Description);
+        using var schema = JsonDocument.Parse(tool.ParametersJson);
+        Assert.True(schema.RootElement.GetProperty("properties").TryGetProperty("city", out _));
+    }
+
+    [Fact]
+    public void ToFunctionCall_ParsesArgumentsAndSynthesizesCallId()
+    {
+        FunctionCallContent fcc = LiteRtChatMapping.ToFunctionCall(
+            new LiteRtToolCall("get_weather", """{"city":"Paris"}"""), index: 2);
+
+        Assert.Equal("get_weather", fcc.Name);
+        Assert.Equal("get_weather_2", fcc.CallId);   // synthesized, stable within a response
+        Assert.Equal("Paris", fcc.Arguments!["city"]?.ToString());
+    }
+
+    [Fact]
+    public void Split_ToolEndedList_ProducesToolResultsTriggerAndPreservesCallTurn()
+    {
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.User, "weather in Paris?"),
+            new(ChatRole.Assistant, (IList<AIContent>)[
+                new FunctionCallContent("get_weather_0", "get_weather", new Dictionary<string, object?> { ["city"] = "Paris" })]),
+            new(ChatRole.Tool, (IList<AIContent>)[new FunctionResultContent("get_weather_0", "sunny")]),
+        };
+
+        (IReadOnlyList<LiteRtMessage> history, LiteRtChatMapping.SendTrigger trigger) = LiteRtChatMapping.Split(messages);
+
+        // Ends in a tool message → the trigger returns tool results, not user text.
+        Assert.True(trigger.IsToolResults);
+        LiteRtToolResult result = Assert.Single(trigger.ToolResults!);
+        Assert.Equal("get_weather", result.Name);   // resolved from the call id, not the raw id
+        Assert.Equal("\"sunny\"", result.ResultJson); // string result serialized to a JSON value
+
+        // History keeps the user turn and the assistant tool-call turn (so the model sees the dialogue).
+        Assert.Equal(2, history.Count);
+        Assert.Equal(LiteRtMessageRole.Model, history[1].Role);
+        LiteRtToolCall call = Assert.Single(history[1].ToolCalls);
+        Assert.Equal("get_weather", call.Name);
+        using var args = JsonDocument.Parse(call.ArgumentsJson);
+        Assert.Equal("Paris", args.RootElement.GetProperty("city").GetString());
+    }
+
+    [Fact]
+    public void ToConversationOptions_ReadsConstrainedDecoding()
+    {
+        var opts = new LiteRtChatOptions { EnableConstrainedDecoding = true };
+        LiteRtConversationOptions? conv = LiteRtChatMapping.ToConversationOptions([], opts);
+        Assert.NotNull(conv);
+        Assert.True(conv!.EnableConstrainedDecoding);
+    }
+
+    [Fact]
+    public void ToFunctionCall_DistinctIndices_ProduceDistinctCallIds()
+    {
+        FunctionCallContent a = LiteRtChatMapping.ToFunctionCall(new LiteRtToolCall("get_weather", "{}"), 0);
+        FunctionCallContent b = LiteRtChatMapping.ToFunctionCall(new LiteRtToolCall("get_weather", "{}"), 1);
+        Assert.Equal("get_weather_0", a.CallId);
+        Assert.Equal("get_weather_1", b.CallId);
+        Assert.NotEqual(a.CallId, b.CallId);
+    }
+
+    [Fact]
+    public void ToFunctionCall_MalformedArguments_YieldNoArguments()
+    {
+        FunctionCallContent fcc = LiteRtChatMapping.ToFunctionCall(new LiteRtToolCall("f", "not json"), 0);
+        Assert.True(fcc.Arguments is null || fcc.Arguments.Count == 0);
+    }
+
+    [Fact]
+    public void Split_ToolResult_PlainTextWithBrackets_IsValidJsonAndSerializesWithoutThrowing()
+    {
+        // A plain-text tool return that happens to start with '{' or '[' must NOT be forwarded as raw JSON
+        // (the native tool_response writer validates and would throw) — it becomes a JSON string instead.
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.User, "find user bob"),
+            new(ChatRole.Assistant, (IList<AIContent>)[
+                new FunctionCallContent("find_0", "find_user", new Dictionary<string, object?> { ["name"] = "bob" })]),
+            new(ChatRole.Tool, (IList<AIContent>)[new FunctionResultContent("find_0", "{bob} not found")]),
+        };
+
+        (_, LiteRtChatMapping.SendTrigger trigger) = LiteRtChatMapping.Split(messages);
+        LiteRtToolResult result = Assert.Single(trigger.ToolResults!);
+
+        Assert.Equal("\"{bob} not found\"", result.ResultJson);   // serialized to a JSON string
+        using (JsonDocument.Parse(result.ResultJson)) { }          // valid JSON
+
+        // The native tool-results writer uses WriteRawValue (which validates) — must not throw.
+        string wire = LiteRtMessage.Serialize([LiteRtMessage.Tool(result)]);
+        Assert.Contains("tool_response", wire);
     }
 }

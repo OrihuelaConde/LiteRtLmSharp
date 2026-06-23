@@ -13,8 +13,10 @@ namespace Microsoft.SemanticKernel;
 /// through Semantic Kernel's
 /// <see cref="ChatCompletionServiceExtensions.AsChatCompletionService(IChatClient, System.IServiceProvider)"/>
 /// adapter, so all of Semantic Kernel's chat machinery — message conversion and function calling — flows
-/// through that single chat client. Register over an engine you own, or from a <see cref="LiteRtEngineOptions"/>
-/// (the container loads/owns/disposes a single shared engine).
+/// through that single chat client (function calling is auto-invoked via MEAI's function-invocation
+/// middleware, since Semantic Kernel's adapter does not run the invoke loop for an <c>IChatClient</c>).
+/// Register over an engine you own, or from a <see cref="LiteRtEngineOptions"/> (the container
+/// loads/owns/disposes a single shared engine).
 /// </summary>
 public static class LiteRtKernelBuilderExtensions
 {
@@ -56,9 +58,17 @@ public static class LiteRtKernelBuilderExtensions
 
     private static IServiceCollection RegisterChatCompletion(IServiceCollection services, string? serviceId)
     {
-        // Expose the registered LiteRtLmSharp IChatClient as a Semantic Kernel IChatCompletionService.
+        // Expose the registered LiteRtLmSharp IChatClient as a Semantic Kernel IChatCompletionService, wrapped
+        // with MEAI's function-invocation middleware. Semantic Kernel's AsChatCompletionService adapter passes
+        // the kernel's functions to the client as tools but does NOT run the auto-invoke loop itself, so
+        // UseFunctionInvocation is what makes FunctionChoiceBehavior actually invoke the functions. It is a
+        // no-op when a request carries no tools, so it is safe to apply unconditionally.
         static IChatCompletionService Factory(IServiceProvider sp, object? _) =>
-            sp.GetRequiredService<IChatClient>().AsChatCompletionService(sp);
+            sp.GetRequiredService<IChatClient>()
+              .AsBuilder()
+              .UseFunctionInvocation()
+              .Build(sp)
+              .AsChatCompletionService(sp);
 
         if (serviceId is null)
             services.AddSingleton<IChatCompletionService>(sp => Factory(sp, null));

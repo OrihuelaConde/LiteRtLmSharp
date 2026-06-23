@@ -76,4 +76,42 @@ public sealed class SemanticKernelModelTests
         // IChatClient's history mapping and were replayed.
         Assert.Contains("teal", second, StringComparison.OrdinalIgnoreCase);
     }
+
+    [SkippableFact]
+    public async Task ChatCompletion_FunctionChoiceBehaviorAuto_InvokesKernelFunction()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+
+        int invocations = 0;
+        string? cityArg = null;
+
+        // The real registration: AddLiteRtChatCompletion wraps the IChatClient with function-invocation so
+        // FunctionChoiceBehavior.Auto actually invokes the kernel function.
+        IKernelBuilder builder = Kernel.CreateBuilder();
+        builder.AddLiteRtChatCompletion(engine, modelId: "litert-test");
+        builder.Plugins.AddFromFunctions("weather", new[]
+        {
+            KernelFunctionFactory.CreateFromMethod(
+                (string city) => { invocations++; cityArg = city; return $"22 degrees and sunny in {city}"; },
+                functionName: "get_weather", description: "Gets the current weather for a given city."),
+        });
+        Kernel kernel = builder.Build();
+
+        var settings = new LiteRtPromptExecutionSettings
+        {
+            FunctionChoiceBehavior = FunctionChoiceBehavior.Auto(),
+            MaxTokens = 256,
+            EnableConstrainedDecoding = !OperatingSystem.IsLinux(),
+        };
+
+        FunctionResult result = await kernel.InvokePromptAsync(
+            "What is the weather in Paris? Use the get_weather tool.", new KernelArguments(settings));
+
+        Assert.True(invocations >= 1, "Expected Semantic Kernel to auto-invoke the get_weather function.");
+        Assert.Contains("paris", (cityArg ?? string.Empty).ToLowerInvariant());
+        Assert.False(string.IsNullOrWhiteSpace(result.ToString()), "Expected a final answer after the function ran.");
+    }
 }

@@ -82,7 +82,7 @@ AgentRunResponse reply = await agent.RunAsync("What can you do?");
 ## Use with the Microsoft.Extensions.AI pipeline
 
 Because it's a standard `IChatClient`, it composes with the ecosystem's middleware (from the
-`Microsoft.Extensions.AI` package). For example, automatic tool invocation:
+`Microsoft.Extensions.AI` package) — caching, telemetry, logging, and **function invocation**:
 
 ```csharp
 IChatClient pipeline = client.AsBuilder()
@@ -91,9 +91,45 @@ IChatClient pipeline = client.AsBuilder()
     .Build();
 ```
 
-> Tool calling is **planned** for LiteRtLmSharp, not wired up yet: the chat client does not surface
-> `FunctionCallContent` from the model's native tool calls into `ChatOptions.Tools` yet. Until it does,
-> drive function calling through the [native LiteRtLmSharp tools API](../README.md#function-calling).
+## Function calling (tools)
+
+Function tools in `ChatOptions.Tools` are passed to the model; the model's tool calls are surfaced as
+`FunctionCallContent` (with `ChatFinishReason.ToolCalls`). Compose `UseFunctionInvocation()` and the pipeline
+runs the loop: the model emits a call → the matching `AIFunction` is invoked → its result is returned to the
+model → the model answers from it.
+
+```csharp
+using LiteRtLmSharp.Extensions.AI;
+using Microsoft.Extensions.AI;
+
+AIFunction getWeather = AIFunctionFactory.Create(
+    (string city) => $"22°C and sunny in {city}",
+    name: "get_weather", description: "Gets the current weather for a city.");
+
+IChatClient client = new LiteRtChatClient(engine)
+    .AsBuilder()
+    .UseFunctionInvocation()      // drives the tool loop
+    .Build();
+
+var options = new LiteRtChatOptions
+{
+    Tools = [getWeather],
+    EnableConstrainedDecoding = true,   // recommended (see below); off by default
+};
+
+ChatResponse response = await client.GetResponseAsync("What's the weather in Paris?", options);
+Console.WriteLine(response.Text);       // "The weather in Paris is 22°C and sunny."
+```
+
+**Constrained decoding.** Set `LiteRtChatOptions.EnableConstrainedDecoding = true` so the model emits valid,
+schema-shaped tool-call arguments — strongly recommended for small on-device models. It is **off by default**
+because the core throws `PlatformNotSupportedException` for it on **linux-x64** (a temporary upstream
+constraint-provider bug, [google-ai-edge/LiteRT-LM#2149](https://github.com/google-ai-edge/LiteRT-LM/issues/2149));
+leave it off there — tools still work, arguments are just not grammar-constrained. On a plain `ChatOptions`,
+set the `enable_constrained_decoding` key in `AdditionalProperties` instead.
+
+> The native [LiteRtLmSharp tools API](../README.md#function-calling) is still available for full control
+> (constrained decoding, custom tool-call parsing); the chat client is the MEAI-idiomatic path on top of it.
 
 ## Reasoning ("thinking")
 
@@ -142,12 +178,13 @@ if (r.FinishReason == ChatFinishReason.Length && string.IsNullOrWhiteSpace(r.Tex
   `LiteRtEngineOptions` so the container loads/owns/disposes a single shared engine. The same
   `AddLiteRtChatClient(options)` registration makes the `IChatClient` available to MAF, Semantic Kernel and
   plain MEAI at once.
-- **Message roles.** `system` / `user` / `assistant` are handled today; the list must end with a user
-  message (tool/assistant continuations arrive with function calling, which is planned).
+- **Message roles.** `system` / `user` / `assistant` / `tool` are handled. The list must end with a user
+  message, or a tool message (the function-calling continuation, appended by `UseFunctionInvocation()` /
+  Semantic Kernel); the assistant tool-call turn is restored as history and the tool results are returned.
 
 ## Scope
 
-- **Tool calling** is planned (see above); the native tools API works today.
+- **Tool calling** is supported (see [Function calling](#function-calling-tools)).
 - **Embeddings**: the LiteRT-LM C API exposes no embeddings functions at v0.13.1, so there is no
   `IEmbeddingGenerator`.
 - **Not AOT/trim-clean.** The core `LiteRtLmSharp` package stays AOT/trim-friendly; this companion does not

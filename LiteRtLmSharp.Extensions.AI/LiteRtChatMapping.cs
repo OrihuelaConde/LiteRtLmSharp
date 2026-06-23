@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.AI;
 
 namespace LiteRtLmSharp.Extensions.AI;
@@ -6,63 +7,156 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// Maps Microsoft.Extensions.AI chat types onto the stateless LiteRtLmSharp conversation model. MEAI passes
 /// the full message list every call; LiteRtLmSharp conversations are stateful, so each call rebuilds a fresh
 /// one: every message except the last becomes restored <see cref="LiteRtConversationOptions.History"/>
-/// (replayed through prefill) and the final user turn is the message actually sent to trigger generation.
+/// (replayed through prefill) and the final turn is the action that triggers generation — a user message to
+/// send, or the results of executed tools to hand back (the function-calling continuation).
 /// </summary>
 internal static class LiteRtChatMapping
 {
     /// <summary>
-    /// Splits <paramref name="messages"/> into the prior messages to restore and the final user text to
-    /// send. The list must be non-empty and end with a <see cref="ChatRole.User"/> message.
+    /// What triggers generation for a request: either user <paramref name="UserText"/> to send, or the
+    /// <paramref name="ToolResults"/> of executed tools to return to the model (function-calling continuation).
     /// </summary>
-    public static (IReadOnlyList<LiteRtMessage> History, string UserText) Split(IEnumerable<ChatMessage> messages)
+    internal readonly record struct SendTrigger(string? UserText, IReadOnlyList<LiteRtToolResult>? ToolResults)
+    {
+        /// <summary>True when this trigger returns tool results rather than sending a user message.</summary>
+        public bool IsToolResults => ToolResults is { Count: > 0 };
+    }
+
+    /// <summary>
+    /// Splits <paramref name="messages"/> into the prior turns to restore as history and the final action
+    /// that triggers generation. The list must be non-empty and end with either a <see cref="ChatRole.User"/>
+    /// message (send its text) or a <see cref="ChatRole.Tool"/> message (return the tool results — the
+    /// function-calling continuation, as appended by <c>FunctionInvokingChatClient</c> / Semantic Kernel).
+    /// </summary>
+    public static (IReadOnlyList<LiteRtMessage> History, SendTrigger Trigger) Split(IEnumerable<ChatMessage> messages)
     {
         ArgumentNullException.ThrowIfNull(messages);
         IReadOnlyList<ChatMessage> list = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
         if (list.Count == 0)
             throw new ArgumentException("The message list is empty; add at least one user message.", nameof(messages));
 
-        ChatMessage last = list[list.Count - 1];
-        if (last.Role != ChatRole.User)
-            throw new ArgumentException(
-                $"The message list must end with a user message (the last message's role was '{last.Role.Value}'). " +
-                "Automatic tool/assistant continuations (function calling) are not wired into this chat client yet " +
-                "— that integration is planned. Drive function calling through the native LiteRtLmSharp tools API " +
-                "in the meantime.",
-                nameof(messages));
+        // A FunctionResultContent carries only a CallId, so map every call id seen in the conversation back to
+        // its tool name (from the assistant turns that requested the calls) to translate results to native names.
+        IReadOnlyDictionary<string, string> callIdToName = BuildCallIdToName(list);
 
         var history = new List<LiteRtMessage>(list.Count - 1);
         for (int i = 0; i < list.Count - 1; i++)
-            history.Add(ToMessage(list[i]));
+            history.Add(ToMessage(list[i], callIdToName));
 
-        return (history, last.Text ?? string.Empty);
+        ChatMessage last = list[list.Count - 1];
+
+        if (last.Role == ChatRole.Tool)
+        {
+            IReadOnlyList<LiteRtToolResult> results = ToToolResults(last, callIdToName);
+            if (results.Count == 0)
+                throw new ArgumentException(
+                    "The final tool message carried no function results to return to the model.", nameof(messages));
+            return (history, new SendTrigger(null, results));
+        }
+
+        if (last.Role == ChatRole.User)
+            return (history, new SendTrigger(last.Text ?? string.Empty, null));
+
+        throw new ArgumentException(
+            $"The message list must end with a user message, or a tool message carrying function results " +
+            $"(the last message's role was '{last.Role.Value}').", nameof(messages));
     }
 
-    /// <summary>Maps one MEAI message to a <see cref="LiteRtMessage"/>. System/User/Assistant only.</summary>
-    private static LiteRtMessage ToMessage(ChatMessage message)
+    /// <summary>Maps every <see cref="FunctionCallContent.CallId"/> in the conversation to its tool name.</summary>
+    private static IReadOnlyDictionary<string, string> BuildCallIdToName(IReadOnlyList<ChatMessage> list)
     {
-        string text = message.Text ?? string.Empty;
+        Dictionary<string, string>? map = null;
+        foreach (ChatMessage m in list)
+            foreach (AIContent c in m.Contents)
+                if (c is FunctionCallContent { CallId: { Length: > 0 } id } call)
+                    (map ??= new Dictionary<string, string>(StringComparer.Ordinal))[id] = call.Name;
+        return map ?? EmptyMap;
+    }
 
-        if (message.Role == ChatRole.System) return LiteRtMessage.System(text);
-        if (message.Role == ChatRole.User) return LiteRtMessage.User(text);
-        if (message.Role == ChatRole.Assistant) return LiteRtMessage.Model(text);
+    private static readonly IReadOnlyDictionary<string, string> EmptyMap = new Dictionary<string, string>(0);
+
+    /// <summary>Maps one MEAI message to a native history message, preserving tool calls (on an assistant
+    /// turn) and tool results (on a tool turn).</summary>
+    private static LiteRtMessage ToMessage(ChatMessage message, IReadOnlyDictionary<string, string> callIdToName)
+    {
+        if (message.Role == ChatRole.System) return LiteRtMessage.System(message.Text ?? string.Empty);
+        if (message.Role == ChatRole.User) return LiteRtMessage.User(message.Text ?? string.Empty);
+        if (message.Role == ChatRole.Tool) return LiteRtMessage.Tool(ToToolResults(message, callIdToName));
+
+        if (message.Role == ChatRole.Assistant)
+        {
+            IReadOnlyList<LiteRtToolCall> calls = ToToolCalls(message);
+            return LiteRtMessage.Model(message.Text ?? string.Empty, calls.Count > 0 ? calls : null);
+        }
 
         throw new NotSupportedException(
-            $"Chat message role '{message.Role.Value}' is not handled by the LiteRtLmSharp chat client yet. " +
-            "Roles handled today: system, user, assistant. Tool messages arrive with function calling, which is " +
-            "planned but not yet bridged — use the native LiteRtLmSharp tools API in the meantime.");
+            $"Chat message role '{message.Role.Value}' is not supported by the LiteRtLmSharp chat client. " +
+            "Roles handled: system, user, assistant, tool.");
+    }
+
+    /// <summary>Extracts the assistant's <see cref="FunctionCallContent"/> as native tool calls.</summary>
+    private static IReadOnlyList<LiteRtToolCall> ToToolCalls(ChatMessage message)
+    {
+        List<LiteRtToolCall>? calls = null;
+        foreach (AIContent c in message.Contents)
+            if (c is FunctionCallContent fcc)
+                (calls ??= []).Add(new LiteRtToolCall(fcc.Name, SerializeArguments(fcc.Arguments)));
+        return calls ?? (IReadOnlyList<LiteRtToolCall>)[];
+    }
+
+    /// <summary>Extracts a tool message's <see cref="FunctionResultContent"/> as native tool results,
+    /// resolving each result's tool name from its <see cref="FunctionResultContent.CallId"/>.</summary>
+    private static IReadOnlyList<LiteRtToolResult> ToToolResults(ChatMessage message, IReadOnlyDictionary<string, string> callIdToName)
+    {
+        List<LiteRtToolResult>? results = null;
+        foreach (AIContent c in message.Contents)
+            if (c is FunctionResultContent frc)
+            {
+                string name = frc.CallId is { Length: > 0 } id && callIdToName.TryGetValue(id, out string? n)
+                    ? n
+                    : frc.CallId ?? string.Empty;
+                (results ??= []).Add(new LiteRtToolResult(name, SerializeResult(frc.Result)));
+            }
+        return results ?? (IReadOnlyList<LiteRtToolResult>)[];
+    }
+
+    /// <summary>Builds a <see cref="FunctionCallContent"/> from a native tool call. The native protocol has no
+    /// call ids, so one is synthesized (stable within a response); the connector recovers the tool name from it
+    /// via <see cref="BuildCallIdToName"/> when the result comes back.</summary>
+    public static FunctionCallContent ToFunctionCall(LiteRtToolCall call, int index)
+        => new($"{call.Name}_{index}", call.Name, ParseArguments(call.ArgumentsJson));
+
+    private static string SerializeArguments(IDictionary<string, object?>? arguments)
+        => arguments is { Count: > 0 } ? JsonSerializer.Serialize(arguments) : "{}";
+
+    // Tool results must be valid JSON for the native tool_response writer (Utf8JsonWriter.WriteRawValue
+    // validates, so a plain-text return like "{user} not found" or "[no results]" would throw and abort the
+    // send). Serializing always yields valid JSON and matches MEAI's own result handling: a string result
+    // becomes a JSON string; a structured result (object / JsonElement) becomes JSON structure. Return
+    // structured data from your function (not a pre-serialized string) when you want the model to see an object.
+    private static string SerializeResult(object? result)
+        => result is null ? "null" : JsonSerializer.Serialize(result);
+
+    private static IDictionary<string, object?>? ParseArguments(string argsJson)
+    {
+        if (string.IsNullOrWhiteSpace(argsJson)) return null;
+        try { return JsonSerializer.Deserialize<IDictionary<string, object?>>(argsJson); }
+        catch (JsonException) { return null; }
     }
 
     /// <summary>
     /// Builds the <see cref="LiteRtConversationOptions"/> for a request, or <c>null</c> when there is nothing
-    /// to set (no history and no options) so a plain conversation is created.
+    /// to set (no history, options, or tools) so a plain conversation is created.
     /// </summary>
     public static LiteRtConversationOptions? ToConversationOptions(IReadOnlyList<LiteRtMessage> history, ChatOptions? options)
     {
         SamplerParams? sampler = ToSampler(options);
         bool? enableThinking = GetEnableThinking(options);
+        bool constrained = GetConstrainedDecoding(options);
+        IReadOnlyList<LiteRtTool>? tools = ToTools(options);
         int maxOutput = options?.MaxOutputTokens ?? 0;
 
-        if (history.Count == 0 && sampler is null && maxOutput == 0 && enableThinking is null)
+        if (history.Count == 0 && sampler is null && maxOutput == 0 && enableThinking is null && tools is null && !constrained)
             return null;
 
         return new LiteRtConversationOptions
@@ -71,7 +165,26 @@ internal static class LiteRtChatMapping
             Sampler = sampler,
             MaxOutputTokens = maxOutput,
             EnableThinking = enableThinking,
+            Tools = tools,
+            EnableConstrainedDecoding = constrained,
         };
+    }
+
+    /// <summary>Maps the function tools in <see cref="ChatOptions.Tools"/> to native <see cref="LiteRtTool"/>s
+    /// (non-function tools are ignored), or <c>null</c> when there are none.</summary>
+    private static IReadOnlyList<LiteRtTool>? ToTools(ChatOptions? o)
+    {
+        if (o?.Tools is not { Count: > 0 } tools)
+            return null;
+
+        List<LiteRtTool>? list = null;
+        foreach (AITool t in tools)
+            if (t is AIFunction f)
+                (list ??= []).Add(new LiteRtTool(
+                    f.Name,
+                    string.IsNullOrEmpty(f.Description) ? null : f.Description,
+                    f.JsonSchema.ValueKind == JsonValueKind.Object ? f.JsonSchema.GetRawText() : LiteRtTool.NoParameters));
+        return list;
     }
 
     /// <summary>Maps the sampler knobs from <see cref="ChatOptions"/>, or <c>null</c> when none are set.</summary>
@@ -94,8 +207,16 @@ internal static class LiteRtChatMapping
 
     /// <summary>Reads the optional <c>enable_thinking</c> flag from <see cref="ChatOptions.AdditionalProperties"/>.</summary>
     private static bool? GetEnableThinking(ChatOptions? o)
+        => GetBoolProperty(o, "enable_thinking");
+
+    /// <summary>Reads the optional <c>enable_constrained_decoding</c> flag (see
+    /// <see cref="LiteRtChatOptions.EnableConstrainedDecoding"/>); default <c>false</c>.</summary>
+    private static bool GetConstrainedDecoding(ChatOptions? o)
+        => GetBoolProperty(o, "enable_constrained_decoding") ?? false;
+
+    private static bool? GetBoolProperty(ChatOptions? o, string key)
     {
-        if (o?.AdditionalProperties is { } props && props.TryGetValue("enable_thinking", out object? v))
+        if (o?.AdditionalProperties is { } props && props.TryGetValue(key, out object? v))
         {
             if (v is bool b) return b;
             if (v is string s && bool.TryParse(s, out bool parsed)) return parsed;

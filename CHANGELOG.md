@@ -23,19 +23,23 @@ are published together.
   - **`LiteRtLmSharp.SemanticKernel`** adds the model to [Semantic Kernel](https://learn.microsoft.com/semantic-kernel/overview/)
     as an `IChatCompletionService` via `builder.AddLiteRtChatCompletion(engine | options)`. It is a thin layer
     over the `IChatClient` (exposed through SK's `AsChatCompletionService` adapter), with a
-    `LiteRtPromptExecutionSettings` (temperature / top-p / top-k / max-tokens / seed / thinking) whose knobs
-    flow through SK's `PromptExecutionSettings → ChatOptions` conversion. Depends on `LiteRtLmSharp.Extensions.AI`
-    + `Microsoft.SemanticKernel.Abstractions`.
+    `LiteRtPromptExecutionSettings` (temperature / top-p / top-k / max-tokens / seed / thinking / constrained
+    decoding) whose knobs flow through SK's `PromptExecutionSettings → ChatOptions` conversion. Depends on
+    `LiteRtLmSharp.Extensions.AI` + `Microsoft.SemanticKernel.Abstractions` + `Microsoft.Extensions.AI`.
+  - **Function calling** is supported on both connectors: function tools in `ChatOptions.Tools` are passed to
+    the model and the model's tool calls surface as `FunctionCallContent`, so MEAI's `UseFunctionInvocation()`
+    and Semantic Kernel's `FunctionChoiceBehavior` auto-invoke your functions and feed the results back. (The SK
+    connector wraps the client with MEAI's function-invocation middleware, since SK's `AsChatCompletionService`
+    adapter does not run the auto-invoke loop itself.) Opt-in `EnableConstrainedDecoding` (off by default; blocked
+    on linux-x64) makes small models emit valid tool-call arguments.
   - Both connectors are **stateless** (a fresh `LiteRtConversation` is rebuilt from the supplied history each
-    call, prior turns replayed through prefill) and serialize calls (one live engine per process). **Function
-    calling is a priority follow-up** — the native tools API already works; what's pending is surfacing the
-    model's tool calls into the chat client so SK's `FunctionChoiceBehavior` / MEAI's `UseFunctionInvocation()`
-    can drive them. Embeddings remain unavailable while the C API exposes none (v0.13.1). A console sample is in
-    [`samples/SemanticKernel`](samples/SemanticKernel); guides: [docs/extensions-ai.md](docs/extensions-ai.md)
-    and [docs/semantic-kernel.md](docs/semantic-kernel.md). Validated end-to-end on win-x64 CPU and GPU/WebGPU
-    with gemma-4-E2B-it; mapping/settings/registration logic is unit-tested model-free in CI, with gated
-    model-backed tests (chat blocking/streaming, multi-turn history replay, reasoning + truncation) under
-    `LITERTLM_TEST_MODEL`.
+    call, prior turns replayed through prefill) and serialize calls (one live engine per process). Embeddings
+    remain unavailable while the C API exposes none (v0.13.1). A console sample is in
+    [`samples/SemanticKernel`](samples/SemanticKernel) (prompt function, streaming, multi-turn chat, function
+    calling); guides: [docs/extensions-ai.md](docs/extensions-ai.md) and [docs/semantic-kernel.md](docs/semantic-kernel.md).
+    Validated end-to-end on win-x64 CPU and GPU/WebGPU with gemma-4-E2B-it; mapping/settings/registration logic is
+    unit-tested model-free in CI, with gated model-backed tests (chat blocking/streaming, multi-turn history replay,
+    reasoning + truncation, and function calling for both MEAI and SK) under `LITERTLM_TEST_MODEL`.
 
 ## [0.1.0-preview.3] — 2026-06-20
 

@@ -7,13 +7,13 @@ standard `IChatCompletionService`.
 It is a **thin layer over the [Microsoft.Extensions.AI `IChatClient`](extensions-ai.md)**: it registers the
 LiteRtLmSharp `IChatClient` and exposes it to Semantic Kernel through SK's own
 [`AsChatCompletionService`](https://learn.microsoft.com/dotnet/api/microsoft.semantickernel.chatcompletion.chatcompletionserviceextensions.aschatcompletionservice)
-adapter. So all of Semantic Kernel's chat machinery — message conversion and (when implemented) function
-calling — flows through that one chat client, and the underlying model is simultaneously available to
+adapter. So all of Semantic Kernel's chat machinery — message conversion and function calling — flows
+through that one chat client, and the underlying model is simultaneously available to
 Microsoft Agent Framework and plain MEAI from the same registration.
 
 | Package | Depends on | Target |
 |---|---|---|
-| `LiteRtLmSharp.SemanticKernel` | `LiteRtLmSharp` + `LiteRtLmSharp.Extensions.AI` (same version) + `Microsoft.SemanticKernel.Abstractions` 1.77.0 | `net10.0` |
+| `LiteRtLmSharp.SemanticKernel` | `LiteRtLmSharp` + `LiteRtLmSharp.Extensions.AI` (same version) + `Microsoft.SemanticKernel.Abstractions` 1.77.0 + `Microsoft.Extensions.AI` 10.7.0 | `net10.0` |
 
 ```xml
 <PackageReference Include="LiteRtLmSharp" Version="0.1.0-preview.3" />
@@ -83,6 +83,7 @@ prompt template's YAML) works equally well.
 | `MaxTokens` | `max_tokens` | max output tokens |
 | `Seed` | `seed` | sampler seed |
 | `EnableThinking` | `enable_thinking` | reasoning mode (see below) |
+| `EnableConstrainedDecoding` | `enable_constrained_decoding` | force schema-constrained tool-call arguments ([Function calling](#function-calling)) |
 
 ## Design: a stateless connector over a stateful engine
 
@@ -106,14 +107,48 @@ is an `O(history)` prefill per turn — fine for typical chats; for very long co
 process; conversations are not thread-safe), and the engine lifecycle is handled by the
 [Extensions.AI registration](extensions-ai.md) the connector builds on.
 
-## Function calling (planned)
+## Function calling
 
-Function calling is a **priority on the roadmap** — it is the capability that matters most for the library.
-LiteRtLmSharp already does function calling through its [native tools API](../README.md#function-calling)
-(constrained decoding, tool-call parsing, the tool-result round-trip); what is not wired up *yet* is the
-bridge into the chat client (surfacing the model's tool calls so Semantic Kernel's `FunctionChoiceBehavior`
-auto-invoke loop, or MEAI's `UseFunctionInvocation()`, can drive them). Until that lands, `FunctionChoiceBehavior`
-is ignored, a chat history must end with a user message, and you should drive tools via the native API.
+Set a `FunctionChoiceBehavior` on the execution settings and Semantic Kernel's functions are offered to the
+model; when the model calls one, it is auto-invoked and the result fed back so the model answers from it —
+the standard SK function-calling experience.
+
+```csharp
+using System.ComponentModel;
+using Microsoft.SemanticKernel;
+
+// A plugin the model may call.
+sealed class WeatherPlugin
+{
+    [KernelFunction, Description("Gets the current weather for a city.")]
+    public string GetWeather([Description("The city.")] string city) => $"22°C and sunny in {city}";
+}
+
+kernel.Plugins.AddFromObject(new WeatherPlugin());
+
+var settings = new LiteRtPromptExecutionSettings
+{
+    FunctionChoiceBehavior = FunctionChoiceBehavior.Auto(),
+    EnableConstrainedDecoding = true,   // recommended for small models (see note); off by default
+};
+
+var answer = await kernel.InvokePromptAsync(
+    "What's the weather in Paris? Use the weather tool.", new KernelArguments(settings));
+Console.WriteLine(answer);              // "The weather in Paris is 22°C and sunny."
+```
+
+**How it works.** Semantic Kernel's `AsChatCompletionService` adapter passes the kernel's functions to the
+chat client as tools but does **not** run the auto-invoke loop itself, so the connector wraps the `IChatClient`
+with MEAI's function-invocation middleware (`UseFunctionInvocation`). That wrapping is built into
+`AddLiteRtChatCompletion`, so `FunctionChoiceBehavior.Auto()` just works; it is a no-op when a request carries
+no functions. Under the hood this is the same bridge the [Microsoft.Extensions.AI integration](extensions-ai.md#function-calling-tools)
+exposes (the model's tool calls become `FunctionCallContent`).
+
+**Constrained decoding.** `LiteRtPromptExecutionSettings.EnableConstrainedDecoding = true` makes the model emit
+valid, schema-shaped tool-call arguments — recommended for small on-device models. It is **off by default**
+because it throws `PlatformNotSupportedException` on **linux-x64** (a temporary upstream constraint-provider
+bug, [google-ai-edge/LiteRT-LM#2149](https://github.com/google-ai-edge/LiteRT-LM/issues/2149)); leave it off
+there — tools still work, arguments are just not grammar-constrained.
 
 ## Reasoning (thinking) and the output-token budget
 
@@ -148,7 +183,7 @@ if (response.FinishReason == ChatFinishReason.Length && string.IsNullOrWhiteSpac
 
 ## Scope
 
-- **Function calling** through Semantic Kernel is planned (see above); the native tools API works today.
+- **Function calling** is supported (see [Function calling](#function-calling)) via `FunctionChoiceBehavior`.
 - **Text generation** (`ITextGenerationService`) is not provided — Semantic Kernel and the wider .NET AI
   stack are chat-centric; use chat completion.
 - **Embeddings** are not provided (the LiteRT-LM C API exposes none at v0.13.1).
@@ -158,6 +193,6 @@ if (response.FinishReason == ChatFinishReason.Length && string.IsNullOrWhiteSpac
 ## Sample
 
 A runnable console sample is in [`samples/SemanticKernel`](../samples/SemanticKernel): it builds a kernel with
-`AddLiteRtChatCompletion` and demonstrates a prompt function, a streaming prompt, and a multi-turn streaming
-chat — pass `--interactive` for a chat loop. See its [README](../samples/SemanticKernel/README.md) for how to
+`AddLiteRtChatCompletion` and demonstrates a prompt function, a streaming prompt, a multi-turn streaming
+chat, and function calling (a `[KernelFunction]` plugin) — pass `--interactive` for a chat loop. See its [README](../samples/SemanticKernel/README.md) for how to
 run it. The broader Microsoft.Extensions.AI / Agent Framework story is in [docs/extensions-ai.md](extensions-ai.md).
