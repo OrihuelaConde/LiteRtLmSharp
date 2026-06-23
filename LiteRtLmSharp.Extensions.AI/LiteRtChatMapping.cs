@@ -13,13 +13,18 @@ namespace LiteRtLmSharp.Extensions.AI;
 internal static class LiteRtChatMapping
 {
     /// <summary>
-    /// What triggers generation for a request: either user <paramref name="UserText"/> to send, or the
-    /// <paramref name="ToolResults"/> of executed tools to return to the model (function-calling continuation).
+    /// What triggers generation for a request: either user <paramref name="UserText"/> (with optional image/audio
+    /// <paramref name="Attachments"/>) to send, or the <paramref name="ToolResults"/> of executed tools to return
+    /// to the model (function-calling continuation).
     /// </summary>
-    internal readonly record struct SendTrigger(string? UserText, IReadOnlyList<LiteRtToolResult>? ToolResults)
+    internal readonly record struct SendTrigger(
+        string? UserText, IReadOnlyList<LiteRtToolResult>? ToolResults, IReadOnlyList<LiteRtAttachment>? Attachments)
     {
         /// <summary>True when this trigger returns tool results rather than sending a user message.</summary>
         public bool IsToolResults => ToolResults is { Count: > 0 };
+
+        /// <summary>True when the user message carries image/audio attachments.</summary>
+        public bool HasAttachments => Attachments is { Count: > 0 };
     }
 
     /// <summary>
@@ -51,11 +56,11 @@ internal static class LiteRtChatMapping
             if (results.Count == 0)
                 throw new ArgumentException(
                     "The final tool message carried no function results to return to the model.", nameof(messages));
-            return (history, new SendTrigger(null, results));
+            return (history, new SendTrigger(null, results, null));
         }
 
         if (last.Role == ChatRole.User)
-            return (history, new SendTrigger(last.Text ?? string.Empty, null));
+            return (history, new SendTrigger(last.Text ?? string.Empty, null, ToAttachments(last)));
 
         throw new ArgumentException(
             $"The message list must end with a user message, or a tool message carrying function results " +
@@ -118,6 +123,31 @@ internal static class LiteRtChatMapping
                 (results ??= []).Add(new LiteRtToolResult(name, SerializeResult(frc.Result)));
             }
         return results ?? (IReadOnlyList<LiteRtToolResult>)[];
+    }
+
+    /// <summary>Maps a user message's image/audio content (inline <see cref="DataContent"/>, or a file-path
+    /// <see cref="UriContent"/>) to native <see cref="LiteRtAttachment"/>s, in order, or <c>null</c> when there
+    /// are none. Remote (non-file) URIs are skipped — the on-device engine cannot fetch them; supply bytes
+    /// (a <see cref="DataContent"/>) or a local file instead.</summary>
+    private static IReadOnlyList<LiteRtAttachment>? ToAttachments(ChatMessage message)
+    {
+        List<LiteRtAttachment>? list = null;
+        foreach (AIContent c in message.Contents)
+        {
+            LiteRtAttachment? attachment = c switch
+            {
+                DataContent dc when dc.HasTopLevelMediaType("image") => LiteRtAttachment.Image(dc.Data.Span),
+                DataContent dc when dc.HasTopLevelMediaType("audio") => LiteRtAttachment.Audio(dc.Data.Span),
+                // IsAbsoluteUri guards IsFile, which throws on a relative Uri — a relative/remote URI then
+                // falls through to null (skipped) rather than throwing, like any other unfetchable reference.
+                UriContent uc when uc.Uri.IsAbsoluteUri && uc.Uri.IsFile && uc.HasTopLevelMediaType("image") => LiteRtAttachment.ImageFile(uc.Uri.LocalPath),
+                UriContent uc when uc.Uri.IsAbsoluteUri && uc.Uri.IsFile && uc.HasTopLevelMediaType("audio") => LiteRtAttachment.AudioFile(uc.Uri.LocalPath),
+                _ => null,
+            };
+            if (attachment is not null)
+                (list ??= []).Add(attachment);
+        }
+        return list;
     }
 
     /// <summary>Builds a <see cref="FunctionCallContent"/> from a native tool call. The native protocol has no

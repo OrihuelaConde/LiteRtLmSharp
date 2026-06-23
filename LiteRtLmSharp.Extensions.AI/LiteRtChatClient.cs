@@ -34,6 +34,13 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// Compose <c>UseFunctionInvocation()</c> (or, in Semantic Kernel, set a <c>FunctionChoiceBehavior</c>) to
 /// auto-invoke them; the executed results come back as a tool message which the client returns to the model.
 /// </para>
+/// <para>
+/// <b>Multimodal.</b> Image/audio content on the final user message — a <see cref="DataContent"/> (inline
+/// bytes) or a file-path <see cref="UriContent"/> with an <c>image/*</c> or <c>audio/*</c> media type — is sent
+/// to the model as an attachment. The engine must have been loaded with the matching modality enabled
+/// (<see cref="LiteRtEngineOptions.VisionBackend"/> / <see cref="LiteRtEngineOptions.AudioBackend"/>) on a
+/// multimodal model. Media on earlier (history) turns is not replayed — only the triggering turn's media is sent.
+/// </para>
 /// </remarks>
 public sealed class LiteRtChatClient : IChatClient
 {
@@ -76,7 +83,9 @@ public sealed class LiteRtChatClient : IChatClient
             // streaming overload for cooperative mid-generation cancellation). A tool-results trigger is the
             // function-calling continuation: the assistant tool-call turn was restored as history above.
             LiteRtResponse response = await Task.Run(
-                () => trigger.IsToolResults ? conv.SendToolResults(trigger.ToolResults!) : conv.Send(trigger.UserText!),
+                () => trigger.IsToolResults ? conv.SendToolResults(trigger.ToolResults!)
+                    : trigger.HasAttachments ? conv.Send(trigger.UserText!, trigger.Attachments!)
+                    : conv.Send(trigger.UserText!),
                 cancellationToken).ConfigureAwait(false);
 
             // Reasoning ("thinking") becomes TextReasoningContent (excluded from ChatResponse.Text but kept on
@@ -144,8 +153,12 @@ public sealed class LiteRtChatClient : IChatClient
                 yield break;
             }
 
+            IAsyncEnumerable<LiteRtStreamChunk> stream = trigger.HasAttachments
+                ? conv.SendMessageStreamingAsync(trigger.UserText!, trigger.Attachments!, cancellationToken)
+                : conv.SendMessageStreamingAsync(trigger.UserText!, cancellationToken);
+
             int toolCallIndex = 0;   // monotonic across the whole stream so synthesized call ids stay unique
-            await foreach (LiteRtStreamChunk chunk in conv.SendMessageStreamingAsync(trigger.UserText!, cancellationToken).ConfigureAwait(false))
+            await foreach (LiteRtStreamChunk chunk in stream.ConfigureAwait(false))
             {
                 // Answer deltas become text; reasoning ("thinking") deltas become TextReasoningContent (kept out
                 // of .Text but surfaced); a tool-call chunk becomes FunctionCallContent(s) so a function-invoking

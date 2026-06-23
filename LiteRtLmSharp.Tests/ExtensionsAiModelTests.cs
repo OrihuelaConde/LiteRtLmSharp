@@ -188,4 +188,89 @@ public sealed class ExtensionsAiModelTests
         Assert.True(invocations >= 1, "Expected the model to call the get_weather tool while streaming.");
         Assert.False(string.IsNullOrWhiteSpace(sb.ToString()), "Expected a streamed final answer after the tool ran.");
     }
+
+    // ─────────────────────── Multimodal (image / audio) ───────────────────────
+    // Gated additionally on LITERTLM_TEST_VISION=1 because they need a vision/audio-capable model and the
+    // engine loaded with the matching backend (the connector just maps DataContent -> LiteRtAttachment).
+
+    // A 64x64 solid red PNG (246 bytes), embedded so the test is self-contained and runs cross-platform.
+    private const string RedPngBase64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJ" +
+        "cEhZcwAADsMAAA7DAcdvqGQAAACLSURBVHhe7dAhAQBADIDAJVn/UN9l76kA4gySebtnNgw2DWCwaQCDTQMYbBrA" +
+        "YNMABpsGMNg0gMGmAQw2DWCwaQCDTQMYbBrAYNMABpsGMNg0gMGmAQw2DWCwaQCDTQMYbBrAYNMABpsGMNg0gMGm" +
+        "AQw2DWCwaQCDTQMYbBrAYNMABpsGMNg0gMHmA+xncfBUukEyAAAAAElFTkSuQmCC";
+
+    private static byte[] LoadEmbedded(string name)
+    {
+        using Stream s = typeof(ExtensionsAiModelTests).Assembly.GetManifestResourceStream(name)
+            ?? throw new InvalidOperationException($"Embedded resource '{name}' not found.");
+        using var ms = new MemoryStream();
+        s.CopyTo(ms);
+        return ms.ToArray();
+    }
+
+    [SkippableFact]
+    public async Task ChatClient_ImageAttachment_IsSentToTheModel()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model)
+                || Environment.GetEnvironmentVariable("LITERTLM_TEST_VISION") != "1",
+            "Set LITERTLM_TEST_VISION=1 and LITERTLM_TEST_MODEL to a vision-capable .litertlm (e.g. gemma-4-E2B-it) to run.");
+
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = Model!,
+            Backend = Backend,
+            VisionBackend = Backend,
+            MaxNumTokens = 4096,
+            CacheDir = Backend == "gpu" ? LiteRtEngineOptions.CacheDisabled : null,
+        });
+        using IChatClient client = new LiteRtChatClient(engine);
+
+        byte[] redPng = Convert.FromBase64String(RedPngBase64);
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.User, (IList<AIContent>)
+            [
+                new TextContent("What is the main color of this image? Answer with one word."),
+                new DataContent(redPng, "image/png"),
+            ]),
+        };
+
+        // Without VisionBackend + the image reaching the encoder this would throw; a non-empty reply confirms
+        // the DataContent flowed through as an attachment.
+        ChatResponse response = await client.GetResponseAsync(messages, new ChatOptions { MaxOutputTokens = 32 });
+        Assert.False(string.IsNullOrWhiteSpace(response.Text), $"Expected a description of the image. Raw: {response.RawRepresentation}");
+    }
+
+    [SkippableFact]
+    public async Task ChatClient_AudioAttachment_IsSentToTheModel()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model)
+                || Environment.GetEnvironmentVariable("LITERTLM_TEST_VISION") != "1",
+            "Set LITERTLM_TEST_VISION=1 and LITERTLM_TEST_MODEL to an audio-capable .litertlm (e.g. gemma-4-E2B-it) to run.");
+        // gemma-4's audio sub-model is CPU-constrained, so audio engine creation fails on a gpu backend.
+        Skip.If(Backend == "gpu", "Audio is CPU-constrained on gemma-4; the GPU leg is skipped (see the native audio test).");
+
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = Model!,
+            Backend = Backend,
+            AudioBackend = Backend,
+            MaxNumTokens = 4096,
+        });
+        using IChatClient client = new LiteRtChatClient(engine);
+
+        byte[] mp3 = LoadEmbedded("countdown.mp3"); // a real spoken 5->0 countdown
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.User, (IList<AIContent>)
+            [
+                new TextContent("Transcribe the spoken words in this audio clip."),
+                new DataContent(mp3, "audio/mpeg"),
+            ]),
+        };
+
+        ChatResponse response = await client.GetResponseAsync(messages, new ChatOptions { MaxOutputTokens = 64 });
+        Assert.False(string.IsNullOrWhiteSpace(response.Text), $"Expected a transcription. Raw: {response.RawRepresentation}");
+    }
 }

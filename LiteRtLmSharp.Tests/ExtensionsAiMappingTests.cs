@@ -220,4 +220,87 @@ public class ExtensionsAiMappingTests
         string wire = LiteRtMessage.Serialize([LiteRtMessage.Tool(result)]);
         Assert.Contains("tool_response", wire);
     }
+
+    // ─────────────────────── Multimodal (image / audio) ───────────────────────
+
+    [Fact]
+    public void Split_UserMessageWithImageAndAudio_MapsToAttachmentsInOrder()
+    {
+        var msg = new ChatMessage(ChatRole.User, (IList<AIContent>)
+        [
+            new TextContent("describe these"),
+            new DataContent(new byte[] { 1, 2, 3 }, "image/png"),
+            new DataContent(new byte[] { 4, 5 }, "audio/wav"),
+        ]);
+
+        (_, LiteRtChatMapping.SendTrigger trigger) = LiteRtChatMapping.Split([msg]);
+
+        Assert.False(trigger.IsToolResults);
+        Assert.True(trigger.HasAttachments);
+        Assert.Equal("describe these", trigger.UserText);
+        Assert.Equal(2, trigger.Attachments!.Count);
+        // Content-part order preserved, inline-bytes carrier wired correctly (the source bytes, not a path).
+        Assert.Equal(LiteRtAttachmentKind.Image, trigger.Attachments[0].Kind);
+        Assert.Equal(new byte[] { 1, 2, 3 }, trigger.Attachments[0].Bytes);
+        Assert.Null(trigger.Attachments[0].Path);
+        Assert.Equal(LiteRtAttachmentKind.Audio, trigger.Attachments[1].Kind);
+        Assert.Equal(new byte[] { 4, 5 }, trigger.Attachments[1].Bytes);
+    }
+
+    [Fact]
+    public void Split_UserMessageWithFileUri_MapsToFilePathAttachment()
+    {
+        var uri = new Uri(OperatingSystem.IsWindows() ? "file:///C:/tmp/pic.jpg" : "file:///tmp/pic.jpg");
+        var msg = new ChatMessage(ChatRole.User, (IList<AIContent>)
+        [
+            new TextContent("describe"),
+            new UriContent(uri, "image/jpeg"),
+        ]);
+
+        (_, LiteRtChatMapping.SendTrigger trigger) = LiteRtChatMapping.Split([msg]);
+
+        LiteRtAttachment att = Assert.Single(trigger.Attachments!);
+        Assert.Equal(LiteRtAttachmentKind.Image, att.Kind);
+        // The file-carrier branch (ImageFile -> Path), distinct from the inline-bytes branch.
+        Assert.Equal(uri.LocalPath, att.Path);
+        Assert.Null(att.Bytes);
+    }
+
+    [Theory]
+    [InlineData("https://example.com/pic.png")]                 // remote URI: unfetchable on-device, skipped
+    [InlineData("pic.png", UriKind.Relative)]                   // relative URI: skipped, must not throw
+    public void Split_UserMessageWithNonFileUri_SkipsIt(string uri, UriKind kind = UriKind.Absolute)
+    {
+        var msg = new ChatMessage(ChatRole.User, (IList<AIContent>)
+        [
+            new TextContent("describe"),
+            new UriContent(new Uri(uri, kind), "image/png"),
+        ]);
+
+        (_, LiteRtChatMapping.SendTrigger trigger) = LiteRtChatMapping.Split([msg]);
+        Assert.False(trigger.HasAttachments);
+    }
+
+    [Fact]
+    public void Split_UnsupportedDataContent_IsSkipped_ImageSurvives()
+    {
+        var msg = new ChatMessage(ChatRole.User, (IList<AIContent>)
+        [
+            new DataContent(new byte[] { 9 }, "application/pdf"),   // not image/audio -> ignored
+            new DataContent(new byte[] { 1, 2, 3 }, "image/png"),
+        ]);
+
+        (_, LiteRtChatMapping.SendTrigger trigger) = LiteRtChatMapping.Split([msg]);
+        LiteRtAttachment att = Assert.Single(trigger.Attachments!);
+        Assert.Equal(LiteRtAttachmentKind.Image, att.Kind);
+    }
+
+    [Fact]
+    public void Split_UserMessageWithoutMedia_HasNoAttachments()
+    {
+        var msg = new ChatMessage(ChatRole.User, "just text");
+        (_, LiteRtChatMapping.SendTrigger trigger) = LiteRtChatMapping.Split([msg]);
+        Assert.False(trigger.HasAttachments);
+        Assert.Null(trigger.Attachments);
+    }
 }

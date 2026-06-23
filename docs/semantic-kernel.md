@@ -181,9 +181,35 @@ if (response.FinishReason == ChatFinishReason.Length && string.IsNullOrWhiteSpac
     Console.WriteLine("(no answer — the reasoning consumed the budget; raise MaxOutputTokens)");
 ```
 
+## Multimodal (image / audio)
+
+On a multimodal model, add an `ImageContent` or `AudioContent` (with inline data) to a chat message — Semantic
+Kernel's adapter forwards it to the model as an attachment through the underlying `IChatClient`:
+
+```csharp
+using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.ChatCompletion;
+
+byte[] png = File.ReadAllBytes("photo.png");
+var history = new ChatHistory();
+history.Add(new ChatMessageContent(AuthorRole.User, new ChatMessageContentItemCollection
+{
+    new TextContent("What is in this image?"),
+    new ImageContent(png, "image/png"),
+}));
+
+IChatCompletionService chat = kernel.GetRequiredService<IChatCompletionService>();
+var reply = await chat.GetChatMessageContentsAsync(history);
+```
+
+The engine must have been loaded with the matching modality enabled (`LiteRtEngineOptions.VisionBackend` /
+`AudioBackend`) on a multimodal model. Only the final user message's media is sent (prior turns are restored as
+text). See [docs/extensions-ai.md](extensions-ai.md#multimodal-image--audio) for the details.
+
 ## Scope
 
 - **Function calling** is supported (see [Function calling](#function-calling)) via `FunctionChoiceBehavior`.
+- **Multimodal** (image / audio) is supported (see [Multimodal](#multimodal-image--audio)).
 - **Text generation** (`ITextGenerationService`) is not provided — Semantic Kernel and the wider .NET AI
   stack are chat-centric; use chat completion.
 - **Embeddings** are not provided (the LiteRT-LM C API exposes none at v0.13.1).

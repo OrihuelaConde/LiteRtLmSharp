@@ -32,6 +32,12 @@ are published together.
     connector wraps the client with MEAI's function-invocation middleware, since SK's `AsChatCompletionService`
     adapter does not run the auto-invoke loop itself.) Opt-in `EnableConstrainedDecoding` (off by default; blocked
     on linux-x64) makes small models emit valid tool-call arguments.
+  - **Multimodal** (image / audio) is supported on both connectors: image/audio content on the final user
+    message — a MEAI `DataContent` (inline bytes) or file-path `UriContent`, or a Semantic Kernel
+    `ImageContent` / `AudioContent` (which the SK adapter forwards as `DataContent`) — is sent to the model as
+    an attachment. Requires the engine loaded with the matching modality (`LiteRtEngineOptions.VisionBackend` /
+    `AudioBackend`) on a multimodal model; only the triggering turn's media is sent (the stateless connector
+    restores prior turns as text).
   - Both connectors are **stateless** (a fresh `LiteRtConversation` is rebuilt from the supplied history each
     call, prior turns replayed through prefill) and serialize calls (one live engine per process). Embeddings
     remain unavailable while the C API exposes none (v0.13.1). A console sample is in
@@ -39,7 +45,7 @@ are published together.
     calling); guides: [docs/extensions-ai.md](docs/extensions-ai.md) and [docs/semantic-kernel.md](docs/semantic-kernel.md).
     Validated end-to-end on win-x64 CPU and GPU/WebGPU with gemma-4-E2B-it; mapping/settings/registration logic is
     unit-tested model-free in CI, with gated model-backed tests (chat blocking/streaming, multi-turn history replay,
-    reasoning + truncation, and function calling for both MEAI and SK) under `LITERTLM_TEST_MODEL`.
+    reasoning + truncation, function calling for both MEAI and SK, and image/audio attachments) under `LITERTLM_TEST_MODEL`.
 
 ## [0.1.0-preview.3] — 2026-06-20
 

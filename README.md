@@ -299,8 +299,9 @@ Both connectors are **stateless** (a fresh conversation is rebuilt from the supp
 serialize calls (one engine per process). Reasoning ("thinking") is surfaced via `TextReasoningContent` on
 the `IChatClient`. **Function calling** is supported on both: the model's tool calls surface as
 `FunctionCallContent`, so MEAI's `UseFunctionInvocation()` and SK's `FunctionChoiceBehavior` auto-invoke your
-functions (enable `EnableConstrainedDecoding` for reliable arguments on small models). Embeddings aren't
-available (the C API exposes none). Full guides:
+functions (enable `EnableConstrainedDecoding` for reliable arguments on small models). **Multimodal**
+(image/audio) is supported too — attach a `DataContent` / SK `ImageContent` to the user message on a model
+loaded with `VisionBackend` / `AudioBackend`. Embeddings aren't available (the C API exposes none). Full guides:
 [docs/extensions-ai.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/extensions-ai.md) and
 [docs/semantic-kernel.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/semantic-kernel.md).
 

@@ -249,7 +249,8 @@ sample + model-free tests), `pack-nuget.yml` (packs both), `samples/LiteRtLmShar
 `samples/SemanticKernel` (pure SK — InvokePrompt + streaming + multi-turn + function calling) validated
 end-to-end on win-x64 CPU and GPU/WebGPU. Gated model-backed tests (`LITERTLM_TEST_MODEL`): chat
 blocking/streaming + multi-turn history replay (both MEAI and SK paths), reasoning surfacing + truncation, and
-function calling (MEAI `UseFunctionInvocation` blocking + streaming, SK `FunctionChoiceBehavior.Auto`). Guides:
+function calling (MEAI `UseFunctionInvocation` blocking + streaming, SK `FunctionChoiceBehavior.Auto`), and
+image/audio attachments (`LITERTLM_TEST_VISION=1`). Guides:
 [extensions-ai.md](extensions-ai.md), [semantic-kernel.md](semantic-kernel.md).
 
 **Function calling (DONE, 2026-06-23).** Implemented ONCE in the `IChatClient`, inherited by SK and MAF:
@@ -265,9 +266,14 @@ Streaming surfaces tool-call chunks as `FunctionCallContent` updates; the post-t
 blocking `SendToolResults` fallback (no native streaming tool-results call). Gated tests pass end-to-end on
 win-x64 (gemma-4-E2B-it) for MEAI (blocking + streaming) and SK (`FunctionChoiceBehavior.Auto`).
 
-Remaining follow-ups: image/audio (multimodal) support in the connectors (the native API has it via
-`LiteRtAttachment`); embeddings blocked (no C-API embeddings at v0.13.1). **Neither companion is AOT/trim-clean**
-(MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AOT guarantee.
+**Multimodal (DONE, 2026-06-23).** Image/audio on the final user message maps to native `LiteRtAttachment`:
+MEAI `DataContent` (inline bytes) / file-path `UriContent`, or Semantic Kernel `ImageContent`/`AudioContent`
+(an empirical probe confirmed SK's `AsChatCompletionService` forwards these as MEAI `DataContent`, media type
+preserved). `conv.Send(text, attachments)` / streaming overload. Requires the engine loaded with
+`VisionBackend`/`AudioBackend`; only the triggering turn's media is sent (history restored as text); remote
+(non-file) URIs skipped. Gated tests pass on win-x64 (vision + audio, `LITERTLM_TEST_VISION=1`). No sample
+change (per the user). Remaining: embeddings blocked (no C-API embeddings at v0.13.1). **Neither companion is
+AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AOT guarantee.
 
 ## Watchlist (re-check periodically)
 

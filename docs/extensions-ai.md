@@ -165,6 +165,32 @@ if (r.FinishReason == ChatFinishReason.Length && string.IsNullOrWhiteSpace(r.Tex
     Console.WriteLine("(no answer — the reasoning consumed the budget; raise MaxOutputTokens)");
 ```
 
+## Multimodal (image / audio)
+
+On a multimodal model, attach an image or audio clip to the final user message as a `DataContent` (inline
+bytes) or a file-path `UriContent`, with an `image/*` or `audio/*` media type:
+
+```csharp
+using Microsoft.Extensions.AI;
+
+byte[] png = File.ReadAllBytes("photo.png");
+var message = new ChatMessage(ChatRole.User,
+[
+    new TextContent("What is in this image?"),
+    new DataContent(png, "image/png"),
+]);
+
+ChatResponse response = await client.GetResponseAsync([message]);
+```
+
+The engine must have been loaded with the matching modality enabled — `LiteRtEngineOptions.VisionBackend` for
+images, `AudioBackend` for audio — on a multimodal model (e.g. the Gemma 4 E-series). Without it the send
+throws with a message naming the likely cause.
+
+Only the **final** (triggering) user message's media is sent; media on earlier history turns is not replayed
+(the stateless connector restores prior turns as text). Remote (non-`file://`) URIs are skipped — the
+on-device engine cannot fetch them, so supply bytes or a local file.
+
 ## Design
 
 - **Stateless.** `IChatClient` hands the full message list every call, so the client rebuilds a *fresh*
