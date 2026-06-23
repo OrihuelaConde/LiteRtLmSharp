@@ -35,14 +35,12 @@ public sealed class LiteRtChatOptions : ChatOptions
     }
 
     /// <summary>
-    /// Forces the model to emit schema-constrained output so tool-call arguments parse reliably (function
-    /// calling). Off by default. Only meaningful when <see cref="ChatOptions.Tools"/> are set.
+    /// Forces the model to emit schema-constrained output so tool-call arguments parse reliably — recommended
+    /// when using tools. Off by default. Only meaningful when <see cref="ChatOptions.Tools"/> are set.
     /// </summary>
     /// <remarks>
     /// Backed by the <c>enable_constrained_decoding</c> key in <see cref="ChatOptions.AdditionalProperties"/>.
-    /// Tools work without it (arguments are simply not grammar-constrained). The core throws
-    /// <see cref="System.PlatformNotSupportedException"/> when this is on under linux-x64 (a temporary upstream
-    /// constraint-provider bug, google-ai-edge/LiteRT-LM#2149) — leave it off there.
+    /// Tools still work without it (arguments are simply not grammar-constrained).
     /// </remarks>
     [JsonIgnore]
     public bool EnableConstrainedDecoding

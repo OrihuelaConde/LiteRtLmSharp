@@ -158,6 +158,7 @@ public sealed class LiteRtChatClient : IChatClient
                 : conv.SendMessageStreamingAsync(trigger.UserText!, cancellationToken);
 
             int toolCallIndex = 0;   // monotonic across the whole stream so synthesized call ids stay unique
+            bool sawAnswer = false, sawReasoning = false, sawToolCall = false;
             await foreach (LiteRtStreamChunk chunk in stream.ConfigureAwait(false))
             {
                 // Answer deltas become text; reasoning ("thinking") deltas become TextReasoningContent (kept out
@@ -165,6 +166,7 @@ public sealed class LiteRtChatClient : IChatClient
                 // pipeline can drive it. Same-kind text deltas are concatenated downstream.
                 if (chunk.Kind == LiteRtStreamChunkKind.ToolCall)
                 {
+                    sawToolCall = true;
                     var calls = new List<AIContent>(chunk.ToolCalls.Count);
                     foreach (LiteRtToolCall call in chunk.ToolCalls)
                         calls.Add(LiteRtChatMapping.ToFunctionCall(call, toolCallIndex++));
@@ -186,6 +188,8 @@ public sealed class LiteRtChatClient : IChatClient
                     _ => null,
                 };
                 if (content is not null)
+                {
+                    if (content is TextReasoningContent) sawReasoning = true; else sawAnswer = true;
                     yield return new ChatResponseUpdate
                     {
                         Role = ChatRole.Assistant,
@@ -193,7 +197,19 @@ public sealed class LiteRtChatClient : IChatClient
                         ModelId = ModelId,
                         RawRepresentation = chunk,
                     };
+                }
             }
+
+            // Mirror GetResponseAsync: reasoning but no answer (and no tool call) means the reasoning consumed
+            // the MaxOutputTokens budget before the answer began — emit a Length finish reason so an empty
+            // streamed answer is diagnosable rather than silent.
+            if (sawReasoning && !sawAnswer && !sawToolCall)
+                yield return new ChatResponseUpdate
+                {
+                    Role = ChatRole.Assistant,
+                    ModelId = ModelId,
+                    FinishReason = ChatFinishReason.Length,
+                };
         }
         finally
         {
@@ -237,6 +253,17 @@ public sealed class LiteRtChatClient : IChatClient
                 Contents = [new TextContent(answer)],
                 ModelId = ModelId,
                 RawRepresentation = response,
+            };
+        }
+        else if (response.Thinking is { Length: > 0 })
+        {
+            // Reasoning consumed the budget before any answer — signal truncation (mirrors GetResponseAsync).
+            yield return new ChatResponseUpdate
+            {
+                Role = ChatRole.Assistant,
+                ModelId = ModelId,
+                RawRepresentation = response,
+                FinishReason = ChatFinishReason.Length,
             };
         }
     }

@@ -57,10 +57,9 @@ You need a `.litertlm` model and the native binaries for your platform.
   supplied `ChatHistory`. Record each assistant turn back into the history so the next call sees the full
   conversation (the sample does this with a `StringBuilder`). See
   [docs/semantic-kernel.md](../../docs/semantic-kernel.md) for the design.
-- **Function calling** (Demo D) turns on `EnableConstrainedDecoding` so the small model emits valid
-  tool-call arguments. That is blocked on linux-x64 (a temporary upstream bug), so the sample only enables
-  it off-Linux; tools still work without it, just with less reliable argument formatting. See
-  [docs/semantic-kernel.md](../../docs/semantic-kernel.md#function-calling).
+- **Function calling** (Demo D) sets `EnableConstrainedDecoding = true` — the recommended setting when using
+  tools, which forces the model to emit schema-valid arguments. See
+  [docs/semantic-kernel.md](../../docs/semantic-kernel.md#function-calling) for its linux-x64 caveat.
 - Native `WARNING: … npu_registry` / `mel_filterbank` lines on startup are harmless — the NPU probe and
   the multimodal model's audio sub-model initializing on CPU.
 - win-x64 needs the Microsoft Visual C++ Redistributable (the native DLLs import `VCRUNTIME140`).

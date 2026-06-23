@@ -41,9 +41,8 @@ public sealed class LiteRtPromptExecutionSettings : PromptExecutionSettings
     public bool? EnableThinking { get => GetBoolean("enable_thinking"); set => Set("enable_thinking", value); }
 
     /// <summary>Force schema-constrained output so function-call arguments parse reliably
-    /// (<c>"enable_constrained_decoding"</c>). Off by default; only meaningful with a
-    /// <see cref="PromptExecutionSettings.FunctionChoiceBehavior"/>. The core throws on linux-x64 when on
-    /// (a temporary upstream constraint-provider bug) — leave it off there; tools work without it.</summary>
+    /// (<c>"enable_constrained_decoding"</c>) — recommended when using tools. Off by default; only meaningful
+    /// with a <see cref="PromptExecutionSettings.FunctionChoiceBehavior"/>. Tools still work without it.</summary>
     [JsonIgnore]
     public bool? EnableConstrainedDecoding { get => GetBoolean("enable_constrained_decoding"); set => Set("enable_constrained_decoding", value); }
 

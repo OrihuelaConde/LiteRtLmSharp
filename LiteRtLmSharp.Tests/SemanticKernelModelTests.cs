@@ -82,6 +82,8 @@ public sealed class SemanticKernelModelTests
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        Skip.If(OperatingSystem.IsLinux(),
+            "EnableConstrainedDecoding (recommended with tools) is blocked on linux-x64 — see docs.");
 
         using var engine = LiteRtEngine.Load(Options());
 
@@ -104,7 +106,7 @@ public sealed class SemanticKernelModelTests
         {
             FunctionChoiceBehavior = FunctionChoiceBehavior.Auto(),
             MaxTokens = 256,
-            EnableConstrainedDecoding = !OperatingSystem.IsLinux(),
+            EnableConstrainedDecoding = true,   // recommended when using tools
         };
 
         FunctionResult result = await kernel.InvokePromptAsync(

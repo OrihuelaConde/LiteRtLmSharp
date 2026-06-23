@@ -166,9 +166,7 @@ static async Task DemoFunctionCallingAsync(Kernel kernel)
     {
         FunctionChoiceBehavior = FunctionChoiceBehavior.Auto(),
         MaxTokens = 256,
-        // Constrained decoding makes the small on-device model emit valid tool-call arguments. It is blocked
-        // on linux-x64 (a temporary upstream bug), so only enable it elsewhere — tools work without it too.
-        EnableConstrainedDecoding = !OperatingSystem.IsLinux(),
+        EnableConstrainedDecoding = true,   // recommended when using tools: forces schema-valid arguments
     };
 
     const string question = "What's the weather in Paris? Use the weather tool.";

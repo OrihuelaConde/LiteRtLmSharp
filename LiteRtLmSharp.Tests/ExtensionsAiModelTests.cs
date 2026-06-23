@@ -115,6 +115,18 @@ public sealed class ExtensionsAiModelTests
         // require empty — just assert the two stay consistent.
         if (string.IsNullOrEmpty(truncated.Text))
             Assert.Equal(ChatFinishReason.Length, truncated.FinishReason);
+
+        // Streaming surfaces the same truncation signal: a Length finish reason in the updates when the
+        // reasoning consumed the budget before any answer (mirrors GetResponseAsync).
+        ChatFinishReason? streamedFinish = null;
+        bool streamedAnswer = false;
+        await foreach (ChatResponseUpdate u in client.GetStreamingResponseAsync(messages, tiny))
+        {
+            if (u.FinishReason is { } fr) streamedFinish = fr;
+            if (u.Contents.Any(c => c is TextContent { Text.Length: > 0 })) streamedAnswer = true;
+        }
+        if (!streamedAnswer)
+            Assert.Equal(ChatFinishReason.Length, streamedFinish);
     }
 
     [SkippableFact]
@@ -122,6 +134,8 @@ public sealed class ExtensionsAiModelTests
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        Skip.If(OperatingSystem.IsLinux(),
+            "EnableConstrainedDecoding (recommended with tools) is blocked on linux-x64 — see docs.");
 
         using var engine = LiteRtEngine.Load(Options());
 
@@ -132,14 +146,13 @@ public sealed class ExtensionsAiModelTests
             name: "get_weather", description: "Gets the current weather for a given city.");
 
         // UseFunctionInvocation runs the tool loop: model emits a call -> the AIFunction is invoked -> the
-        // result is sent back -> the model answers. Constrained decoding makes the small model emit valid
-        // tool-call arguments (it is blocked on linux-x64, so only enable it elsewhere).
+        // result is sent back -> the model answers.
         using IChatClient client = new LiteRtChatClient(engine).AsBuilder().UseFunctionInvocation().Build();
         var options = new LiteRtChatOptions
         {
             Tools = [weather],
             MaxOutputTokens = 256,
-            EnableConstrainedDecoding = !OperatingSystem.IsLinux(),
+            EnableConstrainedDecoding = true,   // recommended when using tools
         };
         var messages = new List<ChatMessage>
         {
@@ -158,6 +171,8 @@ public sealed class ExtensionsAiModelTests
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        Skip.If(OperatingSystem.IsLinux(),
+            "EnableConstrainedDecoding (recommended with tools) is blocked on linux-x64 — see docs.");
 
         using var engine = LiteRtEngine.Load(Options());
 
@@ -174,7 +189,7 @@ public sealed class ExtensionsAiModelTests
         {
             Tools = [weather],
             MaxOutputTokens = 256,
-            EnableConstrainedDecoding = !OperatingSystem.IsLinux(),
+            EnableConstrainedDecoding = true,   // recommended when using tools
         };
         var messages = new List<ChatMessage>
         {
