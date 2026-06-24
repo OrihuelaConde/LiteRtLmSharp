@@ -263,8 +263,13 @@ run the auto-invoke loop, so `AddLiteRtChatCompletion` wraps the client with `Us
 when a request has no tools). Opt-in `EnableConstrainedDecoding` (off by default; blocked on linux-x64 per
 the core guard) makes small models emit valid tool-call arguments — used in the gated tests/sample off-Linux.
 Streaming surfaces tool-call chunks as `FunctionCallContent` updates; the post-tool continuation uses a
-blocking `SendToolResults` fallback (no native streaming tool-results call). Gated tests pass end-to-end on
-win-x64 (gemma-4-E2B-it) for MEAI (blocking + streaming) and SK (`FunctionChoiceBehavior.Auto`).
+blocking `SendToolResults` fallback (no native streaming tool-results call). `ChatOptions.ToolMode` /
+`FunctionChoiceBehavior` honored: `None` → no tools offered; `RequireAny`/`RequireSpecific` → best-effort
+(system-prompt instruction + offering only the named tool; the native API has no `tool_choice`, so it nudges
+but can't force — verified: gemma-4 calls the required tool for a related prompt, ignores it for an unrelated
+one). The `FunctionInvokingChatClient` loop resets `Required`→`null` after the first turn, so no infinite loop.
+Gated tests pass end-to-end on win-x64 (gemma-4-E2B-it) for MEAI (blocking + streaming) and SK
+(`FunctionChoiceBehavior.Auto`).
 
 **Multimodal (DONE, 2026-06-23).** Image/audio on the final user message maps to native `LiteRtAttachment`:
 MEAI `DataContent` (inline bytes) / file-path `UriContent`, or Semantic Kernel `ImageContent`/`AudioContent`

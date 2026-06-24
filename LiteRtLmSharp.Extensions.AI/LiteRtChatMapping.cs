@@ -200,20 +200,69 @@ internal static class LiteRtChatMapping
         };
     }
 
-    /// <summary>Maps the function tools in <see cref="ChatOptions.Tools"/> to native <see cref="LiteRtTool"/>s
-    /// (non-function tools are ignored), or <c>null</c> when there are none.</summary>
+    /// <summary>
+    /// Maps the function tools in <see cref="ChatOptions.Tools"/> to native <see cref="LiteRtTool"/>s (non-function
+    /// tools are ignored), honoring <see cref="ChatOptions.ToolMode"/>. The native API has no tool-choice flag, so:
+    /// <see cref="NoneChatToolMode"/> advertises <b>no</b> tools (emulating "none" — the model can't call what it
+    /// isn't given); a <see cref="RequiredChatToolMode"/> naming a function advertises <b>only</b> that one (so the
+    /// model's only option is the required tool). Returns <c>null</c> when there are no tools to advertise.
+    /// </summary>
     private static IReadOnlyList<LiteRtTool>? ToTools(ChatOptions? o)
     {
         if (o?.Tools is not { Count: > 0 } tools)
             return null;
 
+        if (o.ToolMode is NoneChatToolMode)
+            return null;
+
+        // RequireSpecific("x") → offer only x; RequireAny / Auto → offer all.
+        string? only = (o.ToolMode as RequiredChatToolMode)?.RequiredFunctionName is { Length: > 0 } name ? name : null;
+
         List<LiteRtTool>? list = null;
         foreach (AITool t in tools)
-            if (t is AIFunction f)
+            if (t is AIFunction f && (only is null || f.Name == only))
                 (list ??= []).Add(new LiteRtTool(
                     f.Name,
                     string.IsNullOrEmpty(f.Description) ? null : f.Description,
                     f.JsonSchema.ValueKind == JsonValueKind.Object ? f.JsonSchema.GetRawText() : LiteRtTool.NoParameters));
+        return list;
+    }
+
+    /// <summary>
+    /// The best-effort instruction to add for a <see cref="RequiredChatToolMode"/> request, or <c>null</c> for
+    /// Auto/None. The native API has no forced tool choice (no equivalent of a server's <c>tool_choice: required</c>),
+    /// so "required" is approximated by instructing the model to call a tool. Paired with <see cref="ToTools"/>
+    /// offering only the named function, this nudges — but does not guarantee — a tool call.
+    /// </summary>
+    public static string? RequiredToolInstruction(ChatOptions? o)
+    {
+        if (o?.Tools is not { Count: > 0 } || o.ToolMode is not RequiredChatToolMode required)
+            return null;
+        // Emphatic phrasing (MUST / DO NOT) is a recognized instruction-following nudge; it is best-effort and
+        // a starting point to refine, not a guarantee on a small on-device model.
+        return required.RequiredFunctionName is { Length: > 0 } name
+            ? $"You MUST use the `{name}` tool to answer this request. DO NOT reply with plain text."
+            : "You MUST use one of the available tools to answer this request. DO NOT reply with plain text.";
+    }
+
+    /// <summary>
+    /// Returns <paramref name="history"/> with the <see cref="RequiredToolInstruction"/> folded into the system
+    /// prompt for a <see cref="RequiredChatToolMode"/> request — appended to the leading system message, or added as
+    /// one when there is none — and unchanged otherwise (Auto/None).
+    /// </summary>
+    public static IReadOnlyList<LiteRtMessage> WithRequiredToolInstruction(IReadOnlyList<LiteRtMessage> history, ChatOptions? options)
+    {
+        if (RequiredToolInstruction(options) is not { } instruction)
+            return history;
+
+        var list = new List<LiteRtMessage>(history);
+        for (int i = 0; i < list.Count; i++)
+            if (list[i].Role == LiteRtMessageRole.System)
+            {
+                list[i] = LiteRtMessage.System($"{list[i].Text}\n\n{instruction}");
+                return list;
+            }
+        list.Insert(0, LiteRtMessage.System(instruction));
         return list;
     }
 

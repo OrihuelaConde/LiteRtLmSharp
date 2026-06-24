@@ -31,7 +31,10 @@ are published together.
     and Semantic Kernel's `FunctionChoiceBehavior` auto-invoke your functions and feed the results back. (The SK
     connector wraps the client with MEAI's function-invocation middleware, since SK's `AsChatCompletionService`
     adapter does not run the auto-invoke loop itself.) Opt-in `EnableConstrainedDecoding` (off by default; blocked
-    on linux-x64) makes small models emit valid tool-call arguments.
+    on linux-x64) makes small models emit valid tool-call arguments. `ChatOptions.ToolMode` /
+    `FunctionChoiceBehavior` is honored: `None` offers no tools; `RequireAny`/`RequireSpecific` are best-effort
+    (the connector instructs the model and narrows the offered tools, but the on-device decoder can't be *forced*
+    like a cloud `tool_choice: required`).
   - **Multimodal** (image / audio) is supported on both connectors: image/audio content on the final user
     message — a MEAI `DataContent` (inline bytes) or file-path `UriContent`, or a Semantic Kernel
     `ImageContent` / `AudioContent` (which the SK adapter forwards as `DataContent`) — is sent to the model as

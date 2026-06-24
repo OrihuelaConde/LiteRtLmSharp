@@ -72,6 +72,9 @@ public sealed class LiteRtChatClient : IChatClient
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(messages);
         (IReadOnlyList<LiteRtMessage> history, LiteRtChatMapping.SendTrigger trigger) = LiteRtChatMapping.Split(messages);
+        // For a Required tool mode, fold a best-effort "you must call a tool" instruction into the system prompt
+        // (the native API has no forced tool choice). No-op for Auto/None.
+        history = LiteRtChatMapping.WithRequiredToolInstruction(history, options);
         LiteRtConversationOptions? convOptions = LiteRtChatMapping.ToConversationOptions(history, options);
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -134,6 +137,9 @@ public sealed class LiteRtChatClient : IChatClient
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(messages);
         (IReadOnlyList<LiteRtMessage> history, LiteRtChatMapping.SendTrigger trigger) = LiteRtChatMapping.Split(messages);
+        // For a Required tool mode, fold a best-effort "you must call a tool" instruction into the system prompt
+        // (the native API has no forced tool choice). No-op for Auto/None.
+        history = LiteRtChatMapping.WithRequiredToolInstruction(history, options);
         LiteRtConversationOptions? convOptions = LiteRtChatMapping.ToConversationOptions(history, options);
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);

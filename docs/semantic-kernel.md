@@ -150,6 +150,12 @@ because it throws `PlatformNotSupportedException` on **linux-x64** (a temporary 
 bug, [google-ai-edge/LiteRT-LM#2149](https://github.com/google-ai-edge/LiteRT-LM/issues/2149)); leave it off
 there — tools still work, arguments are just not grammar-constrained.
 
+**Function choice (`FunctionChoiceBehavior`).** `Auto()` (the model decides), `None()` (no functions offered)
+and `Required()` (the model must call one) flow through to the chat client's `ChatOptions.ToolMode`. `Required`
+is **best-effort** on-device — the connector instructs the model to call a function and narrows the offered set,
+but cannot *force* a call the way a cloud API's server-enforced `tool_choice: "required"` does. See
+[Tool choice](extensions-ai.md#function-calling-tools) for the per-mode behavior.
+
 ## Reasoning (thinking) and the output-token budget
 
 With `EnableThinking = true` the model emits a reasoning trace **before** the answer, and that trace shares

@@ -221,6 +221,81 @@ public class ExtensionsAiMappingTests
         Assert.Contains("tool_response", wire);
     }
 
+    // ─────────────────────── Tool choice (ChatOptions.ToolMode) ───────────────────────
+
+    [Fact]
+    public void ToTools_None_AdvertisesNoTools()
+    {
+        AIFunction fn = AIFunctionFactory.Create((string city) => "x", name: "get_weather", description: "d");
+        var opts = new ChatOptions { Tools = [fn], ToolMode = ChatToolMode.None, MaxOutputTokens = 50 };
+
+        LiteRtConversationOptions? conv = LiteRtChatMapping.ToConversationOptions([], opts);
+        Assert.NotNull(conv);
+        Assert.Null(conv!.Tools);   // None → the model is given no tools, so it can't call any
+    }
+
+    [Fact]
+    public void ToTools_RequireSpecific_AdvertisesOnlyThatTool()
+    {
+        AIFunction weather = AIFunctionFactory.Create((string city) => "x", name: "get_weather", description: "d");
+        AIFunction time = AIFunctionFactory.Create(() => "x", name: "get_time", description: "d");
+        var opts = new ChatOptions { Tools = [weather, time], ToolMode = ChatToolMode.RequireSpecific("get_weather") };
+
+        LiteRtConversationOptions? conv = LiteRtChatMapping.ToConversationOptions([], opts);
+        LiteRtTool tool = Assert.Single(conv!.Tools!);
+        Assert.Equal("get_weather", tool.Name);   // only the required tool is offered
+    }
+
+    [Fact]
+    public void ToTools_RequireAny_AdvertisesAllTools()
+    {
+        AIFunction weather = AIFunctionFactory.Create((string city) => "x", name: "get_weather", description: "d");
+        AIFunction time = AIFunctionFactory.Create(() => "x", name: "get_time", description: "d");
+        var opts = new ChatOptions { Tools = [weather, time], ToolMode = ChatToolMode.RequireAny };
+
+        LiteRtConversationOptions? conv = LiteRtChatMapping.ToConversationOptions([], opts);
+        Assert.Equal(2, conv!.Tools!.Count);
+    }
+
+    [Fact]
+    public void WithRequiredToolInstruction_RequireAny_AddsSystemInstruction()
+    {
+        AIFunction fn = AIFunctionFactory.Create((string city) => "x", name: "get_weather", description: "d");
+        var opts = new ChatOptions { Tools = [fn], ToolMode = ChatToolMode.RequireAny };
+
+        IReadOnlyList<LiteRtMessage> history = LiteRtChatMapping.WithRequiredToolInstruction([], opts);
+        LiteRtMessage sys = Assert.Single(history);
+        Assert.Equal(LiteRtMessageRole.System, sys.Role);
+        Assert.Contains("MUST use one of the available tools", sys.Text!);
+    }
+
+    [Fact]
+    public void WithRequiredToolInstruction_RequireSpecific_NamesTool_AndMergesIntoExistingSystem()
+    {
+        AIFunction fn = AIFunctionFactory.Create((string city) => "x", name: "get_weather", description: "d");
+        var opts = new ChatOptions { Tools = [fn], ToolMode = ChatToolMode.RequireSpecific("get_weather") };
+        IReadOnlyList<LiteRtMessage> baseHistory = [LiteRtMessage.System("Be concise."), LiteRtMessage.User("hi")];
+
+        IReadOnlyList<LiteRtMessage> history = LiteRtChatMapping.WithRequiredToolInstruction(baseHistory, opts);
+
+        Assert.Equal(2, history.Count);   // merged into the existing system message, not added as a second one
+        Assert.Equal(LiteRtMessageRole.System, history[0].Role);
+        Assert.Contains("Be concise.", history[0].Text!);
+        Assert.Contains("get_weather", history[0].Text!);
+    }
+
+    [Fact]
+    public void WithRequiredToolInstruction_AutoAndNone_LeaveHistoryUnchanged()
+    {
+        AIFunction fn = AIFunctionFactory.Create((string city) => "x", name: "get_weather", description: "d");
+        IReadOnlyList<LiteRtMessage> baseHistory = [LiteRtMessage.User("hi")];
+
+        Assert.Same(baseHistory, LiteRtChatMapping.WithRequiredToolInstruction(
+            baseHistory, new ChatOptions { Tools = [fn], ToolMode = ChatToolMode.Auto }));
+        Assert.Same(baseHistory, LiteRtChatMapping.WithRequiredToolInstruction(
+            baseHistory, new ChatOptions { Tools = [fn], ToolMode = ChatToolMode.None }));
+    }
+
     // ─────────────────────── Multimodal (image / audio) ───────────────────────
 
     [Fact]

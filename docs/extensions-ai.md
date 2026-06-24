@@ -128,6 +128,22 @@ constraint-provider bug, [google-ai-edge/LiteRT-LM#2149](https://github.com/goog
 leave it off there — tools still work, arguments are just not grammar-constrained. On a plain `ChatOptions`,
 set the `enable_constrained_decoding` key in `AdditionalProperties` instead.
 
+**Tool choice (`ChatOptions.ToolMode`).** The native API has no `tool_choice` parameter (the model always
+decides), so the connector emulates the MEAI modes as best it can:
+
+| `ToolMode` | Behavior |
+|---|---|
+| `Auto` (default) | All tools are offered; the model decides whether to call one. |
+| `None` | **No** tools are offered, so the model can't call any. |
+| `RequireAny` | All tools offered **+ a system-prompt instruction** to call one — *best-effort*. |
+| `RequireSpecific(name)` | **Only that tool** is offered, plus the instruction naming it — *best-effort*. |
+
+`RequireAny` / `RequireSpecific` are **best-effort, not a guarantee**: unlike a cloud API's server-enforced
+`tool_choice: "required"`, the connector can only *instruct* the on-device model (and narrow the tool list) —
+the decoder isn't forced. In practice a capable model calls the tool when the request is plausibly related to
+it, but may ignore the instruction for a clearly-unrelated prompt. (Semantic Kernel's
+`FunctionChoiceBehavior.Auto()/None()/Required()` map to these same modes.)
+
 > The native [LiteRtLmSharp tools API](../README.md#function-calling) is still available for full control
 > (constrained decoding, custom tool-call parsing); the chat client is the MEAI-idiomatic path on top of it.
 
