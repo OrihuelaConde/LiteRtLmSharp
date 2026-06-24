@@ -6,6 +6,53 @@ LiteRT-LM native version it wraps (see the compatibility table in the [README](R
 managed `LiteRtLmSharp` package and every `LiteRtLmSharp.runtime.<rid>` package share one version and
 are published together.
 
+## [Unreleased]
+
+### Added
+
+- **.NET AI ecosystem integration (two optional companion packages).** An on-device model can now be plugged
+  into the .NET AI stack:
+  - **`LiteRtLmSharp.Extensions.AI`** exposes the model as a `Microsoft.Extensions.AI.IChatClient`
+    (`LiteRtChatClient`) — the provider-agnostic chat abstraction that underpins both Semantic Kernel and the
+    Microsoft Agent Framework, so this one package makes the model usable from **Agent Framework**
+    (`new ChatClientAgent(client, …)`), **plain Microsoft.Extensions.AI** (the middleware pipeline, DI), and
+    Semantic Kernel. Blocking + streaming, with `AddLiteRtChatClient(engine | options)` DI registration.
+    Reasoning ("thinking") is surfaced as `TextReasoningContent` (excluded from `ChatResponse.Text`), and a
+    truncated answer (the reasoning consuming the output budget) is flagged with a `Length` finish reason.
+    `ChatResponse.Usage` is populated: `TotalTokenCount` always (free), with the `InputTokenCount`/`OutputTokenCount`
+    split when the engine is loaded with `EnableBenchmark = true` (a note on `response.AdditionalProperties` says
+    so when it is off). Depends only on lightweight abstractions — `Microsoft.Extensions.AI.Abstractions` and
+    `Microsoft.Extensions.DependencyInjection.Abstractions` (+ the core `LiteRtLmSharp` package).
+  - **`LiteRtLmSharp.SemanticKernel`** adds the model to [Semantic Kernel](https://learn.microsoft.com/semantic-kernel/overview/)
+    as an `IChatCompletionService` via `builder.AddLiteRtChatCompletion(engine | options)`. It is a thin layer
+    over the `IChatClient` (exposed through SK's `AsChatCompletionService` adapter), with a
+    `LiteRtPromptExecutionSettings` (temperature / top-p / top-k / max-tokens / seed / thinking / constrained
+    decoding) whose knobs flow through SK's `PromptExecutionSettings → ChatOptions` conversion. Depends on
+    `LiteRtLmSharp.Extensions.AI` + `Microsoft.SemanticKernel.Abstractions` + `Microsoft.Extensions.AI`.
+  - **Function calling** is supported on both connectors: function tools in `ChatOptions.Tools` are passed to
+    the model and the model's tool calls surface as `FunctionCallContent`, so MEAI's `UseFunctionInvocation()`
+    and Semantic Kernel's `FunctionChoiceBehavior` auto-invoke your functions and feed the results back. (The SK
+    connector wraps the client with MEAI's function-invocation middleware, since SK's `AsChatCompletionService`
+    adapter does not run the auto-invoke loop itself.) Opt-in `EnableConstrainedDecoding` (off by default; blocked
+    on linux-x64) makes small models emit valid tool-call arguments. `ChatOptions.ToolMode` /
+    `FunctionChoiceBehavior` is honored: `None` offers no tools; `RequireAny`/`RequireSpecific` are best-effort
+    (the connector instructs the model and narrows the offered tools, but the on-device decoder can't be *forced*
+    like a cloud `tool_choice: required`).
+  - **Multimodal** (image / audio) is supported on both connectors: image/audio content on the final user
+    message — a MEAI `DataContent` (inline bytes) or file-path `UriContent`, or a Semantic Kernel
+    `ImageContent` / `AudioContent` (which the SK adapter forwards as `DataContent`) — is sent to the model as
+    an attachment. Requires the engine loaded with the matching modality (`LiteRtEngineOptions.VisionBackend` /
+    `AudioBackend`) on a multimodal model; only the triggering turn's media is sent (the stateless connector
+    restores prior turns as text).
+  - Both connectors are **stateless** (a fresh `LiteRtConversation` is rebuilt from the supplied history each
+    call, prior turns replayed through prefill) and serialize calls (one live engine per process). Embeddings
+    remain unavailable while the C API exposes none (v0.13.1). A console sample is in
+    [`samples/SemanticKernel`](samples/SemanticKernel) (prompt function, streaming, multi-turn chat, function
+    calling); guides: [docs/extensions-ai.md](docs/extensions-ai.md) and [docs/semantic-kernel.md](docs/semantic-kernel.md).
+    Validated end-to-end on win-x64 CPU and GPU/WebGPU with gemma-4-E2B-it; mapping/settings/registration logic is
+    unit-tested model-free in CI, with gated model-backed tests (chat blocking/streaming, multi-turn history replay,
+    reasoning + truncation, function calling for both MEAI and SK, and image/audio attachments) under `LITERTLM_TEST_MODEL`.
+
 ## [0.1.0-preview.3] — 2026-06-20
 
 Built against **LiteRT-LM v0.13.1** (same native binaries as preview.2 — this release is binding

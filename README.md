@@ -138,7 +138,9 @@ raw `ExtraContext` (a JSON-object string) escape hatch; on a model whose templat
 `enable_thinking` it is a harmless no-op.
 
 See [`samples/Console`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/Console)
-for a runnable demo (`--tools` for the function-calling loop, `--spec` for speculative decoding, `--thinking` for reasoning mode) and
+for a runnable demo (`--tools` for the function-calling loop, `--spec` for speculative decoding, `--thinking` for reasoning mode),
+[`samples/SemanticKernel`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/SemanticKernel)
+for the [.NET AI integrations](#net-ai-integrations-microsoftextensionsai-semantic-kernel-agent-framework), and
 [`samples/Maui`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/Maui) for a
 full Android/Windows chat app with model download, streaming, tools, plus speculative-decoding and reasoning-mode toggles.
 
@@ -255,6 +257,53 @@ if (chat.TokenCount + next > contextWindow - replyHeadroom)
 `Tokenize` counts the raw text; for the exact per-turn cost with the chat template included, render the
 message first with `chat.RenderMessage(text)` (it returns the templated prompt without sending), then
 tokenize that: `engine.Tokenize(chat.RenderMessage(text)).Length`.
+
+### .NET AI integrations (Microsoft.Extensions.AI, Semantic Kernel, Agent Framework)
+
+Two optional companion packages plug an on-device model into the .NET AI ecosystem. Each depends only on the
+relevant abstractions, so apps that don't use them never pull them in.
+
+| Package | Exposes the model as | Works with |
+|---|---|---|
+| **`LiteRtLmSharp.Extensions.AI`** | `Microsoft.Extensions.AI.IChatClient` | Microsoft Agent Framework, Semantic Kernel, plain MEAI (middleware/DI) |
+| **`LiteRtLmSharp.SemanticKernel`** | `IChatCompletionService` (a thin layer over the `IChatClient`) | Semantic Kernel |
+
+`IChatClient` is the .NET ecosystem's provider-agnostic chat abstraction (the foundation under both Semantic
+Kernel and the [Microsoft Agent Framework](https://learn.microsoft.com/agent-framework/)), so the
+Extensions.AI package is the broadest integration; the Semantic Kernel package builds on it.
+
+```csharp
+// Microsoft.Extensions.AI — works with Agent Framework, Semantic Kernel and MEAI:
+using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+{
+    ModelPath = "gemma-4-E2B-it.litertlm", Backend = "cpu", MaxNumTokens = 4096,
+});
+using IChatClient client = new LiteRtChatClient(engine);
+Console.WriteLine((await client.GetResponseAsync("Write one upbeat sentence about on-device AI.")).Text);
+
+// var agent = new ChatClientAgent(client, "You are helpful.");   // Microsoft Agent Framework
+```
+
+```csharp
+// Semantic Kernel — one call registers the model (and the underlying IChatClient):
+var builder = Kernel.CreateBuilder();
+builder.AddLiteRtChatCompletion(new LiteRtEngineOptions
+{
+    ModelPath = "gemma-4-E2B-it.litertlm", Backend = "cpu", MaxNumTokens = 4096,
+});
+Kernel kernel = builder.Build();
+Console.WriteLine(await kernel.InvokePromptAsync("Write one upbeat sentence about on-device AI."));
+```
+
+Both connectors are **stateless** (a fresh conversation is rebuilt from the supplied history each call) and
+serialize calls (one engine per process). Reasoning ("thinking") is surfaced via `TextReasoningContent` on
+the `IChatClient`. **Function calling** is supported on both: the model's tool calls surface as
+`FunctionCallContent`, so MEAI's `UseFunctionInvocation()` and SK's `FunctionChoiceBehavior` auto-invoke your
+functions (enable `EnableConstrainedDecoding` for reliable arguments on small models). **Multimodal**
+(image/audio) is supported too — attach a `DataContent` / SK `ImageContent` to the user message on a model
+loaded with `VisionBackend` / `AudioBackend`. Embeddings aren't available (the C API exposes none). Full guides:
+[docs/extensions-ai.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/extensions-ai.md) and
+[docs/semantic-kernel.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/semantic-kernel.md).
 
 ## Why .NET 10 only?
 

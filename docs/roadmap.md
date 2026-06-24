@@ -1,6 +1,6 @@
 # Project status and roadmap
 
-Last updated: 2026-06-17. Source of truth for "what's done and what's pending".
+Last updated: 2026-06-22. Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -41,6 +41,7 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Multimodal messages (image/audio attachments, vision/audio backend, visual token budget) | ✅ |
 | Tokenize/detokenize + start/stop tokens (exact token counting, no inference) | ✅ |
 | Render a message to its templated prompt (`RenderMessage`) for debugging / exact-cost budgeting | ✅ |
+| .NET AI integrations: `Microsoft.Extensions.AI` `IChatClient` (+ Agent Framework) and a Semantic Kernel connector (separate packages) | ✅ |
 
 Known constraints (documented in the README): one engine ALIVE at a time (reloading after
 `Dispose` works — verified on win-x64 cpu→cpu and cpu→gpu; this is Edge Gallery's pattern for
@@ -211,6 +212,75 @@ drift). The remaining 22 group into the areas below, in suggested priority order
    SECURITY.md, Discussions enabled); scheduled smoke-test workflow that consumes the published
    packages from nuget.org; PR upstream to be listed among the language bindings (planned right
    after the nuget.org release).
+
+## Ecosystem integrations (.NET AI: MEAI / Semantic Kernel / Agent Framework)
+
+✅ (2026-06-22, IN WORKING TREE on `feature/semantic-kernel`, NOT committed yet). **Architecture pivot**:
+after research (Microsoft extracted the chat/embedding abstractions OUT of Semantic Kernel into
+`Microsoft.Extensions.AI` (MEAI); SK is now succeeded by the **Microsoft Agent Framework (MAF)**, and BOTH SK
+and MAF consume MEAI's `IChatClient` — MAF has NO own provider abstraction, it uses `IChatClient`). So the
+durable integration for a model provider is `IChatClient`, not an SK-specific connector. Two packages:
+
+- **`LiteRtLmSharp.Extensions.AI`** (the foundation; deps: `LiteRtLmSharp` +
+  `Microsoft.Extensions.AI.Abstractions` 10.7.0 + `Microsoft.Extensions.DependencyInjection.Abstractions`).
+  `LiteRtChatClient : IChatClient` (`GetResponseAsync`/`GetStreamingResponseAsync`/`GetService`), blocking +
+  streaming. Works directly with MAF (`new ChatClientAgent(client)`), MEAI middleware (`UseFunctionInvocation`
+  etc.), and SK. DI: `AddLiteRtChatClient(engine | options[, eager])` registers a shared `IChatClient`
+  (TryAdd, idempotent — one engine/process). **Reasoning surfaced as `TextReasoningContent`** (excluded from
+  `ChatResponse.Text`); **truncation signal**: empty answer + reasoning ⇒ `FinishReason = Length` (reasoning
+  shares the `MaxOutputTokens` budget — small budget + thinking = empty answer, symmetric blocking/streaming).
+  **Usage**: `ChatResponse.Usage.TotalTokenCount` always (from `conv.TokenCount`, free); `Input`/`OutputTokenCount`
+  only when the engine has `EnableBenchmark = true` (else a `litertlm.usage_note` is left on `AdditionalProperties`).
+- **`LiteRtLmSharp.SemanticKernel`** (thin over the above; deps: `LiteRtLmSharp` + `LiteRtLmSharp.Extensions.AI`
+  + `Microsoft.SemanticKernel.Abstractions` 1.77.0 + `Microsoft.Extensions.AI` for the function-invocation
+  middleware). `AddLiteRtChatCompletion(engine | options[, modelId, serviceId, eager])` on
+  `IKernelBuilder`/`IServiceCollection`: registers the `IChatClient` and exposes it (wrapped with
+  `UseFunctionInvocation` for function calling) as `IChatCompletionService` via SK's `AsChatCompletionService`
+  adapter. `LiteRtPromptExecutionSettings`
+  (temperature/top_p/top_k/max_tokens/seed/enable_thinking/enable_constrained_decoding) stores its knobs in
+  `ExtensionData` under the keys SK's `PES→ChatOptions` converter reads (confirmed against SK source), so they
+  flow through the adapter.
+  **ITextGenerationService DROPPED** (legacy; chat-centric stack). **SK-adapter caveat (verified): the SK
+  adapter does NOT surface `TextReasoningContent` or `FinishReason`** — only `ChatMessageContent.InnerContent`
+  carries the native `LiteRtResponse`. So rich reasoning/truncation handling is done via the `IChatClient`
+  (resolve `kernel.Services.GetRequiredService<IChatClient>()`).
+
+**Stateless mapping** (both): each call rebuilds a fresh `LiteRtConversation` (prior turns → `History` prefill,
+final user turn → `Send`); `SemaphoreSlim`-serialized. Wired into `LiteRtLmSharp.slnx`, `ci.yml` (builds the
+sample + model-free tests), `pack-nuget.yml` (packs both), `samples/LiteRtLmSharp.Samples.slnx`. Console sample
+`samples/SemanticKernel` (pure SK — InvokePrompt + streaming + multi-turn + function calling) validated
+end-to-end on win-x64 CPU and GPU/WebGPU. Gated model-backed tests (`LITERTLM_TEST_MODEL`): chat
+blocking/streaming + multi-turn history replay (both MEAI and SK paths), reasoning surfacing + truncation, and
+function calling (MEAI `UseFunctionInvocation` blocking + streaming, SK `FunctionChoiceBehavior.Auto`), and
+image/audio attachments (`LITERTLM_TEST_VISION=1`). Guides:
+[extensions-ai.md](extensions-ai.md), [semantic-kernel.md](semantic-kernel.md).
+
+**Function calling (DONE, 2026-06-23).** Implemented ONCE in the `IChatClient`, inherited by SK and MAF:
+`ChatOptions.Tools` (AIFunction) → `LiteRtTool` (schema = `AIFunction.JsonSchema`), the model's native tool
+calls → `FunctionCallContent` (+ `FinishReason.ToolCalls`), and a tool-message continuation → native
+`SendToolResults` (the assistant tool-call turn is restored as history; `FunctionResultContent.CallId` →
+native tool name via a call-id↔name map). MEAI's `UseFunctionInvocation()` drives it directly. For SK, an
+empirical probe proved the `AsChatCompletionService` adapter passes the kernel functions as tools but does NOT
+run the auto-invoke loop, so `AddLiteRtChatCompletion` wraps the client with `UseFunctionInvocation` (no-op
+when a request has no tools). Opt-in `EnableConstrainedDecoding` (off by default; blocked on linux-x64 per
+the core guard) makes small models emit valid tool-call arguments — used in the gated tests/sample off-Linux.
+Streaming surfaces tool-call chunks as `FunctionCallContent` updates; the post-tool continuation uses a
+blocking `SendToolResults` fallback (no native streaming tool-results call). `ChatOptions.ToolMode` /
+`FunctionChoiceBehavior` honored: `None` → no tools offered; `RequireAny`/`RequireSpecific` → best-effort
+(system-prompt instruction + offering only the named tool; the native API has no `tool_choice`, so it nudges
+but can't force — verified: gemma-4 calls the required tool for a related prompt, ignores it for an unrelated
+one). The `FunctionInvokingChatClient` loop resets `Required`→`null` after the first turn, so no infinite loop.
+Gated tests pass end-to-end on win-x64 (gemma-4-E2B-it) for MEAI (blocking + streaming) and SK
+(`FunctionChoiceBehavior.Auto`).
+
+**Multimodal (DONE, 2026-06-23).** Image/audio on the final user message maps to native `LiteRtAttachment`:
+MEAI `DataContent` (inline bytes) / file-path `UriContent`, or Semantic Kernel `ImageContent`/`AudioContent`
+(an empirical probe confirmed SK's `AsChatCompletionService` forwards these as MEAI `DataContent`, media type
+preserved). `conv.Send(text, attachments)` / streaming overload. Requires the engine loaded with
+`VisionBackend`/`AudioBackend`; only the triggering turn's media is sent (history restored as text); remote
+(non-file) URIs skipped. Gated tests pass on win-x64 (vision + audio, `LITERTLM_TEST_VISION=1`). No sample
+change (per the user). Remaining: embeddings blocked (no C-API embeddings at v0.13.1). **Neither companion is
+AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AOT guarantee.
 
 ## Watchlist (re-check periodically)
 

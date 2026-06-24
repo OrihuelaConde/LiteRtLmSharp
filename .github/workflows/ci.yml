@@ -69,6 +69,8 @@ jobs:
         run: |
           dotnet build LiteRtLmSharp.slnx -c Release
           dotnet build samples/Console/LiteRtLmSharp.Sample.csproj -c Release
+          # The Semantic Kernel sample builds with the bare SDK too (no MAUI workloads needed).
+          dotnet build samples/SemanticKernel/LiteRtLmSharp.Sample.SemanticKernel.csproj -c Release
 
       - name: Test (interop tests load the native lib; model tests auto-skip)
         run: dotnet test LiteRtLmSharp.Tests/LiteRtLmSharp.Tests.csproj -c Release --no-build --logger "console;verbosity=normal"

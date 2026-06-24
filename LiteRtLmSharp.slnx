@@ -2,6 +2,8 @@
   <!-- Library + tests + packaging only: builds with the bare .NET SDK (what CI uses).
        Samples live in samples/LiteRtLmSharp.Samples.slnx (the MAUI one needs MAUI workloads). -->
   <Project Path="LiteRtLmSharp/LiteRtLmSharp.csproj" />
+  <Project Path="LiteRtLmSharp.Extensions.AI/LiteRtLmSharp.Extensions.AI.csproj" />
+  <Project Path="LiteRtLmSharp.SemanticKernel/LiteRtLmSharp.SemanticKernel.csproj" />
   <Project Path="LiteRtLmSharp.Tests/LiteRtLmSharp.Tests.csproj" />
   <Project Path="packaging/LiteRtLmSharp.runtime.win-x64/LiteRtLmSharp.runtime.win-x64.csproj" />
   <Project Path="packaging/LiteRtLmSharp.runtime.linux-x64/LiteRtLmSharp.runtime.linux-x64.csproj" />

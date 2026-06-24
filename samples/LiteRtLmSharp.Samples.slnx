@@ -6,6 +6,8 @@
     builds with the bare .NET SDK and is what CI uses.
   -->
   <Project Path="../LiteRtLmSharp/LiteRtLmSharp.csproj" />
+  <Project Path="../LiteRtLmSharp.SemanticKernel/LiteRtLmSharp.SemanticKernel.csproj" />
   <Project Path="Console/LiteRtLmSharp.Sample.csproj" />
+  <Project Path="SemanticKernel/LiteRtLmSharp.Sample.SemanticKernel.csproj" />
   <Project Path="Maui/LiteRtLmSharp.SampleMaui.csproj" />
 </Solution>
