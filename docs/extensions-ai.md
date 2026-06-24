@@ -207,6 +207,33 @@ Only the **final** (triggering) user message's media is sent; media on earlier h
 (the stateless connector restores prior turns as text). Remote (non-`file://`) URIs are skipped — the
 on-device engine cannot fetch them, so supply bytes or a local file.
 
+## Token usage
+
+Every response carries `ChatResponse.Usage`. `TotalTokenCount` — the turn's prompt + reply, read from the
+conversation's KV cache — is **always set, at no cost**:
+
+```csharp
+ChatResponse response = await client.GetResponseAsync("Hello", options);
+long? total = response.Usage?.TotalTokenCount;   // e.g. to track how full the context window is
+```
+
+The input/output split (`InputTokenCount` / `OutputTokenCount`) is populated **only when the engine was loaded
+with `EnableBenchmark = true`** — it comes from the engine's benchmark counters (the overhead is just timing
+bookkeeping). Without it those stay `null`, and a note is left under `response.AdditionalProperties` (key
+`litertlm.usage_note`) explaining how to enable them:
+
+```csharp
+using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+{
+    ModelPath = "…", Backend = "cpu", EnableBenchmark = true,   // also enables Input/OutputTokenCount
+});
+// …
+long? input = response.Usage?.InputTokenCount;     // prefill tokens
+long? output = response.Usage?.OutputTokenCount;   // decode tokens
+```
+
+When streaming, the usage arrives as a final `UsageContent` update, which MEAI aggregates into the response's `Usage`.
+
 ## Design
 
 - **Stateless.** `IChatClient` hands the full message list every call, so the client rebuilds a *fresh*

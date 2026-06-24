@@ -41,6 +41,14 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// (<see cref="LiteRtEngineOptions.VisionBackend"/> / <see cref="LiteRtEngineOptions.AudioBackend"/>) on a
 /// multimodal model. Media on earlier (history) turns is not replayed — only the triggering turn's media is sent.
 /// </para>
+/// <para>
+/// <b>Token usage.</b> Each response carries <see cref="ChatResponse.Usage"/> with
+/// <see cref="UsageDetails.TotalTokenCount"/> always set (the turn's prompt + reply, read from the conversation
+/// at no cost). The input/output split — <see cref="UsageDetails.InputTokenCount"/> /
+/// <see cref="UsageDetails.OutputTokenCount"/> — is populated <b>only</b> when the engine was loaded with
+/// <see cref="LiteRtEngineOptions.EnableBenchmark"/> = <c>true</c>; otherwise those stay <c>null</c> and a note
+/// to that effect is left in <see cref="UsageDetails.AdditionalProperties"/>.
+/// </para>
 /// </remarks>
 public sealed class LiteRtChatClient : IChatClient
 {
@@ -120,6 +128,9 @@ public sealed class LiteRtChatClient : IChatClient
             // surface a Length finish reason so callers can detect it (and raise the budget) instead of a silent empty.
             if (finishReason is null && string.IsNullOrEmpty(response.Text) && response.Thinking is { Length: > 0 })
                 chatResponse.FinishReason = ChatFinishReason.Length;
+            chatResponse.Usage = ReadUsage(conv);
+            if (chatResponse.Usage.OutputTokenCount is null)
+                (chatResponse.AdditionalProperties ??= new())[LiteRtChatMapping.UsageBenchmarkNoteKey] = LiteRtChatMapping.UsageBenchmarkNote;
             return chatResponse;
         }
         finally
@@ -156,6 +167,7 @@ public sealed class LiteRtChatClient : IChatClient
                     () => conv.SendToolResults(trigger.ToolResults!), cancellationToken).ConfigureAwait(false);
                 foreach (ChatResponseUpdate update in ToUpdates(continuation))
                     yield return update;
+                yield return UsageUpdate(conv!);
                 yield break;
             }
 
@@ -216,12 +228,40 @@ public sealed class LiteRtChatClient : IChatClient
                     ModelId = ModelId,
                     FinishReason = ChatFinishReason.Length,
                 };
+
+            // Token usage (TotalTokenCount always; the input/output split only when EnableBenchmark is on).
+            yield return UsageUpdate(conv!);
         }
         finally
         {
             conv?.Dispose();
             _gate.Release();
         }
+    }
+
+    /// <summary>A final streaming update carrying the turn's token <see cref="UsageContent"/> (and, when the
+    /// input/output split is absent, the benchmark note in its <c>AdditionalProperties</c>).</summary>
+    private ChatResponseUpdate UsageUpdate(LiteRtConversation conv)
+    {
+        UsageDetails usage = ReadUsage(conv);
+        var update = new ChatResponseUpdate { Role = ChatRole.Assistant, ModelId = ModelId, Contents = [new UsageContent(usage)] };
+        if (usage.OutputTokenCount is null)
+            (update.AdditionalProperties ??= new())[LiteRtChatMapping.UsageBenchmarkNoteKey] = LiteRtChatMapping.UsageBenchmarkNote;
+        return update;
+    }
+
+    /// <summary>
+    /// Reads the just-completed turn's token usage off the (still-live) conversation. <c>TotalTokenCount</c>
+    /// is always set; <c>InputTokenCount</c>/<c>OutputTokenCount</c> are populated only when the engine was
+    /// loaded with <see cref="LiteRtEngineOptions.EnableBenchmark"/> = <c>true</c> (see
+    /// <see cref="LiteRtChatMapping.BuildUsage"/>).
+    /// </summary>
+    private static UsageDetails ReadUsage(LiteRtConversation conv)
+    {
+        LiteRtBenchmarkInfo? benchmark = null;
+        try { benchmark = conv.GetBenchmarkInfo(); }
+        catch (EntryPointNotFoundException) { /* native build predates the benchmark API → total-only */ }
+        return LiteRtChatMapping.BuildUsage(conv.TokenCount, benchmark);
     }
 
     /// <summary>Surfaces a blocking response (used for the function-calling continuation, which has no native

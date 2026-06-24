@@ -204,6 +204,39 @@ public sealed class ExtensionsAiModelTests
         Assert.False(string.IsNullOrWhiteSpace(sb.ToString()), "Expected a streamed final answer after the tool ran.");
     }
 
+    [SkippableFact]
+    public async Task ChatClient_Usage_TotalAlways_SplitWhenBenchmarkEnabled()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        var messages = new List<ChatMessage> { new(ChatRole.User, "Say hello in one short sentence.") };
+
+        // Default engine (EnableBenchmark off): TotalTokenCount is set; the input/output split is absent and a
+        // discoverability note is left on the response.
+        using (var engine = LiteRtEngine.Load(Options()))
+        using (IChatClient client = new LiteRtChatClient(engine))
+        {
+            ChatResponse r = await client.GetResponseAsync(messages, new ChatOptions { MaxOutputTokens = 24 });
+            Assert.NotNull(r.Usage);
+            Assert.True(r.Usage!.TotalTokenCount > 0);
+            Assert.Null(r.Usage.OutputTokenCount);
+            Assert.True(r.AdditionalProperties?.ContainsKey(LiteRtChatMapping.UsageBenchmarkNoteKey) == true);
+        }
+
+        // EnableBenchmark on: the input/output split is populated.
+        using (var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = Model!, Backend = Backend, MaxNumTokens = 2048, EnableBenchmark = true,
+        }))
+        using (IChatClient client = new LiteRtChatClient(engine))
+        {
+            ChatResponse r = await client.GetResponseAsync(messages, new ChatOptions { MaxOutputTokens = 24 });
+            Assert.True(r.Usage!.InputTokenCount > 0, "Expected prefill tokens with EnableBenchmark on.");
+            Assert.True(r.Usage.OutputTokenCount > 0, "Expected decode tokens with EnableBenchmark on.");
+        }
+    }
+
     // ─────────────────────── Multimodal (image / audio) ───────────────────────
     // Gated additionally on LITERTLM_TEST_VISION=1 because they need a vision/audio-capable model and the
     // engine loaded with the matching backend (the connector just maps DataContent -> LiteRtAttachment).

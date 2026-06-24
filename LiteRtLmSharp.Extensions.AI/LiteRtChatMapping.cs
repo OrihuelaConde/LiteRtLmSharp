@@ -266,6 +266,36 @@ internal static class LiteRtChatMapping
         return list;
     }
 
+    /// <summary>The <c>AdditionalProperties</c> key (on the <see cref="ChatResponse"/> / <see cref="ChatResponseUpdate"/>)
+    /// under which the connector leaves <see cref="UsageBenchmarkNote"/> when the input/output token split is absent
+    /// (<see cref="UsageDetails"/> has no property bag of its own).</summary>
+    public const string UsageBenchmarkNoteKey = "litertlm.usage_note";
+
+    /// <summary>The hint left under <see cref="UsageBenchmarkNoteKey"/> explaining why the input/output token split
+    /// is missing and how to get it.</summary>
+    public const string UsageBenchmarkNote =
+        "UsageDetails.InputTokenCount/OutputTokenCount are null because the engine was not loaded with " +
+        "LiteRtEngineOptions.EnableBenchmark = true; only TotalTokenCount is available without it.";
+
+    /// <summary>
+    /// Builds the token <see cref="UsageDetails"/> for a completed turn. <paramref name="totalTokens"/> (the
+    /// conversation's KV-cache size = prompt + reply, from <see cref="LiteRtConversation.TokenCount"/>) is always
+    /// set, at no cost. The input/output split (<see cref="UsageDetails.InputTokenCount"/> /
+    /// <see cref="UsageDetails.OutputTokenCount"/>) is taken from <paramref name="benchmark"/> when present — which
+    /// requires the engine to have been loaded with <see cref="LiteRtEngineOptions.EnableBenchmark"/> = <c>true</c>;
+    /// when it is <c>null</c> those stay <c>null</c> (the caller leaves <see cref="UsageBenchmarkNote"/> nearby).
+    /// </summary>
+    public static UsageDetails BuildUsage(int totalTokens, LiteRtBenchmarkInfo? benchmark)
+    {
+        var usage = new UsageDetails { TotalTokenCount = totalTokens };
+        if (benchmark is not null)
+        {
+            usage.InputTokenCount = benchmark.LastPrefillTokenCount;
+            usage.OutputTokenCount = benchmark.LastDecodeTokenCount;
+        }
+        return usage;
+    }
+
     /// <summary>Maps the sampler knobs from <see cref="ChatOptions"/>, or <c>null</c> when none are set.</summary>
     private static SamplerParams? ToSampler(ChatOptions? o)
     {

@@ -296,6 +296,27 @@ public class ExtensionsAiMappingTests
             baseHistory, new ChatOptions { Tools = [fn], ToolMode = ChatToolMode.None }));
     }
 
+    // ─────────────────────── Token usage (ChatResponse.Usage) ───────────────────────
+
+    [Fact]
+    public void BuildUsage_NoBenchmark_SetsTotalOnly()
+    {
+        UsageDetails u = LiteRtChatMapping.BuildUsage(120, benchmark: null);
+        Assert.Equal(120L, u.TotalTokenCount!.Value);
+        Assert.Null(u.InputTokenCount);    // no split without benchmark
+        Assert.Null(u.OutputTokenCount);
+    }
+
+    [Fact]
+    public void BuildUsage_WithBenchmark_SplitsInputOutput()
+    {
+        var bench = new LiteRtBenchmarkInfo { LastPrefillTokenCount = 30, LastDecodeTokenCount = 90 };
+        UsageDetails u = LiteRtChatMapping.BuildUsage(120, bench);
+        Assert.Equal(120L, u.TotalTokenCount!.Value);
+        Assert.Equal(30L, u.InputTokenCount!.Value);
+        Assert.Equal(90L, u.OutputTokenCount!.Value);
+    }
+
     // ─────────────────────── Multimodal (image / audio) ───────────────────────
 
     [Fact]

@@ -229,6 +229,8 @@ durable integration for a model provider is `IChatClient`, not an SK-specific co
   (TryAdd, idempotent — one engine/process). **Reasoning surfaced as `TextReasoningContent`** (excluded from
   `ChatResponse.Text`); **truncation signal**: empty answer + reasoning ⇒ `FinishReason = Length` (reasoning
   shares the `MaxOutputTokens` budget — small budget + thinking = empty answer, symmetric blocking/streaming).
+  **Usage**: `ChatResponse.Usage.TotalTokenCount` always (from `conv.TokenCount`, free); `Input`/`OutputTokenCount`
+  only when the engine has `EnableBenchmark = true` (else a `litertlm.usage_note` is left on `AdditionalProperties`).
 - **`LiteRtLmSharp.SemanticKernel`** (thin over the above; deps: `LiteRtLmSharp` + `LiteRtLmSharp.Extensions.AI`
   + `Microsoft.SemanticKernel.Abstractions` 1.77.0 + `Microsoft.Extensions.AI` for the function-invocation
   middleware). `AddLiteRtChatCompletion(engine | options[, modelId, serviceId, eager])` on

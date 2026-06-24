@@ -167,7 +167,8 @@ not a connector bug.
 
 A caveat specific to the Semantic Kernel path: SK's `IChatCompletionService` adapter does **not** surface the
 reasoning trace or a truncation signal — `kernel.InvokePromptAsync` / `GetChatMessageContentsAsync` return
-just the answer text (empty when the reasoning ate the budget). The underlying
+just the answer text (empty when the reasoning ate the budget). (Token usage, by contrast, *does* flow through —
+SK exposes it on the result's metadata; see [Token usage](extensions-ai.md#token-usage).) The underlying
 [Microsoft.Extensions.AI `IChatClient`](extensions-ai.md) does surface both: the reasoning as a
 `TextReasoningContent` (excluded from `ChatResponse.Text`), and a `ChatResponse.FinishReason` of `Length`
 when the answer was truncated. The same registration provides it, so resolve it from the kernel when you need
