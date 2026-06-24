@@ -1,6 +1,6 @@
 # Project status and roadmap
 
-Last updated: 2026-06-22. Source of truth for "what's done and what's pending".
+Last updated: 2026-06-24. Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -187,7 +187,7 @@ drift). The remaining 22 group into the areas below, in suggested priority order
 6. **Optional**: binding coverage push per the "C API coverage" section above. **The high-value group is
    now complete** — ✅ history restore + clone (2026-06-16), ✅ cache dir + ✅ speculative decoding
    (2026-06-15), ✅ multimodal image/audio (2026-06-17), ✅ tokenizer surface (exact token counting,
-   2026-06-19; 61/89 bound). **Multimodal is validated cross-platform** (`model-tests.yml` run 27712370474, 2026-06-17):
+   2026-06-19; cumulative **67/89** at preview.3). **Multimodal is validated cross-platform** (`model-tests.yml` run 27712370474, 2026-06-17):
    vision **and** audio pass on the CPU leg of **linux-x64, win-x64 and osx-arm64**, and vision passes on
    the **osx-arm64 GPU** leg (WebGPU→Metal). Audio-on-GPU does NOT run because **gemma-4's audio sub-model
    is CPU-constrained** (the model declares "requires one of [cpu]"); the macOS GPU leg's audio test skips
@@ -215,7 +215,8 @@ drift). The remaining 22 group into the areas below, in suggested priority order
 
 ## Ecosystem integrations (.NET AI: MEAI / Semantic Kernel / Agent Framework)
 
-✅ (2026-06-22, IN WORKING TREE on `feature/semantic-kernel`, NOT committed yet). **Architecture pivot**:
+✅ **Merged to `master` on 2026-06-24** (PR #2, commits `4bef780`→`083675b`); not yet published to NuGet —
+the next release (preview.4) ships it. **Architecture pivot**:
 after research (Microsoft extracted the chat/embedding abstractions OUT of Semantic Kernel into
 `Microsoft.Extensions.AI` (MEAI); SK is now succeeded by the **Microsoft Agent Framework (MAF)**, and BOTH SK
 and MAF consume MEAI's `IChatClient` — MAF has NO own provider abstraction, it uses `IChatClient`). So the
@@ -283,6 +284,14 @@ change (per the user). Remaining: embeddings blocked (no C-API embeddings at v0.
 AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AOT guarantee.
 
 ## Watchlist (re-check periodically)
+
+**Last re-checked: 2026-06-24** — no actionable upstream change since the 2026-06-19 sweep. Still NO
+stable v0.14.x (only the `v0.14.0-alpha.0` pre-release, which ships just the `litert_lm_main.macos_arm64`
+CLI — nothing to repin to), so we stay pinned to v0.13.1; every issue below remains open with no new
+engagement. `main` is now ~121 commits ahead of v0.13.1 and active (22-24 Jun): a second GPU-cache fix
+(`0a6590988`, "Fixed the GPU cache file handling issue", 2026-06-23) touches
+`runtime/executor/llm_executor_settings_utils.cc` — the #2572 root-cause file — alongside `4aa96a019`;
+**diff both before dropping the `CacheDir` workaround once a stable v0.14.x tags.**
 
 - **[LiteRT-LM#2211](https://github.com/google-ai-edge/LiteRT-LM/issues/2211)** — GPU samplers
   missing `DT_NEEDED` (our patchelf is the workaround). If Google ships fixed prebuilts or a

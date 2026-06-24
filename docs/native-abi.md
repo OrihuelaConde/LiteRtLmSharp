@@ -11,7 +11,7 @@
 > all 5 platforms. Speculative decoding, the benchmark API, and the engine cache-dir setting were
 > bound on 2026-06-15; multimodal image/audio messages on 2026-06-17; the tokenizer surface
 > (tokenize/detokenize + start/stop tokens) on 2026-06-19 (see
-> [`roadmap.md`](roadmap.md) for the C-API coverage count, now 61/89, and the
+> [`roadmap.md`](roadmap.md) for the C-API coverage count, now 67/89, and the
 > [multimodal section](#multimodal-messages-image--audio--verified-wire-format) below). The notes
 > below are kept as a diagnostic record.
 >
