@@ -30,7 +30,7 @@ public sealed class LiteRtChatOptions : ChatOptions
     [JsonIgnore]
     public bool EnableThinking
     {
-        get => AdditionalProperties?.TryGetValue("enable_thinking", out object? v) == true && v is true;
+        get => AdditionalProperties?.TryGetValue("enable_thinking", out object? v) == true && LiteRtChatMapping.AsBool(v) == true;
         set => (AdditionalProperties ??= new AdditionalPropertiesDictionary())["enable_thinking"] = value;
     }
 
@@ -45,7 +45,7 @@ public sealed class LiteRtChatOptions : ChatOptions
     [JsonIgnore]
     public bool EnableConstrainedDecoding
     {
-        get => AdditionalProperties?.TryGetValue("enable_constrained_decoding", out object? v) == true && v is true;
+        get => AdditionalProperties?.TryGetValue("enable_constrained_decoding", out object? v) == true && LiteRtChatMapping.AsBool(v) == true;
         set => (AdditionalProperties ??= new AdditionalPropertiesDictionary())["enable_constrained_decoding"] = value;
     }
 }

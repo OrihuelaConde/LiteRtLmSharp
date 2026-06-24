@@ -236,13 +236,17 @@ internal static class LiteRtChatMapping
     /// </summary>
     public static string? RequiredToolInstruction(ChatOptions? o)
     {
-        if (o?.Tools is not { Count: > 0 } || o.ToolMode is not RequiredChatToolMode required)
+        if (o?.Tools is not { Count: > 0 } tools || o.ToolMode is not RequiredChatToolMode required)
             return null;
         // Emphatic phrasing (MUST / DO NOT) is a recognized instruction-following nudge; it is best-effort and
         // a starting point to refine, not a guarantee on a small on-device model.
-        return required.RequiredFunctionName is { Length: > 0 } name
-            ? $"You MUST use the `{name}` tool to answer this request. DO NOT reply with plain text."
-            : "You MUST use one of the available tools to answer this request. DO NOT reply with plain text.";
+        if (required.RequiredFunctionName is { Length: > 0 } name)
+            // Only require the named tool if it is actually offered — RequireSpecific with a missing name leaves
+            // ToTools advertising nothing, so a "you MUST use foo" instruction would be misleading.
+            return tools.OfType<AIFunction>().Any(f => f.Name == name)
+                ? $"You MUST use the `{name}` tool to answer this request. DO NOT reply with plain text."
+                : null;
+        return "You MUST use one of the available tools to answer this request. DO NOT reply with plain text.";
     }
 
     /// <summary>
@@ -324,12 +328,18 @@ internal static class LiteRtChatMapping
         => GetBoolProperty(o, "enable_constrained_decoding") ?? false;
 
     private static bool? GetBoolProperty(ChatOptions? o, string key)
+        => o?.AdditionalProperties is { } props && props.TryGetValue(key, out object? v) ? AsBool(v) : null;
+
+    /// <summary>Coerces a boolean flag stored in a property bag, tolerating the boxed <see cref="bool"/> the typed
+    /// setters write, a <see cref="string"/>, and a <see cref="JsonElement"/> (true/false, or a string) that arrives
+    /// when options are deserialized from JSON/YAML. Shared so every reader (and <see cref="LiteRtChatOptions"/>) agrees.</summary>
+    internal static bool? AsBool(object? v) => v switch
     {
-        if (o?.AdditionalProperties is { } props && props.TryGetValue(key, out object? v))
-        {
-            if (v is bool b) return b;
-            if (v is string s && bool.TryParse(s, out bool parsed)) return parsed;
-        }
-        return null;
-    }
+        bool b => b,
+        string s when bool.TryParse(s, out bool r) => r,
+        JsonElement { ValueKind: JsonValueKind.True } => true,
+        JsonElement { ValueKind: JsonValueKind.False } => false,
+        JsonElement { ValueKind: JsonValueKind.String } e when bool.TryParse(e.GetString(), out bool r) => r,
+        _ => null,
+    };
 }

@@ -6,8 +6,9 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// <summary>
 /// A <see cref="IChatClient"/> (Microsoft.Extensions.AI) backed by a LiteRtLmSharp on-device model. This is
 /// the framework-agnostic integration: the same instance works with Microsoft Agent Framework
-/// (<c>new ChatClientAgent(client, …)</c>), Semantic Kernel (<c>services.AddChatClient(client)</c>), and any
-/// other <see cref="IChatClient"/> consumer or middleware pipeline.
+/// (<c>new ChatClientAgent(client, …)</c>), Semantic Kernel (via the <c>LiteRtLmSharp.SemanticKernel</c>
+/// connector's <c>AddLiteRtChatCompletion</c> / <c>AsChatCompletionService</c>), and any other
+/// <see cref="IChatClient"/> consumer or middleware pipeline.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -135,7 +136,7 @@ public sealed class LiteRtChatClient : IChatClient
         }
         finally
         {
-            _gate.Release();
+            ReleaseGate();
         }
     }
 
@@ -235,7 +236,7 @@ public sealed class LiteRtChatClient : IChatClient
         finally
         {
             conv?.Dispose();
-            _gate.Release();
+            ReleaseGate();
         }
     }
 
@@ -332,5 +333,13 @@ public sealed class LiteRtChatClient : IChatClient
         if (_disposed) return;
         _disposed = true;
         _gate.Dispose();
+    }
+
+    /// <summary>Releases the gate, tolerating a disposal that raced an in-flight call (the contract is to
+    /// serialize calls and not dispose while one is running, but a finally must never throw over the real result).</summary>
+    private void ReleaseGate()
+    {
+        try { _gate.Release(); }
+        catch (ObjectDisposedException) { }
     }
 }

@@ -296,6 +296,31 @@ public class ExtensionsAiMappingTests
             baseHistory, new ChatOptions { Tools = [fn], ToolMode = ChatToolMode.None }));
     }
 
+    // ─────────────────────── Bool-flag coercion parity ───────────────────────
+
+    [Fact]
+    public void AsBool_ToleratesBool_String_AndJsonElement()
+    {
+        Assert.True(LiteRtChatMapping.AsBool(true));
+        Assert.True(LiteRtChatMapping.AsBool("true"));
+        using var jbool = JsonDocument.Parse("true");
+        Assert.True(LiteRtChatMapping.AsBool(jbool.RootElement));           // JsonElement true
+        using var jstr = JsonDocument.Parse("\"true\"");
+        Assert.True(LiteRtChatMapping.AsBool(jstr.RootElement));            // JsonElement "true" (string)
+        Assert.Null(LiteRtChatMapping.AsBool(123));                        // unrelated → null
+    }
+
+    [Fact]
+    public void LiteRtChatOptions_EnableThinking_ReadsBackStringAndJsonElement()
+    {
+        // The getter must agree with the runtime reader (ToConversationOptions) — both go through AsBool now.
+        Assert.True(new LiteRtChatOptions { AdditionalProperties = new() { ["enable_thinking"] = "true" } }.EnableThinking);
+        using var doc = JsonDocument.Parse("true");
+        var opts = new LiteRtChatOptions { AdditionalProperties = new() { ["enable_thinking"] = doc.RootElement } };
+        Assert.True(opts.EnableThinking);
+        Assert.True(LiteRtChatMapping.ToConversationOptions([], opts)!.EnableThinking);   // runtime reader agrees
+    }
+
     // ─────────────────────── Token usage (ChatResponse.Usage) ───────────────────────
 
     [Fact]

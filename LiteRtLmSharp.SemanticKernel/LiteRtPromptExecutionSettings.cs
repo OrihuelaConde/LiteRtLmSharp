@@ -79,6 +79,7 @@ public sealed class LiteRtPromptExecutionSettings : PromptExecutionSettings
         long l => l,
         string s when float.TryParse(s, System.Globalization.CultureInfo.InvariantCulture, out float r) => r,
         JsonElement { ValueKind: JsonValueKind.Number } e => e.GetSingle(),
+        JsonElement { ValueKind: JsonValueKind.String } e when float.TryParse(e.GetString(), System.Globalization.CultureInfo.InvariantCulture, out float r) => r,
         _ => null,
     };
 
@@ -90,6 +91,7 @@ public sealed class LiteRtPromptExecutionSettings : PromptExecutionSettings
         double d => (int)d,
         string s when int.TryParse(s, System.Globalization.CultureInfo.InvariantCulture, out int r) => r,
         JsonElement { ValueKind: JsonValueKind.Number } e => e.GetInt32(),
+        JsonElement { ValueKind: JsonValueKind.String } e when int.TryParse(e.GetString(), System.Globalization.CultureInfo.InvariantCulture, out int r) => r,
         _ => null,
     };
 
@@ -99,6 +101,7 @@ public sealed class LiteRtPromptExecutionSettings : PromptExecutionSettings
         string s when bool.TryParse(s, out bool r) => r,
         JsonElement { ValueKind: JsonValueKind.True } => true,
         JsonElement { ValueKind: JsonValueKind.False } => false,
+        JsonElement { ValueKind: JsonValueKind.String } e when bool.TryParse(e.GetString(), out bool r) => r,
         _ => null,
     };
 }

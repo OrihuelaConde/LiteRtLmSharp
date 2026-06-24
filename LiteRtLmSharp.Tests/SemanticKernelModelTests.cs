@@ -84,6 +84,8 @@ public sealed class SemanticKernelModelTests
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
         Skip.If(OperatingSystem.IsLinux(),
             "EnableConstrainedDecoding (recommended with tools) is blocked on linux-x64 — see docs.");
+        Skip.If(Environment.GetEnvironmentVariable("LITERTLM_TEST_TOOLS") != "1",
+            "Set LITERTLM_TEST_TOOLS=1 (with a version-matched native binary) to run tool tests.");
 
         using var engine = LiteRtEngine.Load(Options());
 
@@ -113,6 +115,7 @@ public sealed class SemanticKernelModelTests
             "What is the weather in Paris? Use the get_weather tool.", new KernelArguments(settings));
 
         Assert.True(invocations >= 1, "Expected Semantic Kernel to auto-invoke the get_weather function.");
+        Assert.True(invocations <= 2, "Expected no double-invocation (one auto-invoke loop, at most one re-call).");
         Assert.Contains("paris", (cityArg ?? string.Empty).ToLowerInvariant());
         Assert.False(string.IsNullOrWhiteSpace(result.ToString()), "Expected a final answer after the function ran.");
     }

@@ -21,7 +21,8 @@ are published together.
     truncated answer (the reasoning consuming the output budget) is flagged with a `Length` finish reason.
     `ChatResponse.Usage` is populated: `TotalTokenCount` always (free), with the `InputTokenCount`/`OutputTokenCount`
     split when the engine is loaded with `EnableBenchmark = true` (a note on `response.AdditionalProperties` says
-    so when it is off). Depends only on `Microsoft.Extensions.AI.Abstractions` (+ the core `LiteRtLmSharp` package).
+    so when it is off). Depends only on lightweight abstractions — `Microsoft.Extensions.AI.Abstractions` and
+    `Microsoft.Extensions.DependencyInjection.Abstractions` (+ the core `LiteRtLmSharp` package).
   - **`LiteRtLmSharp.SemanticKernel`** adds the model to [Semantic Kernel](https://learn.microsoft.com/semantic-kernel/overview/)
     as an `IChatCompletionService` via `builder.AddLiteRtChatCompletion(engine | options)`. It is a thin layer
     over the `IChatClient` (exposed through SK's `AsChatCompletionService` adapter), with a

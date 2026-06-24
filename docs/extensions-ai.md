@@ -11,12 +11,13 @@ makes the model usable from:
 - **plain Microsoft.Extensions.AI** — the middleware pipeline (function invocation, caching, telemetry),
   dependency injection, ASP.NET Core, etc.
 
-This is the **foundation**: it depends only on `Microsoft.Extensions.AI.Abstractions`, and the Semantic
-Kernel connector is built on top of it.
+This is the **foundation**: it depends only on lightweight abstractions
+(`Microsoft.Extensions.AI.Abstractions` + `Microsoft.Extensions.DependencyInjection.Abstractions` for the DI
+helpers), and the Semantic Kernel connector is built on top of it.
 
 | Package | Depends on | Target |
 |---|---|---|
-| `LiteRtLmSharp.Extensions.AI` | `LiteRtLmSharp` (same version) + `Microsoft.Extensions.AI.Abstractions` 10.7.0 | `net10.0` |
+| `LiteRtLmSharp.Extensions.AI` | `LiteRtLmSharp` (same version) + `Microsoft.Extensions.AI.Abstractions` 10.7.0 + `Microsoft.Extensions.DependencyInjection.Abstractions` 10.0.9 | `net10.0` |
 
 ```xml
 <PackageReference Include="LiteRtLmSharp" Version="0.1.0-preview.3" />
