@@ -131,6 +131,27 @@ jobs:
             artifacts/*.nupkg
             artifacts/*.snupkg
 
+      # The GitHub release body is this version's CHANGELOG section, so the notes are readable on the
+      # release page itself. Runs BEFORE the NuGet push on purpose: a missing section fails the run
+      # while nothing has been published yet (NuGet versions are immutable).
+      - name: Prepare release notes from CHANGELOG
+        if: inputs.push
+        run: |
+          awk -v ver="${PKG_VERSION}" '
+            index($0, "## [" ver "]") == 1 { found=1; next }
+            found && index($0, "## [") == 1 { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if ! [ -s release-notes.md ]; then
+            echo "::error::CHANGELOG.md has no '## [${PKG_VERSION}]' section — add one before publishing."
+            exit 1
+          fi
+          {
+            echo "Published on [nuget.org](https://www.nuget.org/packages/LiteRtLmSharp/${PKG_VERSION}); the same .nupkg files are attached below. Native binaries: LiteRT-LM ${NATIVE_REF}."
+            cat release-notes.md
+          } > release-body.md
+          echo "release body: $(wc -l < release-body.md) lines"
+
       # Trusted Publishing: exchange the GitHub OIDC token for a 1-hour nuget.org API key
       # (policy configured on nuget.org under the OrihuelaConde account for this workflow file).
       - name: NuGet login (OIDC -> temp API key)
@@ -158,4 +179,4 @@ jobs:
             --repo "${{ github.repository }}" \
             --target "${GITHUB_SHA}" \
             --title "v${PKG_VERSION}" \
-            --notes "LiteRtLmSharp ${PKG_VERSION}, built against LiteRT-LM ${NATIVE_REF}. The packages are published on nuget.org; the same .nupkg files are attached here. Full notes: https://github.com/${{ github.repository }}/blob/master/CHANGELOG.md"
+            --notes-file release-body.md
