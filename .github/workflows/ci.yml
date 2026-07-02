@@ -97,6 +97,9 @@ jobs:
         run: |
           & ".github/aot-smoke/bin/Release/net10.0/win-x64/publish/AotSmoke.exe"
           if ($LASTEXITCODE -ne 42) { Write-Error "expected exit 42, got $LASTEXITCODE"; exit 1 }
+          # Exit 42 is the SUCCESS marker; without this, the runner's implicit pwsh epilogue
+          # (exit $LASTEXITCODE) would fail the step on our deliberately non-zero exit code.
+          exit 0
 
   # Model-backed tests against a real .litertlm model across all three OSes (linux/win/macOS CPU, plus
   # macOS GPU). Reuses model-tests.yml, which also stays runnable on demand for a single OS. Runs in
