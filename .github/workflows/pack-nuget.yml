@@ -21,6 +21,10 @@ on:
         description: 'Push packages to nuget.org (via Trusted Publishing — OIDC, no secret needed)'
         type: boolean
         default: false
+      include_ios:
+        description: 'Also pack LiteRtLmSharp.runtime.ios-arm64. Keep OFF until the package is validated on a real device (build/link CI only so far — see the roadmap iOS phase).'
+        type: boolean
+        default: false
 
 jobs:
   pack:
@@ -80,16 +84,17 @@ jobs:
             fi
           done
 
-          # iOS is special: it ships .xcframeworks (not a runtimes/<rid>/native dlopen layout),
-          # so extract at the rid ROOT — the tar carries an xcframeworks/ dir at its top level.
-          if [ -f "natives/litertlm-ios_arm64.tar.gz" ]; then
+          # iOS is special twice over: it ships .xcframeworks (not a runtimes/<rid>/native dlopen
+          # layout), so extract at the rid ROOT — and it is gated behind include_ios because the
+          # package is not device-validated yet (packing it with push=true would publish it).
+          if [ "${{ inputs.include_ios }}" = "true" ] && [ -f "natives/litertlm-ios_arm64.tar.gz" ]; then
             mkdir -p "runtimes/ios-arm64"
             tar -xzf "natives/litertlm-ios_arm64.tar.gz" -C "runtimes/ios-arm64"
             find "runtimes/ios-arm64" -name '._*' -delete
             rm -f "runtimes/ios-arm64"/*.dylib   # the tar also carries the raw dylibs; the package only ships the xcframeworks
             echo "ios-arm64:"; ls -R "runtimes/ios-arm64/xcframeworks" 2>/dev/null || echo "  (no xcframeworks/)"
           else
-            echo "ios-arm64: no asset — its runtime package will be skipped"
+            echo "ios-arm64: skipped (include_ios=${{ inputs.include_ios }}; not packed until device-validated)"
           fi
 
       - name: Pack
@@ -110,11 +115,12 @@ jobs:
               echo "skip LiteRtLmSharp.runtime.$rid (no natives)"
             fi
           done
-          # iOS: packs the .xcframeworks restored above (netstandard2.0 project, no Mac needed to pack).
+          # iOS: packs the .xcframeworks restored above (netstandard2.0 project, no Mac needed to
+          # pack). Only reachable with include_ios=true — see the input description.
           if [ -n "$(ls runtimes/ios-arm64/xcframeworks 2>/dev/null)" ]; then
             dotnet pack "packaging/LiteRtLmSharp.runtime.ios-arm64/LiteRtLmSharp.runtime.ios-arm64.csproj" $common
           else
-            echo "skip LiteRtLmSharp.runtime.ios-arm64 (no xcframeworks)"
+            echo "skip LiteRtLmSharp.runtime.ios-arm64 (include_ios off or no xcframeworks)"
           fi
           ls -lh artifacts/*.nupkg
 

@@ -6,7 +6,11 @@ LiteRT-LM native version it wraps (see the compatibility table in the [README](R
 managed `LiteRtLmSharp` package and every `LiteRtLmSharp.runtime.<rid>` package share one version and
 are published together.
 
-## [Unreleased]
+## [1.0.0] — 2026-07-02
+
+The first stable release: everything shipped in the `0.1.0-preview` line plus the changes below.
+Breaking changes for preview consumers are listed under **Changed**. Built against
+**LiteRT-LM v0.13.1** (same native binaries as preview.2/preview.3).
 
 ### Added
 
@@ -83,16 +87,26 @@ are published together.
 
 Surface clean-ups for the first stable release; source-breaking for preview consumers.
 
-- **One send family on `LiteRtConversation`.** `Send(text[, attachments])` returning `LiteRtResponse` is
-  the single blocking entry point: the string-returning `SendMessage(text[, attachments])` convenience is
-  removed — read the answer from `Send(...).Text` (tool calls and the reasoning trace live on the same
-  response, so nothing is silently dropped). `SendMessageStreamingAsync` is renamed to
-  `SendStreamingAsync` and `SendMessageRaw` to `SendRaw`, so the whole family shares the `Send` stem.
+- **One send family on `LiteRtConversation`.** `Send(text[, attachments[, options]])` returning
+  `LiteRtResponse` is the single blocking entry point: the string-returning
+  `SendMessage(text[, attachments])` convenience is removed — read the answer from `Send(...).Text`
+  (tool calls and the reasoning trace live on the same response, so nothing is silently dropped).
+  `SendMessageStreamingAsync` is renamed to `SendStreamingAsync` and `SendMessageRaw` to `SendRaw`, so
+  the whole family shares the `Send` stem. `attachments` is now uniformly nullable (null/empty =
+  text-only) across the blocking, async and streaming variants, and every send accepts an optional
+  **`LiteRtSendOptions`** — per-send settings (today `VisualTokenBudget`, overriding the
+  conversation-level value) with room for the per-send knobs future native versions add.
+- **`LiteRtEngineOptions.ModelPath` is no longer `required`** (it must still be set —
+  `LiteRtEngine.Load` throws when it is empty). This leaves room for alternate model sources (e.g. the
+  file-descriptor load newer native versions expose) to land as sibling properties without breaking.
 - **Sampler types renamed** to match the `LiteRt` prefix every other public type uses:
   `SamplerType` → `LiteRtSamplerType`, `SamplerParams` → `LiteRtSamplerParams`, and
-  `LiteRtSamplerParams.Type` → `.Strategy`. `LiteRtSamplerParams.Seed` is now `int?` (was `int`): `null`
-  (the new default) reseeds randomly each conversation instead of pinning the deterministic seed `0`; set a
-  value for reproducible output. `TopK`/`TopP`/`Temperature` now validate their range on assignment.
+  `LiteRtSamplerParams.Type` → `.Strategy`. The knobs now validate on assignment (`TopK` positive,
+  `TopP` in [0, 1], `Temperature` non-negative, NaN rejected). The defaults — `TopP`, 40, 0.95, 1.0,
+  seed 0 — are the same values Google's official bindings fill in, so a partial configuration behaves
+  identically across the LiteRT-LM ecosystem; seed 0 means sampling is **deterministic by default**
+  (identical context reproduces the identical reply) — pass e.g. `Random.Shared.Next()` for varied
+  output.
 - **Backends are a typed `LiteRtBackend`** smart enum (`Cpu` / `Gpu` / `Npu` / `Custom(string)` /
   `Parse(string)`) instead of magic strings. `LiteRtEngineOptions.Backend` is now `LiteRtBackend` (was
   `string`), and `VisionBackend` / `AudioBackend` are `LiteRtBackend?` (were `string?`; `null` still = off).
@@ -101,6 +115,10 @@ Surface clean-ups for the first stable release; source-breaking for preview cons
   replaced by `LiteRtEngineOptions.Cache`.
 - **Public enums carry explicit numeric values** (`LiteRtMessageRole`, `LiteRtAttachmentKind`,
   `LiteRtStreamChunkKind`) so inserting a member can't silently renumber the others.
+- **Construction-time validation tightened** where a bad value previously surfaced as an opaque native
+  failure: `LiteRtAttachment.Image/Audio` reject empty bytes, `LiteRtCache.Directory` rejects paths
+  starting with `':'` (reserved for the engine's special cache tokens), and `LiteRtBackend.Parse`
+  whitespace-normalizes custom values so `Parse(" xpu ")` equals `Parse("xpu")`.
 - **`LiteRtMessage.Deserialize` rejects unknown roles.** A message whose role is not
   `system`/`user`/`model` (or `assistant`)/`tool` now throws `ArgumentException` instead of being
   silently parsed as a user turn — on the recommended persistence path, failing loudly beats

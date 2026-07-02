@@ -1,14 +1,15 @@
 # LiteRtLmSharp
 
 [![CI](https://github.com/OrihuelaConde/LiteRtLmSharp/actions/workflows/ci.yml/badge.svg)](https://github.com/OrihuelaConde/LiteRtLmSharp/actions/workflows/ci.yml)
-[![NuGet](https://img.shields.io/nuget/vpre/LiteRtLmSharp)](https://www.nuget.org/packages/LiteRtLmSharp)
+[![NuGet](https://img.shields.io/nuget/v/LiteRtLmSharp)](https://www.nuget.org/packages/LiteRtLmSharp)
 
 .NET 10 bindings for [Google's LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) — on-device LLM
 inference (e.g. Gemma) for any .NET app, including MAUI. P/Invoke over LiteRT-LM's C API, with native
 binaries distributed per-RID as NuGet packages (LLamaSharp-style).
 
-> Status: **preview**. Chat, token streaming, function calling, multimodal (image/audio),
-> conversation restore/clone, reasoning mode, speculative decoding and benchmarking working.
+> Status: **stable (1.0)**. Chat (blocking, awaitable + cancellable, streaming), function calling,
+> multimodal (image/audio, including restored multi-turn history), conversation restore/clone,
+> reasoning mode, tokenizer, speculative decoding and benchmarking.
 >
 > | Platform | Native | NuGet | CPU | GPU | Validated on |
 > |---|:---:|:---:|:---:|:---:|---|
@@ -19,8 +20,8 @@ binaries distributed per-RID as NuGet packages (LLamaSharp-style).
 > | ios-arm64 | ✅ | ⏳ | — | — | pending |
 >
 > <sub>**CPU / GPU** = inference validated on that backend. macOS GPU runs in CI on the **WebGPU**
-> (Dawn→Metal) delegate; the native Metal delegate ships as a real-hardware fallback. iOS still
-> needs xcframework packaging.</sub>
+> (Dawn→Metal) delegate; the native Metal delegate ships as a real-hardware fallback. The iOS
+> runtime package ships once on-device validation lands.</sub>
 >
 > See the [roadmap](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md)
 > for the full status and pending work, and the
@@ -29,8 +30,8 @@ binaries distributed per-RID as NuGet packages (LLamaSharp-style).
 ## Quick start
 
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="0.1.0-preview.3" />
-<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="0.1.0-preview.3" />
+<PackageReference Include="LiteRtLmSharp" Version="1.0.0" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.0.0" />
 <!-- or LiteRtLmSharp.runtime.linux-x64 / android-arm64 / osx-arm64, per target -->
 ```
 
@@ -39,6 +40,7 @@ version number**. Which LiteRT-LM native build each release wraps:
 
 | LiteRtLmSharp | LiteRT-LM native |
 |---|---|
+| 1.0.0 | v0.13.1 |
 | 0.1.0-preview.3 | v0.13.1 |
 | 0.1.0-preview.2 | v0.13.1 |
 | 0.1.0-preview.1 | v0.13.1 |

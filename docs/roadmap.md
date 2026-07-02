@@ -1,6 +1,6 @@
 # Project status and roadmap
 
-Last updated: 2026-06-24. Source of truth for "what's done and what's pending".
+Last updated: 2026-07-02. Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -215,8 +215,8 @@ drift). The remaining 22 group into the areas below, in suggested priority order
 
 ## Ecosystem integrations (.NET AI: MEAI / Semantic Kernel / Agent Framework)
 
-✅ **Merged to `master` on 2026-06-24** (PR #2, commits `4bef780`→`083675b`); not yet published to NuGet —
-the next release (preview.4) ships it. **Architecture pivot**:
+✅ **Merged to `master` on 2026-06-24** (PR #2, commits `4bef780`→`083675b`); first published in
+**1.0.0**. **Architecture pivot**:
 after research (Microsoft extracted the chat/embedding abstractions OUT of Semantic Kernel into
 `Microsoft.Extensions.AI` (MEAI); SK is now succeeded by the **Microsoft Agent Framework (MAF)**, and BOTH SK
 and MAF consume MEAI's `IChatClient` — MAF has NO own provider abstraction, it uses `IChatClient`). So the
