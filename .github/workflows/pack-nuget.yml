@@ -30,7 +30,7 @@ jobs:
   pack:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write  # create the v<version> tag + GitHub release on push
       id-token: write  # OIDC token for nuget.org Trusted Publishing
     steps:
       - uses: actions/checkout@v4
@@ -145,3 +145,17 @@ jobs:
         run: |
           dotnet nuget push 'artifacts/*.nupkg' --api-key "${{ steps.nuget_login.outputs.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      # A real publish also tags the commit and opens a GitHub release carrying the same .nupkg files
+      # pushed to nuget.org (an auditable mirror; nuget.org stays the canonical source). Runs after the
+      # NuGet push so a failed push never leaves a tagged release without packages.
+      - name: Tag and publish the GitHub release
+        if: inputs.push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${PKG_VERSION}" artifacts/*.nupkg artifacts/*.snupkg \
+            --repo "${{ github.repository }}" \
+            --target "${GITHUB_SHA}" \
+            --title "v${PKG_VERSION}" \
+            --notes "LiteRtLmSharp ${PKG_VERSION}, built against LiteRT-LM ${NATIVE_REF}. The packages are published on nuget.org; the same .nupkg files are attached here. Full notes: https://github.com/${{ github.repository }}/blob/master/CHANGELOG.md"
