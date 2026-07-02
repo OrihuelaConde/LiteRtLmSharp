@@ -9,6 +9,9 @@ namespace LiteRtLmSharp.Native;
 /// libraries (e.g. libLiteRt) from the same folder with <c>RTLD_GLOBAL</c> so the main library's
 /// dependencies resolve without an rpath/LD_LIBRARY_PATH. On Windows same-directory resolution
 /// already works. Registered lazily from <see cref="LiteRtEngine"/>'s static constructor.
+/// When the library cannot be resolved, throws a <see cref="DllNotFoundException"/> whose message
+/// names the fix: the missing <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package for this process's
+/// RID, or — when the binary exists but fails to load — the usual system prerequisites.
 /// </summary>
 internal static partial class NativeLibraryResolver
 {
@@ -43,6 +46,7 @@ internal static partial class NativeLibraryResolver
         }
 
         string fileName = GetPlatformFileName(libraryName);
+        string? foundButFailed = null;
 
         foreach (string dir in CandidateDirectories())
         {
@@ -53,11 +57,45 @@ internal static partial class NativeLibraryResolver
             PreloadCompanions(dir, fileName);
             if (NativeLibrary.TryLoad(main, out nint handle))
                 return handle;
+            // The file is there but would not load — remember it so the failure message can point at
+            // system prerequisites instead of (wrongly) telling the user to install the runtime package.
+            foundButFailed = main;
         }
 
         // Fallback to the default OS resolution (e.g. the library is on PATH/LD_LIBRARY_PATH).
-        return NativeLibrary.TryLoad(libraryName, assembly, searchPath, out nint def) ? def : nint.Zero;
+        if (NativeLibrary.TryLoad(libraryName, assembly, searchPath, out nint def))
+            return def;
+
+        // Nothing resolved. Throw with an actionable message instead of returning zero, which would
+        // surface as a bare "Unable to load DLL" with no hint of the fix.
+        throw new DllNotFoundException(foundButFailed is not null
+            ? BuildFoundButFailedMessage(foundButFailed)
+            : BuildNotFoundMessage(fileName, CandidateDirectories()));
     }
+
+    /// <summary>The RIDs this project publishes a <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package for.</summary>
+    private static readonly string[] OfficialRids = ["win-x64", "linux-x64", "osx-arm64", "android-arm64"];
+
+    /// <summary>Failure message when no native binary was found anywhere: names the runtime package
+    /// for this process's RID (or says none exists for it) and lists the searched locations.</summary>
+    internal static string BuildNotFoundMessage(string fileName, IEnumerable<string> searchedDirs)
+    {
+        string rid = RuntimeInformation.RuntimeIdentifier;
+        string advice = OfficialRids.Contains(rid)
+            ? $"Install the 'LiteRtLmSharp.runtime.{rid}' NuGet package alongside 'LiteRtLmSharp'."
+            : $"No official native package exists for this platform (published RIDs: {string.Join(", ", OfficialRids)}).";
+        return $"The LiteRT-LM native library '{fileName}' was not found. Searched: " +
+               $"{string.Join("; ", searchedDirs)}; then the default OS search paths. This process runs " +
+               $"as RID '{rid}'. {advice} If you build your own native binaries, place them next to the " +
+               "application executable.";
+    }
+
+    /// <summary>Failure message when a native binary exists but failed to load: points at system
+    /// prerequisites rather than the (already installed) runtime package.</summary>
+    internal static string BuildFoundButFailedMessage(string path)
+        => $"The LiteRT-LM native library was found at '{path}' but failed to load. Common causes: the " +
+           "Microsoft Visual C++ Redistributable is not installed (Windows), missing system libraries " +
+           "(Linux), or a process/binary architecture mismatch.";
 
     private static IEnumerable<string> CandidateDirectories()
     {
