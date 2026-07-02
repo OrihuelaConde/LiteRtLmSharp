@@ -361,6 +361,14 @@ engagement. `main` is now ~121 commits ahead of v0.13.1 and active (22-24 Jun): 
 ## Architecture decisions (log)
 
 - P/Invoke wrapper over the **C API** (`c/engine.h`), never C++/CLI. .NET 10 only.
+- **Public type prefix is `LiteRt*`, not `LiteRtLm*`** (settled 2026-07-02, ahead of 1.0). Upstream's C
+  naming reserves `LiteRt*` for the base runtime and `LiteRtLm*` for the LM engine, so our prefix
+  knowingly "occupies" the base product's name — chosen anyway because the disambiguation already
+  lives at the package/namespace boundary (`LiteRtLmSharp`), the double abbreviation (`LiteRtLmEngine`)
+  reads worse on every consumer line forever, peers set the same precedent (LLamaSharp wraps llama.cpp,
+  Whisper.net wraps whisper.cpp), and the collision it would guard against (a .NET binding of base
+  LiteRT used in-process with this one) does not exist. Bonus: the internal native-mirror layer keeps
+  the `LiteRtLm*` names (`LiteRtLmNative`, raw structs), cleanly separated from the public surface.
 - **Self-built** native binaries from release tags (never loose commits — lesson from the
   streaming segfault at `032334d8`), via `native/patch_c_api.sh` + `build-native.yml`
   (`platforms` input to avoid rebuilding existing assets; the release accumulates assets).
