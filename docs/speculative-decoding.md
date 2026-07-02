@@ -14,7 +14,7 @@ the effect.
   models without a drafter make the flag a no-op (no speedup, no error).
 - It is fixed at engine creation — choose it in `LiteRtEngineOptions`, not per conversation.
 - **On the WebGPU GPU backend (desktop), disable the disk cache** —
-  `CacheDir = LiteRtEngineOptions.CacheDisabled`. With the default disk cache the drafter's shared
+  `Cache = LiteRtCache.Disabled`. With the default disk cache the drafter's shared
   weight-cache file fails to open ("Access denied") on Windows and engine creation fails. This is an
   upstream issue, not a binding bug — Google's own `litert-lm` CLI fails identically with
   `--cache disk` and works with `--cache no` (full investigation in [Root cause](#root-cause-the-disk-cache)).
@@ -25,24 +25,24 @@ the effect.
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 {
     ModelPath = "gemma-4-E2B-it.litertlm",
-    Backend = "gpu",
+    Backend = LiteRtBackend.Gpu,
     MaxNumTokens = 4096,
     EnableSpeculativeDecoding = true,                 // MTP drafter
     EnableBenchmark = true,                           // so GetBenchmarkInfo() reports timings
-    CacheDir = LiteRtEngineOptions.CacheDisabled,     // REQUIRED for speculative + WebGPU GPU
+    Cache = LiteRtCache.Disabled,                     // REQUIRED for speculative + WebGPU GPU
 });
 
 using var chat = engine.CreateConversation();
-chat.SendMessage("Hello!");
+chat.Send("Hello!");
 
 if (chat.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b)
     Console.WriteLine($"{b.LastDecodeTokensPerSecond:F1} tok/s decode · TTFT {b.TimeToFirstTokenSeconds:F2}s");
 ```
 
-On CPU you can drop the `CacheDir` line (the disk cache is fine there).
+On CPU you can drop the `Cache` line (the disk cache is fine there).
 
 `GetBenchmarkInfo()` works after both blocking (`Send`) and streaming
-(`SendMessageStreamingAsync`) generation. It returns `null` when benchmarking was not enabled or no
+(`SendStreamingAsync`) generation. It returns `null` when benchmarking was not enabled or no
 turn has completed yet; it throws `EntryPointNotFoundException` on native binaries that predate the
 benchmark API (the samples catch this and fall back to wall-clock timing).
 
@@ -56,7 +56,7 @@ benchmark API (the samples catch this and fall back to wall-clock timing).
 - **MAUI**: after picking the backend, a *Speculative decoding* prompt (shown only for MTP-capable
   models). The three tab headers show `· speculative on/off` and the gauge shows decode tok/s · TTFT.
 
-Both samples automatically set `CacheDir = CacheDisabled` when speculative decoding is enabled on the
+Both samples automatically set `Cache = LiteRtCache.Disabled` when speculative decoding is enabled on the
 GPU backend, so the toggle "just works" there.
 
 ## How effectiveness is measured
@@ -105,7 +105,7 @@ native benchmark API's `decode_tokens_per_sec` for the turn.
   decode. Both outputs were coherent, full paragraphs, and the `*.mtp_drafter.xnnpack_cache_*` file
   produced alongside the model confirms the drafter was actually engaged.
 - **Desktop WebGPU GPU works (with the cache off), but doesn't help here.** With
-  `CacheDir = CacheDisabled` the engine loads and the drafter speculates on the GPU (the CLI reports
+  `Cache = LiteRtCache.Disabled` the engine loads and the drafter speculates on the GPU (the CLI reports
   ~0.32 draft-acceptance on this prompt). In a fair A/B with the cache off on both legs, spec is a
   slight regression (35.5 vs 41.8 tok/s, 0.85×). Two compounding factors: our package's WebGPU
   **sampler** does not load (`LiteRtTopKWebGpuSampler_UpdateConfig` is missing → CPU-sampling
@@ -141,7 +141,7 @@ the main model and the drafter share one `…_mldrift_weight_cache.bin`, and on 
 consumer's `mmap` of that file fails (a file-sharing violation). Pointing the cache at a different
 directory does **not** help (same shared file, same error) — only disabling the disk cache avoids it.
 The CLI's `--cache no` maps to `litert_lm_engine_settings_set_cache_dir(settings, ":nocache")`, which
-we now expose as `CacheDir = LiteRtEngineOptions.CacheDisabled`.
+we now expose as `Cache = LiteRtCache.Disabled`.
 
 Source-level (v0.13.1): `CreateCompilationOptions` in `runtime/executor/llm_executor_settings_utils.cc`
 applies the `.mtp_drafter` cache suffix only on the CPU/XNNPACK branch, not the GPU/MlDrift branch, so
@@ -163,6 +163,6 @@ the closed `libLiteRtWebGpuAccelerator` (inferred `ERROR_SHARING_VIOLATION`).
   small (~3%), but it weighs more on the speculative draft/verify loop.
 
 In short: ship the flag; on CPU it works (default cache) but can be slower; on the desktop WebGPU GPU
-set `CacheDir = CacheDisabled`; reach for it on a modern/fast accelerator with an MTP-capable model
+set `Cache = LiteRtCache.Disabled`; reach for it on a modern/fast accelerator with an MTP-capable model
 (older mobile GPUs like the Adreno 650 show no win at ~32% acceptance). The samples apply the cache
 workaround automatically so the toggle just works.

@@ -35,7 +35,7 @@ using Microsoft.Extensions.AI;
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 {
     ModelPath = "gemma-4-E2B-it.litertlm",
-    Backend = "cpu",
+    Backend = LiteRtBackend.Cpu,
     MaxNumTokens = 4096,
 });
 
@@ -56,7 +56,7 @@ await foreach (ChatResponseUpdate update in client.GetStreamingResponseAsync("Te
 // Container loads, owns and disposes a single shared engine (one engine per process):
 services.AddLiteRtChatClient(new LiteRtEngineOptions
 {
-    ModelPath = "gemma-4-E2B-it.litertlm", Backend = "cpu", MaxNumTokens = 4096,
+    ModelPath = "gemma-4-E2B-it.litertlm", Backend = LiteRtBackend.Cpu, MaxNumTokens = 4096,
 });
 
 // ... or register over an engine you already loaded (you dispose it):
@@ -226,7 +226,7 @@ bookkeeping). Without it those stay `null`, and a note is left under `response.A
 ```csharp
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 {
-    ModelPath = "…", Backend = "cpu", EnableBenchmark = true,   // also enables Input/OutputTokenCount
+    ModelPath = "…", Backend = LiteRtBackend.Cpu, EnableBenchmark = true,   // also enables Input/OutputTokenCount
 });
 // …
 long? input = response.Usage?.InputTokenCount;     // prefill tokens
@@ -251,6 +251,11 @@ When streaming, the usage arrives as a final `UsageContent` update, which MEAI a
 - **Message roles.** `system` / `user` / `assistant` / `tool` are handled. The list must end with a user
   message, or a tool message (the function-calling continuation, appended by `UseFunctionInvocation()` /
   Semantic Kernel); the assistant tool-call turn is restored as history and the tool results are returned.
+- **Testing your app code.** `IChatClient` is the intended seam for unit tests: have your code depend on
+  `IChatClient` and substitute a mock/stub in tests — no model file or native binaries needed. The core
+  types (`LiteRtEngine` / `LiteRtConversation`) are sealed and bound to the native runtime; code that
+  drives them directly is best covered by wrapping them behind your own abstraction, or by
+  integration tests against a real model.
 
 ## Scope
 

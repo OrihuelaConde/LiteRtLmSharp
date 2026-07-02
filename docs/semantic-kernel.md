@@ -34,7 +34,7 @@ var builder = Kernel.CreateBuilder();
 builder.AddLiteRtChatCompletion(new LiteRtEngineOptions
 {
     ModelPath = "gemma-4-E2B-it.litertlm",
-    Backend = "cpu",
+    Backend = LiteRtBackend.Cpu,
     MaxNumTokens = 4096,
 });
 Kernel kernel = builder.Build();

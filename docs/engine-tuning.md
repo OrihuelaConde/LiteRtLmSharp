@@ -7,7 +7,7 @@ specific load-time, memory or throughput goal.
 
 This guide explains what each one does, when it helps, and what it costs. Two related performance
 features have their own pages: [speculative decoding](speculative-decoding.md) (the MTP drafter) and
-the compiled-artifact cache (`LiteRtEngineOptions.CacheDir`, also the fix for speculative decoding on
+the compiled-artifact cache (`LiteRtEngineOptions.Cache`, also the fix for speculative decoding on
 the desktop WebGPU backend).
 
 ## Activation precision — `ActivationDataType`
@@ -19,7 +19,7 @@ own default — the text executor uses **F16** on GPU; the vision and audio exec
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 {
     ModelPath = "gemma-4-E2B-it.litertlm",
-    Backend = "gpu",
+    Backend = LiteRtBackend.Gpu,
     ActivationDataType = LiteRtActivationDataType.Float32,  // full precision on GPU
 });
 ```
@@ -81,11 +81,11 @@ is timing bookkeeping only.
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 {
     ModelPath = "gemma-4-E2B-it.litertlm",
-    Backend = "cpu",
+    Backend = LiteRtBackend.Cpu,
     EnableBenchmark = true,
 });
 using var chat = engine.CreateConversation();
-chat.SendMessage("Write a short paragraph about the printing press.");
+chat.Send("Write a short paragraph about the printing press.");
 
 if (chat.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b)
     Console.WriteLine(
@@ -107,12 +107,12 @@ counts. A send then runs a benchmark instead of answering:
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 {
     ModelPath = "gemma-4-E2B-it.litertlm",
-    Backend = "cpu",
+    Backend = LiteRtBackend.Cpu,
     BenchmarkPrefillTokens = 512,   // prefill exactly 512 tokens
     BenchmarkDecodeTokens = 128,    // decode exactly 128 tokens
 });
 using var chat = engine.CreateConversation();
-chat.SendMessage("anything");       // the text is ignored — this is a benchmark run
+chat.Send("anything");              // the text is ignored — this is a benchmark run
 
 var b = chat.GetBenchmarkInfo()!;   // reports 512 prefill / 128 decode
 Console.WriteLine($"prefill {b.LastPrefillTokensPerSecond:F1} tok/s · decode {b.LastDecodeTokensPerSecond:F1} tok/s");

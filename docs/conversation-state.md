@@ -48,7 +48,7 @@ using var chat2 = engine.CreateConversation(new LiteRtConversationOptions
     History = restored,                 // re-prefilled into the KV cache on create
 });
 
-Console.WriteLine(chat2.SendMessage("What is my name and what do I like?"));
+Console.WriteLine(chat2.Send("What is my name and what do I like?").Text);
 // -> "Your name is Ada and you love astronomy."
 ```
 
@@ -114,14 +114,14 @@ paying to prefill that prefix again.
 
 ```csharp
 using var baseChat = engine.CreateConversation();
-baseChat.SendMessage("You are a travel agent. The user is going to Tokyo for 3 days.");
+baseChat.Send("You are a travel agent. The user is going to Tokyo for 3 days.");
 
 // Fork two independent continuations that share the prefilled prefix (no re-prefill):
 using var budget = baseChat.Clone();
 using var luxury = baseChat.Clone();
 
-Console.WriteLine(budget.SendMessage("Suggest a budget itinerary."));
-Console.WriteLine(luxury.SendMessage("Suggest a luxury itinerary."));
+Console.WriteLine(budget.Send("Suggest a budget itinerary.").Text);
+Console.WriteLine(luxury.Send("Suggest a luxury itinerary.").Text);
 // baseChat is untouched; each clone advances on its own KV cache.
 ```
 
@@ -131,7 +131,7 @@ A/B two sampler settings or two phrasings from the same context.
 ### Caveats
 
 - **Idle only.** Conversations are not thread-safe. Clone when the source is idle, with no in-flight
-  `SendMessageStreamingAsync`.
+  `SendStreamingAsync`.
 - **May be unsupported on some backends.** Cloning is implemented by the standard executors and is
   verified on CPU and GPU (win-x64 WebGPU). It is not a CPU-only feature, but an executor that does not
   implement it makes the native call return null and `Clone()` throw `LiteRtException`. If you target an

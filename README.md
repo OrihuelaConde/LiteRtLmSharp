@@ -49,17 +49,20 @@ using LiteRtLmSharp;
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 {
     ModelPath = "gemma-4-E2B-it.litertlm",   // from huggingface.co/litert-community
-    Backend = "cpu",                          // or "gpu" (WebGPU -> D3D12/Vulkan/Metal)
+    Backend = LiteRtBackend.Cpu,              // or .Gpu (WebGPU -> D3D12/Vulkan/Metal)
     MaxNumTokens = 4096,                       // total context window
 });
 
 using var chat = engine.CreateConversation();
 
 // Blocking:
-Console.WriteLine(chat.SendMessage("Hello!"));
+Console.WriteLine(chat.Send("Hello!").Text);
+
+// Awaitable (pass a CancellationToken to cancel mid-generation):
+Console.WriteLine((await chat.SendAsync("Hello!")).Text);
 
 // Streaming: each piece is tagged (answer / thinking / tool call) — see Reasoning mode below.
-await foreach (var chunk in chat.SendMessageStreamingAsync("Tell me a joke"))
+await foreach (var chunk in chat.SendStreamingAsync("Tell me a joke"))
     Console.Write(chunk.Text);
 ```
 
@@ -90,20 +93,20 @@ Turn on benchmarking to measure it (decode/prefill tok/s, time-to-first-token):
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 {
     ModelPath = "gemma-4-E2B-it.litertlm",
-    Backend = "cpu",
+    Backend = LiteRtBackend.Cpu,
     EnableSpeculativeDecoding = true,   // MTP drafter
     EnableBenchmark = true,             // enables GetBenchmarkInfo()
 });
 
 using var chat = engine.CreateConversation();
-chat.SendMessage("Hello!");
+chat.Send("Hello!");
 
 if (chat.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b)
     Console.WriteLine($"{b.LastDecodeTokensPerSecond:F1} tok/s decode · TTFT {b.TimeToFirstTokenSeconds:F2}s");
 ```
 
 The win is accelerator-specific — on desktop CPU it can be slower, and on the desktop WebGPU GPU
-backend you must set `CacheDir = LiteRtEngineOptions.CacheDisabled` (otherwise engine creation fails —
+backend you must set `Cache = LiteRtCache.Disabled` (otherwise engine creation fails —
 an upstream issue that also affects Google's own CLI). Measured numbers, requirements and the full
 root-cause are in
 [docs/speculative-decoding.md](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/speculative-decoding.md).
@@ -129,7 +132,7 @@ The reasoning trace comes back **separate** from the answer — on the blocking 
 `LiteRtStreamChunk` is tagged by `Kind` (`Answer` / `Thinking` / `ToolCall`):
 
 ```csharp
-await foreach (var chunk in chat.SendMessageStreamingAsync("Why is the sky blue?"))
+await foreach (var chunk in chat.SendStreamingAsync("Why is the sky blue?"))
     Console.Write(chunk.IsThinking ? $"\n[thinking] {chunk.Text}" : chunk.Text);
 ```
 
@@ -160,17 +163,17 @@ using var resumed = engine.CreateConversation(new LiteRtConversationOptions
 {
     History = LiteRtMessage.Deserialize(File.ReadAllText("chat.json")),  // re-prefilled on create
 });
-resumed.SendMessage("What is my name?");                 // -> "Ada"
+resumed.Send("What is my name?");                        // -> "Ada"
 ```
 
 ```csharp
 // Clone: branch into independent continuations that share the prefilled prefix.
 using var baseChat = engine.CreateConversation();
-baseChat.SendMessage("You are a travel agent. The user is going to Tokyo.");
+baseChat.Send("You are a travel agent. The user is going to Tokyo.");
 using var budget = baseChat.Clone();
 using var luxury = baseChat.Clone();
-budget.SendMessage("Suggest a budget itinerary.");
-luxury.SendMessage("Suggest a luxury itinerary.");       // baseChat stays untouched
+budget.Send("Suggest a budget itinerary.");
+luxury.Send("Suggest a luxury itinerary.");              // baseChat stays untouched
 ```
 
 Restoring replays the history through prefill (it counts against `MaxNumTokens`); cloning copies state
@@ -189,9 +192,9 @@ sent.
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 {
     ModelPath = "gemma-4-E2B-it.litertlm",
-    Backend = "cpu",
-    VisionBackend = "cpu",   // enables image input; null = off
-    AudioBackend = "cpu",    // enables audio input; null = off
+    Backend = LiteRtBackend.Cpu,
+    VisionBackend = LiteRtBackend.Cpu,   // enables image input; null = off
+    AudioBackend = LiteRtBackend.Cpu,    // enables audio input; null = off
     MaxNumTokens = 4096,     // leave room for the media's tokens (an image is ~256)
 });
 using var chat = engine.CreateConversation();   // a plain conversation can send attachments
@@ -204,7 +207,7 @@ var reply = chat.Send("What is in this image?", [LiteRtAttachment.Image(png)]);
 chat.Send("Describe this photo.", [LiteRtAttachment.ImageFile("/photos/sunset.jpg")]);
 
 // Audio works the same way; streaming has matching attachment overloads:
-await foreach (var chunk in chat.SendMessageStreamingAsync(
+await foreach (var chunk in chat.SendStreamingAsync(
                   "Transcribe this.", [LiteRtAttachment.Audio(wavBytes)]))
     Console.Write(chunk.Text);
 ```
@@ -212,7 +215,7 @@ await foreach (var chunk in chat.SendMessageStreamingAsync(
 Attachments follow the text in content-part order; pass several to interleave them. Cap how much of the
 context window an image consumes with `LiteRtConversationOptions.VisualTokenBudget`. Vision runs on CPU
 or GPU; some models constrain their audio backend (Gemma 4's audio sub-model requires CPU, so
-`AudioBackend = "gpu"` fails engine creation for it on any platform) — keep audio on CPU when the main
+`AudioBackend = LiteRtBackend.Gpu` fails engine creation for it on any platform) — keep audio on CPU when the main
 backend is GPU. A plain `CreateConversation()` can send attachments: the binding configures the
 conversation for the engine's encoders automatically, so you don't have to set a sampler or output cap.
 Just give `MaxNumTokens` room for the media's tokens (an image is ~256). If a send still hits a
@@ -276,7 +279,7 @@ Extensions.AI package is the broadest integration; the Semantic Kernel package b
 // Microsoft.Extensions.AI — works with Agent Framework, Semantic Kernel and MEAI:
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 {
-    ModelPath = "gemma-4-E2B-it.litertlm", Backend = "cpu", MaxNumTokens = 4096,
+    ModelPath = "gemma-4-E2B-it.litertlm", Backend = LiteRtBackend.Cpu, MaxNumTokens = 4096,
 });
 using IChatClient client = new LiteRtChatClient(engine);
 Console.WriteLine((await client.GetResponseAsync("Write one upbeat sentence about on-device AI.")).Text);
@@ -289,7 +292,7 @@ Console.WriteLine((await client.GetResponseAsync("Write one upbeat sentence abou
 var builder = Kernel.CreateBuilder();
 builder.AddLiteRtChatCompletion(new LiteRtEngineOptions
 {
-    ModelPath = "gemma-4-E2B-it.litertlm", Backend = "cpu", MaxNumTokens = 4096,
+    ModelPath = "gemma-4-E2B-it.litertlm", Backend = LiteRtBackend.Cpu, MaxNumTokens = 4096,
 });
 Kernel kernel = builder.Build();
 Console.WriteLine(await kernel.InvokePromptAsync("Write one upbeat sentence about on-device AI."));

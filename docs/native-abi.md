@@ -166,7 +166,7 @@ The C API exposes tools via the conversation config (requires a skew-free binary
 
 Wrapper surface: `LiteRtTool`, `LiteRtConversationOptions.Tools` + `EnableConstrainedDecoding`,
 `conv.Send(text) → LiteRtResponse` (`.Text` or `.ToolCalls`), `conv.SendToolResults(...)`, and
-`conv.SendMessageRaw(json)` as an escape hatch. The parser is tolerant (function.arguments as
+`conv.SendRaw(json)` as an escape hatch. The parser is tolerant (function.arguments as
 object or string; fallback to top-level name/args) and always exposes `RawJson`.
 
 **VALIDATED end-to-end** with our own binary + `gemma-4-E2B-it` (CPU): define tool → model
@@ -223,8 +223,8 @@ path. Two layers:
 > (`gemma4_data_processor.cc` uses an image *and* an audio preprocessor), not from the test file.
 
 Wrapper surface: `LiteRtAttachment.Image/ImageFile/Audio/AudioFile`,
-`LiteRtConversation.Send(text, attachments)` / `SendMessage(text, attachments)` /
-`SendMessageStreamingAsync(text, attachments, ct)`, `LiteRtEngineOptions.VisionBackend`/`AudioBackend`/
+`LiteRtConversation.Send(text, attachments)` /
+`SendStreamingAsync(text, attachments, ct)`, `LiteRtEngineOptions.VisionBackend`/`AudioBackend`/
 `MaxNumImages`, `LiteRtConversationOptions.VisualTokenBudget`.
 
 > **The vision/audio executor needs a session config on the conversation.** The encoder executor only
