@@ -24,6 +24,9 @@ public static class LiteRtChatClientServiceCollectionExtensions
 
     /// <summary>Registers a <see cref="LiteRtChatClient"/> from <paramref name="options"/>; the container loads,
     /// owns and disposes a single shared engine.</summary>
+    /// <param name="services">The DI service collection to register into.</param>
+    /// <param name="options">Engine options the container uses to load the single shared engine.</param>
+    /// <param name="modelId">Optional model id surfaced on the chat client's metadata.</param>
     /// <param name="eager">When <c>true</c>, load the engine now (a bad model path/backend throws here);
     /// otherwise it is loaded lazily on first use.</param>
     public static IServiceCollection AddLiteRtChatClient(this IServiceCollection services, LiteRtEngineOptions options, string? modelId = null, bool eager = false)

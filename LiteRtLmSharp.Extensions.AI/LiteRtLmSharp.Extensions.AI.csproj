@@ -6,6 +6,9 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
 
+    <!-- Ship the XML doc file so the public API surface appears in consumers' IntelliSense. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
     <!--
       Microsoft.Extensions.AI (MEAI) integration for LiteRtLmSharp: an IChatClient implementation
       (LiteRtChatClient). This is the foundational, framework-agnostic integration — it works directly with

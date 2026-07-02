@@ -21,9 +21,9 @@ public sealed class LiteRtEngine : IDisposable
     // Two LIVE engines in one process is unsupported (creating a second engine while the first
     // is alive hangs in the native layer). Recreating an engine after disposing the previous one
     // works — Google's Edge Gallery switches model/backend exactly this way (engine.close() +
-    // new Engine). Guard with a process-wide live count so callers get a clear exception
-    // instead of a hang.
-    private static int s_liveEngines;
+    // new Engine). The process-wide gate (EngineLiveness) is acquired here and released when the
+    // native engine is destroyed (EngineHandle.ReleaseHandle), so a forgotten/GC'd engine also frees
+    // the slot — callers get a clear exception instead of a hang.
 
     private LiteRtEngine(EngineHandle engine, bool isMultimodal)
     {
@@ -32,6 +32,9 @@ public sealed class LiteRtEngine : IDisposable
     }
 
     /// <summary>Sets the global minimum log level (0=VERBOSE … 5=FATAL, 1000=SILENT).</summary>
+    /// <exception cref="DllNotFoundException">The native LiteRT-LM library could not be loaded; the
+    /// message names the fix (the missing <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package, or a system
+    /// prerequisite such as the VC++ Redistributable on Windows).</exception>
     public static void SetMinLogLevel(int level) => LiteRtLmNative.litert_lm_set_min_log_level(level);
 
     /// <summary>
@@ -41,6 +44,9 @@ public sealed class LiteRtEngine : IDisposable
     /// </summary>
     /// <exception cref="ArgumentException">The model file does not exist.</exception>
     /// <exception cref="InvalidOperationException">Another engine is still alive in this process.</exception>
+    /// <exception cref="DllNotFoundException">The native LiteRT-LM library could not be loaded; the
+    /// message names the fix (the missing <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package, or a system
+    /// prerequisite such as the VC++ Redistributable on Windows).</exception>
     /// <exception cref="LiteRtException">Native engine creation failed.</exception>
     public static LiteRtEngine Load(LiteRtEngineOptions options)
     {
@@ -48,7 +54,7 @@ public sealed class LiteRtEngine : IDisposable
         if (!File.Exists(options.ModelPath))
             throw new ArgumentException($"Model file not found: {options.ModelPath}", nameof(options));
 
-        if (Interlocked.CompareExchange(ref s_liveEngines, 1, 0) != 0)
+        if (!EngineLiveness.TryAcquire())
             throw new InvalidOperationException(
                 "Another LiteRtEngine is still alive in this process; a second concurrent engine " +
                 "hangs in the native layer. Dispose the existing engine (and its conversations) " +
@@ -57,9 +63,9 @@ public sealed class LiteRtEngine : IDisposable
         try
         {
             // Passing null for vision/audio leaves that modality unconfigured (NULL = "not set" per
-            // the C API). Set them to "cpu"/"gpu" on a multimodal model to enable image/audio input.
+            // the C API). Set a LiteRtBackend on a multimodal model to enable image/audio input.
             nint settingsPtr = LiteRtLmNative.litert_lm_engine_settings_create(
-                options.ModelPath, options.Backend, options.VisionBackend, options.AudioBackend);
+                options.ModelPath, options.Backend.Value, options.VisionBackend?.Value, options.AudioBackend?.Value);
             if (settingsPtr == nint.Zero)
                 throw new LiteRtException("litert_lm_engine_settings_create returned null.");
 
@@ -68,8 +74,8 @@ public sealed class LiteRtEngine : IDisposable
                 LiteRtLmNative.litert_lm_engine_settings_set_max_num_tokens(settings.Ptr, options.MaxNumTokens);
             if (options.MaxNumImages > 0)
                 LiteRtLmNative.litert_lm_engine_settings_set_max_num_images(settings.Ptr, options.MaxNumImages);
-            if (!string.IsNullOrEmpty(options.CacheDir))
-                LiteRtLmNative.litert_lm_engine_settings_set_cache_dir(settings.Ptr, options.CacheDir);
+            if (options.Cache.NativeValue is { } cacheDir)
+                LiteRtLmNative.litert_lm_engine_settings_set_cache_dir(settings.Ptr, cacheDir);
             if (options.EnableBenchmark)
                 LiteRtLmNative.litert_lm_engine_settings_enable_benchmark(settings.Ptr);
             if (options.EnableSpeculativeDecoding)
@@ -99,8 +105,9 @@ public sealed class LiteRtEngine : IDisposable
         }
         catch
         {
-            // Creation failed — allow a corrected retry.
-            Interlocked.Exchange(ref s_liveEngines, 0);
+            // Creation failed before the engine handle took ownership of the slot — release it so a
+            // corrected retry can load.
+            EngineLiveness.Release();
             throw;
         }
     }
@@ -218,12 +225,14 @@ public sealed class LiteRtEngine : IDisposable
         return stops;
     }
 
+    /// <summary>Disposes the engine, freeing the native model weights and releasing the process-wide
+    /// one-engine slot so another model can be loaded. Dispose every conversation first.</summary>
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
+        // Disposing the handle deletes the native engine and frees the one-engine slot
+        // (EngineHandle.ReleaseHandle → EngineLiveness.Release), so a new engine can be loaded.
         _engine.Dispose();
-        // The native engine is gone; a new one may be loaded now.
-        Interlocked.Exchange(ref s_liveEngines, 0);
     }
 }

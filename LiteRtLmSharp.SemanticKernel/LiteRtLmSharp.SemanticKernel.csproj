@@ -6,6 +6,9 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
 
+    <!-- Ship the XML doc file so the public API surface appears in consumers' IntelliSense. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
     <!--
       Microsoft Semantic Kernel connector for LiteRtLmSharp. Pure managed: a thin layer over the
       LiteRtLmSharp.Extensions.AI IChatClient, exposed to Semantic Kernel via the AsChatCompletionService

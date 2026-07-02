@@ -8,6 +8,9 @@
     <IsAotCompatible>true</IsAotCompatible>
     <LangVersion>latest</LangVersion>
 
+    <!-- Ship the XML doc file so the public API surface appears in consumers' IntelliSense. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
     <!-- Pure managed package. Native binaries ship in LiteRtLmSharp.runtime.<rid> packages. -->
     <PackageId>LiteRtLmSharp</PackageId>
     <Description>.NET binding for Google's LiteRT-LM on-device LLM inference (P/Invoke over the C API). Add a LiteRtLmSharp.runtime.&lt;rid&gt; package for native binaries. $(LiteRtLmDisclaimer)</Description>

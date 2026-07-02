@@ -10,8 +10,7 @@ namespace Microsoft.SemanticKernel;
 /// <summary>
 /// Adds a LiteRtLmSharp on-device model to Semantic Kernel as an <see cref="IChatCompletionService"/>. Under
 /// the hood this registers the LiteRtLmSharp <c>IChatClient</c> (Microsoft.Extensions.AI) and exposes it
-/// through Semantic Kernel's
-/// <see cref="ChatCompletionServiceExtensions.AsChatCompletionService(IChatClient, System.IServiceProvider)"/>
+/// through Semantic Kernel's <c>AsChatCompletionService</c>
 /// adapter, so all of Semantic Kernel's chat machinery — message conversion and function calling — flows
 /// through that single chat client (function calling is auto-invoked via MEAI's function-invocation
 /// middleware, since Semantic Kernel's adapter does not run the invoke loop for an <c>IChatClient</c>).

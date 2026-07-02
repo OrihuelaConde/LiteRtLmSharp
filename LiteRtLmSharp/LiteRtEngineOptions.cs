@@ -3,31 +3,27 @@ namespace LiteRtLmSharp;
 /// <summary>Options for creating a <see cref="LiteRtEngine"/>.</summary>
 public sealed record LiteRtEngineOptions
 {
-    /// <summary><see cref="CacheDir"/> sentinel: disable the compiled-artifact disk cache entirely.</summary>
-    public const string CacheDisabled = ":nocache";
-
-    /// <summary><see cref="CacheDir"/> sentinel: keep the compiled-artifact cache in RAM only
-    /// (CPU backend only; not available on Windows).</summary>
-    public const string CacheInMemory = ":memory";
-
     /// <summary>Path to the <c>.litertlm</c> (or <c>.task</c>) model file. Required.</summary>
     public required string ModelPath { get; init; }
 
-    /// <summary>Backend to run on: <c>"cpu"</c> or <c>"gpu"</c>. Defaults to CPU.</summary>
-    public string Backend { get; init; } = "cpu";
+    /// <summary>Backend to run the model on. Defaults to <see cref="LiteRtBackend.Cpu"/>. Use
+    /// <see cref="LiteRtBackend.Gpu"/>, <see cref="LiteRtBackend.Npu"/>, or
+    /// <see cref="LiteRtBackend.Custom"/> for a backend exposed by your own native build.</summary>
+    public LiteRtBackend Backend { get; init; } = LiteRtBackend.Cpu;
 
     /// <summary>
-    /// Backend for the vision encoder (<c>"cpu"</c> or <c>"gpu"</c>), enabling <b>image</b> input.
-    /// <c>null</c> (default) leaves vision unconfigured — image attachments will not work. Requires a
-    /// multimodal model (e.g. the Gemma 4 E-series); on a text-only model setting this has no effect.
+    /// Backend for the vision encoder, enabling <b>image</b> input. <c>null</c> (default) leaves vision
+    /// unconfigured — image attachments will not work. Requires a multimodal model (e.g. the Gemma 4
+    /// E-series); on a text-only model setting this has no effect.
     /// </summary>
     /// <remarks>
     /// Maps to the <c>vision_backend_str</c> parameter of the C API <c>engine_settings_create</c>.
-    /// May differ from <see cref="Backend"/> (e.g. main on GPU, vision on CPU). Pair with image
-    /// attachments via <see cref="LiteRtAttachment.Image(System.ReadOnlySpan{byte})"/> and tune the
-    /// image prefill budget with <see cref="LiteRtConversationOptions.VisualTokenBudget"/>.
+    /// May differ from <see cref="Backend"/> (e.g. main on <see cref="LiteRtBackend.Gpu"/>, vision on
+    /// <see cref="LiteRtBackend.Cpu"/>). Pair with image attachments via
+    /// <see cref="LiteRtAttachment.Image(System.ReadOnlySpan{byte})"/> and tune the image prefill budget
+    /// with <see cref="LiteRtConversationOptions.VisualTokenBudget"/>.
     /// </remarks>
-    public string? VisionBackend { get; init; }
+    public LiteRtBackend? VisionBackend { get; init; }
 
     /// <summary>
     /// Backend for the audio encoder, enabling <b>audio</b> input. <c>null</c> (default) leaves audio
@@ -36,13 +32,14 @@ public sealed record LiteRtEngineOptions
     /// </summary>
     /// <remarks>
     /// A model may constrain which backend its audio encoder accepts. The Gemma 4 audio sub-model
-    /// requires <b>CPU</b>: passing <c>"gpu"</c> makes <c>litert_lm_engine_create</c> fail with
-    /// "Audio backend constraint mismatch. Model requires one of [cpu]" even when <see cref="Backend"/>
-    /// is GPU — on any platform, not a win-x64 quirk (verified 2026-06-17). Use <c>"cpu"</c> for such
-    /// models; the vision encoder has no such constraint and runs on GPU. Maps to the
-    /// <c>audio_backend_str</c> parameter of the C API <c>engine_settings_create</c>.
+    /// requires <b>CPU</b>: passing <see cref="LiteRtBackend.Gpu"/> makes <c>litert_lm_engine_create</c>
+    /// fail with "Audio backend constraint mismatch. Model requires one of [cpu]" even when
+    /// <see cref="Backend"/> is GPU — on any platform, not a win-x64 quirk. Use
+    /// <see cref="LiteRtBackend.Cpu"/> for such models; the vision encoder has no such constraint and
+    /// runs on GPU. Maps to the <c>audio_backend_str</c> parameter of the C API
+    /// <c>engine_settings_create</c>.
     /// </remarks>
-    public string? AudioBackend { get; init; }
+    public LiteRtBackend? AudioBackend { get; init; }
 
     /// <summary>
     /// The total context window in tokens: prompt + generated replies, accumulated across every turn of
@@ -62,29 +59,36 @@ public sealed record LiteRtEngineOptions
     public int MaxNumTokens { get; init; }
 
     /// <summary>
-    /// Maximum number of images the engine accepts per turn. 0 = engine default. Kept for parity with
-    /// the reference Kotlin binding, which exposes the same <c>maxNumImages</c> setting (mapping a null
-    /// to the <c>-1</c> "use default" sentinel). Per the C API header this only affects the
-    /// <i>legacy</i> engine implementation, so the current path ignores it — prefer
-    /// <see cref="LiteRtConversationOptions.VisualTokenBudget"/> to bound image cost. Maps to
-    /// <c>engine_settings_set_max_num_images</c>.
+    /// Maximum number of images the engine accepts per turn. 0 = engine default. <b>On the standard
+    /// binaries this setting has no effect</b> — see the remarks for the case where it applies. To bound
+    /// how much of the context window images consume, use
+    /// <see cref="LiteRtConversationOptions.VisualTokenBudget"/> instead.
     /// </summary>
+    /// <remarks>
+    /// The native library compiles several engine implementations into one binary and picks one per
+    /// backend. This value always reaches the engine settings, but only the <i>legacy TFLite</i>
+    /// implementation reads it; the standard binaries select the modern CompiledModel engines for
+    /// CPU/GPU, which ignore it. It matters only when a custom native build routes your backend
+    /// (e.g. one targeted via <see cref="LiteRtBackend.Custom"/>) through the legacy engine. Kept for
+    /// parity with the reference Kotlin binding's <c>maxNumImages</c>. Maps to
+    /// <c>engine_settings_set_max_num_images</c>.
+    /// </remarks>
     public int MaxNumImages { get; init; }
 
     /// <summary>
-    /// Directory for the engine's compiled-artifact cache (GPU shaders / converted weights),
-    /// which speeds up subsequent loads. Null/empty = write next to the model file (the engine
-    /// default). A directory path = use that directory. Two special sentinels:
-    /// <see cref="CacheDisabled"/> turns the disk cache off, <see cref="CacheInMemory"/> caches in RAM.
+    /// Where the engine keeps its compiled-artifact cache (GPU shaders / converted weights), which
+    /// speeds up subsequent loads. Defaults to <see cref="LiteRtCache.Default"/> (written next to the
+    /// model file). Use <see cref="LiteRtCache.Disabled"/>, <see cref="LiteRtCache.InMemory"/>, or
+    /// <see cref="LiteRtCache.Directory"/> for an explicit path.
     /// </summary>
     /// <remarks>
-    /// Set this to <see cref="CacheDisabled"/> to make <see cref="EnableSpeculativeDecoding"/> work
-    /// on the desktop <b>WebGPU</b> GPU backend: with the default disk cache the MTP drafter's shared
-    /// weight-cache file fails to open ("Access denied") on Windows and engine creation fails. This
-    /// is an upstream issue (Google's own <c>litert-lm</c> CLI fails the same way with <c>--cache disk</c>
-    /// and succeeds with <c>--cache no</c>); see <c>docs/speculative-decoding.md</c>.
+    /// Set this to <see cref="LiteRtCache.Disabled"/> to make <see cref="EnableSpeculativeDecoding"/>
+    /// work on the desktop <b>WebGPU</b> GPU backend: with the default disk cache the MTP drafter's
+    /// shared weight-cache file fails to open ("Access denied") on Windows and engine creation fails.
+    /// This is an upstream issue (Google's own <c>litert-lm</c> CLI fails the same way with
+    /// <c>--cache disk</c> and succeeds with <c>--cache no</c>); see <c>docs/speculative-decoding.md</c>.
     /// </remarks>
-    public string? CacheDir { get; init; }
+    public LiteRtCache Cache { get; init; }
 
     /// <summary>
     /// Enable speculative decoding — the model drafts several tokens ahead with a small
@@ -101,7 +105,7 @@ public sealed record LiteRtEngineOptions
     /// <c>docs/speculative-decoding.md</c>): the win comes from memory-bound accelerator decode.
     /// On desktop <b>CPU</b> it can REGRESS throughput (the drafter + verification overhead is not
     /// amortized). On the desktop <b>WebGPU</b> GPU backend it works, but only with the disk cache
-    /// disabled — set <see cref="CacheDir"/> = <see cref="CacheDisabled"/>, otherwise the drafter's
+    /// disabled — set <see cref="Cache"/> = <see cref="LiteRtCache.Disabled"/>, otherwise the drafter's
     /// shared weight-cache file fails to open ("Access denied") and engine creation fails (an
     /// upstream issue that reproduces in Google's own CLI).
     /// </para>
@@ -204,7 +208,7 @@ public sealed record LiteRtConversationOptions
     public string? SystemMessage { get; init; }
 
     /// <summary>Optional sampler parameters. Null = engine default.</summary>
-    public SamplerParams? Sampler { get; init; }
+    public LiteRtSamplerParams? Sampler { get; init; }
 
     /// <summary>Maximum output tokens per response. 0 = engine default.</summary>
     public int MaxOutputTokens { get; init; }

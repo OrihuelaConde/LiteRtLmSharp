@@ -65,15 +65,16 @@ public sealed class EngineService
             // works). Gemma 4's audio sub-model is CPU-constrained — the model declares "requires one of
             // [cpu]", so audio=gpu fails engine creation on any platform (verified 2026-06-17) — so run
             // audio on CPU whenever the main backend is GPU.
-            string? visionBackend = model.SupportsVision ? backend : null;
-            string? audioBackend = model.SupportsAudio ? (backend == "gpu" ? "cpu" : backend) : null;
+            LiteRtBackend? visionBackend = model.SupportsVision ? LiteRtBackend.Parse(backend) : null;
+            LiteRtBackend? audioBackend = model.SupportsAudio
+                ? LiteRtBackend.Parse(backend == "gpu" ? "cpu" : backend) : null;
 
             LiteRtEngine.SetMinLogLevel(3);
             // Engine creation is heavy (GBs of weights) — never on the UI thread.
             Engine = await Task.Run(() => LiteRtEngine.Load(new LiteRtEngineOptions
             {
                 ModelPath = modelPath,
-                Backend = backend,
+                Backend = LiteRtBackend.Parse(backend),
                 VisionBackend = visionBackend,
                 AudioBackend = audioBackend,
                 MaxNumTokens = ContextTokens,
@@ -82,8 +83,8 @@ public sealed class EngineService
                 // Speculative decoding on the WebGPU GPU backend needs the disk cache off, or the
                 // MTP drafter's shared weight-cache file fails to open ("Access denied") on Windows
                 // and the engine fails to load (upstream issue — see docs/speculative-decoding.md).
-                CacheDir = enableSpeculativeDecoding && backend == "gpu"
-                    ? LiteRtEngineOptions.CacheDisabled : null,
+                Cache = enableSpeculativeDecoding && backend == "gpu"
+                    ? LiteRtCache.Disabled : LiteRtCache.Default,
             }));
             LoadedModel = model;
             LoadedBackend = backend;
@@ -123,7 +124,7 @@ public sealed class EngineService
         Engine?.CreateConversation(new LiteRtConversationOptions
         {
             SystemMessage = "You are a concise, helpful assistant.",
-            Sampler = new SamplerParams { Type = SamplerType.TopP, TopK = 40, TopP = 0.95f, Temperature = 0.8f },
+            Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 40, TopP = 0.95f, Temperature = 0.8f },
             EnableThinking = LoadedThinking,
             // The chat reuses one conversation across turns, so drop the (long) reasoning from the
             // KV cache or it eats the context window on later turns.

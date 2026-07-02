@@ -60,6 +60,36 @@ public class NativeInteropTests
 /// <c>runtime/conversation/model_data_processor/data_utils.cc</c>): text part first, then each
 /// attachment as <c>{"type":"image"|"audio","blob":&lt;base64&gt;}</c> or <c>{… ,"path":…}</c>, in order.
 /// </summary>
+/// <summary>
+/// The two native-load failure messages (model-free: the throw path itself cannot run here because the
+/// test process always has the natives next to the assembly, so the builders are tested directly).
+/// </summary>
+public class NativeResolverMessageTests
+{
+    [Fact]
+    public void NotFoundMessage_NamesRidRuntimePackageAndSearchedDirs()
+    {
+        string msg = NativeLibraryResolver.BuildNotFoundMessage("LiteRtLm.dll", ["C:\\app", "C:\\app\\runtimes\\win-x64\\native"]);
+
+        Assert.Contains("LiteRtLm.dll", msg);
+        Assert.Contains(System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier, msg);
+        Assert.Contains("C:\\app", msg);
+        // On an official RID (this dev/CI box) the message must name the exact runtime package.
+        Assert.Contains($"LiteRtLmSharp.runtime.{System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier}", msg);
+    }
+
+    [Fact]
+    public void FoundButFailedMessage_NamesPathAndPrerequisites()
+    {
+        string msg = NativeLibraryResolver.BuildFoundButFailedMessage("C:\\app\\LiteRtLm.dll");
+
+        Assert.Contains("C:\\app\\LiteRtLm.dll", msg);
+        Assert.Contains("Visual C++ Redistributable", msg);
+        // Must NOT steer the user to the runtime package — it is already installed in this scenario.
+        Assert.DoesNotContain("LiteRtLmSharp.runtime.", msg);
+    }
+}
+
 public class MultimodalMessageJsonTests
 {
     private static readonly byte[] Bytes = [0xDE, 0xAD, 0xBE, 0xEF];
@@ -385,6 +415,34 @@ public class HistoryMessageTests
     }
 
     [Fact]
+    public void Deserialize_UnknownRole_Throws()
+    {
+        // An unknown role must be rejected, not coerced: parsing a foreign/future role as User would
+        // silently misattribute the turn in the restored history.
+        var ex = Assert.Throws<ArgumentException>(() => LiteRtMessage.Deserialize(
+            """[{"role":"function","content":[{"type":"text","text":"hi"}]}]"""));
+        Assert.Contains("function", ex.Message);
+    }
+
+    [Fact]
+    public void Deserialize_MissingRole_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => LiteRtMessage.Deserialize(
+            """[{"content":[{"type":"text","text":"hi"}]}]"""));
+    }
+
+    [Fact]
+    public void Deserialize_UnknownContentPartType_IsSkippedNotFatal()
+    {
+        // Unknown PART types degrade gracefully (skipped) — unlike roles, a dropped part does not
+        // change who said what; the known parts around it survive.
+        IReadOnlyList<LiteRtMessage> msgs = LiteRtMessage.Deserialize(
+            """[{"role":"user","content":[{"type":"video","blob":"AAAA"},{"type":"text","text":"what is this?"}]}]""");
+        Assert.Equal("what is this?", msgs[0].Text);
+        Assert.Empty(msgs[0].Attachments);
+    }
+
+    [Fact]
     public void Serialize_ModelToolCall_EmitsFunctionShape()
     {
         var msg = LiteRtMessage.Model("", [new LiteRtToolCall("get_weather", """{"location":"Tokyo"}""")]);
@@ -524,7 +582,7 @@ public sealed class EngineFixture : IDisposable
             Engine = LiteRtEngine.Load(new LiteRtEngineOptions
             {
                 ModelPath = modelPath,
-                Backend = Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu",
+                Backend = LiteRtBackend.Parse(Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu"),
                 MaxNumTokens = 2048,
             });
         }
@@ -536,6 +594,82 @@ public sealed class EngineFixture : IDisposable
 public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixture>
 {
     private readonly EngineFixture _fixture = fixture;
+
+    /// <summary>
+    /// Mid-generation cancellation of a blocking SendAsync: the token must cut the native generation
+    /// short (OperationCanceledException well before a 512-token reply completes). Contract: the
+    /// cancelled conversation is consumed — dispose it and continue on a FRESH one (reusing it hangs in
+    /// the native runtime at v0.13.1, reproduced with Google's own binaries — do not "fix" this test by
+    /// sending on the cancelled conversation). Also covers CancelProcess as a safe idle no-op.
+    /// </summary>
+    [SkippableFact]
+    public async Task SendAsync_CancelMidGeneration_ThrowsAndEngineSurvives()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        var conv = _fixture.Engine.CreateConversation(
+            new LiteRtConversationOptions { MaxOutputTokens = 512 });
+
+        // Idle cancel is a no-op — must not fault the conversation or the send that follows.
+        conv.CancelProcess();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => conv.SendAsync(
+            "Write a very long, detailed story about a sea voyage, at least 400 words.", cts.Token));
+        sw.Stop();
+
+        // A full 512-token reply takes far longer than this on CPU; returning early proves the native
+        // decode was actually cancelled rather than left to run to completion.
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(15),
+            $"Cancellation did not cut generation short (took {sw.Elapsed.TotalSeconds:F1}s).");
+
+        // Dispose-after-cancel must not hang, and the engine must stay healthy for new conversations.
+        conv.Dispose();
+        using var fresh = _fixture.Engine.CreateConversation(
+            new LiteRtConversationOptions { MaxOutputTokens = 16 });
+        LiteRtResponse after = fresh.Send("Reply with one short word: hello");
+        Assert.False(string.IsNullOrWhiteSpace(after.Text), "Engine unusable after a cancelled send.");
+    }
+
+    /// <summary>
+    /// Streaming teardown on early exit: cancelling the token and breaking out of the await-foreach must
+    /// both return promptly (the teardown cancels the native inference and DRAINS the channel — before
+    /// the drain fix, unread buffered chunks kept the channel's Completion from ever transitioning and
+    /// the teardown deadlocked). Contract after a cancel: dispose and use a fresh conversation.
+    /// </summary>
+    [SkippableFact]
+    public async Task Streaming_CancelAndEarlyBreak_TeardownCompletes()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        const string prompt = "Write a very long, detailed story about a sea voyage, at least 400 words.";
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // Token cancellation mid-stream.
+        var conv = _fixture.Engine.CreateConversation();
+        using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            {
+                await foreach (LiteRtStreamChunk _ in conv.SendStreamingAsync(prompt, cts.Token)) { }
+            });
+        }
+        conv.Dispose();
+
+        // Early break (no token) — same teardown path.
+        using (var conv2 = _fixture.Engine.CreateConversation())
+        {
+            int chunks = 0;
+            await foreach (LiteRtStreamChunk _ in conv2.SendStreamingAsync(prompt))
+                if (++chunks >= 10) break;
+            Assert.True(chunks >= 10);
+        }
+
+        sw.Stop();
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(30),
+            $"Streaming teardown did not complete promptly (took {sw.Elapsed.TotalSeconds:F1}s).");
+    }
 
     /// <summary>Plain blocking chat. Skipped unless LITERTLM_TEST_MODEL is set.</summary>
     [SkippableFact]
@@ -583,7 +717,7 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
 
         using var conversation = _fixture.Engine!.CreateConversation();
         var sb = new System.Text.StringBuilder();
-        await foreach (LiteRtStreamChunk chunk in conversation.SendMessageStreamingAsync("Count from 1 to 3."))
+        await foreach (LiteRtStreamChunk chunk in conversation.SendStreamingAsync("Count from 1 to 3."))
             if (chunk.Kind == LiteRtStreamChunkKind.Answer)
                 sb.Append(chunk.Text);
 
@@ -605,7 +739,7 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
         const string probe = "Reply with one short sentence.";
 
         using var fresh = _fixture.Engine!.CreateConversation();
-        fresh.SendMessage(probe);
+        fresh.Send(probe);
         int freshCount = fresh.TokenCount;
 
         // A round-trip through Serialize/Deserialize, exactly as an app would persist and reload it.
@@ -636,7 +770,7 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
         Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
         using var baseConv = _fixture.Engine!.CreateConversation();
-        baseConv.SendMessage("Remember this secret word: banana.");
+        baseConv.Send("Remember this secret word: banana.");
         int baseCount = baseConv.TokenCount;
 
         LiteRtConversation clone;
@@ -923,7 +1057,7 @@ public sealed class SpeculativeDecodingBenchmarkTests(ITestOutputHelper output)
         using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
         {
             ModelPath = model,
-            Backend = backend,
+            Backend = LiteRtBackend.Parse(backend),
             MaxNumTokens = 2048,
             EnableBenchmark = true,
             EnableSpeculativeDecoding = speculative,
@@ -931,14 +1065,14 @@ public sealed class SpeculativeDecodingBenchmarkTests(ITestOutputHelper output)
             // Windows ("Access denied") unless the disk cache is off; disable it for GPU so the A/B
             // can run there too (an upstream issue — Google's own CLI needs --cache no, see
             // docs/speculative-decoding.md). Both legs use the same setting for a fair comparison.
-            CacheDir = backend == "gpu" ? LiteRtEngineOptions.CacheDisabled : null,
+            Cache = backend == "gpu" ? LiteRtCache.Disabled : LiteRtCache.Default,
         });
         using var conv = engine.CreateConversation(new LiteRtConversationOptions
         {
             // TopP is the only sampler the v0.13.1 native build implements (Greedy/TopK return
             // "not implemented yet"). A fixed seed keeps each run reproducible; speculative decoding
             // preserves the output distribution, so coherence — not byte-equality — is what we check.
-            Sampler = new SamplerParams { Type = SamplerType.TopP, TopK = 40, TopP = 0.95f, Temperature = 1.0f, Seed = 42 },
+            Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 40, TopP = 0.95f, Temperature = 1.0f, Seed = 42 },
             MaxOutputTokens = MaxOutputTokens,
         });
 
@@ -1017,6 +1151,56 @@ public sealed class MultimodalModelTests(ITestOutputHelper output)
     }
 
     [SkippableFact]
+    public void Vision_ImageInRestoredHistory_IsReEncoded()
+    {
+        string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
+        Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model)
+                || Environment.GetEnvironmentVariable("LITERTLM_TEST_VISION") != "1",
+            "Set LITERTLM_TEST_VISION=1 and LITERTLM_TEST_MODEL to a vision-capable .litertlm to run.");
+
+        LiteRtEngine.SetMinLogLevel(3);
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = model!, Backend = LiteRtBackend.Cpu, VisionBackend = LiteRtBackend.Cpu, MaxNumTokens = 4096,
+        });
+
+        byte[] redPng = Convert.FromBase64String(RedPngBase64);
+        // Two histories differing only by an image attachment on the first user turn, restored via the
+        // TYPED History (LiteRtMessage.User(text, attachments)). History prefill is lazy (runs on the first
+        // send), so compare the post-send KV-cache size: a ~256-token delta proves the typed Attachments
+        // are serialized into history and re-encoded by the vision encoder.
+        var imgHistory = new List<LiteRtMessage>
+        {
+            LiteRtMessage.User("Here is a picture, please remember it.", [LiteRtAttachment.Image(redPng)]),
+            LiteRtMessage.Model("Okay."),
+        };
+        var textHistory = new List<LiteRtMessage>
+        {
+            LiteRtMessage.User("Here is a picture, please remember it."),
+            LiteRtMessage.Model("Okay."),
+        };
+        const string followUp = "What is the main color of the picture I showed you? Answer with one word.";
+
+        int withImage, textOnly;
+        string imgReply;
+        using (var c1 = engine.CreateConversation(new LiteRtConversationOptions { History = imgHistory }))
+        {
+            imgReply = c1.Send(followUp).Text ?? "";
+            withImage = c1.TokenCount;
+        }
+        using (var c2 = engine.CreateConversation(new LiteRtConversationOptions { History = textHistory }))
+        {
+            c2.Send(followUp);
+            textOnly = c2.TokenCount;
+        }
+
+        _output.WriteLine($"image-history tokens={withImage} (reply: {imgReply}); text-history tokens={textOnly}; delta={withImage - textOnly}");
+        Assert.True(withImage > textOnly + 100,
+            $"Expected the restored history image to add ~256 vision tokens (image {withImage} vs text {textOnly}); " +
+            "the typed Attachments were not re-encoded into the restored history.");
+    }
+
+    [SkippableFact]
     public void Audio_AudioAttachment_IsIngestedByTheEncoder()
     {
         string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
@@ -1081,10 +1265,10 @@ public sealed class MultimodalModelTests(ITestOutputHelper output)
         using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
         {
             ModelPath = model!,
-            Backend = backend,
-            VisionBackend = backend,
+            Backend = LiteRtBackend.Parse(backend),
+            VisionBackend = LiteRtBackend.Parse(backend),
             MaxNumTokens = 4096,
-            CacheDir = backend == "gpu" ? LiteRtEngineOptions.CacheDisabled : null,
+            Cache = backend == "gpu" ? LiteRtCache.Disabled : LiteRtCache.Default,
         });
 
         using var conv = engine.CreateConversation(); // NO options — would have thrown before the fix
@@ -1110,19 +1294,19 @@ public sealed class MultimodalModelTests(ITestOutputHelper output)
         using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
         {
             ModelPath = model,
-            Backend = backend,
+            Backend = LiteRtBackend.Parse(backend),
             // Both encoders follow the main backend so a GPU run actually exercises vision/audio on GPU.
             // Vision on GPU works. Audio on GPU fails for gemma-4: the model's audio sub-model declares a
             // CPU backend constraint ("Audio backend constraint mismatch. Model requires one of [cpu]"),
             // so engine_create returns null with audio=gpu — on ANY platform, not just win-x64. The audio
             // test treats that GPU-load failure as a recorded skip; the macOS GPU CI leg confirms the
             // constraint is the model's, not platform-specific.
-            VisionBackend = vision ? backend : null,
-            AudioBackend = audio ? backend : null,
+            VisionBackend = vision ? LiteRtBackend.Parse(backend) : null,
+            AudioBackend = audio ? LiteRtBackend.Parse(backend) : null,
             MaxNumTokens = 4096,
             // Desktop GPU + multimodal: keep the disk cache off (same shared-cache family as the MTP
             // weight-cache bug); harmless on CPU.
-            CacheDir = backend == "gpu" ? LiteRtEngineOptions.CacheDisabled : null,
+            Cache = backend == "gpu" ? LiteRtCache.Disabled : LiteRtCache.Default,
         });
 
         // Small output cap so the attachment's encoder-token block dominates any decode-length
@@ -1173,7 +1357,7 @@ public sealed class EngineTuningTests
         using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
         {
             ModelPath = model!,
-            Backend = "cpu",
+            Backend = LiteRtBackend.Cpu,
             MaxNumTokens = 2048,
             ParallelFileSectionLoading = false,                 // load sections sequentially
             PrefillChunkSize = 128,                             // CPU prefill chunking
@@ -1205,7 +1389,7 @@ public sealed class EngineTuningTests
         using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
         {
             ModelPath = model!,
-            Backend = "cpu",
+            Backend = LiteRtBackend.Cpu,
             MaxNumTokens = 2048,
             EnableBenchmark = true,
             BenchmarkPrefillTokens = 256,   // the prompt is padded/truncated to 256 tokens for prefill

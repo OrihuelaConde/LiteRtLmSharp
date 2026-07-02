@@ -9,11 +9,12 @@ namespace LiteRtLmSharp.Sample;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// <summary>Parsed command-line arguments for the scripted (non-interactive) modes.</summary>
-record CliArgs(string? ModelPath, string Backend, string? OneShotPrompt, bool ToolsMode, int ContextTokens, bool Speculative, bool Thinking, string? CacheDir)
+record CliArgs(string? ModelPath, string Backend, string? OneShotPrompt, bool ToolsMode, int ContextTokens, bool Speculative, bool Thinking, LiteRtCache? Cache)
 {
     public static CliArgs Parse(string[] args)
     {
-        string? model = null, prompt = null, cacheDir = null;
+        string? model = null, prompt = null;
+        LiteRtCache? cache = null;
         string backend = "cpu";
         bool tools = false, spec = false, thinking = false;
         int ctx = 4096;
@@ -30,20 +31,20 @@ record CliArgs(string? ModelPath, string Backend, string? OneShotPrompt, bool To
                 case "--context" when i + 1 < args.Length && int.TryParse(args[i + 1], out int c): ctx = c; i++; break;
                 // --cache <disk|no|memory|PATH>: disk = default (next to model), no/memory map to the
                 // engine sentinels, anything else is treated as a cache directory path.
-                case "--cache" when i + 1 < args.Length: cacheDir = CacheArg(args[++i]); break;
+                case "--cache" when i + 1 < args.Length: cache = CacheArg(args[++i]); break;
                 default: rest.Add(args[i]); break;
             }
         }
         if (rest.Count > 0) { model = rest[0]; if (rest.Count > 1) prompt = string.Join(' ', rest.Skip(1)); }
-        return new CliArgs(model, backend, prompt, tools, ctx, spec, thinking, cacheDir);
+        return new CliArgs(model, backend, prompt, tools, ctx, spec, thinking, cache);
     }
 
-    private static string? CacheArg(string v) => v.ToLowerInvariant() switch
+    private static LiteRtCache? CacheArg(string v) => v.ToLowerInvariant() switch
     {
-        "disk" or "" => null,                                   // engine default: next to the model
-        "no" or "none" or "off" => LiteRtEngineOptions.CacheDisabled,
-        "memory" or "ram" => LiteRtEngineOptions.CacheInMemory,
-        _ => v,                                                 // a directory path
+        "disk" or "" => LiteRtCache.Default,                    // engine default: next to the model
+        "no" or "none" or "off" => LiteRtCache.Disabled,
+        "memory" or "ram" => LiteRtCache.InMemory,
+        _ => LiteRtCache.Directory(v),                          // a directory path
     };
 }
 

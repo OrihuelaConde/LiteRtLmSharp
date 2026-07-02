@@ -19,7 +19,7 @@ public sealed class ExtensionsAiModelTests
     private static LiteRtEngineOptions Options() => new()
     {
         ModelPath = Model!,
-        Backend = Backend,
+        Backend = LiteRtBackend.Parse(Backend),
         MaxNumTokens = 2048,
     };
 
@@ -231,7 +231,7 @@ public sealed class ExtensionsAiModelTests
         // EnableBenchmark on: the input/output split is populated.
         using (var engine = LiteRtEngine.Load(new LiteRtEngineOptions
         {
-            ModelPath = Model!, Backend = Backend, MaxNumTokens = 2048, EnableBenchmark = true,
+            ModelPath = Model!, Backend = LiteRtBackend.Parse(Backend), MaxNumTokens = 2048, EnableBenchmark = true,
         }))
         using (IChatClient client = new LiteRtChatClient(engine))
         {
@@ -271,10 +271,10 @@ public sealed class ExtensionsAiModelTests
         using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
         {
             ModelPath = Model!,
-            Backend = Backend,
-            VisionBackend = Backend,
+            Backend = LiteRtBackend.Parse(Backend),
+            VisionBackend = LiteRtBackend.Parse(Backend),
             MaxNumTokens = 4096,
-            CacheDir = Backend == "gpu" ? LiteRtEngineOptions.CacheDisabled : null,
+            Cache = Backend == "gpu" ? LiteRtCache.Disabled : LiteRtCache.Default,
         });
         using IChatClient client = new LiteRtChatClient(engine);
 
@@ -295,6 +295,53 @@ public sealed class ExtensionsAiModelTests
     }
 
     [SkippableFact]
+    public async Task ChatClient_MultiTurnImage_RecalledFromRestoredHistory()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model)
+                || Environment.GetEnvironmentVariable("LITERTLM_TEST_VISION") != "1",
+            "Set LITERTLM_TEST_VISION=1 and LITERTLM_TEST_MODEL to a vision-capable .litertlm (e.g. gemma-4-E2B-it) to run.");
+
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = Model!,
+            Backend = LiteRtBackend.Parse(Backend),
+            VisionBackend = LiteRtBackend.Parse(Backend),
+            MaxNumTokens = 4096,
+            Cache = Backend == "gpu" ? LiteRtCache.Disabled : LiteRtCache.Default,
+        });
+        using IChatClient client = new LiteRtChatClient(engine);
+
+        byte[] redPng = Convert.FromBase64String(RedPngBase64);
+        const string followUp = "What is the main color of the picture I sent earlier? Answer with one word.";
+
+        // A multi-turn thread whose FIRST turn carried the image; the stateless connector must restore that
+        // image into history so the final (text-only) follow-up can be answered. Compared against the same
+        // thread WITHOUT the image: TotalTokenCount carries the image's ~256 vision tokens only when the
+        // connector preserved the earlier-turn media (deterministic, independent of the model's wording).
+        var withImage = new List<ChatMessage>
+        {
+            new(ChatRole.User, (IList<AIContent>)[new TextContent("Here is a picture."), new DataContent(redPng, "image/png")]),
+            new(ChatRole.Assistant, "Okay, I see it."),
+            new(ChatRole.User, followUp),
+        };
+        var withoutImage = new List<ChatMessage>
+        {
+            new(ChatRole.User, "Here is a picture."),
+            new(ChatRole.Assistant, "Okay, I see it."),
+            new(ChatRole.User, followUp),
+        };
+
+        ChatResponse imgResp = await client.GetResponseAsync(withImage, new ChatOptions { MaxOutputTokens = 16 });
+        ChatResponse txtResp = await client.GetResponseAsync(withoutImage, new ChatOptions { MaxOutputTokens = 16 });
+
+        long imgTokens = imgResp.Usage?.TotalTokenCount ?? 0;
+        long txtTokens = txtResp.Usage?.TotalTokenCount ?? 0;
+        Assert.True(imgTokens > txtTokens + 100,
+            $"Expected the connector to restore the earlier-turn image into history (with-image {imgTokens} vs " +
+            $"text {txtTokens} tokens). with-image reply: '{imgResp.Text}', text reply: '{txtResp.Text}'.");
+    }
+
+    [SkippableFact]
     public async Task ChatClient_AudioAttachment_IsSentToTheModel()
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model)
@@ -306,8 +353,8 @@ public sealed class ExtensionsAiModelTests
         using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
         {
             ModelPath = Model!,
-            Backend = Backend,
-            AudioBackend = Backend,
+            Backend = LiteRtBackend.Parse(Backend),
+            AudioBackend = LiteRtBackend.Parse(Backend),
             MaxNumTokens = 4096,
         });
         using IChatClient client = new LiteRtChatClient(engine);

@@ -11,7 +11,7 @@ using LiteRtLmSharp.Sample;
 //
 // The library in one paragraph: LiteRtEngine.Load() loads the model (heavy — the weights);
 // engine.CreateConversation() starts a cheap, stateful chat session; conversation.Send() /
-// SendMessageStreamingAsync() generate replies. Dispose conversations, then the engine.
+// SendStreamingAsync() generate replies. Dispose conversations, then the engine.
 // Only one engine may be alive at a time — dispose it first to switch model or backend.
 //
 // Interactive (no args):   LiteRtLmSharp.Sample
@@ -51,16 +51,14 @@ while (true)
         // Speculative decoding on the WebGPU GPU backend needs the disk cache OFF (the MTP drafter's
         // shared weight-cache file fails to open on Windows otherwise — upstream issue). Default to
         // disabling it for that combo unless the user picked a cache mode explicitly via --cache.
-        string? cacheDir = cli.CacheDir
-            ?? (speculative && backend == "gpu" ? LiteRtEngineOptions.CacheDisabled : null);
+        LiteRtCache cache = cli.Cache
+            ?? (speculative && backend == "gpu" ? LiteRtCache.Disabled : LiteRtCache.Default);
 
-        string cacheNote = cacheDir switch
-        {
-            LiteRtEngineOptions.CacheDisabled => ", cache off",
-            LiteRtEngineOptions.CacheInMemory => ", cache in-memory",
-            null or "" => "",
-            _ => $", cache {cacheDir}",
-        };
+        string cacheNote =
+            cache == LiteRtCache.Disabled ? ", cache off"
+            : cache == LiteRtCache.InMemory ? ", cache in-memory"
+            : cache == LiteRtCache.Default ? ""
+            : $", cache {cache}";
         Ui.Info($"\nLoading model ({Path.GetFileName(modelPath)}, {backend}, ctx {contextTokens}"
             + $"{(speculative ? ", speculative" : "")}{(thinking ? ", thinking" : "")}{cacheNote}) …");
         var sw = Stopwatch.StartNew();
@@ -68,11 +66,11 @@ while (true)
         engine = LiteRtEngine.Load(new LiteRtEngineOptions
         {
             ModelPath = modelPath,
-            Backend = backend,          // "cpu" or "gpu"
+            Backend = LiteRtBackend.Parse(backend),  // "cpu" or "gpu"
             MaxNumTokens = contextTokens, // total context window (prompt + replies, all turns)
             EnableSpeculativeDecoding = speculative, // MTP drafter → faster decode (supported models)
             EnableBenchmark = true,     // so the gauge can show decode tok/s and time-to-first-token
-            CacheDir = cacheDir,        // null = next to model; ":nocache" disables it (GPU+spec)
+            Cache = cache,              // Default = next to model; Disabled for GPU+spec
         });
 
         Ui.Success($"Engine ready in {sw.Elapsed.TotalSeconds:F1}s.\n");
@@ -155,7 +153,7 @@ static async Task<bool> MainMenuAsync(
 static LiteRtConversation NewChat(LiteRtEngine engine, bool thinking) => engine.CreateConversation(new LiteRtConversationOptions
 {
     SystemMessage = "You are a concise, helpful assistant.",
-    Sampler = new SamplerParams { Type = SamplerType.TopP, TopK = 40, TopP = 0.95f, Temperature = 0.8f },
+    Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 40, TopP = 0.95f, Temperature = 0.8f },
     EnableThinking = thinking,
 });
 
@@ -194,7 +192,7 @@ static async Task StreamReplyAsync(LiteRtConversation chat, string prompt, int c
         // Chunks arrive tagged as reasoning ("thinking", only with EnableThinking on) or answer
         // (this chat has no tools, so no tool-call chunks). Show the thinking trace dimmed above the
         // answer. Cancellation stops generation mid-reply.
-        await foreach (LiteRtStreamChunk chunk in chat.SendMessageStreamingAsync(prompt, cts.Token))
+        await foreach (LiteRtStreamChunk chunk in chat.SendStreamingAsync(prompt, cts.Token))
         {
             if (chunk.IsThinking)
             {

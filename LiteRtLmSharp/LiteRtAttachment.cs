@@ -4,9 +4,9 @@ namespace LiteRtLmSharp;
 public enum LiteRtAttachmentKind
 {
     /// <summary>An image (PNG/JPEG/… — the model decodes it; no format hint is sent).</summary>
-    Image,
+    Image = 0,
     /// <summary>An audio clip (WAV/… — decoded by the model's audio preprocessor).</summary>
-    Audio,
+    Audio = 1,
 }
 
 /// <summary>

@@ -26,11 +26,32 @@ internal sealed class EngineSettingsHandle(nint handle) : LiteRtLmHandle(handle)
     }
 }
 
+/// <summary>
+/// Process-wide gate for the "only one live engine at a time" rule. The slot is acquired in
+/// <see cref="LiteRtEngine.Load"/> and released when the native engine is actually destroyed, in
+/// <see cref="EngineHandle.ReleaseHandle"/> — which runs on Dispose AND on finalization, so a
+/// GC'd-but-undisposed engine still frees the slot (and only after the native engine is gone).
+/// </summary>
+internal static class EngineLiveness
+{
+    private static int s_live;
+
+    /// <summary>Tries to take the single engine slot; returns false if one is already live.</summary>
+    public static bool TryAcquire() => Interlocked.CompareExchange(ref s_live, 1, 0) == 0;
+
+    /// <summary>Frees the engine slot.</summary>
+    public static void Release() => Interlocked.Exchange(ref s_live, 0);
+}
+
 internal sealed class EngineHandle(nint handle) : LiteRtLmHandle(handle)
 {
     protected override bool ReleaseHandle()
     {
         LiteRtLmNative.litert_lm_engine_delete(handle);
+        // Free the one-engine slot only after the native engine is destroyed (ordering matters: a new
+        // engine must not be created while this one's native object still exists). This runs on Dispose
+        // and on finalization, so even a forgotten/GC'd engine releases the slot.
+        EngineLiveness.Release();
         return true;
     }
 }

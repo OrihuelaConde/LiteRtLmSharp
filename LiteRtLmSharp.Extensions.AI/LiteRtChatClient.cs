@@ -48,7 +48,7 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// at no cost). The input/output split — <see cref="UsageDetails.InputTokenCount"/> /
 /// <see cref="UsageDetails.OutputTokenCount"/> — is populated <b>only</b> when the engine was loaded with
 /// <see cref="LiteRtEngineOptions.EnableBenchmark"/> = <c>true</c>; otherwise those stay <c>null</c> and a note
-/// to that effect is left in <see cref="UsageDetails.AdditionalProperties"/>.
+/// to that effect is left in <see cref="ChatResponse.AdditionalProperties"/>.
 /// </para>
 /// </remarks>
 public sealed class LiteRtChatClient : IChatClient
@@ -90,15 +90,12 @@ public sealed class LiteRtChatClient : IChatClient
         try
         {
             using LiteRtConversation conv = _engine.CreateConversation(convOptions);
-            // Send / SendToolResults are blocking native calls; offload so the async contract holds and the gate
-            // wait + pre-call cancellation are honored (they do not interrupt generation mid-flight — use the
-            // streaming overload for cooperative mid-generation cancellation). A tool-results trigger is the
-            // function-calling continuation: the assistant tool-call turn was restored as history above.
-            LiteRtResponse response = await Task.Run(
-                () => trigger.IsToolResults ? conv.SendToolResults(trigger.ToolResults!)
-                    : trigger.HasAttachments ? conv.Send(trigger.UserText!, trigger.Attachments!)
-                    : conv.Send(trigger.UserText!),
-                cancellationToken).ConfigureAwait(false);
+            // The awaitable sends cancel the native inference mid-generation when the token fires
+            // (OperationCanceledException). A tool-results trigger is the function-calling continuation:
+            // the assistant tool-call turn was restored as history above.
+            LiteRtResponse response = trigger.IsToolResults
+                ? await conv.SendToolResultsAsync(trigger.ToolResults!, cancellationToken).ConfigureAwait(false)
+                : await conv.SendAsync(trigger.UserText!, trigger.Attachments, cancellationToken).ConfigureAwait(false);
 
             // Reasoning ("thinking") becomes TextReasoningContent (excluded from ChatResponse.Text but kept on
             // Contents). The reply is then either tool calls (FunctionCallContent) or the answer text.
@@ -163,9 +160,10 @@ public sealed class LiteRtChatClient : IChatClient
             if (trigger.IsToolResults)
             {
                 // The native API has no streaming tool-results call, so the function-calling continuation is a
-                // single blocking send surfaced as updates (the answer after a tool round is typically short).
-                LiteRtResponse continuation = await Task.Run(
-                    () => conv.SendToolResults(trigger.ToolResults!), cancellationToken).ConfigureAwait(false);
+                // single awaitable send surfaced as updates (the answer after a tool round is typically short);
+                // the token cancels it mid-generation like the streaming path.
+                LiteRtResponse continuation = await conv.SendToolResultsAsync(
+                    trigger.ToolResults!, cancellationToken).ConfigureAwait(false);
                 foreach (ChatResponseUpdate update in ToUpdates(continuation))
                     yield return update;
                 yield return UsageUpdate(conv!);
@@ -173,8 +171,8 @@ public sealed class LiteRtChatClient : IChatClient
             }
 
             IAsyncEnumerable<LiteRtStreamChunk> stream = trigger.HasAttachments
-                ? conv.SendMessageStreamingAsync(trigger.UserText!, trigger.Attachments!, cancellationToken)
-                : conv.SendMessageStreamingAsync(trigger.UserText!, cancellationToken);
+                ? conv.SendStreamingAsync(trigger.UserText!, trigger.Attachments!, cancellationToken)
+                : conv.SendStreamingAsync(trigger.UserText!, cancellationToken);
 
             int toolCallIndex = 0;   // monotonic across the whole stream so synthesized call ids stay unique
             bool sawAnswer = false, sawReasoning = false, sawToolCall = false;

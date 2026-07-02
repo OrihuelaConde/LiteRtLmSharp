@@ -344,7 +344,8 @@ internal static class LiteRtJson
                 w.WriteString("role", WireRole(m.Role));
 
                 bool hasText = !string.IsNullOrEmpty(m.Text);
-                if (hasText || m.ToolResults.Count > 0)
+                bool hasAttachments = m.Attachments.Count > 0;
+                if (hasText || hasAttachments || m.ToolResults.Count > 0)
                 {
                     w.WriteStartArray("content");
                     if (hasText)
@@ -352,6 +353,18 @@ internal static class LiteRtJson
                         w.WriteStartObject();
                         w.WriteString("type", "text");
                         w.WriteString("text", m.Text);
+                        w.WriteEndObject();
+                    }
+                    foreach (LiteRtAttachment a in m.Attachments)
+                    {
+                        // Same content-part shape as a live multimodal send (UserMessage): a file-backed
+                        // attachment as a memory-mapped "path", inline bytes as a base64 "blob".
+                        w.WriteStartObject();
+                        w.WriteString("type", a.Kind == LiteRtAttachmentKind.Image ? "image" : "audio");
+                        if (a.Path is { } path)
+                            w.WriteString("path", path);
+                        else
+                            w.WriteString("blob", Convert.ToBase64String(a.Bytes ?? []));
                         w.WriteEndObject();
                     }
                     foreach (LiteRtToolResult r in m.ToolResults)

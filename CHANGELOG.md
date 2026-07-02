@@ -52,6 +52,74 @@ are published together.
     Validated end-to-end on win-x64 CPU and GPU/WebGPU with gemma-4-E2B-it; mapping/settings/registration logic is
     unit-tested model-free in CI, with gated model-backed tests (chat blocking/streaming, multi-turn history replay,
     reasoning + truncation, function calling for both MEAI and SK, and image/audio attachments) under `LITERTLM_TEST_MODEL`.
+- **Multi-turn multimodal history.** A restored conversation history can carry image/audio:
+  `LiteRtMessage` gains an `Attachments` property and a `User(text, attachments)` factory,
+  `LiteRtMessage.Serialize`/`Deserialize` round-trip media content parts, and history attachments are
+  re-encoded through prefill — so a thread can refer back to an image/audio sent in an earlier turn.
+  The MEAI / Semantic Kernel connectors restore prior-turn `DataContent` / file-`UriContent` media the
+  same way.
+- **`LiteRtBackend.Npu`** plus **`LiteRtBackend.Custom(string)`** — NPU support and a passthrough escape
+  hatch for custom native builds exposing additional backends.
+- **XML documentation now ships** in all three packages (`GenerateDocumentationFile`), so the public API
+  appears in consumers' IntelliSense (the hand-written `///` docs were previously not emitted).
+- **Cancellation.** `LiteRtConversation.CancelProcess()` cancels any in-flight generation from any
+  thread (parity with the Kotlin/JS bindings' `cancelProcess`/`cancel` — the native cancel reaches the
+  execution manager, so it cuts blocking sends short too, not just streams). The new awaitable
+  `SendAsync(text[, attachments], ct)` and `SendToolResultsAsync(results, ct)` wrap the blocking send
+  with that mechanism: cancelling the token cancels the native inference mid-generation and the task
+  faults with `OperationCanceledException`. After a cancelled send, dispose the conversation and
+  continue on a fresh one (restoring `History` if needed): sending again on a cancelled conversation
+  hangs inside the native runtime — reproduced with Google's own binaries at v0.13.1 — while the engine
+  itself is unaffected. The `IChatClient` connector's `GetResponseAsync` now honors its
+  `CancellationToken` mid-generation as well (its stateless one-conversation-per-call design already
+  matches the dispose-after-cancel contract).
+- **Actionable native-load errors.** When the native library cannot be resolved, the
+  `DllNotFoundException` now says what to do instead of a bare "Unable to load DLL": a missing binary
+  names the `LiteRtLmSharp.runtime.<rid>` package for the process's RID (and the searched paths), while a
+  binary that is present but fails to load points at the usual system prerequisites (VC++ Redistributable
+  on Windows, missing system libraries on Linux, architecture mismatch).
+
+### Changed (breaking — update `0.1.0-preview` consumers)
+
+Surface clean-ups for the first stable release; source-breaking for preview consumers.
+
+- **One send family on `LiteRtConversation`.** `Send(text[, attachments])` returning `LiteRtResponse` is
+  the single blocking entry point: the string-returning `SendMessage(text[, attachments])` convenience is
+  removed — read the answer from `Send(...).Text` (tool calls and the reasoning trace live on the same
+  response, so nothing is silently dropped). `SendMessageStreamingAsync` is renamed to
+  `SendStreamingAsync` and `SendMessageRaw` to `SendRaw`, so the whole family shares the `Send` stem.
+- **Sampler types renamed** to match the `LiteRt` prefix every other public type uses:
+  `SamplerType` → `LiteRtSamplerType`, `SamplerParams` → `LiteRtSamplerParams`, and
+  `LiteRtSamplerParams.Type` → `.Strategy`. `LiteRtSamplerParams.Seed` is now `int?` (was `int`): `null`
+  (the new default) reseeds randomly each conversation instead of pinning the deterministic seed `0`; set a
+  value for reproducible output. `TopK`/`TopP`/`Temperature` now validate their range on assignment.
+- **Backends are a typed `LiteRtBackend`** smart enum (`Cpu` / `Gpu` / `Npu` / `Custom(string)` /
+  `Parse(string)`) instead of magic strings. `LiteRtEngineOptions.Backend` is now `LiteRtBackend` (was
+  `string`), and `VisionBackend` / `AudioBackend` are `LiteRtBackend?` (were `string?`; `null` still = off).
+- **Cache configuration is a typed `LiteRtCache`** (`Default` / `Disabled` / `InMemory` / `Directory(path)`).
+  The `LiteRtEngineOptions.CacheDir` string and the `CacheDisabled` / `CacheInMemory` string sentinels are
+  replaced by `LiteRtEngineOptions.Cache`.
+- **Public enums carry explicit numeric values** (`LiteRtMessageRole`, `LiteRtAttachmentKind`,
+  `LiteRtStreamChunkKind`) so inserting a member can't silently renumber the others.
+- **`LiteRtMessage.Deserialize` rejects unknown roles.** A message whose role is not
+  `system`/`user`/`model` (or `assistant`)/`tool` now throws `ArgumentException` instead of being
+  silently parsed as a user turn — on the recommended persistence path, failing loudly beats
+  misattributing who said what. Content parts of unknown types are still skipped (documented).
+
+### Fixed
+
+- **Streaming teardown no longer deadlocks on early exit.** Abandoning `SendStreamingAsync`
+  mid-generation — cancelling the token, or simply `break`ing out of the `await foreach` — could hang
+  forever: the teardown awaited the channel's completion without draining the chunks the consumer never
+  read, and a channel only completes once its buffer is empty. The teardown now cancels the native
+  inference and drains the channel, so early exits return promptly.
+- **Blocking-send lifetime edge case.** A caller whose last use of a conversation was a blocking send
+  could, in principle, have the wrapper garbage-collected while the native call was still running — the
+  handle's finalizer would then delete the native conversation mid-generation. The blocking send now
+  pins the wrapper for the duration of the call.
+- **One-engine-alive counter leak.** The process-wide "single live engine" slot is now released when the
+  native engine is destroyed — on `Dispose` *and* on finalization — so an engine that is garbage-collected
+  without `Dispose` no longer leaves the slot stuck (previously the process could never load another model).
 
 ## [0.1.0-preview.3] — 2026-06-20
 

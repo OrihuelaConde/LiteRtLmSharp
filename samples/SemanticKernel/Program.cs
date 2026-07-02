@@ -55,7 +55,7 @@ builder.AddLiteRtChatCompletion(
     new LiteRtEngineOptions
     {
         ModelPath = modelPath,
-        Backend = backend,
+        Backend = LiteRtBackend.Parse(backend),
         MaxNumTokens = 4096, // total context window (prompt + replies, accumulated across turns)
     },
     modelId: Path.GetFileNameWithoutExtension(modelPath),

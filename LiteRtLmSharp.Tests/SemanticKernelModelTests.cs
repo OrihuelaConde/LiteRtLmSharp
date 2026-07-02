@@ -23,7 +23,7 @@ public sealed class SemanticKernelModelTests
     private static LiteRtEngineOptions Options() => new()
     {
         ModelPath = Model!,
-        Backend = Backend,
+        Backend = LiteRtBackend.Parse(Backend),
         MaxNumTokens = 2048,
     };
 

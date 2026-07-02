@@ -67,7 +67,7 @@ internal static class LiteRtChatMapping
             $"(the last message's role was '{last.Role.Value}').", nameof(messages));
     }
 
-    /// <summary>Maps every <see cref="FunctionCallContent.CallId"/> in the conversation to its tool name.</summary>
+    /// <summary>Maps every <see cref="FunctionCallContent"/>'s <c>CallId</c> in the conversation to its tool name.</summary>
     private static IReadOnlyDictionary<string, string> BuildCallIdToName(IReadOnlyList<ChatMessage> list)
     {
         Dictionary<string, string>? map = null;
@@ -85,7 +85,15 @@ internal static class LiteRtChatMapping
     private static LiteRtMessage ToMessage(ChatMessage message, IReadOnlyDictionary<string, string> callIdToName)
     {
         if (message.Role == ChatRole.System) return LiteRtMessage.System(message.Text ?? string.Empty);
-        if (message.Role == ChatRole.User) return LiteRtMessage.User(message.Text ?? string.Empty);
+        if (message.Role == ChatRole.User)
+        {
+            // Carry any image/audio on a prior user turn into the restored history (re-encoded through
+            // prefill), so a multi-turn multimodal thread keeps its earlier media.
+            IReadOnlyList<LiteRtAttachment>? userAttachments = ToAttachments(message);
+            return userAttachments is { Count: > 0 }
+                ? LiteRtMessage.User(message.Text ?? string.Empty, userAttachments)
+                : LiteRtMessage.User(message.Text ?? string.Empty);
+        }
         if (message.Role == ChatRole.Tool) return LiteRtMessage.Tool(ToToolResults(message, callIdToName));
 
         if (message.Role == ChatRole.Assistant)
@@ -110,7 +118,7 @@ internal static class LiteRtChatMapping
     }
 
     /// <summary>Extracts a tool message's <see cref="FunctionResultContent"/> as native tool results,
-    /// resolving each result's tool name from its <see cref="FunctionResultContent.CallId"/>.</summary>
+    /// resolving each result's tool name from its <c>CallId</c>.</summary>
     private static IReadOnlyList<LiteRtToolResult> ToToolResults(ChatMessage message, IReadOnlyDictionary<string, string> callIdToName)
     {
         List<LiteRtToolResult>? results = null;
@@ -180,7 +188,7 @@ internal static class LiteRtChatMapping
     /// </summary>
     public static LiteRtConversationOptions? ToConversationOptions(IReadOnlyList<LiteRtMessage> history, ChatOptions? options)
     {
-        SamplerParams? sampler = ToSampler(options);
+        LiteRtSamplerParams? sampler = ToSampler(options);
         bool? enableThinking = GetEnableThinking(options);
         bool constrained = GetConstrainedDecoding(options);
         IReadOnlyList<LiteRtTool>? tools = ToTools(options);
@@ -301,20 +309,20 @@ internal static class LiteRtChatMapping
     }
 
     /// <summary>Maps the sampler knobs from <see cref="ChatOptions"/>, or <c>null</c> when none are set.</summary>
-    private static SamplerParams? ToSampler(ChatOptions? o)
+    private static LiteRtSamplerParams? ToSampler(ChatOptions? o)
     {
         if (o is null || (o.Temperature is null && o.TopP is null && o.TopK is null && o.Seed is null))
             return null;
 
-        var defaults = new SamplerParams();
-        return new SamplerParams
+        var defaults = new LiteRtSamplerParams();
+        return new LiteRtSamplerParams
         {
-            Type = SamplerType.TopP,
+            Strategy = LiteRtSamplerType.TopP,
             TopK = o.TopK ?? defaults.TopK,
             TopP = o.TopP ?? defaults.TopP,
             Temperature = o.Temperature ?? defaults.Temperature,
-            // ChatOptions.Seed is a long?; LiteRtLmSharp's sampler seed is an int.
-            Seed = o.Seed is { } seed ? unchecked((int)seed) : defaults.Seed,
+            // ChatOptions.Seed is a long?; LiteRtLmSharp's sampler seed is an int? (null = reseed).
+            Seed = o.Seed is { } seed ? unchecked((int)seed) : null,
         };
     }
 

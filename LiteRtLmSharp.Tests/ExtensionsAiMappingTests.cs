@@ -65,7 +65,7 @@ public class ExtensionsAiMappingTests
         Assert.NotNull(conv);
         Assert.Equal(128, conv!.MaxOutputTokens);
         Assert.NotNull(conv.Sampler);
-        Assert.Equal(SamplerType.TopP, conv.Sampler!.Type);
+        Assert.Equal(LiteRtSamplerType.TopP, conv.Sampler!.Strategy);
         Assert.Equal(0.3f, conv.Sampler.Temperature, 3);
         Assert.Equal(0.8f, conv.Sampler.TopP, 3);
         Assert.Equal(20, conv.Sampler.TopK);

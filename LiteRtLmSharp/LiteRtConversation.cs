@@ -69,10 +69,9 @@ public sealed class LiteRtConversation : IDisposable
 
             // A multimodal engine needs the conversation to carry a session config, otherwise the
             // vision/audio executor never loads and the first attachment send fails with "Vision/Audio
-            // executor should not be null". A BARE session config is enough (verified) and is neutral for
-            // text, so attach one whenever the engine has an encoder enabled — even if the caller passed
-            // no sampler/output cap (e.g. a plain CreateConversation()). This removes the footgun where a
-            // default conversation could not send images.
+            // executor should not be null". A BARE session config is enough and is neutral for text, so
+            // attach one whenever the engine has an encoder enabled — even if the caller passed no
+            // sampler/output cap — so a plain CreateConversation() can send attachments without setup.
             bool needsSessionConfig =
                 options?.Sampler is not null || options?.MaxOutputTokens > 0 || engineIsMultimodal;
             bool needsConfig = needsSessionConfig ||
@@ -101,11 +100,13 @@ public sealed class LiteRtConversation : IDisposable
                     {
                         var native = new LiteRtLmSamplerParams
                         {
-                            Type = (LiteRtLmSamplerType)s.Type,
+                            Type = (LiteRtLmSamplerType)s.Strategy,
                             TopK = s.TopK,
                             TopP = s.TopP,
                             Temperature = s.Temperature,
-                            Seed = s.Seed,
+                            // A null Seed reseeds randomly each conversation (non-deterministic); a set
+                            // value pins deterministic sampling. The native struct always carries a seed.
+                            Seed = s.Seed ?? Random.Shared.Next(),
                         };
                         LiteRtLmNative.litert_lm_session_config_set_sampler_params(sessionPtr, &native);
                     }
@@ -209,7 +210,7 @@ public sealed class LiteRtConversation : IDisposable
     /// re-prefilling the shared prefix. The clone advances on its own; this conversation is untouched.
     /// </summary>
     /// <remarks>
-    /// Call this only when the conversation is idle (no in-flight <see cref="SendMessageStreamingAsync"/>) —
+    /// Call this only when the conversation is idle (no in-flight <see cref="SendStreamingAsync(string, System.Threading.CancellationToken)"/>) —
     /// conversations are not thread-safe. Dispose the clone like any conversation, before the engine.
     /// Cloning duplicates state in memory; to persist a conversation across process restarts use
     /// <see cref="LiteRtConversationOptions.History"/> instead.
@@ -239,29 +240,17 @@ public sealed class LiteRtConversation : IDisposable
             new ConversationHandle(clonedPtr), config: null, sessionConfig: null, _visualTokenBudget);
     }
 
-    /// <summary>Sends a user message and returns only the text answer (blocking).
-    /// For function calling use <see cref="Send(string)"/>, which also surfaces tool calls.</summary>
-    public string SendMessage(string text)
-    {
-        ArgumentNullException.ThrowIfNull(text);
-        return Send(text).Text ?? string.Empty;
-    }
-
-    /// <summary>Sends a user message and returns the structured response (text or tool calls).</summary>
+    /// <summary>Sends a user message and returns the reply (blocking). The answer text is
+    /// <see cref="LiteRtResponse.Text"/>; when the conversation has tools the model may instead return
+    /// <see cref="LiteRtResponse.ToolCalls"/> (see <see cref="SendToolResults"/>), and reasoning models
+    /// expose their thinking trace via <see cref="LiteRtResponse.Thinking"/>. For an awaitable variant
+    /// with mid-generation cancellation use <see cref="SendAsync(string, CancellationToken)"/>; to cut a
+    /// blocking send short from another thread, call <see cref="CancelProcess"/>.</summary>
     public LiteRtResponse Send(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
-        return LiteRtResponse.Parse(SendMessageRaw(LiteRtJson.UserMessage(text)));
+        return LiteRtResponse.Parse(SendRaw(LiteRtJson.UserMessage(text)));
     }
-
-    /// <summary>
-    /// Sends a user message with image/audio <paramref name="attachments"/> and returns only the text
-    /// answer (blocking). The engine must have been loaded with the matching modality enabled
-    /// (<see cref="LiteRtEngineOptions.VisionBackend"/> / <see cref="LiteRtEngineOptions.AudioBackend"/>)
-    /// and the model must support it.
-    /// </summary>
-    public string SendMessage(string text, IReadOnlyList<LiteRtAttachment> attachments)
-        => Send(text, attachments).Text ?? string.Empty;
 
     /// <summary>
     /// Sends a user message with image/audio <paramref name="attachments"/> and returns the structured
@@ -273,7 +262,7 @@ public sealed class LiteRtConversation : IDisposable
     {
         ArgumentNullException.ThrowIfNull(text);
         ArgumentNullException.ThrowIfNull(attachments);
-        return LiteRtResponse.Parse(SendMessageRaw(LiteRtJson.UserMessage(text, attachments)));
+        return LiteRtResponse.Parse(SendRaw(LiteRtJson.UserMessage(text, attachments)));
     }
 
     /// <summary>
@@ -283,14 +272,108 @@ public sealed class LiteRtConversation : IDisposable
     public LiteRtResponse SendToolResults(IEnumerable<LiteRtToolResult> results)
     {
         ArgumentNullException.ThrowIfNull(results);
-        return LiteRtResponse.Parse(SendMessageRaw(LiteRtJson.ToolResults(results)));
+        return LiteRtResponse.Parse(SendRaw(LiteRtJson.ToolResults(results)));
+    }
+
+    /// <summary>
+    /// Awaitable <see cref="Send(string)"/> with true mid-generation cancellation: cancelling
+    /// <paramref name="cancellationToken"/> cancels the native inference (via <see cref="CancelProcess"/>)
+    /// and the task faults with <see cref="OperationCanceledException"/>. Treat a cancelled conversation
+    /// as consumed: dispose it and continue on a fresh one (restore prior turns via
+    /// <see cref="LiteRtConversationOptions.History"/> if needed) — sending again on it hangs inside the
+    /// native runtime (LiteRT-LM v0.13.1, reproduced with Google's own binaries); the engine itself is
+    /// unaffected. While the send is in flight, do not touch the conversation from other threads —
+    /// cancellation is the only supported concurrent operation.
+    /// </summary>
+    public Task<LiteRtResponse> SendAsync(string text, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(text);
+        return RunCancellable(() => Send(text), cancellationToken);
+    }
+
+    /// <summary>
+    /// Awaitable <see cref="Send(string, IReadOnlyList{LiteRtAttachment})"/> with true mid-generation
+    /// cancellation — see <see cref="SendAsync(string, CancellationToken)"/> for the cancellation
+    /// contract. <paramref name="attachments"/> may be null/empty for a text-only send.
+    /// </summary>
+    public Task<LiteRtResponse> SendAsync(
+        string text, IReadOnlyList<LiteRtAttachment>? attachments, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(text);
+        return RunCancellable(
+            () => attachments is { Count: > 0 } ? Send(text, attachments) : Send(text), cancellationToken);
+    }
+
+    /// <summary>
+    /// Awaitable <see cref="SendToolResults"/> with true mid-generation cancellation — see
+    /// <see cref="SendAsync(string, CancellationToken)"/> for the cancellation contract.
+    /// </summary>
+    public Task<LiteRtResponse> SendToolResultsAsync(
+        IEnumerable<LiteRtToolResult> results, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(results);
+        return RunCancellable(() => SendToolResults(results), cancellationToken);
+    }
+
+    /// <summary>
+    /// Cancels any in-flight generation on this conversation: a blocking <see cref="Send(string)"/>
+    /// running on another thread, a <see cref="SendAsync(string, CancellationToken)"/>, or an active
+    /// <see cref="SendStreamingAsync(string, System.Threading.CancellationToken)"/> stream. This is the
+    /// one operation that is safe to call from any thread while a send is in flight; when nothing is in
+    /// flight it is a no-op. A cancelled blocking send fails with <see cref="LiteRtException"/> (the
+    /// async variants translate that to <see cref="OperationCanceledException"/>). Afterwards, treat the
+    /// conversation as consumed: dispose it and continue on a fresh one (restore prior turns via
+    /// <see cref="LiteRtConversationOptions.History"/> if needed) — sending again on a cancelled
+    /// conversation hangs inside the native runtime (LiteRT-LM v0.13.1, reproduced with Google's own
+    /// binaries); the engine itself is unaffected. Mirrors the native <c>cancel_process</c> (the Kotlin
+    /// binding's <c>cancelProcess</c> / the JS binding's <c>cancel</c>).
+    /// </summary>
+    public void CancelProcess()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        LiteRtLmNative.litert_lm_conversation_cancel_process(_conversation.Ptr);
+    }
+
+    /// <summary>
+    /// Runs a blocking send on the thread pool with the cancellation contract of the Async sends: the
+    /// token triggers the native cancel; a send that then fails while the token is set surfaces as
+    /// <see cref="OperationCanceledException"/> (the native CANCELLED state reaches the C API as a null
+    /// response, i.e. a <see cref="LiteRtException"/> here).
+    /// </summary>
+    private async Task<LiteRtResponse> RunCancellable(Func<LiteRtResponse> send, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        using CancellationTokenRegistration registration = cancellationToken.Register(static state =>
+        {
+            // A late cancel racing Dispose is benign — the generation it would cut short is already gone.
+            try { ((LiteRtConversation)state!).CancelProcess(); }
+            catch (ObjectDisposedException) { }
+        }, this);
+
+        try
+        {
+            LiteRtResponse response = await Task.Run(send, CancellationToken.None).ConfigureAwait(false);
+            // The token can win the race but the native task may still have completed first (e.g. it was
+            // cancelled between decode steps or after the reply finished) — honor the contract regardless.
+            cancellationToken.ThrowIfCancellationRequested();
+            return response;
+        }
+        catch (LiteRtException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(
+                "The generation was cancelled (LiteRtConversation.CancelProcess).", cancellationToken);
+        }
     }
 
     /// <summary>
     /// Low-level escape hatch: sends a raw message JSON and returns the raw response JSON.
     /// Use when you need full control over the wire format.
     /// </summary>
-    public string SendMessageRaw(string messageJson, string? extraContext = null)
+    public string SendRaw(string messageJson, string? extraContext = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(messageJson);
@@ -298,6 +381,10 @@ public sealed class LiteRtConversation : IDisposable
         using ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs();
         nint responsePtr = LiteRtLmNative.litert_lm_conversation_send_message(
             _conversation.Ptr, messageJson, extraContext, optionalArgs?.Ptr ?? nint.Zero);
+        // The send can run for seconds. Without this, a caller whose LAST use of the conversation is
+        // this call could have the wrapper collected mid-call — and its SafeHandle finalizer deletes
+        // the native conversation the native thread is still generating on.
+        GC.KeepAlive(this);
         if (responsePtr == nint.Zero)
         {
             // The blocking send returns null with no error string (the native reason goes to stderr).
@@ -410,16 +497,12 @@ public sealed class LiteRtConversation : IDisposable
     /// text deltas to rebuild the answer and the thinking trace. With
     /// <see cref="LiteRtConversationOptions.EnableThinking"/> on, reasoning models emit the thinking
     /// trace before the answer. A <see cref="LiteRtStreamChunkKind.ToolCall"/> chunk only appears when
-    /// the conversation was created with tools — handle it like the blocking <see cref="Send"/> loop
+    /// the conversation was created with tools — handle it like the blocking <see cref="Send(string)"/> loop
     /// (run the tools, then <see cref="SendToolResults"/>).
-    /// <para>
-    /// Requires a sound native build: the async decode thread crashed on the interim commit
-    /// 032334d8, but works on release tags (verified on v0.13.1) and on community 0.12.0-a.
-    /// </para>
     /// </summary>
-    public IAsyncEnumerable<LiteRtStreamChunk> SendMessageStreamingAsync(
+    public IAsyncEnumerable<LiteRtStreamChunk> SendStreamingAsync(
         string text, CancellationToken cancellationToken = default)
-        => SendMessageStreamingAsync(text, attachments: null, cancellationToken);
+        => SendStreamingAsync(text, attachments: null, cancellationToken);
 
     /// <summary>
     /// Streaming overload that attaches image/audio <paramref name="attachments"/> to the user message.
@@ -428,7 +511,7 @@ public sealed class LiteRtConversation : IDisposable
     /// <see cref="LiteRtEngineOptions.AudioBackend"/>) on a multimodal model; otherwise the native send
     /// fails. The chunk kinds and cancellation behavior are identical to the text-only overload.
     /// </summary>
-    public async IAsyncEnumerable<LiteRtStreamChunk> SendMessageStreamingAsync(
+    public async IAsyncEnumerable<LiteRtStreamChunk> SendStreamingAsync(
         string text, IReadOnlyList<LiteRtAttachment>? attachments,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -468,15 +551,25 @@ public sealed class LiteRtConversation : IDisposable
         }
         finally
         {
-            // The native streaming thread invokes the callback until is_final, which completes the
-            // channel. Before freeing the GCHandle (and letting the caller dispose the conversation)
-            // we MUST ensure that thread is done — otherwise it dereferences freed state / a deleted
-            // conversation and segfaults. If the consumer abandoned early, cancel and then wait.
+            // The native streaming thread invokes the callback until is_final (or the CANCELLED error),
+            // which completes the channel. Before freeing the GCHandle (and letting the caller dispose
+            // the conversation) we MUST ensure that thread is done — otherwise it dereferences freed
+            // state / a deleted conversation and segfaults. If the consumer abandoned early (break or
+            // cancellation), cancel the native inference, then DRAIN the channel: chunks the consumer
+            // never read may still sit in the buffer, and a channel's Completion only transitions once
+            // the writer has completed AND the buffer is empty — awaiting Completion without draining
+            // deadlocks exactly when there are leftovers.
             if (!channel.Reader.Completion.IsCompleted)
             {
                 LiteRtLmNative.litert_lm_conversation_cancel_process(_conversation.Ptr);
-                try { await channel.Reader.Completion.ConfigureAwait(false); }
-                catch { /* completion may surface the cancel error; ignore here */ }
+                try
+                {
+                    // Terminates once the writer completes: WaitToReadAsync returns false on a clean
+                    // completion and throws the completion error on a faulted one (the CANCELLED path).
+                    while (await channel.Reader.WaitToReadAsync().ConfigureAwait(false))
+                        while (channel.Reader.TryRead(out _)) { }
+                }
+                catch { /* the cancel error is expected here; the consumer already gave up */ }
             }
             if (gcHandle.IsAllocated)
                 gcHandle.Free();
@@ -540,6 +633,8 @@ public sealed class LiteRtConversation : IDisposable
         public readonly Channel<LiteRtStreamChunk> Channel = channel;
     }
 
+    /// <summary>Disposes the conversation, freeing its native resources (and its config handles). Dispose
+    /// a conversation, and any clones, before the <see cref="LiteRtEngine"/> it came from.</summary>
     public void Dispose()
     {
         if (_disposed) return;
@@ -554,15 +649,15 @@ public sealed class LiteRtConversation : IDisposable
 public enum LiteRtStreamChunkKind
 {
     /// <summary>A fragment of the answer text.</summary>
-    Answer,
+    Answer = 0,
     /// <summary>A fragment of the reasoning ("thinking") trace.</summary>
-    Thinking,
+    Thinking = 1,
     /// <summary>One or more tool calls the model wants executed (only when the conversation has tools).</summary>
-    ToolCall,
+    ToolCall = 2,
 }
 
 /// <summary>
-/// One streamed piece of a reply from <see cref="LiteRtConversation.SendMessageStreamingAsync"/>.
+/// One streamed piece of a reply from <see cref="LiteRtConversation.SendStreamingAsync(string, System.Threading.CancellationToken)"/>.
 /// <see cref="Kind"/> says what it is: an <see cref="LiteRtStreamChunkKind.Answer"/> or
 /// <see cref="LiteRtStreamChunkKind.Thinking"/> text delta (concatenate same-kind chunks in order
 /// to rebuild each), or a <see cref="LiteRtStreamChunkKind.ToolCall"/> carrying the model's tool
