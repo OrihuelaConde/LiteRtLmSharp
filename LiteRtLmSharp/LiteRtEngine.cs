@@ -51,6 +51,10 @@ public sealed class LiteRtEngine : IDisposable
     public static LiteRtEngine Load(LiteRtEngineOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+        if (string.IsNullOrEmpty(options.ModelPath))
+            throw new ArgumentException(
+                "LiteRtEngineOptions.ModelPath must be set — it is the only model source in this release.",
+                nameof(options));
         if (!File.Exists(options.ModelPath))
             throw new ArgumentException($"Model file not found: {options.ModelPath}", nameof(options));
 

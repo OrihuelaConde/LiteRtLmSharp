@@ -104,9 +104,9 @@ public sealed class LiteRtConversation : IDisposable
                             TopK = s.TopK,
                             TopP = s.TopP,
                             Temperature = s.Temperature,
-                            // A null Seed reseeds randomly each conversation (non-deterministic); a set
-                            // value pins deterministic sampling. The native struct always carries a seed.
-                            Seed = s.Seed ?? Random.Shared.Next(),
+                            // Seed 0 (the default) = deterministic, matching the engine default and
+                            // Google's official bindings (Kotlin defaults 0; python maps unset -> 0).
+                            Seed = s.Seed,
                         };
                         LiteRtLmNative.litert_lm_session_config_set_sampler_params(sessionPtr, &native);
                     }
@@ -173,6 +173,8 @@ public sealed class LiteRtConversation : IDisposable
     /// The native per-turn accessors do not bounds-check their index, so this only reads a turn
     /// after confirming the corresponding turn count is &gt; 0. Throws
     /// <see cref="EntryPointNotFoundException"/> on native binaries predating the benchmark API.
+    /// Wraps a native surface Google still marks experimental in its own bindings; the reported
+    /// values may change with the native runtime version.
     /// </remarks>
     public LiteRtBenchmarkInfo? GetBenchmarkInfo()
     {
@@ -246,33 +248,30 @@ public sealed class LiteRtConversation : IDisposable
     /// expose their thinking trace via <see cref="LiteRtResponse.Thinking"/>. For an awaitable variant
     /// with mid-generation cancellation use <see cref="SendAsync(string, CancellationToken)"/>; to cut a
     /// blocking send short from another thread, call <see cref="CancelProcess"/>.</summary>
-    public LiteRtResponse Send(string text)
-    {
-        ArgumentNullException.ThrowIfNull(text);
-        return LiteRtResponse.Parse(SendRaw(LiteRtJson.UserMessage(text)));
-    }
+    public LiteRtResponse Send(string text) => Send(text, attachments: null);
 
     /// <summary>
-    /// Sends a user message with image/audio <paramref name="attachments"/> and returns the structured
-    /// response. The attachments are appended after the text in content-part order. Requires the engine
-    /// to have the matching modality enabled (see <see cref="LiteRtEngineOptions.VisionBackend"/> /
+    /// Sends a user message with optional image/audio <paramref name="attachments"/> (null/empty =
+    /// text-only) and optional per-send <paramref name="options"/>, returning the structured response.
+    /// Attachments are appended after the text in content-part order and require the engine to have the
+    /// matching modality enabled (see <see cref="LiteRtEngineOptions.VisionBackend"/> /
     /// <see cref="LiteRtEngineOptions.AudioBackend"/>) on a multimodal model.
     /// </summary>
-    public LiteRtResponse Send(string text, IReadOnlyList<LiteRtAttachment> attachments)
+    public LiteRtResponse Send(
+        string text, IReadOnlyList<LiteRtAttachment>? attachments, LiteRtSendOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(text);
-        ArgumentNullException.ThrowIfNull(attachments);
-        return LiteRtResponse.Parse(SendRaw(LiteRtJson.UserMessage(text, attachments)));
+        return LiteRtResponse.Parse(SendRaw(LiteRtJson.UserMessage(text, attachments), extraContext: null, options));
     }
 
     /// <summary>
     /// Sends the results of executed tools back to the model and returns its next response.
     /// Call after a <see cref="LiteRtResponse"/> with <see cref="LiteRtResponse.IsToolCall"/> = true.
     /// </summary>
-    public LiteRtResponse SendToolResults(IEnumerable<LiteRtToolResult> results)
+    public LiteRtResponse SendToolResults(IEnumerable<LiteRtToolResult> results, LiteRtSendOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(results);
-        return LiteRtResponse.Parse(SendRaw(LiteRtJson.ToolResults(results)));
+        return LiteRtResponse.Parse(SendRaw(LiteRtJson.ToolResults(results), extraContext: null, options));
     }
 
     /// <summary>
@@ -286,24 +285,20 @@ public sealed class LiteRtConversation : IDisposable
     /// cancellation is the only supported concurrent operation.
     /// </summary>
     public Task<LiteRtResponse> SendAsync(string text, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentNullException.ThrowIfNull(text);
-        return RunCancellable(() => Send(text), cancellationToken);
-    }
+        => SendAsync(text, attachments: null, options: null, cancellationToken);
 
     /// <summary>
-    /// Awaitable <see cref="Send(string, IReadOnlyList{LiteRtAttachment})"/> with true mid-generation
-    /// cancellation — see <see cref="SendAsync(string, CancellationToken)"/> for the cancellation
-    /// contract. <paramref name="attachments"/> may be null/empty for a text-only send.
+    /// Awaitable <see cref="Send(string, IReadOnlyList{LiteRtAttachment}, LiteRtSendOptions)"/> with
+    /// true mid-generation cancellation — see <see cref="SendAsync(string, CancellationToken)"/> for the
+    /// cancellation contract. <paramref name="attachments"/> may be null/empty for a text-only send.
     /// </summary>
     public Task<LiteRtResponse> SendAsync(
-        string text, IReadOnlyList<LiteRtAttachment>? attachments, CancellationToken cancellationToken = default)
+        string text, IReadOnlyList<LiteRtAttachment>? attachments, LiteRtSendOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(text);
-        return RunCancellable(
-            () => attachments is { Count: > 0 } ? Send(text, attachments) : Send(text), cancellationToken);
+        return RunCancellable(() => Send(text, attachments, options), cancellationToken);
     }
 
     /// <summary>
@@ -311,11 +306,12 @@ public sealed class LiteRtConversation : IDisposable
     /// <see cref="SendAsync(string, CancellationToken)"/> for the cancellation contract.
     /// </summary>
     public Task<LiteRtResponse> SendToolResultsAsync(
-        IEnumerable<LiteRtToolResult> results, CancellationToken cancellationToken = default)
+        IEnumerable<LiteRtToolResult> results, LiteRtSendOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(results);
-        return RunCancellable(() => SendToolResults(results), cancellationToken);
+        return RunCancellable(() => SendToolResults(results, options), cancellationToken);
     }
 
     /// <summary>
@@ -373,12 +369,12 @@ public sealed class LiteRtConversation : IDisposable
     /// Low-level escape hatch: sends a raw message JSON and returns the raw response JSON.
     /// Use when you need full control over the wire format.
     /// </summary>
-    public string SendRaw(string messageJson, string? extraContext = null)
+    public string SendRaw(string messageJson, string? extraContext = null, LiteRtSendOptions? options = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(messageJson);
 
-        using ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs();
+        using ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs(options);
         nint responsePtr = LiteRtLmNative.litert_lm_conversation_send_message(
             _conversation.Ptr, messageJson, extraContext, optionalArgs?.Ptr ?? nint.Zero);
         // The send can run for seconds. Without this, a caller whose LAST use of the conversation is
@@ -406,6 +402,8 @@ public sealed class LiteRtConversation : IDisposable
     /// <see cref="LiteRtEngine.Tokenize"/> to measure a turn's real token cost with the chat template
     /// included, or to inspect how a system prompt / history shape the rendered turn.
     /// </summary>
+    /// <remarks>Wraps a native entry point Google still marks experimental in its own bindings; the
+    /// rendered format may change with the native runtime version.</remarks>
     public string RenderMessage(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
@@ -471,14 +469,16 @@ public sealed class LiteRtConversation : IDisposable
     }
 
     /// <summary>
-    /// Builds the per-send native optional-args object carrying the conversation's
-    /// <see cref="LiteRtConversationOptions.VisualTokenBudget"/>, or <c>null</c> when no budget is set
-    /// (the common case). The caller owns the returned handle: dispose it after the send completes (for
-    /// streaming, only after the native decode thread is done — it reads the args during prefill).
+    /// Builds the per-send native optional-args object, or <c>null</c> when there is nothing to set
+    /// (the common case). A per-send <see cref="LiteRtSendOptions.VisualTokenBudget"/> overrides the
+    /// conversation-level <see cref="LiteRtConversationOptions.VisualTokenBudget"/>. The caller owns the
+    /// returned handle: dispose it after the send completes (for streaming, only after the native
+    /// decode thread is done — it reads the args during prefill).
     /// </summary>
-    private ConversationOptionalArgsHandle? BuildOptionalArgs()
+    private ConversationOptionalArgsHandle? BuildOptionalArgs(LiteRtSendOptions? options)
     {
-        if (_visualTokenBudget <= 0)
+        int budget = options is { VisualTokenBudget: > 0 } ? options.VisualTokenBudget : _visualTokenBudget;
+        if (budget <= 0)
             return null;
 
         nint p = LiteRtLmNative.litert_lm_conversation_optional_args_create();
@@ -486,7 +486,7 @@ public sealed class LiteRtConversation : IDisposable
             throw new LiteRtException("litert_lm_conversation_optional_args_create returned null.");
 
         var handle = new ConversationOptionalArgsHandle(p);
-        LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget(p, _visualTokenBudget);
+        LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget(p, budget);
         return handle;
     }
 
@@ -502,17 +502,18 @@ public sealed class LiteRtConversation : IDisposable
     /// </summary>
     public IAsyncEnumerable<LiteRtStreamChunk> SendStreamingAsync(
         string text, CancellationToken cancellationToken = default)
-        => SendStreamingAsync(text, attachments: null, cancellationToken);
+        => SendStreamingAsync(text, attachments: null, options: null, cancellationToken);
 
     /// <summary>
-    /// Streaming overload that attaches image/audio <paramref name="attachments"/> to the user message.
-    /// The attachments follow the text in content-part order. Requires the engine to have the matching
-    /// modality enabled (<see cref="LiteRtEngineOptions.VisionBackend"/> /
-    /// <see cref="LiteRtEngineOptions.AudioBackend"/>) on a multimodal model; otherwise the native send
-    /// fails. The chunk kinds and cancellation behavior are identical to the text-only overload.
+    /// Streaming overload with optional image/audio <paramref name="attachments"/> (null/empty =
+    /// text-only) and per-send <paramref name="options"/>. The attachments follow the text in
+    /// content-part order and require the engine to have the matching modality enabled
+    /// (<see cref="LiteRtEngineOptions.VisionBackend"/> / <see cref="LiteRtEngineOptions.AudioBackend"/>)
+    /// on a multimodal model; otherwise the native send fails. The chunk kinds and cancellation behavior
+    /// are identical to the text-only overload.
     /// </summary>
     public async IAsyncEnumerable<LiteRtStreamChunk> SendStreamingAsync(
-        string text, IReadOnlyList<LiteRtAttachment>? attachments,
+        string text, IReadOnlyList<LiteRtAttachment>? attachments, LiteRtSendOptions? options = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -526,7 +527,7 @@ public sealed class LiteRtConversation : IDisposable
         // The optional args (visual token budget) must stay alive for the whole stream: the native
         // decode thread reads them during prefill. Freed in the finally, after the channel completes.
         // Built before the GCHandle so that if native allocation fails we don't leak a pinned handle.
-        ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs();
+        ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs(options);
         var gcHandle = GCHandle.Alloc(state);
 
         int rc;

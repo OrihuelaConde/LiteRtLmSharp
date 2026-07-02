@@ -60,6 +60,58 @@ public class NativeInteropTests
 /// <c>runtime/conversation/model_data_processor/data_utils.cc</c>): text part first, then each
 /// attachment as <c>{"type":"image"|"audio","blob":&lt;base64&gt;}</c> or <c>{… ,"path":…}</c>, in order.
 /// </summary>
+/// <summary>Model-free guards on the small value types (validation that must hold at 1.0 — loosening
+/// later is safe, tightening later is breaking, so these pin the accepted domain).</summary>
+public class ApiGuardsTests
+{
+    [Fact]
+    public void SamplerParams_RejectsInvalidValues()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtSamplerParams { TopK = 0 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtSamplerParams { TopK = -1 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtSamplerParams { TopP = float.NaN });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtSamplerParams { TopP = 1.5f });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtSamplerParams { Temperature = float.NaN });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtSamplerParams { Temperature = -0.1f });
+    }
+
+    [Fact]
+    public void SamplerParams_DefaultsMatchTheOfficialBindings()
+    {
+        // TOP_P / 40 / 0.95 / 1.0 / seed 0 — the exact fill values of Google's python binding
+        // (litert-lm 0.13.1 utils._sampler_config_to_params) and Kotlin's SamplerConfig seed default.
+        var p = new LiteRtSamplerParams();
+        Assert.Equal(LiteRtSamplerType.TopP, p.Strategy);
+        Assert.Equal(40, p.TopK);
+        Assert.Equal(0.95f, p.TopP, 3);
+        Assert.Equal(1.0f, p.Temperature, 3);
+        Assert.Equal(0, p.Seed);
+    }
+
+    [Fact]
+    public void BackendParse_NormalizesWhitespaceForCustomValues()
+    {
+        Assert.Equal(LiteRtBackend.Parse("xpu"), LiteRtBackend.Parse(" xpu "));
+        Assert.Equal(LiteRtBackend.Cpu, LiteRtBackend.Parse(" CPU "));
+        Assert.Equal("xpu", LiteRtBackend.Parse(" xpu ").Value);
+    }
+
+    [Fact]
+    public void CacheDirectory_RejectsReservedTokenPrefix()
+    {
+        Assert.Throws<ArgumentException>(() => LiteRtCache.Directory(":memory"));
+        Assert.Throws<ArgumentException>(() => LiteRtCache.Directory(":nocache"));
+        Assert.Throws<ArgumentException>(() => LiteRtCache.Directory(":future-token"));
+    }
+
+    [Fact]
+    public void Attachment_RejectsEmptyBytes()
+    {
+        Assert.Throws<ArgumentException>(() => LiteRtAttachment.Image(ReadOnlySpan<byte>.Empty));
+        Assert.Throws<ArgumentException>(() => LiteRtAttachment.Audio(ReadOnlySpan<byte>.Empty));
+    }
+}
+
 /// <summary>
 /// The two native-load failure messages (model-free: the throw path itself cannot run here because the
 /// test process always has the natives next to the assembly, so the builders are tested directly).

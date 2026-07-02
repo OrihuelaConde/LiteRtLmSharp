@@ -95,7 +95,8 @@ internal static partial class NativeLibraryResolver
     internal static string BuildFoundButFailedMessage(string path)
         => $"The LiteRT-LM native library was found at '{path}' but failed to load. Common causes: the " +
            "Microsoft Visual C++ Redistributable is not installed (Windows), missing system libraries " +
-           "(Linux), or a process/binary architecture mismatch.";
+           "(Linux/macOS), a missing <uses-native-library> manifest entry for vendor GPU libraries " +
+           "(Android 12+), or a process/binary architecture mismatch.";
 
     private static IEnumerable<string> CandidateDirectories()
     {

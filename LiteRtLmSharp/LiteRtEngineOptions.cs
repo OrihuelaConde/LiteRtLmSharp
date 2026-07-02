@@ -3,8 +3,11 @@ namespace LiteRtLmSharp;
 /// <summary>Options for creating a <see cref="LiteRtEngine"/>.</summary>
 public sealed record LiteRtEngineOptions
 {
-    /// <summary>Path to the <c>.litertlm</c> (or <c>.task</c>) model file. Required.</summary>
-    public required string ModelPath { get; init; }
+    /// <summary>Path to the <c>.litertlm</c> (or <c>.task</c>) model file. Must be set —
+    /// <see cref="LiteRtEngine.Load"/> throws <see cref="System.ArgumentException"/> when it is empty.
+    /// (Deliberately not <c>required</c>: future native versions add alternate model sources — e.g.
+    /// loading from a file descriptor — which will land here as sibling properties.)</summary>
+    public string ModelPath { get; init; } = "";
 
     /// <summary>Backend to run the model on. Defaults to <see cref="LiteRtBackend.Cpu"/>. Use
     /// <see cref="LiteRtBackend.Gpu"/>, <see cref="LiteRtBackend.Npu"/>, or

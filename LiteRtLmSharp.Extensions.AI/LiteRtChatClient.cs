@@ -94,8 +94,8 @@ public sealed class LiteRtChatClient : IChatClient
             // (OperationCanceledException). A tool-results trigger is the function-calling continuation:
             // the assistant tool-call turn was restored as history above.
             LiteRtResponse response = trigger.IsToolResults
-                ? await conv.SendToolResultsAsync(trigger.ToolResults!, cancellationToken).ConfigureAwait(false)
-                : await conv.SendAsync(trigger.UserText!, trigger.Attachments, cancellationToken).ConfigureAwait(false);
+                ? await conv.SendToolResultsAsync(trigger.ToolResults!, options: null, cancellationToken).ConfigureAwait(false)
+                : await conv.SendAsync(trigger.UserText!, trigger.Attachments, options: null, cancellationToken).ConfigureAwait(false);
 
             // Reasoning ("thinking") becomes TextReasoningContent (excluded from ChatResponse.Text but kept on
             // Contents). The reply is then either tool calls (FunctionCallContent) or the answer text.
@@ -163,7 +163,7 @@ public sealed class LiteRtChatClient : IChatClient
                 // single awaitable send surfaced as updates (the answer after a tool round is typically short);
                 // the token cancels it mid-generation like the streaming path.
                 LiteRtResponse continuation = await conv.SendToolResultsAsync(
-                    trigger.ToolResults!, cancellationToken).ConfigureAwait(false);
+                    trigger.ToolResults!, options: null, cancellationToken).ConfigureAwait(false);
                 foreach (ChatResponseUpdate update in ToUpdates(continuation))
                     yield return update;
                 yield return UsageUpdate(conv!);
@@ -171,7 +171,7 @@ public sealed class LiteRtChatClient : IChatClient
             }
 
             IAsyncEnumerable<LiteRtStreamChunk> stream = trigger.HasAttachments
-                ? conv.SendStreamingAsync(trigger.UserText!, trigger.Attachments!, cancellationToken)
+                ? conv.SendStreamingAsync(trigger.UserText!, trigger.Attachments!, options: null, cancellationToken)
                 : conv.SendStreamingAsync(trigger.UserText!, cancellationToken);
 
             int toolCallIndex = 0;   // monotonic across the whole stream so synthesized call ids stay unique

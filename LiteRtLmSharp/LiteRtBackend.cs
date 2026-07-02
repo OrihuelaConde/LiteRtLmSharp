@@ -62,7 +62,10 @@ public readonly struct LiteRtBackend : IEquatable<LiteRtBackend>
             "cpu" => Cpu,
             "gpu" => Gpu,
             "npu" => Npu,
-            _ => new(value),
+            // Whitespace-normalize custom values too (case is preserved): Parse(" xpu ") and
+            // Parse("xpu") must yield the same Value/equality, or config-driven hosts get
+            // silently distinct backends.
+            _ => new(value.Trim()),
         };
     }
 

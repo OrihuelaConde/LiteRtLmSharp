@@ -10,6 +10,13 @@ namespace LiteRtLmSharp;
 /// (the <c>parameters</c> of a Gemini/OpenAI function declaration), e.g.
 /// <c>{"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}</c>.
 /// </summary>
+/// <remarks>
+/// Names are sent to the model <b>verbatim</b>. Small on-device models are trained predominantly on
+/// <c>snake_case</c> tool and parameter names, and calling accuracy suffers with other conventions —
+/// prefer <c>get_weather</c> over <c>GetWeather</c>/<c>getWeather</c>. (Google's Kotlin binding
+/// converts camelCase to snake_case automatically for this reason; this binding keeps names
+/// as-authored, so the convention is the caller's responsibility.)
+/// </remarks>
 public sealed record LiteRtTool(string Name, string? Description, string ParametersJson)
 {
     /// <summary>An empty parameter schema, for tools that take no arguments.</summary>

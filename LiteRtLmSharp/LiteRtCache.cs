@@ -29,10 +29,17 @@ public readonly struct LiteRtCache : IEquatable<LiteRtCache>
     public static LiteRtCache InMemory => new(":memory");
 
     /// <summary>Use a specific directory for the cache.</summary>
-    /// <exception cref="System.ArgumentException"><paramref name="path"/> is null or empty.</exception>
+    /// <exception cref="System.ArgumentException"><paramref name="path"/> is null or empty, or starts
+    /// with <c>':'</c> — that prefix is reserved for the engine's special cache tokens (a real directory
+    /// named e.g. <c>":memory"</c> would silently become <see cref="InMemory"/>).</exception>
     public static LiteRtCache Directory(string path)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
+        if (path[0] == ':')
+            throw new ArgumentException(
+                $"Cache directory '{path}' starts with ':' — that prefix is reserved for the engine's " +
+                "special cache tokens (e.g. \":nocache\", \":memory\"). Use Disabled/InMemory for those.",
+                nameof(path));
         return new(path);
     }
 

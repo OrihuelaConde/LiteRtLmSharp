@@ -203,7 +203,7 @@ public partial class ChatPage : ContentPage
             // Chunks are tagged as reasoning ("thinking", only with EnableThinking on) or answer;
             // the chat conversation has no tools, so no tool-call chunks arrive. The image/audio
             // attachments ride along in the user message and are encoded into vision/audio tokens.
-            await foreach (LiteRtStreamChunk chunk in _conversation!.SendStreamingAsync(prompt, attachments, _replyCts.Token))
+            await foreach (LiteRtStreamChunk chunk in _conversation!.SendStreamingAsync(prompt, attachments, options: null, _replyCts.Token))
             {
                 if (chunk.IsThinking)
                     reply.AppendThinking(chunk.Text);

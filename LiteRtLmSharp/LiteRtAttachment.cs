@@ -11,7 +11,7 @@ public enum LiteRtAttachmentKind
 
 /// <summary>
 /// One image or audio attachment to add to a user message on a multimodal model. Attach it to a
-/// turn with <see cref="LiteRtConversation.Send(string, System.Collections.Generic.IReadOnlyList{LiteRtAttachment})"/>
+/// turn with <see cref="LiteRtConversation.Send(string, System.Collections.Generic.IReadOnlyList{LiteRtAttachment}, LiteRtSendOptions)"/>
 /// (or the streaming overload). The engine must have been loaded with the matching modality enabled
 /// (<see cref="LiteRtEngineOptions.VisionBackend"/> for images, <see cref="LiteRtEngineOptions.AudioBackend"/>
 /// for audio) and the model must support it (e.g. the Gemma 4 E-series handle both).
@@ -44,8 +44,14 @@ public sealed class LiteRtAttachment
 
     /// <summary>An image from in-memory bytes (PNG/JPEG/…); sent as a base64 blob. The bytes are
     /// copied, so the caller may reuse the buffer.</summary>
-    public static LiteRtAttachment Image(ReadOnlySpan<byte> bytes) =>
-        new(LiteRtAttachmentKind.Image, bytes.ToArray(), null);
+    /// <exception cref="System.ArgumentException"><paramref name="bytes"/> is empty (the engine fails
+    /// on an empty blob at send time with a far less helpful error).</exception>
+    public static LiteRtAttachment Image(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.IsEmpty)
+            throw new ArgumentException("Image bytes must not be empty.", nameof(bytes));
+        return new(LiteRtAttachmentKind.Image, bytes.ToArray(), null);
+    }
 
     /// <summary>An image read from a file on disk; sent as a native-memory-mapped path (no base64).
     /// Desktop only — the path must be readable by the native process.</summary>
@@ -57,8 +63,14 @@ public sealed class LiteRtAttachment
 
     /// <summary>An audio clip from in-memory bytes (WAV/…); sent as a base64 blob. The bytes are
     /// copied, so the caller may reuse the buffer.</summary>
-    public static LiteRtAttachment Audio(ReadOnlySpan<byte> bytes) =>
-        new(LiteRtAttachmentKind.Audio, bytes.ToArray(), null);
+    /// <exception cref="System.ArgumentException"><paramref name="bytes"/> is empty (the engine fails
+    /// on an empty blob at send time with a far less helpful error).</exception>
+    public static LiteRtAttachment Audio(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.IsEmpty)
+            throw new ArgumentException("Audio bytes must not be empty.", nameof(bytes));
+        return new(LiteRtAttachmentKind.Audio, bytes.ToArray(), null);
+    }
 
     /// <summary>An audio clip read from a file on disk; sent as a native-memory-mapped path (no
     /// base64). Desktop only — the path must be readable by the native process.</summary>

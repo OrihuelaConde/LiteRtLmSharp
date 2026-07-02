@@ -321,8 +321,9 @@ internal static class LiteRtChatMapping
             TopK = o.TopK ?? defaults.TopK,
             TopP = o.TopP ?? defaults.TopP,
             Temperature = o.Temperature ?? defaults.Temperature,
-            // ChatOptions.Seed is a long?; LiteRtLmSharp's sampler seed is an int? (null = reseed).
-            Seed = o.Seed is { } seed ? unchecked((int)seed) : null,
+            // ChatOptions.Seed is a long?; the native seed is an int. Unset falls back to the
+            // cross-binding default (0, deterministic) like every official LiteRT-LM binding.
+            Seed = o.Seed is { } seed ? unchecked((int)seed) : defaults.Seed,
         };
     }
 
