@@ -355,12 +355,16 @@ tag, so they stay unbound.
   NOT fix this. ✅ **Filed [#2572](https://github.com/google-ai-edge/LiteRT-LM/issues/2572)**
   (2026-06-15), cross-ref #2503/#2461; named the `CreateCompilationOptions` GPU-branch `cache_suffix`
   omission. flutter_gemma has no matching report. Full write-up: [speculative-decoding.md](speculative-decoding.md).
-  **v0.14.0 status:** the #2572 GPU-cache-handling fix IS in the tag. Re-testing whether the
-  `CacheDir=CacheDisabled` workaround for GPU + speculative decoding can now be dropped is in progress
-  this session; **the workaround stays until the re-test confirms it.**
+  **v0.14.0 status: FIXED AND VERIFIED (2026-07-10).** The tag carries `4aa96a019` + `0a6590988`;
+  re-tested end to end on win-x64 WebGPU with our v0.14.0 natives (spec + default disk cache: engine
+  create, generation, and cache readback across two loads all pass). **The `Cache = Disabled`
+  workaround is DROPPED from the samples and docs.** Follow-up candidate: post a close-request on
+  #2572 with the verification (draft with the user first).
 - **[LiteRT-LM#2073](https://github.com/google-ai-edge/LiteRT-LM/issues/2073)** — WebGPU TopK sampler
   exports only **3/7** C-ABI functions on **macOS/Windows** (Linux/Android ship 7) → `sampler_factory`
   can't resolve `LiteRtTopKWebGpuSampler_UpdateConfig` (+ 3 others) and **falls back to CPU sampling**.
+  (At v0.14.0 the engine additionally probes `LiteRtTopKWebGpuSampler_UpdateConfig` on every load and
+  logs the miss — same graceful fallback, now noisier and observed directly in our spec re-test.)
   This is our exact GPU-sampling fallback (confirmed against the committed `webgpu_exported_symbols.lds`
   / `windows_exported_symbols.def` at v0.13.1; Metal was fixed to 7/7, WebGPU left at 3/7). OPEN, filed
   by flutter_gemma's author (DenisovAV), **zero Google engagement, no fix PR**; #2502 was closed as a

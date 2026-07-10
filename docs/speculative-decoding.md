@@ -13,11 +13,13 @@ the effect.
 - A model that ships an MTP drafter. The **Gemma 4** builds (`gemma-4-E2B-it`, `E4B`, `12B`) do;
   models without a drafter make the flag a no-op (no speedup, no error).
 - It is fixed at engine creation — choose it in `LiteRtEngineOptions`, not per conversation.
-- **On the WebGPU GPU backend (desktop), disable the disk cache** —
-  `Cache = LiteRtCache.Disabled`. With the default disk cache the drafter's shared
-  weight-cache file fails to open ("Access denied") on Windows and engine creation fails. This is an
-  upstream issue, not a binding bug — Google's own `litert-lm` CLI fails identically with
-  `--cache disk` and works with `--cache no` (full investigation in [Root cause](#root-cause-the-disk-cache)).
+- ~~On the WebGPU GPU backend (desktop), disable the disk cache~~ — **fixed in LiteRT-LM v0.14.0**.
+  On v0.13.1 the drafter's shared weight-cache file failed to open ("Access denied") on Windows and
+  engine creation failed unless `Cache = LiteRtCache.Disabled` (upstream
+  [#2572](https://github.com/google-ai-edge/LiteRT-LM/issues/2572); full investigation in
+  [Root cause](#root-cause-the-disk-cache)). The fix is in the v0.14.0 tag and re-verified end to
+  end with our v0.14.0 natives (engine create + generate + cache readback across two loads, win-x64
+  WebGPU): the default disk cache is safe again, and warm loads benefit from it.
 
 ## Using it
 
@@ -29,7 +31,8 @@ using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
     MaxNumTokens = 4096,
     EnableSpeculativeDecoding = true,                 // MTP drafter
     EnableBenchmark = true,                           // so GetBenchmarkInfo() reports timings
-    Cache = LiteRtCache.Disabled,                     // REQUIRED for speculative + WebGPU GPU
+    // On LiteRT-LM v0.13.1 natives, speculative + WebGPU GPU also required
+    // Cache = LiteRtCache.Disabled (upstream #2572); fixed in v0.14.0.
 });
 
 using var chat = engine.CreateConversation();
@@ -38,8 +41,6 @@ chat.Send("Hello!");
 if (chat.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b)
     Console.WriteLine($"{b.LastDecodeTokensPerSecond:F1} tok/s decode · TTFT {b.TimeToFirstTokenSeconds:F2}s");
 ```
-
-On CPU you can drop the `Cache` line (the disk cache is fine there).
 
 `GetBenchmarkInfo()` works after both blocking (`Send`) and streaming
 (`SendStreamingAsync`) generation. It returns `null` when benchmarking was not enabled or no
@@ -56,8 +57,8 @@ benchmark API (the samples catch this and fall back to wall-clock timing).
 - **MAUI**: after picking the backend, a *Speculative decoding* prompt (shown only for MTP-capable
   models). The three tab headers show `· speculative on/off` and the gauge shows decode tok/s · TTFT.
 
-Both samples automatically set `Cache = LiteRtCache.Disabled` when speculative decoding is enabled on the
-GPU backend, so the toggle "just works" there.
+(Until v0.14.0 both samples automatically set `Cache = LiteRtCache.Disabled` when speculative decoding
+was enabled on the GPU backend; with #2572 fixed they use the default disk cache everywhere.)
 
 ## How effectiveness is measured
 
@@ -149,6 +150,11 @@ the main model and the drafter resolve to one `…_mldrift_weight_cache.bin` —
 directory doesn't help. The Windows share-mode that turns the collision into "Access denied" lives in
 the closed `libLiteRtWebGpuAccelerator` (inferred `ERROR_SHARING_VIOLATION`).
 
+**Fixed in v0.14.0** (commit `4aa96a019` applies the `cache_suffix` on the GPU/MlDrift branch too, plus
+the follow-up `0a6590988`; both are in the tag). Re-verified 2026-07-10 with our v0.14.0 natives on
+win-x64 WebGPU: spec + default disk cache creates, generates, and reads the cache back across engine
+reloads. The whole section above is kept as the v0.13.1 historical record.
+
 ### Upstream tracking (researched 2026-06-15)
 
 - **Cache**: no dedicated issue for the Windows/WebGPU case yet —
@@ -162,7 +168,7 @@ the closed `libLiteRtWebGpuAccelerator` (inferred `ERROR_SHARING_VIOLATION`).
   compiled binary) — it needs an upstream re-export. Per flutter_gemma #287 the steady-state cost is
   small (~3%), but it weighs more on the speculative draft/verify loop.
 
-In short: ship the flag; on CPU it works (default cache) but can be slower; on the desktop WebGPU GPU
-set `Cache = LiteRtCache.Disabled`; reach for it on a modern/fast accelerator with an MTP-capable model
-(older mobile GPUs like the Adreno 650 show no win at ~32% acceptance). The samples apply the cache
-workaround automatically so the toggle just works.
+In short: ship the flag; on CPU it works (default cache) but can be slower; on v0.14.0+ the desktop
+WebGPU GPU works with the default cache too (on v0.13.1 it needed `Cache = LiteRtCache.Disabled`);
+reach for it on a modern/fast accelerator with an MTP-capable model (older mobile GPUs like the
+Adreno 650 show no win at ~32% acceptance).

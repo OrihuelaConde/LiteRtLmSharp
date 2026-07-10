@@ -49,11 +49,10 @@ while (true)
     LiteRtEngine engine;
     try
     {
-        // Speculative decoding on the WebGPU GPU backend needs the disk cache OFF (the MTP drafter's
-        // shared weight-cache file fails to open on Windows otherwise — upstream issue). Default to
-        // disabling it for that combo unless the user picked a cache mode explicitly via --cache.
-        LiteRtCache cache = cli.Cache
-            ?? (speculative && backend == "gpu" ? LiteRtCache.Disabled : LiteRtCache.Default);
+        // Historical note: on LiteRT-LM v0.13.1 speculative decoding on the WebGPU backend needed the
+        // disk cache OFF (the MTP drafter's shared weight cache failed to mmap on Windows — upstream
+        // #2572). Fixed in v0.14.0 and re-verified end to end, so the default cache is safe again.
+        LiteRtCache cache = cli.Cache ?? LiteRtCache.Default;
 
         string cacheNote =
             cache == LiteRtCache.Disabled ? ", cache off"
@@ -72,7 +71,7 @@ while (true)
             MaxNumTokens = contextTokens, // total context window (prompt + replies, all turns)
             EnableSpeculativeDecoding = speculative, // MTP drafter → faster decode (supported models)
             EnableBenchmark = true,     // so the gauge can show decode tok/s and time-to-first-token
-            Cache = cache,              // Default = next to model; Disabled for GPU+spec
+            Cache = cache,              // Default = disk cache next to the model
             NumThreads = cli.Threads,   // CPU text-executor thread count; null = engine default (CPU-only, no-op on GPU)
         });
 

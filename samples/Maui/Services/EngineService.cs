@@ -80,11 +80,10 @@ public sealed class EngineService
                 MaxNumTokens = ContextTokens,
                 EnableSpeculativeDecoding = enableSpeculativeDecoding, // MTP drafter → faster decode
                 EnableBenchmark = true,                                // gauge shows decode tok/s
-                // Speculative decoding on the WebGPU GPU backend needs the disk cache off, or the
-                // MTP drafter's shared weight-cache file fails to open ("Access denied") on Windows
-                // and the engine fails to load (upstream issue — see docs/speculative-decoding.md).
-                Cache = enableSpeculativeDecoding && backend == "gpu"
-                    ? LiteRtCache.Disabled : LiteRtCache.Default,
+                // Default disk cache is safe with speculative decoding on GPU since LiteRT-LM
+                // v0.14.0 (the v0.13.1 shared weight-cache mmap failure, upstream #2572, is fixed
+                // in the tag and re-verified — see docs/speculative-decoding.md).
+                Cache = LiteRtCache.Default,
             }));
             LoadedModel = model;
             LoadedBackend = backend;
