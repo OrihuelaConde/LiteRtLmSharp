@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Adds a redistributable shared-library target for the LiteRT-LM C API.
 #
-# Upstream only exposes the C API as a Bazel cc_library (//c:engine) and builds
-# the `litert_lm_main` executable — there is no public shared-lib target yet
-# (issue #2154). This patch appends a `cc_binary(linkshared=True)` over //c:engine,
-# so we can produce libLiteRtLm.so / LiteRtLm.dll exporting the litert_lm_* C ABI.
+# Upstream exposes the C API as a Bazel cc_library (//c:engine); since v0.14.0 it
+# also ships its own shared-lib target (cc_binary `litert-lm`, the Python-wheel
+# build), but that one fits the wheel, not us: no Windows .def (no exports on MSVC),
+# -fvisibility=hidden without the LiteRt* wildcard exports the prebuilt WebGPU
+# accelerator resolves via dlsym, and no @loader_path/$ORIGIN rpath setup for our
+# side-by-side companion layout. So we keep appending our own
+# `cc_binary(linkshared=True)` over //c:engine to produce libLiteRtLm.so /
+# LiteRtLm.dll exporting the litert_lm_* C ABI.
 #
 # Approach mirrors flutter_gemma's downstream patch (MIT) but is trimmed to just
 # the shared-lib target and generates the Windows .def from c/engine.h so the
@@ -41,8 +45,11 @@ if [ -f "$DIR/WORKSPACE" ] && grep -q "zlib.net" "$DIR/WORKSPACE"; then
   echo "  OK: repointed zlib.net -> GitHub release in WORKSPACE (same checksum)."
 fi
 
-if grep -q "linkshared" "$BUILD"; then
-  echo "  SKIP: c/BUILD already has a shared-lib target."
+# Idempotence guard: look for OUR target name, not just "linkshared" — v0.14.0's
+# c/BUILD ships upstream's own cc_binary(linkshared = 1) target, which must not
+# make us skip appending ours.
+if grep -q "libLiteRtLm.dylib" "$BUILD"; then
+  echo "  SKIP: c/BUILD already has our shared-lib target."
   exit 0
 fi
 
