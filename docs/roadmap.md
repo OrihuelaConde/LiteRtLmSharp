@@ -304,6 +304,17 @@ three OSes including the model tests). The tag lands several watched fixes, so e
 re-stated against v0.14.0. Note that penalties / no-repeat-ngram sampling did NOT reach the C API in this
 tag, so they stay unbound.
 
+Comparative research vs Google's official CI and flutter_gemma (2026-07-10): our desktop define trio
+matches Google's own v0.14.0 dynamic-linking CI exactly, DXC and the dawn shipping match, and
+flutter_gemma is still on v0.13.1 (their eventual 0.14 migration will hit the double-runtime crash we
+root-caused — nobody has reported it upstream yet). Items for the NEXT repin (0.15.x): upstream
+deprecated `litert_link_capi_so` (commit `daa8ea819`; `litert_runtime_link_mode=dynamic` is the
+surviving knob) and is queuing `resolve_symbols_in_exec` for removal (#2234/#2237) — trim our defines
+then. Also worth verifying against our binding at some point (flutter_gemma patches these in source;
+we do not): `set_cache_dir` does not propagate to the vision/audio executors upstream, and GPU
+sampling only partially honors session sampler params (#2080, PR #2081 unmerged). Watch #2529 (asks
+Google to publish an official prebuilt C-API shared lib — would let us drop patch_c_api.sh).
+
 - **[LiteRT-LM#2211](https://github.com/google-ai-edge/LiteRT-LM/issues/2211)**: **unchanged at
   v0.14.0.** GPU samplers still ship missing `DT_NEEDED` (our patchelf is the workaround). If Google
   ships fixed prebuilts or a fix, **drop the patchelf** from the android job. Also watch the related
@@ -376,8 +387,12 @@ tag, so they stay unbound.
   [issuecomment-4705832501](https://github.com/google-ai-edge/LiteRT-LM/issues/2073#issuecomment-4705832501));
   verified the export lists ourselves (`webgpu_exported_symbols.lds`/`windows_exported_symbols.def` = 3,
   `metal_exported_symbols.lds` = 7 at v0.13.1). **Re-verified at v0.14.0: still NOT fixed.** The
-  windows/webgpu export lists are unchanged at 3/7, so the desktop-GPU CPU-sampling fallback stays. No
-  upstream re-export yet; keep watching.
+  windows/webgpu export lists are unchanged at 3/7, so the desktop-GPU CPU-sampling fallback stays.
+  NEW: [#2745](https://github.com/google-ai-edge/LiteRT-LM/issues/2745) (2026-07-07, assigned)
+  confirms the 4 missing symbols EXIST in the binaries but are local/unexported — so the fix is an
+  8-line export-list change. **Candidate: a trivial upstream PR adding the 4 symbols to both lists**
+  (drafted with the user; note upstream's stated inability to merge external PRs — it would still
+  document the fix for the assignee).
 - **[LiteRT-LM#2080](https://github.com/google-ai-edge/LiteRT-LM/issues/2080)**: sampler params were
   not being read from the runtime config on some paths. **PARTIALLY addressed in v0.14.0**:
   `InitializeSampler` now reads the `runtime_config` sampler params when present. Re-measuring the

@@ -298,9 +298,10 @@ jobs:
         # gpu_registry's desktop load order is WebGpu -> OpenCL -> Metal, so with both present
         # the engine runs WebGPU and falls back to Metal only if WebGPU fails to load (e.g. a
         # real Apple Silicon Mac, still untested by us). This also matches upstream's macOS
-        # default (LiteRT-LM PR #2302). Dawn is statically linked inside
-        # libLiteRtWebGpuAccelerator.dylib — there is no separate libwebgpu_dawn.dylib in the
-        # prebuilt. libLiteRt.dylib stays a separate shared lib (litert_link_capi_so) so every
+        # default (LiteRT-LM PR #2302). Since v0.14.0 Dawn ships as a SEPARATE
+        # libwebgpu_dawn.dylib in the prebuilt (statically embedded in the accelerator before
+        # that) — the *.dylib glob below picks it up. libLiteRt.dylib stays a separate shared
+        # lib (litert_link_capi_so + litert_runtime_link_mode=dynamic) so every
         # companion resolves it via @rpath/@loader_path; NativeLibraryResolver additionally
         # RTLD_GLOBAL-preloads the whole directory. (Reverts the WebGPU exclusion from a461607,
         # which was inherited from flutter_gemma's macOS bundle — but flutter_gemma runs on real
