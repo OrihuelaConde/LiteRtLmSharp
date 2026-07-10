@@ -94,6 +94,18 @@ public sealed class LiteRtEngine : IDisposable
                 LiteRtLmNative.litert_lm_engine_settings_set_num_prefill_tokens(settings.Ptr, options.BenchmarkPrefillTokens);
             if (options.BenchmarkDecodeTokens > 0)
                 LiteRtLmNative.litert_lm_engine_settings_set_num_decode_tokens(settings.Ptr, options.BenchmarkDecodeTokens);
+            if (options.NumThreads is { } numThreads)
+                LiteRtLmNative.litert_lm_engine_settings_set_num_threads(settings.Ptr, numThreads);
+            if (options.AudioNumThreads is { } audioNumThreads)
+                LiteRtLmNative.litert_lm_engine_settings_set_audio_num_threads(settings.Ptr, audioNumThreads);
+            if (options.LoraRank is { } loraRank)
+                LiteRtLmNative.litert_lm_engine_settings_set_lora_rank(settings.Ptr, loraRank);
+            if (options.AudioLoraRank is { } audioLoraRank)
+                LiteRtLmNative.litert_lm_engine_settings_set_audio_lora_rank(settings.Ptr, audioLoraRank);
+            if (options.SupportedLoraRanks is { } supportedLoraRanks)
+                ApplySupportedLoraRanks(settings.Ptr, supportedLoraRanks, audio: false);
+            if (options.SupportedAudioLoraRanks is { } supportedAudioLoraRanks)
+                ApplySupportedLoraRanks(settings.Ptr, supportedAudioLoraRanks, audio: true);
 
             nint enginePtr = LiteRtLmNative.litert_lm_engine_create(settings.Ptr);
             if (enginePtr == nint.Zero)
@@ -114,6 +126,25 @@ public sealed class LiteRtEngine : IDisposable
             EngineLiveness.Release();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Marshals a supported-LoRA-ranks list to the native <c>const int*</c>/count setter (text or audio)
+    /// and surfaces a non-zero return as a <see cref="LiteRtException"/>. The list is validated non-empty
+    /// with positive elements by <see cref="LiteRtEngineOptions.SupportedLoraRanks"/> at init time.
+    /// </summary>
+    private static unsafe void ApplySupportedLoraRanks(nint settings, IReadOnlyList<int> ranks, bool audio)
+    {
+        int[] arr = ranks as int[] ?? [.. ranks];
+        int rc;
+        fixed (int* p = arr)
+            rc = audio
+                ? LiteRtLmNative.litert_lm_engine_settings_set_supported_audio_lora_ranks(settings, p, (nuint)arr.Length)
+                : LiteRtLmNative.litert_lm_engine_settings_set_supported_lora_ranks(settings, p, (nuint)arr.Length);
+        if (rc != 0)
+            throw new LiteRtException(
+                $"litert_lm_engine_settings_set_supported{(audio ? "_audio" : "")}_lora_ranks failed (returned {rc}). " +
+                (audio ? "Audio LoRA ranks require an audio executor (set AudioBackend)." : "Check the provided ranks."));
     }
 
     /// <summary>Creates a new stateful conversation from this engine.</summary>

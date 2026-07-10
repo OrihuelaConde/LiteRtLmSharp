@@ -175,6 +175,140 @@ public sealed record LiteRtEngineOptions
     /// for the full behavior. Maps to <c>engine_settings_set_num_decode_tokens</c>.
     /// </summary>
     public int BenchmarkDecodeTokens { get; init; }
+
+    private readonly int? _numThreads;
+
+    /// <summary>
+    /// Number of CPU threads for the <b>text</b> executor. <c>null</c> (default) leaves the engine
+    /// default. <b>CPU-backend only</b>: the native setter reads the executor's <c>CpuConfig</c> and is a
+    /// no-op when the text backend is not CPU (verified in engine.cc <c>set_num_threads</c>). Maps to
+    /// <c>engine_settings_set_num_threads</c>.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The value is zero or negative.</exception>
+    public int? NumThreads
+    {
+        get => _numThreads;
+        init
+        {
+            if (value is { } v)
+                ArgumentOutOfRangeException.ThrowIfNegativeOrZero(v);
+            _numThreads = value;
+        }
+    }
+
+    private readonly int? _audioNumThreads;
+
+    /// <summary>
+    /// Number of CPU threads for the <b>audio</b> executor. <c>null</c> (default) leaves the engine
+    /// default. Only applies when an audio executor is configured (<see cref="AudioBackend"/> set), and
+    /// only reaches the audio backend's CPU compilation options — a no-op otherwise (verified in
+    /// engine.cc <c>set_audio_num_threads</c> → audio_executor CPU options). Maps to
+    /// <c>engine_settings_set_audio_num_threads</c>.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The value is zero or negative.</exception>
+    public int? AudioNumThreads
+    {
+        get => _audioNumThreads;
+        init
+        {
+            if (value is { } v)
+                ArgumentOutOfRangeException.ThrowIfNegativeOrZero(v);
+            _audioNumThreads = value;
+        }
+    }
+
+    private readonly int? _loraRank;
+
+    /// <summary>
+    /// LoRA rank for the <b>text</b> executor. <c>null</c> (default) leaves the engine default (LoRA
+    /// disabled). Requires a LoRA-enabled model and a matching adapter passed per conversation via
+    /// <see cref="LiteRtConversationOptions.LoraPath"/>. Maps to <c>engine_settings_set_lora_rank</c>.
+    /// </summary>
+    /// <remarks>The full LoRA path (rank here + adapter file on the conversation) has not yet been
+    /// validated end-to-end in this binding — no LoRA adapter artifact was available at the time of
+    /// writing — so treat it as wired-through but unverified against a real adapter.</remarks>
+    /// <exception cref="ArgumentOutOfRangeException">The value is zero or negative.</exception>
+    public int? LoraRank
+    {
+        get => _loraRank;
+        init
+        {
+            if (value is { } v)
+                ArgumentOutOfRangeException.ThrowIfNegativeOrZero(v);
+            _loraRank = value;
+        }
+    }
+
+    private readonly IReadOnlyList<int>? _supportedLoraRanks;
+
+    /// <summary>
+    /// The set of LoRA ranks the <b>text</b> executor should support (for switching adapters of different
+    /// ranks). <c>null</c> (default) leaves the engine default. <b>Only honored on the GPU (Artisan)
+    /// backend</b>: on other backends the native layer accepts and silently ignores it (verified in
+    /// <c>llm_executor_settings.h SetSupportedLoraRanks</c>). Every element must be positive and the list
+    /// non-empty. Maps to <c>engine_settings_set_supported_lora_ranks</c>.
+    /// </summary>
+    /// <exception cref="ArgumentException">The list is empty.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Any element is zero or negative.</exception>
+    public IReadOnlyList<int>? SupportedLoraRanks
+    {
+        get => _supportedLoraRanks;
+        init
+        {
+            ValidateRanks(value);
+            _supportedLoraRanks = value;
+        }
+    }
+
+    private readonly int? _audioLoraRank;
+
+    /// <summary>
+    /// LoRA rank for the <b>audio</b> executor. <c>null</c> (default) leaves the engine default. Only
+    /// applies when an audio executor is configured (<see cref="AudioBackend"/> set). Maps to
+    /// <c>engine_settings_set_audio_lora_rank</c>. See <see cref="LoraRank"/> for the not-yet-validated
+    /// caveat.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The value is zero or negative.</exception>
+    public int? AudioLoraRank
+    {
+        get => _audioLoraRank;
+        init
+        {
+            if (value is { } v)
+                ArgumentOutOfRangeException.ThrowIfNegativeOrZero(v);
+            _audioLoraRank = value;
+        }
+    }
+
+    private readonly IReadOnlyList<int>? _supportedAudioLoraRanks;
+
+    /// <summary>
+    /// The set of LoRA ranks the <b>audio</b> executor should support. <c>null</c> (default) leaves the
+    /// engine default. Requires an audio executor (<see cref="AudioBackend"/> set); see
+    /// <see cref="SupportedLoraRanks"/> for the GPU-backend caveat. Every element must be positive and the
+    /// list non-empty. Maps to <c>engine_settings_set_supported_audio_lora_ranks</c>.
+    /// </summary>
+    /// <exception cref="ArgumentException">The list is empty.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Any element is zero or negative.</exception>
+    public IReadOnlyList<int>? SupportedAudioLoraRanks
+    {
+        get => _supportedAudioLoraRanks;
+        init
+        {
+            ValidateRanks(value);
+            _supportedAudioLoraRanks = value;
+        }
+    }
+
+    private static void ValidateRanks(IReadOnlyList<int>? ranks)
+    {
+        if (ranks is null)
+            return;
+        if (ranks.Count == 0)
+            throw new ArgumentException("The supported LoRA ranks list must not be empty (use null to leave it unset).", nameof(ranks));
+        foreach (int r in ranks)
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(r);
+    }
 }
 
 /// <summary>
@@ -295,10 +429,51 @@ public sealed record LiteRtConversationOptions
     public bool FilterThinkingFromKvCache { get; init; }
 
     /// <summary>
+    /// Stream the raw text of a tool call <b>while the model is generating it</b>. Default <c>false</c>:
+    /// during a tool-call block the stream goes silent until the block completes and the parsed
+    /// <see cref="LiteRtStreamChunkKind.ToolCall"/> chunk arrives whole. With this on,
+    /// <see cref="LiteRtConversation.SendStreamingAsync(string, System.Threading.CancellationToken)"/>
+    /// additionally yields <see cref="LiteRtStreamChunkKind.ToolCallDelta"/> chunks — incremental,
+    /// unparsed fragments of the tool-call text — as they are produced, followed by the usual complete
+    /// <see cref="LiteRtStreamChunkKind.ToolCall"/> chunk. Use the deltas for progress display only;
+    /// act on the final parsed chunk. Only meaningful when <see cref="Tools"/> are set.
+    /// </summary>
+    /// <remarks>
+    /// Maps to the C API <c>conversation_config_set_stream_tool_calls</c> (requires native LiteRT-LM
+    /// v0.14.0+; older binaries throw <see cref="System.EntryPointNotFoundException"/> at conversation
+    /// creation). The deltas do not affect the blocking <see cref="LiteRtConversation.Send(string)"/> path.
+    /// </remarks>
+    public bool StreamToolCalls { get; init; }
+
+    /// <summary>
     /// Budget (in tokens) that <b>image</b> attachments may consume during prefill. 0 (default) =
     /// engine default. Lower it to cap how much of the context window an image eats on a vision model;
     /// only meaningful when sending image attachments. Applied per send via the C API
     /// <c>conversation_optional_args_set_visual_token_budget</c>.
     /// </summary>
     public int VisualTokenBudget { get; init; }
+
+    /// <summary>
+    /// Path to a <b>text</b> LoRA adapter (weights file) to apply to this conversation. <c>null</c>
+    /// (default) = no adapter. Requires a LoRA-enabled model, and the engine loaded with a matching
+    /// <see cref="LiteRtEngineOptions.LoraRank"/>.
+    /// </summary>
+    /// <remarks>
+    /// The native side opens the file when the conversation is created, so a missing/unreadable path
+    /// fails fast with <see cref="LiteRtException"/> at <see cref="LiteRtEngine.CreateConversation"/> —
+    /// not silently at first send. Maps to the C API <c>session_config_set_lora_path</c>. <b>Not yet
+    /// validated end-to-end</b> in this binding (no LoRA adapter artifact was available at the time of
+    /// writing): the plumbing is in place and a bad path is reported coherently, but a successful load
+    /// against a real adapter has not been exercised here.
+    /// </remarks>
+    public string? LoraPath { get; init; }
+
+    /// <summary>
+    /// Path to an <b>audio</b> LoRA adapter (weights file) to apply to this conversation. <c>null</c>
+    /// (default) = no adapter. Requires an audio-capable, LoRA-enabled model and a matching
+    /// <see cref="LiteRtEngineOptions.AudioLoraRank"/>. Opened at conversation creation (see
+    /// <see cref="LoraPath"/> for the fail-fast and not-yet-validated notes). Maps to the C API
+    /// <c>session_config_set_audio_lora_path</c>.
+    /// </summary>
+    public string? AudioLoraPath { get; init; }
 }

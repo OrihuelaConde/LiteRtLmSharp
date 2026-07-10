@@ -18,19 +18,28 @@ public sealed class LiteRtConversation : IDisposable
     // Image prefill budget (from LiteRtConversationOptions.VisualTokenBudget); 0 = engine default.
     // Applied per send by building a native optional-args object. Inherited by Clone().
     private readonly int _visualTokenBudget;
+    // Channel name the native side streams raw tool-call text on (LiteRtConversationOptions.StreamToolCalls);
+    // null = the feature is off and channel content routes to Thinking as before. Inherited by Clone().
+    private readonly string? _toolCallStreamChannel;
     private bool _disposed;
+
+    /// <summary>Channel name passed to <c>set_stream_tool_calls</c>. Pinned explicitly (rather than
+    /// relying on the native default, currently also "tool_call") so the split logic and the native
+    /// side can never disagree.</summary>
+    internal const string ToolCallStreamChannelName = "tool_call";
 
     private LiteRtConversation(
         ConversationHandle conversation, ConversationConfigHandle? config, SessionConfigHandle? sessionConfig,
-        int visualTokenBudget = 0)
+        int visualTokenBudget = 0, string? toolCallStreamChannel = null)
     {
         _conversation = conversation;
         _config = config;
         _sessionConfig = sessionConfig;
         _visualTokenBudget = visualTokenBudget;
+        _toolCallStreamChannel = toolCallStreamChannel;
     }
 
-    internal static unsafe LiteRtConversation Create(
+    internal static LiteRtConversation Create(
         EngineHandle engine, LiteRtConversationOptions? options, bool engineIsMultimodal = false)
     {
         // TEMPORARY GUARD — remove when upstream republishes a fixed linux prebuilt.
@@ -73,11 +82,14 @@ public sealed class LiteRtConversation : IDisposable
             // attach one whenever the engine has an encoder enabled — even if the caller passed no
             // sampler/output cap — so a plain CreateConversation() can send attachments without setup.
             bool needsSessionConfig =
-                options?.Sampler is not null || options?.MaxOutputTokens > 0 || engineIsMultimodal;
+                options?.Sampler is not null || options?.MaxOutputTokens > 0
+                || options?.LoraPath is not null || options?.AudioLoraPath is not null
+                || engineIsMultimodal;
             bool needsConfig = needsSessionConfig ||
                 (options is not null &&
                  (options.SystemMessage is not null || hasTools || options.EnableConstrainedDecoding ||
-                  extraContext is not null || options.FilterThinkingFromKvCache || historyJson is not null));
+                  extraContext is not null || options.FilterThinkingFromKvCache ||
+                  options.StreamToolCalls || historyJson is not null));
 
             if (needsConfig)
             {
@@ -96,26 +108,64 @@ public sealed class LiteRtConversation : IDisposable
                     if (options?.MaxOutputTokens > 0)
                         LiteRtLmNative.litert_lm_session_config_set_max_output_tokens(sessionPtr, options.MaxOutputTokens);
 
-                    if (options?.Sampler is { } s)
+                    // Unspecified = "let the engine choose": no sampler params are sent at all, so the
+                    // executor's internal default sampling applies — the same effective behavior as
+                    // 1.0.0/v0.13.1, where the native unspecified type made the sampler factory return
+                    // null (sampler_factory.cc CreateCpuSampler) and the numeric fields went unused.
+                    // v0.14.0 removed the native unspecified member, so "don't set" is the only faithful
+                    // mapping; forcing TopP here would switch CPU decoding to an explicit top-p sampler.
+                    if (options?.Sampler is { Strategy: not LiteRtSamplerType.Unspecified } s)
                     {
-                        var native = new LiteRtLmSamplerParams
+                        // v0.14.0: build the opaque sampler params, set ALL four fields (create() zeroes
+                        // them — not the ecosystem defaults our record always carries), copy them into the
+                        // session config, then delete immediately (try/finally so it can't leak).
+                        nint samplerParams = LiteRtLmNative.litert_lm_sampler_params_create((LiteRtLmSamplerType)s.Strategy);
+                        if (samplerParams == nint.Zero)
+                            throw new LiteRtException("litert_lm_sampler_params_create returned null.");
+                        try
                         {
-                            Type = (LiteRtLmSamplerType)s.Strategy,
-                            TopK = s.TopK,
-                            TopP = s.TopP,
-                            Temperature = s.Temperature,
+                            LiteRtLmNative.litert_lm_sampler_params_set_top_k(samplerParams, s.TopK);
+                            LiteRtLmNative.litert_lm_sampler_params_set_top_p(samplerParams, s.TopP);
+                            LiteRtLmNative.litert_lm_sampler_params_set_temperature(samplerParams, s.Temperature);
                             // Seed 0 (the default) = deterministic, matching the engine default and
                             // Google's official bindings (Kotlin defaults 0; python maps unset -> 0).
-                            Seed = s.Seed,
-                        };
-                        LiteRtLmNative.litert_lm_session_config_set_sampler_params(sessionPtr, &native);
+                            LiteRtLmNative.litert_lm_sampler_params_set_seed(samplerParams, s.Seed);
+                            LiteRtLmNative.litert_lm_session_config_set_sampler_params(sessionPtr, samplerParams);
+                        }
+                        finally
+                        {
+                            LiteRtLmNative.litert_lm_sampler_params_delete(samplerParams);
+                        }
                     }
-                    // Multimodal-only (no sampler/output cap): the session config stays bare — its mere
-                    // presence is what lets the encoder executor load.
+
+                    // LoRA adapters (text / audio). The native side opens the file at set time, so a bad
+                    // path surfaces here as a clear LiteRtException rather than a later create failure.
+                    if (options?.LoraPath is { } loraPath)
+                    {
+                        int rc = LiteRtLmNative.litert_lm_session_config_set_lora_path(sessionPtr, loraPath);
+                        if (rc != 0)
+                            throw new LiteRtException(
+                                $"litert_lm_session_config_set_lora_path failed (returned {rc}) for '{loraPath}'. " +
+                                "The path must point to a readable LoRA weights file, and the model must be LoRA-enabled.");
+                    }
+
+                    if (options?.AudioLoraPath is { } audioLoraPath)
+                    {
+                        int rc = LiteRtLmNative.litert_lm_session_config_set_audio_lora_path(sessionPtr, audioLoraPath);
+                        if (rc != 0)
+                            throw new LiteRtException(
+                                $"litert_lm_session_config_set_audio_lora_path failed (returned {rc}) for '{audioLoraPath}'. " +
+                                "The path must point to a readable audio LoRA weights file, and the model must be LoRA-enabled.");
+                    }
+                    // Multimodal-only (no sampler/output cap/LoRA): the session config stays bare — its
+                    // mere presence is what lets the encoder executor load.
 
                     LiteRtLmNative.litert_lm_conversation_config_set_session_config(configPtr, sessionPtr);
                 }
 
+                // LiteRtJson.SystemMessage wraps the text in a content-parts ARRAY — a bare part object
+                // gets dropped by the chat template and the system turn renders empty (the old
+                // "SystemMessage silently ignored" bug; see the builder's doc for the full story).
                 if (options?.SystemMessage is not null)
                     LiteRtLmNative.litert_lm_conversation_config_set_system_message(configPtr, LiteRtJson.SystemMessage(options.SystemMessage));
 
@@ -131,6 +181,10 @@ public sealed class LiteRtConversation : IDisposable
                 if (options?.FilterThinkingFromKvCache == true)
                     LiteRtLmNative.litert_lm_conversation_config_set_filter_channel_content_from_kv_cache(configPtr, true);
 
+                if (options?.StreamToolCalls == true)
+                    LiteRtLmNative.litert_lm_conversation_config_set_stream_tool_calls(
+                        configPtr, true, ToolCallStreamChannelName);
+
                 if (historyJson is not null)
                     LiteRtLmNative.litert_lm_conversation_config_set_messages(configPtr, historyJson);
             }
@@ -140,7 +194,8 @@ public sealed class LiteRtConversation : IDisposable
                 throw new LiteRtException("litert_lm_conversation_create returned null.");
 
             return new LiteRtConversation(
-                new ConversationHandle(convPtr), config, sessionConfig, options?.VisualTokenBudget ?? 0);
+                new ConversationHandle(convPtr), config, sessionConfig, options?.VisualTokenBudget ?? 0,
+                options?.StreamToolCalls == true ? ToolCallStreamChannelName : null);
         }
         catch
         {
@@ -237,9 +292,11 @@ public sealed class LiteRtConversation : IDisposable
         // The clone is a fully independent native conversation; it does not share or need the parent's
         // config handles (those are only read at create time). Each conversation frees its own native
         // object on Dispose, so the clone outlives a disposed parent as long as the engine is alive.
-        // It inherits the parent's visual token budget so attachments behave the same on the branch.
+        // It inherits the parent's visual token budget and tool-call stream channel so attachments and
+        // streaming behave the same on the branch (the native clone copies the config, channel included).
         return new LiteRtConversation(
-            new ConversationHandle(clonedPtr), config: null, sessionConfig: null, _visualTokenBudget);
+            new ConversationHandle(clonedPtr), config: null, sessionConfig: null, _visualTokenBudget,
+            _toolCallStreamChannel);
     }
 
     /// <summary>Sends a user message and returns the reply (blocking). The answer text is
@@ -429,6 +486,30 @@ public sealed class LiteRtConversation : IDisposable
     }
 
     /// <summary>
+    /// Renders the conversation's <b>preface</b> — the templated preamble the model sees before the first
+    /// user turn: the system message, any tools, and the restored <see cref="LiteRtConversationOptions.History"/>
+    /// — to its exact prompt string, <b>without sending</b> (conversation state is unchanged). Pair with
+    /// <see cref="LiteRtEngine.Tokenize"/> to measure how many tokens the system prompt / tools / history
+    /// consume up front, or to inspect the templated preamble. Complements
+    /// <see cref="RenderMessage(string)"/>, which renders one user turn.
+    /// </summary>
+    /// <remarks>Wraps a native entry point Google still marks experimental in its own bindings; the
+    /// rendered format may change with the native runtime version. Requires native LiteRT-LM v0.14.0+
+    /// (throws <see cref="EntryPointNotFoundException"/> on older binaries).</remarks>
+    /// <exception cref="LiteRtException">The native render call returned null.</exception>
+    public string RenderPreface()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // The returned pointer is owned by the conversation and only valid until the next render call;
+        // PtrToStringUTF8 copies it out here, so the managed string outlives that window.
+        nint strPtr = LiteRtLmNative.litert_lm_conversation_render_preface_to_string(_conversation.Ptr);
+        if (strPtr == nint.Zero)
+            throw new LiteRtException("litert_lm_conversation_render_preface_to_string returned null.");
+        return Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
+    }
+
+    /// <summary>
     /// Guidance appended when a send carrying an image/audio attachment fails the way an unconfigured
     /// multimodal engine does (the native layer reports "Vision/Audio executor should not be null").
     /// Names the usual causes so the caller does not have to dig through native stderr.
@@ -471,14 +552,17 @@ public sealed class LiteRtConversation : IDisposable
     /// <summary>
     /// Builds the per-send native optional-args object, or <c>null</c> when there is nothing to set
     /// (the common case). A per-send <see cref="LiteRtSendOptions.VisualTokenBudget"/> overrides the
-    /// conversation-level <see cref="LiteRtConversationOptions.VisualTokenBudget"/>. The caller owns the
+    /// conversation-level <see cref="LiteRtConversationOptions.VisualTokenBudget"/>; a per-send
+    /// <see cref="LiteRtSendOptions.MaxOutputTokens"/> overrides the conversation-level
+    /// <see cref="LiteRtConversationOptions.MaxOutputTokens"/> for this one send. The caller owns the
     /// returned handle: dispose it after the send completes (for streaming, only after the native
     /// decode thread is done — it reads the args during prefill).
     /// </summary>
     private ConversationOptionalArgsHandle? BuildOptionalArgs(LiteRtSendOptions? options)
     {
         int budget = options is { VisualTokenBudget: > 0 } ? options.VisualTokenBudget : _visualTokenBudget;
-        if (budget <= 0)
+        int maxOutputTokens = options is { MaxOutputTokens: > 0 } ? options.MaxOutputTokens : 0;
+        if (budget <= 0 && maxOutputTokens <= 0)
             return null;
 
         nint p = LiteRtLmNative.litert_lm_conversation_optional_args_create();
@@ -486,7 +570,10 @@ public sealed class LiteRtConversation : IDisposable
             throw new LiteRtException("litert_lm_conversation_optional_args_create returned null.");
 
         var handle = new ConversationOptionalArgsHandle(p);
-        LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget(p, budget);
+        if (budget > 0)
+            LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget(p, budget);
+        if (maxOutputTokens > 0)
+            LiteRtLmNative.litert_lm_conversation_optional_args_set_max_output_tokens(p, maxOutputTokens);
         return handle;
     }
 
@@ -498,7 +585,10 @@ public sealed class LiteRtConversation : IDisposable
     /// <see cref="LiteRtConversationOptions.EnableThinking"/> on, reasoning models emit the thinking
     /// trace before the answer. A <see cref="LiteRtStreamChunkKind.ToolCall"/> chunk only appears when
     /// the conversation was created with tools — handle it like the blocking <see cref="Send(string)"/> loop
-    /// (run the tools, then <see cref="SendToolResults"/>).
+    /// (run the tools, then <see cref="SendToolResults"/>). With
+    /// <see cref="LiteRtConversationOptions.StreamToolCalls"/> on, raw
+    /// <see cref="LiteRtStreamChunkKind.ToolCallDelta"/> progress fragments additionally precede that
+    /// complete tool-call chunk.
     /// </summary>
     public IAsyncEnumerable<LiteRtStreamChunk> SendStreamingAsync(
         string text, CancellationToken cancellationToken = default)
@@ -523,7 +613,7 @@ public sealed class LiteRtConversation : IDisposable
 
         var channel = Channel.CreateUnbounded<LiteRtStreamChunk>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
-        var state = new StreamState(channel);
+        var state = new StreamState(channel, _toolCallStreamChannel);
         // The optional args (visual token budget) must stay alive for the whole stream: the native
         // decode thread reads them during prefill. Freed in the finally, after the channel completes.
         // Built before the GCHandle so that if native allocation fails we don't leak a pinned handle.
@@ -599,7 +689,7 @@ public sealed class LiteRtConversation : IDisposable
         {
             string? piece = Marshal.PtrToStringUTF8(chunk);
             if (!string.IsNullOrEmpty(piece))
-                foreach (LiteRtStreamChunk c in SplitMessageChunk(piece))
+                foreach (LiteRtStreamChunk c in SplitMessageChunk(piece, state.ToolCallChannel))
                     state.Channel.Writer.TryWrite(c);
         }
 
@@ -612,16 +702,41 @@ public sealed class LiteRtConversation : IDisposable
 
     /// <summary>
     /// Splits one streamed message-chunk JSON into tagged pieces: the reasoning ("thinking") delta
-    /// first (if any), then either the tool calls (when present) or the answer-text delta. Content
-    /// and channel values are per-chunk deltas; tool calls arrive complete. Internal so the split can
-    /// be unit-tested without a model — the native callback just feeds it each raw chunk.
+    /// first (if any), then the raw tool-call delta (only with
+    /// <see cref="LiteRtConversationOptions.StreamToolCalls"/>), then either the tool calls (when
+    /// present) or the answer-text delta. Content and channel values are per-chunk deltas; tool calls
+    /// arrive complete. When <paramref name="toolCallChannel"/> is non-null, channel content under that
+    /// name becomes a <see cref="LiteRtStreamChunkKind.ToolCallDelta"/> chunk instead of polluting the
+    /// thinking concatenation. Internal so the split can be unit-tested without a model — the native
+    /// callback just feeds it each raw chunk.
     /// </summary>
-    internal static IReadOnlyList<LiteRtStreamChunk> SplitMessageChunk(string messageJson)
+    internal static IReadOnlyList<LiteRtStreamChunk> SplitMessageChunk(
+        string messageJson, string? toolCallChannel = null)
     {
         LiteRtResponse parsed = LiteRtResponse.Parse(messageJson);
         var chunks = new List<LiteRtStreamChunk>(capacity: 2);
-        if (parsed.Thinking is { Length: > 0 } thinking)
+        if (toolCallChannel is not null && parsed.Channels.Count > 0)
+        {
+            // Route the tool-call stream channel to its own kind; everything else stays "thinking"
+            // (mirrors LiteRtResponse.Thinking, which concatenates all channels).
+            string? thinking = null;
+            string? toolCallDelta = null;
+            foreach (var (name, value) in parsed.Channels)
+            {
+                if (string.Equals(name, toolCallChannel, StringComparison.Ordinal))
+                    toolCallDelta = value;
+                else
+                    thinking = thinking is null ? value : thinking + value;
+            }
+            if (thinking is { Length: > 0 })
+                chunks.Add(LiteRtStreamChunk.Thinking(thinking));
+            if (toolCallDelta is { Length: > 0 })
+                chunks.Add(LiteRtStreamChunk.ToolCallDelta(toolCallDelta));
+        }
+        else if (parsed.Thinking is { Length: > 0 } thinking)
+        {
             chunks.Add(LiteRtStreamChunk.Thinking(thinking));
+        }
         if (parsed.IsToolCall)
             chunks.Add(LiteRtStreamChunk.Tools(parsed.ToolCalls));
         else if (parsed.Text is { Length: > 0 } answer)
@@ -629,9 +744,10 @@ public sealed class LiteRtConversation : IDisposable
         return chunks;
     }
 
-    private sealed class StreamState(Channel<LiteRtStreamChunk> channel)
+    private sealed class StreamState(Channel<LiteRtStreamChunk> channel, string? toolCallChannel)
     {
         public readonly Channel<LiteRtStreamChunk> Channel = channel;
+        public readonly string? ToolCallChannel = toolCallChannel;
     }
 
     /// <summary>Disposes the conversation, freeing its native resources (and its config handles). Dispose
@@ -655,14 +771,20 @@ public enum LiteRtStreamChunkKind
     Thinking = 1,
     /// <summary>One or more tool calls the model wants executed (only when the conversation has tools).</summary>
     ToolCall = 2,
+    /// <summary>A raw, incremental fragment of a tool call being generated — progress feed only, not
+    /// parseable on its own; the complete parsed <see cref="ToolCall"/> chunk still follows. Emitted
+    /// only when the conversation was created with
+    /// <see cref="LiteRtConversationOptions.StreamToolCalls"/>.</summary>
+    ToolCallDelta = 3,
 }
 
 /// <summary>
 /// One streamed piece of a reply from <see cref="LiteRtConversation.SendStreamingAsync(string, System.Threading.CancellationToken)"/>.
 /// <see cref="Kind"/> says what it is: an <see cref="LiteRtStreamChunkKind.Answer"/> or
 /// <see cref="LiteRtStreamChunkKind.Thinking"/> text delta (concatenate same-kind chunks in order
-/// to rebuild each), or a <see cref="LiteRtStreamChunkKind.ToolCall"/> carrying the model's tool
-/// calls. <see cref="Text"/> is the delta for the text kinds (empty for tool calls);
+/// to rebuild each), a <see cref="LiteRtStreamChunkKind.ToolCall"/> carrying the model's tool
+/// calls, or an opt-in <see cref="LiteRtStreamChunkKind.ToolCallDelta"/> raw progress fragment.
+/// <see cref="Text"/> is the delta for the text kinds (empty for complete tool calls);
 /// <see cref="ToolCalls"/> is populated only for the tool-call kind.
 /// </summary>
 public readonly record struct LiteRtStreamChunk
@@ -698,4 +820,5 @@ public readonly record struct LiteRtStreamChunk
     internal static LiteRtStreamChunk Answer(string text) => new(LiteRtStreamChunkKind.Answer, text, []);
     internal static LiteRtStreamChunk Thinking(string text) => new(LiteRtStreamChunkKind.Thinking, text, []);
     internal static LiteRtStreamChunk Tools(IReadOnlyList<LiteRtToolCall> toolCalls) => new(LiteRtStreamChunkKind.ToolCall, string.Empty, toolCalls);
+    internal static LiteRtStreamChunk ToolCallDelta(string text) => new(LiteRtStreamChunkKind.ToolCallDelta, text, []);
 }

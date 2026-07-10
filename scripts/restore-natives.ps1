@@ -12,7 +12,7 @@ Usage:
   pwsh scripts/restore-natives.ps1 -All
 #>
 param(
-    [string]$Version = 'v0.13.1',
+    [string]$Version = 'v0.14.0',
     [ValidateSet('win-x64', 'linux-x64', 'android-arm64', 'osx-arm64', 'ios-arm64')]
     [string[]]$Rid,
     [switch]$All

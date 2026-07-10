@@ -110,6 +110,58 @@ public class ApiGuardsTests
         Assert.Throws<ArgumentException>(() => LiteRtAttachment.Image(ReadOnlySpan<byte>.Empty));
         Assert.Throws<ArgumentException>(() => LiteRtAttachment.Audio(ReadOnlySpan<byte>.Empty));
     }
+
+    [Fact]
+    public void EngineOptions_ThreadCounts_RejectNonPositive()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtEngineOptions { NumThreads = 0 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtEngineOptions { NumThreads = -1 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtEngineOptions { AudioNumThreads = 0 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtEngineOptions { AudioNumThreads = -2 });
+        // null (default) and positive values are accepted.
+        Assert.Null(new LiteRtEngineOptions().NumThreads);
+        Assert.Equal(4, new LiteRtEngineOptions { NumThreads = 4 }.NumThreads);
+    }
+
+    [Fact]
+    public void EngineOptions_LoraRanks_RejectNonPositive()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtEngineOptions { LoraRank = 0 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtEngineOptions { LoraRank = -1 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtEngineOptions { AudioLoraRank = 0 });
+        Assert.Equal(16, new LiteRtEngineOptions { LoraRank = 16 }.LoraRank);
+    }
+
+    [Fact]
+    public void EngineOptions_SupportedLoraRanks_RejectEmptyOrNonPositive()
+    {
+        // Empty list is meaningless (the native setter returns failure on it) — rejected explicitly.
+        Assert.Throws<ArgumentException>(() => new LiteRtEngineOptions { SupportedLoraRanks = [] });
+        Assert.Throws<ArgumentException>(() => new LiteRtEngineOptions { SupportedAudioLoraRanks = [] });
+        // Any non-positive element is rejected.
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtEngineOptions { SupportedLoraRanks = [4, 0, 16] });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtEngineOptions { SupportedLoraRanks = [-1] });
+        // A valid, positive, non-empty list is accepted; null is the default.
+        Assert.Null(new LiteRtEngineOptions().SupportedLoraRanks);
+        Assert.Equal([4, 16], new LiteRtEngineOptions { SupportedLoraRanks = [4, 16] }.SupportedLoraRanks!);
+    }
+
+    [Fact]
+    public void SamplerType_KeepsUnspecifiedMember_ForPublicCompat()
+    {
+        // The native v0.14.0 enum dropped its "unspecified" member, but the PUBLIC enum must keep it at 0
+        // (removing it would be a breaking change); the binding maps it to TopP at the native boundary.
+        Assert.Equal(0, (int)LiteRtSamplerType.Unspecified);
+        Assert.Equal(LiteRtSamplerType.Unspecified, default(LiteRtSamplerType));
+    }
+
+    [Fact]
+    public void SendOptions_MaxOutputTokens_DefaultsToInheritZero()
+    {
+        // 0 (default) = inherit the conversation-level cap; a positive value is a per-send override.
+        Assert.Equal(0, new LiteRtSendOptions().MaxOutputTokens);
+        Assert.Equal(64, new LiteRtSendOptions { MaxOutputTokens = 64 }.MaxOutputTokens);
+    }
 }
 
 /// <summary>
@@ -397,6 +449,73 @@ public class StreamChunkSplitTests
         Assert.Equal("reasoning", chunks[0].Text);
         Assert.Equal(LiteRtStreamChunkKind.Answer, chunks[1].Kind);
         Assert.Equal("Paris.", chunks[1].Text);
+    }
+
+    [Fact]
+    public void Split_ToolCallChannel_RoutedToDeltaNotThinking()
+    {
+        var chunks = LiteRtConversation.SplitMessageChunk(
+            """{"role":"assistant","channels":{"tool_call":"{\"name\":\"get_w"}}""",
+            LiteRtConversation.ToolCallStreamChannelName);
+        var c = Assert.Single(chunks);
+        Assert.Equal(LiteRtStreamChunkKind.ToolCallDelta, c.Kind);
+        Assert.Equal("""{"name":"get_w""", c.Text);
+        Assert.False(c.IsThinking);
+        Assert.Empty(c.ToolCalls);
+    }
+
+    [Fact]
+    public void Split_ThinkingAndToolCallChannels_SeparatedByKind()
+    {
+        var chunks = LiteRtConversation.SplitMessageChunk(
+            """{"role":"assistant","channels":{"thought":"deciding","tool_call":"partial"}}""",
+            LiteRtConversation.ToolCallStreamChannelName);
+        Assert.Equal(2, chunks.Count);
+        Assert.Equal(LiteRtStreamChunkKind.Thinking, chunks[0].Kind);
+        Assert.Equal("deciding", chunks[0].Text);
+        Assert.Equal(LiteRtStreamChunkKind.ToolCallDelta, chunks[1].Kind);
+        Assert.Equal("partial", chunks[1].Text);
+    }
+
+    [Fact]
+    public void Split_ToolCallChannelAndParsedCall_DeltaPrecedesToolCall()
+    {
+        // Native emits the final channel flush and the parsed call as separate callback messages, but
+        // the streaming test's "deltas precede the first parsed call" assertion leans on this ordering
+        // contract — lock it for the combined-shape case too.
+        var chunks = LiteRtConversation.SplitMessageChunk(
+            """{"role":"assistant","channels":{"tool_call":"tail"},"tool_calls":[{"function":{"name":"get_weather","arguments":{}}}]}""",
+            LiteRtConversation.ToolCallStreamChannelName);
+        Assert.Equal(2, chunks.Count);
+        Assert.Equal(LiteRtStreamChunkKind.ToolCallDelta, chunks[0].Kind);
+        Assert.Equal("tail", chunks[0].Text);
+        Assert.Equal(LiteRtStreamChunkKind.ToolCall, chunks[1].Kind);
+        Assert.Equal("get_weather", Assert.Single(chunks[1].ToolCalls).Name);
+    }
+
+    [Fact]
+    public void Split_ToolCallChannelAndAnswerText_DeltaPrecedesAnswer()
+    {
+        var chunks = LiteRtConversation.SplitMessageChunk(
+            """{"role":"assistant","content":[{"type":"text","text":"hi"}],"channels":{"tool_call":"x"}}""",
+            LiteRtConversation.ToolCallStreamChannelName);
+        Assert.Equal(2, chunks.Count);
+        Assert.Equal(LiteRtStreamChunkKind.ToolCallDelta, chunks[0].Kind);
+        Assert.Equal("x", chunks[0].Text);
+        Assert.Equal(LiteRtStreamChunkKind.Answer, chunks[1].Kind);
+        Assert.Equal("hi", chunks[1].Text);
+    }
+
+    [Fact]
+    public void Split_ToolCallChannel_WithoutOptIn_StaysThinking()
+    {
+        // With StreamToolCalls off the native side never emits the channel, but if a model's own
+        // template used the same channel name the legacy all-channels-are-thinking behavior holds.
+        var chunks = LiteRtConversation.SplitMessageChunk(
+            """{"role":"assistant","channels":{"tool_call":"partial"}}""");
+        var c = Assert.Single(chunks);
+        Assert.Equal(LiteRtStreamChunkKind.Thinking, c.Kind);
+        Assert.Equal("partial", c.Text);
     }
 
     [Fact]
@@ -940,6 +1059,55 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     }
 
     /// <summary>
+    /// Preface rendering: <see cref="LiteRtConversation.RenderPreface"/> returns the templated preamble
+    /// (system message + tools + history) without sending, and does not change conversation state. A
+    /// conversation created with a system message renders a non-empty preface that includes the system
+    /// text; a bare conversation renders without throwing. Requires native LiteRT-LM v0.14.0+. Skipped
+    /// unless LITERTLM_TEST_MODEL is set.
+    /// </summary>
+    [SkippableFact]
+    public void RenderPreface_ReturnsTemplatedPreamble_WithoutSending()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var conv = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions
+        {
+            SystemMessage = "You are a helpful pirate. Always answer in pirate speak.",
+        });
+        int before = conv.TokenCount;
+
+        string preface = conv.RenderPreface();
+        Assert.False(string.IsNullOrEmpty(preface));
+        // The system message should appear (verbatim or reworded by the template — assert on a distinctive
+        // word that the template cannot drop without losing the instruction).
+        Assert.Contains("pirate", preface, StringComparison.OrdinalIgnoreCase);
+        // Rendering only templates the preface; it does not prefill, so the KV cache is untouched.
+        Assert.Equal(before, conv.TokenCount);
+    }
+
+    /// <summary>
+    /// LoRA negative coverage: a conversation created with a <see cref="LiteRtConversationOptions.LoraPath"/>
+    /// pointing at a nonexistent file must fail with a coherent <see cref="LiteRtException"/> at creation
+    /// (the native side opens the adapter file at set time), not crash the process. We cannot assert the
+    /// SUCCESS path — no LoRA adapter artifact is available — so this pins only the honest failure mode.
+    /// Requires native LiteRT-LM v0.14.0+ (older binaries lack the entry point). Skipped unless
+    /// LITERTLM_TEST_MODEL is set.
+    /// </summary>
+    [SkippableFact]
+    public void Lora_NonexistentAdapterPath_ThrowsCoherentException()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        string bogus = Path.Combine(Path.GetTempPath(), $"no-such-lora-{Guid.NewGuid():N}.litertlm");
+        var ex = Assert.Throws<LiteRtException>(() => _fixture.Engine!.CreateConversation(
+            new LiteRtConversationOptions { LoraPath = bogus }));
+
+        // The message must name the failing native call and the offending path so the cause is obvious.
+        Assert.Contains("lora", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(bogus, ex.Message);
+    }
+
+    /// <summary>
     /// Sending an image to an engine that was NOT loaded with a vision backend fails with a clear,
     /// actionable managed error instead of the bare native "Vision executor should not be null". The
     /// shared fixture engine has no vision backend (and a small context), so this is the exact misuse a
@@ -957,6 +1125,43 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
 
         Assert.Contains("VisionBackend", ex.Message);
         Assert.Contains("MaxNumTokens", ex.Message);
+    }
+
+    /// <summary>
+    /// Per-send MaxOutputTokens override (v0.14.0 optional_args): with the same long-generation prompt,
+    /// a send capped at 8 tokens must consume clearly fewer KV tokens than an uncapped send under a
+    /// generous conversation-level cap — the prompt-token cost is identical on both sides, so the
+    /// TokenCount difference isolates the decode length and proves the per-send value overrode the
+    /// session value (session_advanced resolves per-send over session config).
+    /// </summary>
+    [SkippableFact]
+    public void SendOptions_MaxOutputTokens_CapsSingleSend()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        const string prompt = "Write a very long, detailed story about a sea voyage, at least 400 words.";
+        var options = new LiteRtConversationOptions { MaxOutputTokens = 256 };
+
+        int uncappedTokens;
+        using (var uncapped = _fixture.Engine!.CreateConversation(options))
+        {
+            uncapped.Send(prompt);
+            uncappedTokens = uncapped.TokenCount;
+        }
+
+        int cappedTokens;
+        using (var capped = _fixture.Engine!.CreateConversation(options))
+        {
+            var response = capped.Send(prompt, attachments: null, new LiteRtSendOptions { MaxOutputTokens = 8 });
+            cappedTokens = capped.TokenCount;
+            Assert.False(string.IsNullOrEmpty(response.Text), "Capped send produced no text at all.");
+        }
+
+        // The uncapped side decodes toward 256 tokens; the capped side stops at 8. Requiring a ≥64-token
+        // gap keeps the assertion robust to template/count noise while being impossible if the per-send
+        // cap was ignored (both sides would then decode to the same 256 ceiling).
+        Assert.True(uncappedTokens - cappedTokens >= 64,
+            $"Per-send cap had no effect: uncapped={uncappedTokens}, capped={cappedTokens}.");
     }
 
     /// <summary>
@@ -990,6 +1195,59 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
         }
 
         RunToolCallingLoop(constrainedDecoding: true);
+    }
+
+    /// <summary>
+    /// StreamToolCalls: with the flag on, the streaming path yields raw ToolCallDelta progress
+    /// fragments while the model generates the tool call, and the complete parsed ToolCall chunk
+    /// still arrives after them; concatenated deltas must correspond to the same call. Requires
+    /// native v0.14.0+ (the config setter is new).
+    /// </summary>
+    [SkippableFact]
+    public async Task ToolCalling_StreamToolCalls_YieldsDeltasBeforeCompleteCall()
+    {
+        SkipUnlessToolTestsEnabled();
+
+        using var conv = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions
+        {
+            SystemMessage = "Use tools when needed.",
+            MaxOutputTokens = 128,
+            StreamToolCalls = true,
+            Tools =
+            [
+                new LiteRtTool("get_current_weather", "Get the current weather for a city.",
+                    """{"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}"""),
+            ],
+        });
+
+        // Contract-guaranteed: within one tool-call block the native side flushes the channel deltas
+        // BEFORE emitting the parsed call (two separate callback invocations). NOT guaranteed: a model
+        // may emit several tool-call blocks in one turn, in which case later deltas legitimately follow
+        // an earlier complete call — so assert "the FIRST parsed call was preceded by ≥1 delta" rather
+        // than "no delta ever follows a call".
+        var deltas = new System.Text.StringBuilder();
+        LiteRtStreamChunk? firstCall = null;
+        int deltasBeforeFirstCall = 0;
+        await foreach (var chunk in conv.SendStreamingAsync("What's the weather in Tokyo?"))
+        {
+            if (chunk.Kind == LiteRtStreamChunkKind.ToolCallDelta)
+            {
+                deltas.Append(chunk.Text);
+                if (firstCall is null)
+                    deltasBeforeFirstCall++;
+            }
+            else if (chunk.Kind == LiteRtStreamChunkKind.ToolCall)
+            {
+                firstCall ??= chunk;
+            }
+        }
+
+        Assert.NotNull(firstCall);
+        Assert.Equal("get_current_weather", firstCall.Value.ToolCalls[0].Name);
+        Assert.True(deltasBeforeFirstCall > 0, "Expected at least one ToolCallDelta chunk before the first parsed call.");
+        // Model-dependent (not a native guarantee): typical templates serialize the call as JSON that
+        // names the function, so the concatenated raw deltas should mention it.
+        Assert.Contains("get_current_weather", deltas.ToString());
     }
 
     /// <summary>

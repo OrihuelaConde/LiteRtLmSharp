@@ -6,6 +6,58 @@ LiteRT-LM native version it wraps (see the compatibility table in the [README](R
 managed `LiteRtLmSharp` package and every `LiteRtLmSharp.runtime.<rid>` package share one version and
 are published together.
 
+## [Unreleased]
+
+Requires **LiteRT-LM v0.14.0** native binaries (the `LiteRtLmSharp.runtime.<rid>` packages bump to
+match). The managed surface is source-compatible with 1.0.0 — all changes below are additive.
+
+### Added
+
+- **CPU thread counts** — `LiteRtEngineOptions.NumThreads` and `AudioNumThreads` set the CPU text /
+  audio executor thread counts (`null` = engine default). CPU-backend knobs: no-op on non-CPU backends,
+  and the audio one only applies when an audio executor is configured. Non-positive values are rejected.
+- **LoRA surface** — engine-level `LiteRtEngineOptions.LoraRank`, `SupportedLoraRanks`, `AudioLoraRank`,
+  `SupportedAudioLoraRanks`, plus per-conversation `LiteRtConversationOptions.LoraPath` /
+  `AudioLoraPath` (the adapter file is opened when the conversation is created, so a bad path fails fast
+  with `LiteRtException`). Requires a LoRA-enabled model; supported-ranks are only honored on the GPU
+  (Artisan) backend. Not yet validated end-to-end against a real adapter — the plumbing is in place and
+  failure modes are surfaced coherently.
+- **`LiteRtConversation.RenderPreface()`** — renders the templated conversation preface (system message
+  + tools + history) to a string without sending, complementing `RenderMessage`. Pair with
+  `LiteRtEngine.Tokenize` to measure the preamble's token cost.
+- **Per-send output cap** — `LiteRtSendOptions.MaxOutputTokens` overrides the conversation-level
+  `MaxOutputTokens` for a single send (maps to the v0.14.0 `optional_args_set_max_output_tokens`; the
+  runtime resolves the per-send value over the session value).
+- **Tool-call streaming** — `LiteRtConversationOptions.StreamToolCalls` streams the raw text of a tool
+  call while the model generates it: `SendStreamingAsync` yields the new
+  `LiteRtStreamChunkKind.ToolCallDelta` chunks (incremental, unparsed progress fragments) before the
+  usual complete `ToolCall` chunk. Default off — without it a tool-call block keeps today's behavior
+  (silence until the parsed call arrives whole). Progress display only; act on the final parsed chunk.
+
+### Fixed
+
+- **`LiteRtConversationOptions.SystemMessage` was silently ignored** — the binding wrapped the text in
+  a bare `{"type":"text",...}` part object; the native side JSON-parses that into the message content
+  and the chat template drops object-valued content, so the system turn rendered empty
+  (`<|turn>system\n<turn|>`) and the model never saw the prompt. The system text is now sent as a
+  content-parts **array**, which the template renders. Diagnosed and verified with the new
+  `RenderPreface()` (the system prompt now appears in the templated preface). Workaround on older
+  versions: pass the system prompt as a leading `LiteRtMessage.System` history message instead
+  (the path `LiteRtChatClient` uses, which was never affected). **Migration note:** if you used that
+  History workaround while ALSO leaving `SystemMessage` set, remove one of the two — both now render,
+  which yields two system turns (the long-documented behavior of setting the system prompt in both
+  places; check with `RenderPreface()`).
+
+### Changed
+
+- **Sampler params migration (internal)** — v0.14.0 replaced the by-value `LiteRtLmSamplerParams` struct
+  with an opaque builder API (`sampler_params_create` + `set_top_k/top_p/temperature/seed`, copied into
+  the session config then deleted). The binding was rewired to the builder; no public surface change.
+  The native enum dropped its `unspecified` member — the public `LiteRtSamplerType.Unspecified` is
+  retained (at `0`, no break) and now means what its docs always said: no sampler parameters are sent
+  and the executor's internal default sampling applies (the same effective behavior as v0.13.1, where
+  the unspecified type made the native sampler factory defer to the executor).
+
 ## [1.0.0] — 2026-07-02
 
 The first stable release: everything shipped in the `0.1.0-preview` line plus the changes below.

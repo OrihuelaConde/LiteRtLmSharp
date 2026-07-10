@@ -30,6 +30,42 @@ internal static unsafe partial class LiteRtLmNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_engine_settings_set_max_num_tokens(nint settings, int max_num_tokens);
 
+    /// <summary>Number of threads for the CPU text executor. A no-op on non-CPU backends: the setter
+    /// fetches the executor's <c>CpuConfig</c> and only applies when the backend is CPU (see engine.cc
+    /// <c>set_num_threads</c>).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_num_threads(nint settings, int num_threads);
+
+    /// <summary>Number of threads for the CPU audio executor. Applies only when an audio executor is
+    /// configured, and only reaches the audio backend's CPU compilation options (audio_executor path).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_audio_num_threads(nint settings, int num_threads);
+
+    /// <summary>Sets the LoRA rank for the text executor. 0 disables LoRA. Requires a LoRA-enabled model.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_lora_rank(nint settings, int lora_rank);
+
+    /// <summary>Sets the supported LoRA ranks for the text executor. Returns 0 on success, non-zero on
+    /// null/empty input. The ranks are only honored on the GPU (Artisan) backend; on other backends the
+    /// native layer accepts and ignores them (still returns success) — see engine.cc + llm_executor_settings.h.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial int litert_lm_engine_settings_set_supported_lora_ranks(nint settings, int* lora_ranks, nuint num_ranks);
+
+    /// <summary>Sets the LoRA rank for the audio executor. Applies only when an audio executor is configured.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_audio_lora_rank(nint settings, int lora_rank);
+
+    /// <summary>Sets the supported LoRA ranks for the audio executor. Returns 0 on success, non-zero on
+    /// null/empty input or when no audio executor is configured.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial int litert_lm_engine_settings_set_supported_audio_lora_ranks(nint settings, int* lora_ranks, nuint num_ranks);
+
     /// <summary>Sets the maximum number of images the engine accepts. Per the header this only
     /// affects the <i>legacy</i> engine implementation; the current path ignores it. Bound for
     /// completeness — the per-conversation knob is <c>optional_args_set_visual_token_budget</c>.</summary>
@@ -94,7 +130,39 @@ internal static unsafe partial class LiteRtLmNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_engine_delete(nint engine);
 
-    // --- Session config (sampler) ---------------------------------------
+    // --- Sampler params (v0.14.0 opaque builder) ------------------------
+    // v0.14.0 replaced the by-value LiteRtLmSamplerParams struct with an opaque object built through
+    // setters. Create one, set all fields, pass it to session_config_set_sampler_params (which COPIES
+    // the fields), then delete it — the caller retains ownership. create() zeroes all numeric fields
+    // (NOT the ecosystem defaults), so the binding always sets all four explicitly.
+
+    /// <summary>Allocates an opaque sampler-params object of the given type (all numeric fields zeroed).
+    /// Caller frees it with <see cref="litert_lm_sampler_params_delete"/>. Null on failure.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_sampler_params_create(LiteRtLmSamplerType type);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_sampler_params_delete(nint sampler_params);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_sampler_params_set_top_k(nint sampler_params, int top_k);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_sampler_params_set_top_p(nint sampler_params, float top_p);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_sampler_params_set_temperature(nint sampler_params, float temperature);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_sampler_params_set_seed(nint sampler_params, int seed);
+
+    // --- Session config -------------------------------------------------
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -104,9 +172,24 @@ internal static unsafe partial class LiteRtLmNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_session_config_set_max_output_tokens(nint config, int max_output_tokens);
 
+    /// <summary>Copies the opaque sampler params into the session config; the caller keeps ownership of
+    /// <paramref name="sampler_params"/> and deletes it afterwards.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_session_config_set_sampler_params(nint config, LiteRtLmSamplerParams* sampler_params);
+    internal static partial void litert_lm_session_config_set_sampler_params(nint config, nint sampler_params);
+
+    /// <summary>Sets the text LoRA weights file for the session. The native side OPENS the file
+    /// immediately (validates it exists/opens), so a bad path fails here. Returns 0 on success, non-zero
+    /// on a null/empty path or an open failure. Requires a LoRA-enabled model.</summary>
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial int litert_lm_session_config_set_lora_path(nint config, string lora_path);
+
+    /// <summary>Sets the audio LoRA weights file for the session. Opens the file immediately (see
+    /// <see cref="litert_lm_session_config_set_lora_path"/>). Returns 0 on success, non-zero on failure.</summary>
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial int litert_lm_session_config_set_audio_lora_path(nint config, string audio_lora_path);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -156,6 +239,16 @@ internal static unsafe partial class LiteRtLmNative
     internal static partial void litert_lm_conversation_config_set_filter_channel_content_from_kv_cache(
         nint config, [MarshalAs(UnmanagedType.U1)] bool filter);
 
+    /// <summary>Streams the raw tool-call text incrementally on the named channel while it is being
+    /// generated (default off: the callback stays silent during a tool-call block and delivers it whole
+    /// at the end). The complete tool-call message still arrives as before — the channel chunks are an
+    /// additional progress feed (internal_callback_util.cc streams up to a safe cursor that can never
+    /// contain a partial end delimiter). Requires native LiteRT-LM v0.14.0+.</summary>
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_conversation_config_set_stream_tool_calls(
+        nint config, [MarshalAs(UnmanagedType.U1)] bool stream_tool_calls, string channel_name);
+
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_conversation_config_delete(nint config);
@@ -177,6 +270,16 @@ internal static unsafe partial class LiteRtLmNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_conversation_optional_args_set_visual_token_budget(
         nint optional_args, int visual_token_budget);
+
+    /// <summary>Sets a per-send max output-tokens cap. When present it overrides the session config's
+    /// value for that one send (session_advanced.cc resolves
+    /// <c>decode_config.GetMaxOutputTokens().value_or(session_config.GetMaxOutputTokens())</c>); when
+    /// absent the session config value applies. Same underlying decode knob as
+    /// <see cref="litert_lm_session_config_set_max_output_tokens"/>, at per-send granularity.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_conversation_optional_args_set_max_output_tokens(
+        nint optional_args, int max_output_tokens);
 
     // --- Conversation ----------------------------------------------------
 
@@ -223,6 +326,15 @@ internal static unsafe partial class LiteRtLmNative
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial nint litert_lm_conversation_render_message_to_string(nint conversation, string message_json);
+
+    /// <summary>Renders the conversation's preface (system message + tools + history preamble) to its
+    /// templated string, without sending. The returned pointer is owned by the conversation (its own
+    /// <c>last_rendered_preface</c> buffer, separate from the message-render buffer) and valid only until
+    /// the next <b>preface</b> render or the conversation's deletion — copy it out immediately. Null on
+    /// failure.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_conversation_render_preface_to_string(nint conversation);
 
     // --- JSON response ---------------------------------------------------
 
@@ -369,10 +481,12 @@ internal static unsafe partial class LiteRtLmNative
     internal static partial nint litert_lm_engine_get_stop_tokens(nint engine);
 }
 
-/// <summary>Mirrors <c>LiteRtLmSamplerType</c> in engine.h.</summary>
+/// <summary>Mirrors <c>LiteRtLmSamplerType</c> in engine.h. v0.14.0 removed the <c>Unspecified = 0</c>
+/// member; a public <see cref="LiteRtSamplerType.Unspecified"/> never reaches this enum — the binding
+/// skips setting sampler params entirely so the executor's internal default applies
+/// (see <see cref="LiteRtConversation.Create"/>).</summary>
 internal enum LiteRtLmSamplerType
 {
-    Unspecified = 0,
     TopK = 1,
     TopP = 2,
     Greedy = 3,
@@ -386,13 +500,3 @@ internal enum LiteRtLmTokenUnionType
     Ids = 1,
 }
 
-/// <summary>Mirrors the <c>LiteRtLmSamplerParams</c> struct in engine.h.</summary>
-[StructLayout(LayoutKind.Sequential)]
-internal struct LiteRtLmSamplerParams
-{
-    public LiteRtLmSamplerType Type;
-    public int TopK;
-    public float TopP;
-    public float Temperature;
-    public int Seed;
-}

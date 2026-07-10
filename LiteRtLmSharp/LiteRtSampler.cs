@@ -3,8 +3,11 @@ namespace LiteRtLmSharp;
 /// <summary>Token sampling strategy. Mirrors LiteRT-LM's <c>LiteRtLmSamplerType</c>.</summary>
 public enum LiteRtSamplerType
 {
-    /// <summary>Let the engine choose its default. On the CPU/GPU backends the engine resolves this
-    /// to <see cref="TopP"/>.</summary>
+    /// <summary>Let the engine choose its default: the binding sends <b>no</b> sampler parameters at
+    /// all, so the executor's internal default sampling applies and the other
+    /// <see cref="LiteRtSamplerParams"/> fields are not forwarded. (Native v0.14.0 removed its
+    /// unspecified sampler type; not sending parameters preserves the pre-v0.14.0 behavior, where the
+    /// unspecified type also deferred to the executor.)</summary>
     Unspecified = 0,
     /// <summary>Sample probabilistically among the top-k tokens.</summary>
     TopK = 1,
@@ -25,8 +28,8 @@ public enum LiteRtSamplerType
 public sealed record LiteRtSamplerParams
 {
     /// <summary>The sampling strategy. Default <see cref="LiteRtSamplerType.TopP"/> (the value the
-    /// official bindings use, and what the engine resolves <see cref="LiteRtSamplerType.Unspecified"/>
-    /// to on CPU/GPU).</summary>
+    /// official bindings use). With <see cref="LiteRtSamplerType.Unspecified"/> no sampler parameters
+    /// are sent at all — the engine's own default applies and the fields below are ignored.</summary>
     public LiteRtSamplerType Strategy { get; init; } = LiteRtSamplerType.TopP;
 
     private readonly int _topK = 40;

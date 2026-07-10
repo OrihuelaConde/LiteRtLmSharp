@@ -18,7 +18,7 @@ concurrency:
 
 env:
   # Keep in sync with Directory.Build.props <LiteRtLmVersion>.
-  NATIVE_REF: v0.13.1
+  NATIVE_REF: v0.14.0
 
 jobs:
   build-test:

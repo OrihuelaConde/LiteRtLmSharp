@@ -270,14 +270,22 @@ internal static class LiteRtJson
         });
     }
 
-    /// <summary>{"type":"text","text":...} — for the system message config.</summary>
+    /// <summary>[{"type":"text","text":...}] — content-parts ARRAY for the system message config.
+    /// MUST be an array (or a raw non-JSON string), never a bare part object: the C wrapper JSON-parses
+    /// the argument into the message "content", and the chat template drops object-valued content —
+    /// the system turn renders EMPTY (the pre-v0.14.0-repin bug: SystemMessage silently ignored).
+    /// Array-valued content renders via the template's part iteration, and unlike passing the raw text
+    /// it also survives a system prompt that happens to be valid JSON. Verified both ways with
+    /// RenderPreface against v0.14.0 natives.</summary>
     public static string SystemMessage(string text)
         => Build(w =>
         {
+            w.WriteStartArray();
             w.WriteStartObject();
             w.WriteString("type", "text");
             w.WriteString("text", text);
             w.WriteEndObject();
+            w.WriteEndArray();
         });
 
     /// <summary>[{"type":"function","function":{"name","description","parameters":&lt;schema&gt;}}]</summary>

@@ -21,7 +21,7 @@ on:
         # Release tag: version-synced with Google, includes get_token_count, and is the
         # target for streaming-fix validation. Proven fallback commit if a tag regresses:
         # 032334d81ff96431492be272e536fbafe094b1e9
-        default: 'v0.13.1'
+        default: 'v0.14.0'
       platforms:
         description: 'Platforms to build (comma-separated: linux-x64,win-x64,android-arm64,macos-arm64,ios-arm64) or "all". Build only NEW platforms to save Actions minutes; the release keeps existing assets.'
         required: true

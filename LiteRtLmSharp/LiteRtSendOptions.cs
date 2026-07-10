@@ -19,4 +19,18 @@ public sealed record LiteRtSendOptions
     /// means the engine default). Only meaningful when the send carries image attachments.
     /// </summary>
     public int VisualTokenBudget { get; init; }
+
+    /// <summary>
+    /// Maximum output tokens for <b>this one send</b>. 0 (default) = inherit the conversation-level
+    /// <see cref="LiteRtConversationOptions.MaxOutputTokens"/> (whose own 0 means the engine default).
+    /// When positive it overrides that conversation-level cap for this send only.
+    /// </summary>
+    /// <remarks>
+    /// Maps to the C API <c>conversation_optional_args_set_max_output_tokens</c>. This is the same
+    /// underlying decode cap as the conversation-level setting, applied at per-send granularity: the
+    /// native runtime resolves the effective cap as the per-send value when present, otherwise the
+    /// session's value (session_advanced.cc). Unlike the conversation-level setting, it does not create a
+    /// session config, so it never changes multimodal encoder loading.
+    /// </remarks>
+    public int MaxOutputTokens { get; init; }
 }

@@ -10,7 +10,7 @@
   <PropertyGroup>
     <Version>1.0.0</Version>
     <!-- LiteRT-LM release tag the native binaries are built from (build-native.yml input). -->
-    <LiteRtLmVersion>v0.13.1</LiteRtLmVersion>
+    <LiteRtLmVersion>v0.14.0</LiteRtLmVersion>
     <!-- Shown on the nuget.org version page; update each release. Full history in CHANGELOG.md. -->
     <PackageReleaseNotes>1.0.0: first stable release. One awaitable, cancellable Send API; typed configuration (LiteRtBackend, LiteRtCache, LiteRtSamplerParams); function calling; multimodal image/audio including restored multi-turn history; tokenizer surface; speculative decoding and benchmark APIs; Microsoft.Extensions.AI (IChatClient) and Semantic Kernel companion packages. Breaking changes from the 0.1.0 previews are listed in the CHANGELOG. Built against LiteRT-LM $(LiteRtLmVersion). Full notes: https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/CHANGELOG.md</PackageReleaseNotes>
 
