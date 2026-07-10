@@ -183,10 +183,32 @@ internal static class LiteRtChatMapping
     }
 
     /// <summary>
-    /// Builds the <see cref="LiteRtConversationOptions"/> for a request, or <c>null</c> when there is nothing
-    /// to set (no history, sampler, thinking, tools, or constrained decoding) so a plain conversation is created.
+    /// Builds the <see cref="LiteRtConversationOptions"/> for a request by merging the per-call MEAI
+    /// <paramref name="options"/> over an optional per-client <paramref name="template"/>, or <c>null</c> when
+    /// nothing at all is set so a plain conversation is created.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// <b>Merge rules</b> (per-call MEAI value wins where it supplies one; the template fills the rest):
+    /// <list type="bullet">
+    /// <item><b>History</b> is always per-call — the client derives it from the message list; a template
+    /// carrying history is rejected at construction (see <see cref="ValidateTemplate"/>).</item>
+    /// <item><b>Sampler</b> / <b>EnableThinking</b> / <b>EnableConstrainedDecoding</b> / <b>Tools</b>:
+    /// the per-call value (from <paramref name="options"/>) wins when present; the template's value applies
+    /// otherwise. For tools, "present" means <see cref="ChatOptions.Tools"/> is non-empty — a
+    /// <see cref="NoneChatToolMode"/> then still advertises none (it does not fall back to the template).</item>
+    /// <item><b>SystemMessage</b>: the per-request system message (folded into <paramref name="history"/> as a
+    /// leading <see cref="LiteRtMessageRole.System"/> turn by the client) wins; the template's
+    /// <see cref="LiteRtConversationOptions.SystemMessage"/> is applied <b>only</b> when the history carries no
+    /// system turn — never two system turns.</item>
+    /// <item><b>MaxOutputTokens</b>: the template's conversation-level value is honored as the session default;
+    /// <see cref="ChatOptions.MaxOutputTokens"/> continues to map per-send (see below), overriding it.</item>
+    /// <item><b>LoraPath</b> / <b>AudioLoraPath</b> / <b>StreamToolCalls</b> / <b>VisualTokenBudget</b> /
+    /// <b>FilterThinkingFromKvCache</b> / <b>ExtraContext</b>: template only — MEAI has no per-request surface
+    /// for them.</item>
+    /// </list>
+    /// </para>
+    /// <para>
     /// <see cref="ChatOptions.MaxOutputTokens"/> is deliberately <b>not</b> mapped here — it is a MEAI
     /// per-request option, so the connector maps it to the native per-send cap (see <see cref="ToSendOptions"/>)
     /// rather than the conversation-level session config. The client creates a fresh conversation per call, so
@@ -195,15 +217,40 @@ internal static class LiteRtChatMapping
     /// multimodal encoder side effect: a multimodal engine forces the session config into existence regardless
     /// (see <c>LiteRtConversation.Create</c>'s <c>engineIsMultimodal</c> branch), so dropping the output cap
     /// from these options can never flip that behavior; the per-send cap likewise never creates a session config.
+    /// </para>
     /// </remarks>
-    public static LiteRtConversationOptions? ToConversationOptions(IReadOnlyList<LiteRtMessage> history, ChatOptions? options)
+    public static LiteRtConversationOptions? ToConversationOptions(
+        IReadOnlyList<LiteRtMessage> history, ChatOptions? options, LiteRtConversationOptions? template = null)
     {
-        LiteRtSamplerParams? sampler = ToSampler(options);
-        bool? enableThinking = GetEnableThinking(options);
-        bool constrained = GetConstrainedDecoding(options);
-        IReadOnlyList<LiteRtTool>? tools = ToTools(options);
+        // Sampler / thinking / constrained / tools: the per-call MEAI value wins when present, else the template.
+        LiteRtSamplerParams? sampler = ToSampler(options) ?? template?.Sampler;
+        bool? enableThinking = GetEnableThinking(options) ?? template?.EnableThinking;
+        bool constrained = GetBoolProperty(options, "enable_constrained_decoding")
+            ?? template?.EnableConstrainedDecoding ?? false;
+        // "Present" for tools = ChatOptions carries tools; then ToTools honors ToolMode (None → no tools, and it
+        // does NOT fall back to the template). Only a request with no tools at all uses the template's tools.
+        IReadOnlyList<LiteRtTool>? tools = options?.Tools is { Count: > 0 } ? ToTools(options) : template?.Tools;
 
-        if (history.Count == 0 && sampler is null && enableThinking is null && tools is null && !constrained)
+        // System message: the per-request system message (a leading System turn in history) wins; the template's
+        // SystemMessage is used only when the request carries none — guaranteeing there are never two system
+        // turns (a Required-tool instruction the client may have inserted also counts as a system turn here).
+        bool historyHasSystem = false;
+        for (int i = 0; i < history.Count; i++)
+            if (history[i].Role == LiteRtMessageRole.System) { historyHasSystem = true; break; }
+        string? systemMessage = historyHasSystem ? null : template?.SystemMessage;
+
+        // Template-only conversation settings (MEAI has no per-request surface for these).
+        int maxOutputTokens = template?.MaxOutputTokens ?? 0;
+        string? loraPath = template?.LoraPath;
+        string? audioLoraPath = template?.AudioLoraPath;
+        bool streamToolCalls = template?.StreamToolCalls ?? false;
+        int visualTokenBudget = template?.VisualTokenBudget ?? 0;
+        bool filterThinkingFromKvCache = template?.FilterThinkingFromKvCache ?? false;
+        string? extraContext = template?.ExtraContext;
+
+        if (history.Count == 0 && sampler is null && enableThinking is null && tools is null && !constrained
+            && systemMessage is null && maxOutputTokens == 0 && loraPath is null && audioLoraPath is null
+            && !streamToolCalls && visualTokenBudget == 0 && !filterThinkingFromKvCache && extraContext is null)
             return null;
 
         return new LiteRtConversationOptions
@@ -213,7 +260,35 @@ internal static class LiteRtChatMapping
             EnableThinking = enableThinking,
             Tools = tools,
             EnableConstrainedDecoding = constrained,
+            SystemMessage = systemMessage,
+            MaxOutputTokens = maxOutputTokens,
+            LoraPath = loraPath,
+            AudioLoraPath = audioLoraPath,
+            StreamToolCalls = streamToolCalls,
+            VisualTokenBudget = visualTokenBudget,
+            FilterThinkingFromKvCache = filterThinkingFromKvCache,
+            ExtraContext = extraContext,
         };
+    }
+
+    /// <summary>
+    /// Validates a per-client conversation-options <paramref name="template"/>: it must not set
+    /// <see cref="LiteRtConversationOptions.History"/> or <see cref="LiteRtConversationOptions.HistoryJson"/>.
+    /// The chat client derives conversation history from the per-call message list, so template history would be
+    /// silently ignored every call and is almost certainly a mistake. <c>null</c> is allowed (no template).
+    /// </summary>
+    /// <exception cref="ArgumentException">The template sets <c>History</c> or <c>HistoryJson</c>.</exception>
+    public static void ValidateTemplate(LiteRtConversationOptions? template)
+    {
+        if (template is null)
+            return;
+        if (template.History is { Count: > 0 } || !string.IsNullOrEmpty(template.HistoryJson))
+            throw new ArgumentException(
+                "The conversation-options template must not set History or HistoryJson: the chat client derives " +
+                "conversation history from the per-call message list, so template history would be ignored on " +
+                "every call. Remove History/HistoryJson from the template (persist and restore history via the " +
+                "per-call messages instead).",
+                nameof(template));
     }
 
     /// <summary>
@@ -244,6 +319,28 @@ internal static class LiteRtChatMapping
         LiteRtStreamChunkKind.Thinking when chunk.Text.Length > 0 => new TextReasoningContent(chunk.Text),
         _ => null,
     };
+
+    /// <summary>The <c>AdditionalProperties</c> key (on a <see cref="ChatResponseUpdate"/>) under which the
+    /// connector surfaces a raw tool-call progress fragment when the conversation-options template enables
+    /// <see cref="LiteRtConversationOptions.StreamToolCalls"/>.</summary>
+    public const string ToolCallDeltaKey = "litertlm.tool_call_delta";
+
+    /// <summary>
+    /// Maps a <see cref="LiteRtStreamChunkKind.ToolCallDelta"/> chunk to a content-less
+    /// <see cref="ChatResponseUpdate"/> that carries the raw fragment under <see cref="ToolCallDeltaKey"/> in its
+    /// <c>AdditionalProperties</c>, or <c>null</c> for any other chunk kind (or an empty delta). These deltas only
+    /// ever arrive when the template enabled <see cref="LiteRtConversationOptions.StreamToolCalls"/>, so surfacing
+    /// them here is opt-in by construction — invisible (no update) otherwise. Use the deltas for progress display
+    /// only; act on the complete <see cref="FunctionCallContent"/> the following tool-call chunk carries.
+    /// </summary>
+    public static ChatResponseUpdate? ToToolCallDeltaUpdate(LiteRtStreamChunk chunk, string? modelId)
+    {
+        if (chunk.Kind != LiteRtStreamChunkKind.ToolCallDelta || chunk.Text.Length == 0)
+            return null;
+        var update = new ChatResponseUpdate { Role = ChatRole.Assistant, ModelId = modelId };
+        (update.AdditionalProperties ??= new())[ToolCallDeltaKey] = chunk.Text;
+        return update;
+    }
 
     /// <summary>
     /// Maps the function tools in <see cref="ChatOptions.Tools"/> to native <see cref="LiteRtTool"/>s (non-function
@@ -367,11 +464,6 @@ internal static class LiteRtChatMapping
     /// <summary>Reads the optional <c>enable_thinking</c> flag from <see cref="ChatOptions.AdditionalProperties"/>.</summary>
     private static bool? GetEnableThinking(ChatOptions? o)
         => GetBoolProperty(o, "enable_thinking");
-
-    /// <summary>Reads the optional <c>enable_constrained_decoding</c> flag (see
-    /// <see cref="LiteRtChatOptions.EnableConstrainedDecoding"/>); default <c>false</c>.</summary>
-    private static bool GetConstrainedDecoding(ChatOptions? o)
-        => GetBoolProperty(o, "enable_constrained_decoding") ?? false;
 
     private static bool? GetBoolProperty(ChatOptions? o, string key)
         => o?.AdditionalProperties is { } props && props.TryGetValue(key, out object? v) ? AsBool(v) : null;

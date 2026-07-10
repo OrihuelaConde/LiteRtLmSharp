@@ -85,6 +85,37 @@ prompt template's YAML) works equally well.
 | `EnableThinking` | `enable_thinking` | reasoning mode (see below) |
 | `EnableConstrainedDecoding` | `enable_constrained_decoding` | force schema-constrained tool-call arguments ([Function calling](#function-calling)) |
 
+### Conversation-options template (per-service)
+
+`LiteRtPromptExecutionSettings` covers the per-request sampler/output knobs, but a few conversation-level
+settings have no execution-settings surface: `SystemMessage`, `LoraPath` / `AudioLoraPath`, `StreamToolCalls`,
+`VisualTokenBudget`, `FilterThinkingFromKvCache`, `ExtraContext`, and a session-default `MaxOutputTokens`.
+Pass them once as a `LiteRtConversationOptions` template on the registration and they apply to every call:
+
+```csharp
+using LiteRtLmSharp;
+using Microsoft.SemanticKernel;
+
+var template = new LiteRtConversationOptions
+{
+    SystemMessage = "You are a terse, on-device assistant.",
+    VisualTokenBudget = 256,
+};
+
+var builder = Kernel.CreateBuilder();
+builder.AddLiteRtChatCompletion(new LiteRtEngineOptions
+{
+    ModelPath = "gemma-4-E2B-it.litertlm", Backend = LiteRtBackend.Cpu, MaxNumTokens = 4096,
+}, optionsTemplate: template);
+```
+
+The merge is per-call-wins: anything the request's execution settings supply (sampler, thinking, constrained
+decoding, function choice) overrides the template, and the template fills the rest. A `ChatHistory` system
+message on the request always wins, and the template's `SystemMessage` is used only when the request carries
+none, so there are never two system turns. The template must not carry `History` / `HistoryJson` (history is
+per-call); doing so throws at registration. The parameter is available on every `AddLiteRtChatCompletion`
+overload, on both `IKernelBuilder` and `IServiceCollection`.
+
 ## Design: a stateless connector over a stateful engine
 
 Semantic Kernel's `IChatCompletionService` (and the `IChatClient` underneath) is **stateless**: the caller

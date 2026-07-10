@@ -496,4 +496,241 @@ public class ExtensionsAiMappingTests
         Assert.False(trigger.HasAttachments);
         Assert.Null(trigger.Attachments);
     }
+
+    // ─────────────────────── Conversation-options template (per-client) ───────────────────────
+    // The template carries the conversation-level settings MEAI's ChatOptions does not surface; per-call
+    // ChatOptions values win where present. All model-free (ToConversationOptions is pure).
+
+    [Fact]
+    public void Template_Null_PreservesExistingBehavior_ReturnsNullWhenNothingSet()
+    {
+        // No template + no options + no history is still the "plain conversation" null (regression guard).
+        Assert.Null(LiteRtChatMapping.ToConversationOptions([], null, template: null));
+    }
+
+    [Fact]
+    public void Template_TemplateOnlyField_ForcesNonNullOptions()
+    {
+        var template = new LiteRtConversationOptions { StreamToolCalls = true };
+        LiteRtConversationOptions? conv = LiteRtChatMapping.ToConversationOptions([], options: null, template);
+        Assert.NotNull(conv);
+        Assert.True(conv!.StreamToolCalls);
+    }
+
+    [Fact]
+    public void Template_TemplateOnlyFields_AllFlowThrough()
+    {
+        var template = new LiteRtConversationOptions
+        {
+            LoraPath = "text.lora",
+            AudioLoraPath = "audio.lora",
+            StreamToolCalls = true,
+            VisualTokenBudget = 128,
+            FilterThinkingFromKvCache = true,
+            ExtraContext = """{"user_name":"Alice"}""",
+            MaxOutputTokens = 256,   // template's conversation-level output cap = session default
+        };
+
+        LiteRtConversationOptions? conv = LiteRtChatMapping.ToConversationOptions([], options: null, template);
+
+        Assert.NotNull(conv);
+        Assert.Equal("text.lora", conv!.LoraPath);
+        Assert.Equal("audio.lora", conv.AudioLoraPath);
+        Assert.True(conv.StreamToolCalls);
+        Assert.Equal(128, conv.VisualTokenBudget);
+        Assert.True(conv.FilterThinkingFromKvCache);
+        Assert.Equal("""{"user_name":"Alice"}""", conv.ExtraContext);
+        Assert.Equal(256, conv.MaxOutputTokens);
+    }
+
+    [Fact]
+    public void Template_MaxOutputTokens_IsSessionDefault_PerSendStillFromChatOptions()
+    {
+        // The template's MaxOutputTokens is the session default on the conversation options; ChatOptions
+        // continues to map per-send (ToSendOptions), so the two scopes coexist.
+        var template = new LiteRtConversationOptions { MaxOutputTokens = 256 };
+        var options = new ChatOptions { MaxOutputTokens = 64 };
+
+        LiteRtConversationOptions? conv = LiteRtChatMapping.ToConversationOptions([], options, template);
+        Assert.Equal(256, conv!.MaxOutputTokens);                                 // session default from template
+        Assert.Equal(64, LiteRtChatMapping.ToSendOptions(options)!.MaxOutputTokens); // per-send from ChatOptions
+    }
+
+    [Fact]
+    public void Template_Sampler_PerCallWins_TemplateOtherwise()
+    {
+        var template = new LiteRtConversationOptions
+        {
+            Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, Temperature = 0.9f, TopK = 5 },
+        };
+
+        // No sampler in the request → template's sampler applies.
+        LiteRtConversationOptions? fromTemplate = LiteRtChatMapping.ToConversationOptions([], new ChatOptions(), template);
+        Assert.Equal(0.9f, fromTemplate!.Sampler!.Temperature, 3);
+        Assert.Equal(5, fromTemplate.Sampler.TopK);
+
+        // Request supplies a sampler knob → per-call sampler wins entirely (template sampler is not merged in).
+        LiteRtConversationOptions? fromCall = LiteRtChatMapping.ToConversationOptions(
+            [], new ChatOptions { Temperature = 0.2f }, template);
+        Assert.Equal(0.2f, fromCall!.Sampler!.Temperature, 3);
+    }
+
+    [Fact]
+    public void Template_EnableThinking_PerCallWins_TemplateOtherwise()
+    {
+        var template = new LiteRtConversationOptions { EnableThinking = true };
+
+        // No per-call flag → template's true applies.
+        Assert.True(LiteRtChatMapping.ToConversationOptions([], new ChatOptions(), template)!.EnableThinking);
+
+        // Per-call false explicitly overrides the template's true.
+        var off = new ChatOptions { AdditionalProperties = new() { ["enable_thinking"] = false } };
+        Assert.False(LiteRtChatMapping.ToConversationOptions([], off, template)!.EnableThinking);
+    }
+
+    [Fact]
+    public void Template_EnableConstrainedDecoding_PerCallWins_TemplateOtherwise()
+    {
+        var template = new LiteRtConversationOptions { EnableConstrainedDecoding = true };
+
+        // No per-call flag → template's true applies.
+        Assert.True(LiteRtChatMapping.ToConversationOptions([], new ChatOptions(), template)!.EnableConstrainedDecoding);
+
+        // Per-call false explicitly overrides the template's true (history keeps the options non-null so the
+        // resolved-to-false flag is observable rather than collapsing to a plain conversation).
+        IReadOnlyList<LiteRtMessage> history = [LiteRtMessage.User("hi")];
+        var off = new ChatOptions { AdditionalProperties = new() { ["enable_constrained_decoding"] = false } };
+        Assert.False(LiteRtChatMapping.ToConversationOptions(history, off, template)!.EnableConstrainedDecoding);
+    }
+
+    [Fact]
+    public void Template_Tools_UsedWhenRequestHasNone_PerCallWinsWhenPresent()
+    {
+        LiteRtTool templateTool = new("template_tool", "d", LiteRtTool.NoParameters);
+        var template = new LiteRtConversationOptions { Tools = [templateTool] };
+
+        // Request carries no tools → template's tools apply.
+        LiteRtConversationOptions? fromTemplate = LiteRtChatMapping.ToConversationOptions([], new ChatOptions(), template);
+        Assert.Equal("template_tool", Assert.Single(fromTemplate!.Tools!).Name);
+
+        // Request carries tools → per-call tools win (template tools are not merged in).
+        AIFunction fn = AIFunctionFactory.Create((string city) => "x", name: "get_weather", description: "d");
+        LiteRtConversationOptions? fromCall = LiteRtChatMapping.ToConversationOptions(
+            [], new ChatOptions { Tools = [fn] }, template);
+        Assert.Equal("get_weather", Assert.Single(fromCall!.Tools!).Name);
+    }
+
+    [Fact]
+    public void Template_Tools_NoneMode_DoesNotFallBackToTemplate()
+    {
+        // A request that carries tools but sets ToolMode.None advertises NO tools — it must not fall back to
+        // the template's tools (None means "the model gets nothing to call").
+        LiteRtTool templateTool = new("template_tool", "d", LiteRtTool.NoParameters);
+        var template = new LiteRtConversationOptions { Tools = [templateTool] };
+        AIFunction fn = AIFunctionFactory.Create((string city) => "x", name: "get_weather", description: "d");
+        var opts = new ChatOptions { Tools = [fn], ToolMode = ChatToolMode.None };
+
+        LiteRtConversationOptions? conv = LiteRtChatMapping.ToConversationOptions([], opts, template);
+        Assert.Null(conv?.Tools);   // no tools advertised (whether the options collapse to null or carry null Tools)
+    }
+
+    [Fact]
+    public void Template_SystemMessage_AppliedWhenRequestHasNoSystemTurn()
+    {
+        var template = new LiteRtConversationOptions { SystemMessage = "You are terse." };
+        IReadOnlyList<LiteRtMessage> historyNoSystem = [LiteRtMessage.User("hi")];
+
+        LiteRtConversationOptions? conv = LiteRtChatMapping.ToConversationOptions(historyNoSystem, new ChatOptions(), template);
+        Assert.Equal("You are terse.", conv!.SystemMessage);
+    }
+
+    [Fact]
+    public void Template_SystemMessage_SuppressedWhenRequestCarriesSystemTurn_NoDoubleSystem()
+    {
+        // The client folds a request system message into history as a leading System turn. When one is present,
+        // the template's SystemMessage must NOT also be sent (never two system turns).
+        var template = new LiteRtConversationOptions { SystemMessage = "You are terse." };
+        IReadOnlyList<LiteRtMessage> historyWithSystem = [LiteRtMessage.System("Be a pirate."), LiteRtMessage.User("hi")];
+
+        LiteRtConversationOptions? conv = LiteRtChatMapping.ToConversationOptions(historyWithSystem, new ChatOptions(), template);
+
+        Assert.Null(conv!.SystemMessage);   // template SystemMessage dropped — the request's system turn wins
+        // The request's system message survives in history (the single system turn).
+        Assert.Equal(LiteRtMessageRole.System, conv.History![0].Role);
+        Assert.Equal("Be a pirate.", conv.History[0].Text);
+    }
+
+    // ─────────────────────── Template validation ───────────────────────
+
+    [Fact]
+    public void ValidateTemplate_Null_Ok()
+    {
+        LiteRtChatMapping.ValidateTemplate(null);   // no throw
+    }
+
+    [Fact]
+    public void ValidateTemplate_WithHistory_Throws()
+    {
+        var template = new LiteRtConversationOptions { History = [LiteRtMessage.User("nope")] };
+        ArgumentException ex = Assert.Throws<ArgumentException>(() => LiteRtChatMapping.ValidateTemplate(template));
+        Assert.Contains("History", ex.Message);
+    }
+
+    [Fact]
+    public void ValidateTemplate_WithHistoryJson_Throws()
+    {
+        var template = new LiteRtConversationOptions { HistoryJson = "[]" };
+        Assert.Throws<ArgumentException>(() => LiteRtChatMapping.ValidateTemplate(template));
+    }
+
+    // ─────────────────────── DI registration with a template ───────────────────────
+
+    [Fact]
+    public void AddLiteRtChatClient_FromOptions_WithTemplate_RegistersClient()
+    {
+        var options = new LiteRtEngineOptions { ModelPath = "does-not-exist.litertlm" };
+        var template = new LiteRtConversationOptions { SystemMessage = "You are terse." };
+
+        var services = new ServiceCollection();
+        services.AddLiteRtChatClient(options, optionsTemplate: template);   // lazy engine; never loaded here
+
+        Assert.Single(services, d => d.ServiceType == typeof(LiteRtEngine));
+        Assert.Single(services, d => d.ServiceType == typeof(IChatClient));
+    }
+
+    [Fact]
+    public void AddLiteRtChatClient_FromOptions_BadTemplate_ThrowsAtRegistration()
+    {
+        var options = new LiteRtEngineOptions { ModelPath = "does-not-exist.litertlm" };
+        var badTemplate = new LiteRtConversationOptions { HistoryJson = "[]" };
+
+        var services = new ServiceCollection();
+        Assert.Throws<ArgumentException>(() => services.AddLiteRtChatClient(options, optionsTemplate: badTemplate));
+    }
+
+    // ─────────────────────── ToolCallDelta surfacing (opt-in via template) ───────────────────────
+
+    [Fact]
+    public void ToToolCallDeltaUpdate_ToolCallDelta_SurfacedUnderAdditionalPropertyKey()
+    {
+        LiteRtStreamChunk delta = LiteRtStreamChunk.ToolCallDelta("""{"name":"get_""");
+        ChatResponseUpdate? update = LiteRtChatMapping.ToToolCallDeltaUpdate(delta, modelId: "m");
+
+        Assert.NotNull(update);
+        Assert.Empty(update!.Contents);   // content-less: the fragment is not answer/reasoning text
+        Assert.Equal("m", update.ModelId);
+        Assert.True(update.AdditionalProperties!.TryGetValue(LiteRtChatMapping.ToolCallDeltaKey, out object? raw));
+        Assert.Equal("""{"name":"get_""", raw);
+    }
+
+    [Fact]
+    public void ToToolCallDeltaUpdate_OtherKinds_ReturnNull()
+    {
+        // Answer / Thinking / ToolCall chunks (and an empty delta) contribute no tool-call-delta update — the
+        // surfacing is exclusive to a non-empty ToolCallDelta, so it stays invisible unless StreamToolCalls is on.
+        Assert.Null(LiteRtChatMapping.ToToolCallDeltaUpdate(LiteRtStreamChunk.Answer("hi"), "m"));
+        Assert.Null(LiteRtChatMapping.ToToolCallDeltaUpdate(LiteRtStreamChunk.Thinking("t"), "m"));
+        Assert.Null(LiteRtChatMapping.ToToolCallDeltaUpdate(LiteRtStreamChunk.Tools([new LiteRtToolCall("f", "{}")]), "m"));
+        Assert.Null(LiteRtChatMapping.ToToolCallDeltaUpdate(LiteRtStreamChunk.ToolCallDelta(""), "m"));
+    }
 }

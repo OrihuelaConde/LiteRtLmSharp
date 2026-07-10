@@ -182,6 +182,45 @@ if (r.FinishReason == ChatFinishReason.Length && string.IsNullOrWhiteSpace(r.Tex
     Console.WriteLine("(no answer — the reasoning consumed the budget; raise MaxOutputTokens)");
 ```
 
+## Conversation-options template (per-client)
+
+`ChatOptions` covers the per-request knobs (sampler, `MaxOutputTokens`, tools, thinking), but a few
+conversation-level settings have no MEAI surface: `SystemMessage`, `LoraPath` / `AudioLoraPath`,
+`StreamToolCalls`, `VisualTokenBudget`, `FilterThinkingFromKvCache`, `ExtraContext`, and a session-default
+`MaxOutputTokens`. Supply them once as a **per-client template** (`LiteRtConversationOptions`) on the
+constructor or the DI registration, and they apply to every call:
+
+```csharp
+using LiteRtLmSharp;
+using LiteRtLmSharp.Extensions.AI;
+using Microsoft.Extensions.AI;
+
+var template = new LiteRtConversationOptions
+{
+    SystemMessage = "You are a terse, on-device assistant.",
+    VisualTokenBudget = 256,          // cap what an image costs during prefill
+    FilterThinkingFromKvCache = true, // keep long reasoning out of later turns' context
+};
+
+using IChatClient client = new LiteRtChatClient(engine, modelId: "gemma-4-E2B-it", optionsTemplate: template);
+
+// ... or via DI (the template flows to the registered client):
+services.AddLiteRtChatClient(engineOptions, optionsTemplate: template);
+```
+
+The merge is per-call-wins: any value the request's `ChatOptions` supplies (sampler, thinking, constrained
+decoding, tools) overrides the template, and the template fills the rest. The `SystemMessage` rule is the
+one to note: a system message on the request (the leading `system` chat message) always wins, and the
+template's `SystemMessage` is used **only** when the request carries none, so there are never two system
+turns. The template must not set `History` or `HistoryJson` (history is always per-call); doing so throws at
+construction (or at registration, for the DI overloads).
+
+When the template sets `StreamToolCalls = true`, the streaming path surfaces each raw tool-call fragment as a
+content-less `ChatResponseUpdate` whose `AdditionalProperties` carries the fragment under the key
+`litertlm.tool_call_delta`. Use it for progress display only, and act on the complete `FunctionCallContent`
+that the following tool-call update carries. Without `StreamToolCalls` no such updates are emitted, so it is
+invisible unless you opt in.
+
 ## Multimodal (image / audio)
 
 On a multimodal model, attach an image or audio clip to the final user message as a `DataContent` (inline

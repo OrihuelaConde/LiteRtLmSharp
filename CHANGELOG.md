@@ -33,6 +33,18 @@ match). The managed surface is source-compatible with 1.0.0 — all changes belo
   `LiteRtStreamChunkKind.ToolCallDelta` chunks (incremental, unparsed progress fragments) before the
   usual complete `ToolCall` chunk. Default off — without it a tool-call block keeps today's behavior
   (silence until the parsed call arrives whole). Progress display only; act on the final parsed chunk.
+- **`.NET AI connectors` — per-client conversation-options template** — `LiteRtChatClient` takes an
+  optional `LiteRtConversationOptions optionsTemplate`, and the DI registrations expose it too
+  (`AddLiteRtChatClient(...)` and Semantic Kernel's `AddLiteRtChatCompletion(...)`). It surfaces the
+  conversation-level settings MEAI's `ChatOptions` cannot express — `SystemMessage`, `LoraPath` /
+  `AudioLoraPath`, `StreamToolCalls`, `VisualTokenBudget`, `FilterThinkingFromKvCache`, `ExtraContext`,
+  and a session-default `MaxOutputTokens` — applied to every call. Per-call `ChatOptions` values still
+  win where MEAI supplies them (sampler, thinking, constrained decoding, tools, system message); the
+  template's `SystemMessage` is used only when the request carries no system message (never two system
+  turns). When the template enables `StreamToolCalls`, streaming now surfaces each tool-call delta as a
+  content-less `ChatResponseUpdate` carrying the raw fragment under `AdditionalProperties`
+  (`litertlm.tool_call_delta`) — opt-in by construction, invisible otherwise. A template that carries
+  `History` / `HistoryJson` is rejected at registration (history is per-call).
 
 ### Fixed
 
@@ -50,6 +62,12 @@ match). The managed surface is source-compatible with 1.0.0 — all changes belo
 
 ### Changed
 
+- **GPU + speculative decoding no longer needs the disk cache off** — the upstream shared
+  weight-cache mmap failure ([LiteRT-LM#2572](https://github.com/google-ai-edge/LiteRT-LM/issues/2572))
+  is fixed in the v0.14.0 natives and re-verified end to end (engine create, generation, and cache
+  readback across reloads on win-x64 WebGPU). The samples' automatic `Cache = LiteRtCache.Disabled`
+  workaround for that combination is removed; `docs/speculative-decoding.md` keeps the v0.13.1
+  behavior as a historical record.
 - **`.NET AI connector` maps `ChatOptions.MaxOutputTokens` per-send (internal)** — the
   Microsoft.Extensions.AI `LiteRtChatClient` now maps the MEAI per-request `MaxOutputTokens` to the
   v0.14.0 per-send cap (`LiteRtSendOptions.MaxOutputTokens`) instead of the conversation-level session

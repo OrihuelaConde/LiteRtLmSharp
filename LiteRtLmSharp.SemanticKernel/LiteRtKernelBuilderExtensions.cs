@@ -20,38 +20,46 @@ namespace Microsoft.SemanticKernel;
 public static class LiteRtKernelBuilderExtensions
 {
     /// <summary>Adds a chat-completion service over an engine <b>you own</b> (you dispose it).</summary>
-    public static IKernelBuilder AddLiteRtChatCompletion(this IKernelBuilder builder, LiteRtEngine engine, string? modelId = null, string? serviceId = null)
+    /// <param name="optionsTemplate">Optional per-client conversation-options template applied to every call —
+    /// the settings MEAI's <c>ChatOptions</c> does not surface (system message, LoRA paths, tool-call streaming,
+    /// visual token budget, thinking-KV filtering, extra context, a session-default output cap). Per-call values
+    /// still win. Must not carry history (that is per-call) — rejected at registration.</param>
+    public static IKernelBuilder AddLiteRtChatCompletion(this IKernelBuilder builder, LiteRtEngine engine, string? modelId = null, string? serviceId = null, LiteRtConversationOptions? optionsTemplate = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        builder.Services.AddLiteRtChatCompletion(engine, modelId, serviceId);
+        builder.Services.AddLiteRtChatCompletion(engine, modelId, serviceId, optionsTemplate);
         return builder;
     }
 
     /// <summary>Adds a chat-completion service from <paramref name="options"/>; the container loads/owns/disposes
     /// a single shared engine. <paramref name="eager"/> loads it at registration. The underlying
     /// <c>IChatClient</c> is also registered, so the same model is available to Microsoft Agent Framework / MEAI.</summary>
-    public static IKernelBuilder AddLiteRtChatCompletion(this IKernelBuilder builder, LiteRtEngineOptions options, string? modelId = null, string? serviceId = null, bool eager = false)
+    /// <param name="optionsTemplate">Optional per-client conversation-options template applied to every call —
+    /// the settings MEAI's <c>ChatOptions</c> does not surface (system message, LoRA paths, tool-call streaming,
+    /// visual token budget, thinking-KV filtering, extra context, a session-default output cap). Per-call values
+    /// still win. Must not carry history (that is per-call) — rejected at registration.</param>
+    public static IKernelBuilder AddLiteRtChatCompletion(this IKernelBuilder builder, LiteRtEngineOptions options, string? modelId = null, string? serviceId = null, bool eager = false, LiteRtConversationOptions? optionsTemplate = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        builder.Services.AddLiteRtChatCompletion(options, modelId, serviceId, eager);
+        builder.Services.AddLiteRtChatCompletion(options, modelId, serviceId, eager, optionsTemplate);
         return builder;
     }
 
-    /// <inheritdoc cref="AddLiteRtChatCompletion(IKernelBuilder, LiteRtEngine, string, string)"/>
-    public static IServiceCollection AddLiteRtChatCompletion(this IServiceCollection services, LiteRtEngine engine, string? modelId = null, string? serviceId = null)
+    /// <inheritdoc cref="AddLiteRtChatCompletion(IKernelBuilder, LiteRtEngine, string, string, LiteRtConversationOptions)"/>
+    public static IServiceCollection AddLiteRtChatCompletion(this IServiceCollection services, LiteRtEngine engine, string? modelId = null, string? serviceId = null, LiteRtConversationOptions? optionsTemplate = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(engine);
-        services.AddLiteRtChatClient(engine, modelId);
+        services.AddLiteRtChatClient(engine, modelId, optionsTemplate);
         return RegisterChatCompletion(services, serviceId);
     }
 
-    /// <inheritdoc cref="AddLiteRtChatCompletion(IKernelBuilder, LiteRtEngineOptions, string, string, bool)"/>
-    public static IServiceCollection AddLiteRtChatCompletion(this IServiceCollection services, LiteRtEngineOptions options, string? modelId = null, string? serviceId = null, bool eager = false)
+    /// <inheritdoc cref="AddLiteRtChatCompletion(IKernelBuilder, LiteRtEngineOptions, string, string, bool, LiteRtConversationOptions)"/>
+    public static IServiceCollection AddLiteRtChatCompletion(this IServiceCollection services, LiteRtEngineOptions options, string? modelId = null, string? serviceId = null, bool eager = false, LiteRtConversationOptions? optionsTemplate = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
-        services.AddLiteRtChatClient(options, modelId, eager);
+        services.AddLiteRtChatClient(options, modelId, eager, optionsTemplate);
         return RegisterChatCompletion(services, serviceId);
     }
 

@@ -56,6 +56,7 @@ public sealed class LiteRtChatClient : IChatClient
     private readonly LiteRtEngine _engine;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ChatClientMetadata _metadata;
+    private readonly LiteRtConversationOptions? _optionsTemplate;
     private bool _disposed;
 
     /// <summary>Creates a chat client over an already-loaded <paramref name="engine"/>. The client does not
@@ -63,11 +64,26 @@ public sealed class LiteRtChatClient : IChatClient
     /// engine's lifetime, register from <see cref="LiteRtEngineOptions"/> via <c>AddLiteRtChatClient</c>.</summary>
     /// <param name="engine">The loaded LiteRtLmSharp engine. Must outlive this client.</param>
     /// <param name="modelId">Identifier surfaced as the metadata default model id. Optional.</param>
-    public LiteRtChatClient(LiteRtEngine engine, string? modelId = null)
+    /// <param name="optionsTemplate">
+    /// Optional per-client conversation-options template. Its conversation-level settings — those MEAI's
+    /// <see cref="ChatOptions"/> does not surface (e.g. <see cref="LiteRtConversationOptions.SystemMessage"/>,
+    /// <see cref="LiteRtConversationOptions.LoraPath"/> / <see cref="LiteRtConversationOptions.AudioLoraPath"/>,
+    /// <see cref="LiteRtConversationOptions.StreamToolCalls"/>, <see cref="LiteRtConversationOptions.VisualTokenBudget"/>,
+    /// <see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/>, <see cref="LiteRtConversationOptions.ExtraContext"/>,
+    /// and a session-default <see cref="LiteRtConversationOptions.MaxOutputTokens"/>) — apply to every call, while
+    /// any value the per-call <see cref="ChatOptions"/> supplies (sampler, thinking, constrained decoding, tools,
+    /// system message) wins. See <see cref="LiteRtChatMapping.ToConversationOptions"/> for the full merge rules.
+    /// The template must not set <see cref="LiteRtConversationOptions.History"/> or
+    /// <see cref="LiteRtConversationOptions.HistoryJson"/> (history is per-call) — doing so throws.
+    /// </param>
+    /// <exception cref="ArgumentException">The template sets <c>History</c> or <c>HistoryJson</c>.</exception>
+    public LiteRtChatClient(LiteRtEngine engine, string? modelId = null, LiteRtConversationOptions? optionsTemplate = null)
     {
         ArgumentNullException.ThrowIfNull(engine);
+        LiteRtChatMapping.ValidateTemplate(optionsTemplate);
         _engine = engine;
         _metadata = new ChatClientMetadata("litert-lm", null, modelId);
+        _optionsTemplate = optionsTemplate;
     }
 
     private string? ModelId => _metadata.DefaultModelId;
@@ -84,7 +100,7 @@ public sealed class LiteRtChatClient : IChatClient
         // For a Required tool mode, fold a best-effort "you must call a tool" instruction into the system prompt
         // (the native API has no forced tool choice). No-op for Auto/None.
         history = LiteRtChatMapping.WithRequiredToolInstruction(history, options);
-        LiteRtConversationOptions? convOptions = LiteRtChatMapping.ToConversationOptions(history, options);
+        LiteRtConversationOptions? convOptions = LiteRtChatMapping.ToConversationOptions(history, options, _optionsTemplate);
         // ChatOptions.MaxOutputTokens is a MEAI per-request option, so it maps to the native per-send cap
         // rather than the conversation-level session config (see LiteRtChatMapping.ToConversationOptions).
         LiteRtSendOptions? sendOptions = LiteRtChatMapping.ToSendOptions(options);
@@ -152,7 +168,7 @@ public sealed class LiteRtChatClient : IChatClient
         // For a Required tool mode, fold a best-effort "you must call a tool" instruction into the system prompt
         // (the native API has no forced tool choice). No-op for Auto/None.
         history = LiteRtChatMapping.WithRequiredToolInstruction(history, options);
-        LiteRtConversationOptions? convOptions = LiteRtChatMapping.ToConversationOptions(history, options);
+        LiteRtConversationOptions? convOptions = LiteRtChatMapping.ToConversationOptions(history, options, _optionsTemplate);
         // ChatOptions.MaxOutputTokens is a MEAI per-request option, so it maps to the native per-send cap
         // rather than the conversation-level session config (see LiteRtChatMapping.ToConversationOptions).
         LiteRtSendOptions? sendOptions = LiteRtChatMapping.ToSendOptions(options);
@@ -204,8 +220,21 @@ public sealed class LiteRtChatClient : IChatClient
                     continue;
                 }
 
-                // Answer/Thinking deltas map to text/reasoning content; every other kind (including an opt-in
-                // ToolCallDelta progress fragment, or any future kind) is ignored so it can't break the stream.
+                // A ToolCallDelta is a raw tool-call progress fragment. These only arrive when the template
+                // enabled StreamToolCalls, so surfacing them is opt-in by construction (invisible otherwise):
+                // emit a content-less update carrying the raw fragment under litertlm.tool_call_delta.
+                if (chunk.Kind == LiteRtStreamChunkKind.ToolCallDelta)
+                {
+                    if (LiteRtChatMapping.ToToolCallDeltaUpdate(chunk, ModelId) is { } deltaUpdate)
+                    {
+                        deltaUpdate.RawRepresentation = chunk;
+                        yield return deltaUpdate;
+                    }
+                    continue;
+                }
+
+                // Answer/Thinking deltas map to text/reasoning content; every other (future) kind is ignored so
+                // it can't break the stream.
                 AIContent? content = LiteRtChatMapping.ToStreamingTextContent(chunk);
                 if (content is not null)
                 {
