@@ -315,6 +315,51 @@ we do not): `set_cache_dir` does not propagate to the vision/audio executors ups
 sampling only partially honors session sampler params (#2080, PR #2081 unmerged). Watch #2529 (asks
 Google to publish an official prebuilt C-API shared lib — would let us drop patch_c_api.sh).
 
+### Feature-readiness protocol (adopted 2026-07-10; the C header is NOT the source of truth)
+
+Two same-day case studies proved that a function existing in `c/engine.h` says nothing about the
+feature working: the v0.14.0 **text-LoRA** surface loads an adapter fine and then the first
+generation dies on an unconditional runtime stub ("Lora is not supported.", internal TODO
+b/462499294), and **multi-conversation interleaving** silently loses the suspended conversation's
+state on every distribution we tested, including Google's own wheel (entry below). Before binding or
+shipping NEW native surface, check ALL of:
+
+1. **Release notes + official docs** (developers.google.com/edge/litert-lm) mention it — Google's
+   curated "this shipped" signal. The header and even the Python wheel surface are aspirational
+   (the wheel exposes `LoraConfig` while the runtime stubs it).
+2. **An upstream END-TO-END test exercises the engine/session path** (`c/engine_test.cc`,
+   `runtime/engine/...`). Component tests are not enough: LoRA's weight-application has passing
+   component tests while the session path is stubbed; no upstream e2e test interleaves two
+   conversations and re-asks content.
+3. **Grep the full consumption chain for stubs**: `not supported`, `Unimplemented`, `TODO: b/` from
+   the C wrapper down to the executor. This found the LoRA stub in minutes.
+4. **Our own real-model probe before the feature ships** — load, exercise, and assert CONTENT, not
+   just absence of errors (the multi-conversation loss hid behind token-count-only assertions for
+   two native eras). The Kotlin surface is a useful secondary signal (the most production-hardened
+   binding: it exposes neither clone nor LoRA today).
+
+- **Multi-conversation / clone interleaving loses the suspended conversation's state (upstream,
+  UNRELEASED capability)** — found 2026-07-10 while building conversation forking. Minimal repro
+  (two independent conversations, interleaved sends, re-ask content): the suspended conversation
+  answers as if its own turns never happened, with NO error. Reproduced identically on our v0.13.1
+  natives, our v0.14.0 natives, and **Google's official `litert-lm==0.14.0` wheel (pure-Python
+  repro)** — so it is not a build/linking issue on our side. Status evidence says "under
+  construction, never released": no release-notes mention of clone/multi-session ever; the Python
+  wheel deliberately does not expose clone (`interfaces.py` TODO b/482060476 "Add clone() API once
+  switching to advanced engine"); Kotlin does not either; the runtime HAS a purpose-built
+  copy-on-write context subsystem (`ContextHandler`/`SharedProcessedContext`,
+  `resource_manager.cc` save-on-switch-out + `RestoreContext` on switch-in, internal design doc
+  `go/llm_resource_manager`) that does not yet preserve the physical KV across switches.
+  **What we hold back because of this**: the MEAI stateful mode keeps exactly ONE live conversation
+  (the internal store is a ready LRU, capacity pinned to 1); the conversation-forking feature
+  (`LiteRtConversationBranching` over native `Clone()`, fully implemented + tested) is in-tree but
+  INTERNAL, not reachable from the public API. **Activation checklist when upstream ships suspended-
+  state preservation**: the sentinel model test (interleaved-loss pin) starts FAILING → verify with
+  the multi-conv gated tests (`LITERTLM_TEST_MULTICONV=1`), raise the store capacity, make
+  `LiteRtConversationBranching` public, restore its docs/CHANGELOG entries, re-run the fork
+  divergence suite. Candidate upstream engagement: a status question + the pure-Python wheel repro
+  (drafted with the user before posting).
+
 - **[LiteRT-LM#2211](https://github.com/google-ai-edge/LiteRT-LM/issues/2211)**: **unchanged at
   v0.14.0.** GPU samplers still ship missing `DT_NEEDED` (our patchelf is the workaround). If Google
   ships fixed prebuilts or a fix, **drop the patchelf** from the android job. Also watch the related

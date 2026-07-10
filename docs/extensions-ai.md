@@ -238,7 +238,7 @@ using Microsoft.Extensions.AI;
 
 using IChatClient client = new LiteRtChatClient(
     engine, modelId: "gemma-4-E2B-it",
-    statefulConversations: new LiteRtStatefulConversationOptions { MaxLiveConversations = 8 });
+    statefulConversations: new LiteRtStatefulConversationOptions());
 
 // ... or via DI (the option flows to the registered client):
 services.AddLiteRtChatClient(engineOptions, statefulConversations: new LiteRtStatefulConversationOptions());
@@ -275,14 +275,19 @@ carries a `ConversationId`):
 - a **system message on a continuation throws** `InvalidOperationException` (the preface cannot be rewritten).
   To change any fixed setting, start a new conversation by omitting `ConversationId`.
 
-Lifetime and eviction:
+One live conversation at a time:
 
-- live conversations are held in an LRU cache bounded by `MaxLiveConversations` (default 8);
-- creating a new conversation beyond the cap evicts and disposes the least-recently-used one;
-- a request whose `ConversationId` was evicted, or was never issued by this client, throws
-  `ArgumentException`;
-- disposing the client disposes every live conversation. There is no time-based expiry in this mode, so size
-  the cap for your concurrency.
+- this mode keeps a **single** live conversation. Starting a new conversation (a call **without** a
+  `ConversationId`) replaces the previous one: the replaced conversation is disposed, and a later request that
+  carries its id throws `ArgumentException` (as does an id this client never issued);
+- disposing the client disposes the live conversation. There is no time-based expiry in this mode.
+
+**Why only one?** Upstream LiteRT-LM does not yet preserve a suspended conversation's state when another
+conversation advances, so keeping two live conversations and interleaving them would silently corrupt the
+parked one's answers. The single-conversation limit is deliberate; a bounded multi-conversation cache (and a
+conversation-forking hatch) already exists internally and will be enabled once upstream preserves
+suspended-conversation state. There is no public knob to raise the limit. See
+[`docs/roadmap.md`](roadmap.md).
 
 `ChatResponse.Usage.TotalTokenCount` in this mode is the conversation's **cumulative** KV-cache size, so it
 grows across the thread (rather than resetting per call as in the stateless mode).

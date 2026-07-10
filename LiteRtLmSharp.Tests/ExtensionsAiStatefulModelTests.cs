@@ -146,17 +146,19 @@ public sealed class ExtensionsAiStatefulModelTests
             () => client.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")], options));
     }
 
-    /// <summary>With <c>MaxLiveConversations = 1</c>, creating a second conversation evicts (and disposes) the
-    /// first; resuming the first id then throws, while the second remains resumable.</summary>
+    /// <summary>The stateful mode keeps a <b>single</b> live conversation: starting a second conversation (a
+    /// call without a <c>ConversationId</c>) implicitly replaces the first, so resuming the first id then throws
+    /// while the second remains resumable. No public knob is involved — this is the deliberate
+    /// single-conversation contract (upstream LiteRT-LM cannot yet preserve a suspended conversation's state; a
+    /// bounded multi-conversation cache is parked behind that limitation — see docs/roadmap.md).</summary>
     [SkippableFact]
-    public async Task Stateful_Eviction_BeyondCap_InvalidatesOldestConversationId()
+    public async Task Stateful_StartingSecondConversation_ReplacesFirst_OldIdThrows()
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
         using var engine = LiteRtEngine.Load(Options());
-        using var client = new LiteRtChatClient(
-            engine, statefulConversations: new LiteRtStatefulConversationOptions { MaxLiveConversations = 1 });
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
         var options = new ChatOptions { MaxOutputTokens = 16 };
 
         ChatResponse first = await client.GetResponseAsync([new ChatMessage(ChatRole.User, "Remember A.")], options);
@@ -164,14 +166,242 @@ public sealed class ExtensionsAiStatefulModelTests
         Assert.False(string.IsNullOrEmpty(first.ConversationId));
         Assert.NotEqual(first.ConversationId, second.ConversationId);
 
-        // The cap is 1, so creating the second conversation evicted the first — resuming it now throws.
+        // Only one live conversation is kept, so starting the second replaced the first — resuming it now throws.
         var resumeFirst = new ChatOptions { MaxOutputTokens = 16, ConversationId = first.ConversationId };
         await Assert.ThrowsAsync<ArgumentException>(
             () => client.GetResponseAsync([new ChatMessage(ChatRole.User, "what did I say?")], resumeFirst));
 
-        // The most-recently-used conversation is still live and resumable.
+        // The most-recently-started conversation is still live and resumable.
         var resumeSecond = new ChatOptions { MaxOutputTokens = 16, ConversationId = second.ConversationId };
         ChatResponse ok = await client.GetResponseAsync([new ChatMessage(ChatRole.User, "ok?")], resumeSecond);
         Assert.Equal(second.ConversationId, ok.ConversationId);
+    }
+
+    // ─────────────────────── Forking + multi-conversation (PARKED capability) ───────────────────────
+    //
+    // The tests below exercise the PARKED multi-live-conversation / forking machinery, which is intentionally
+    // NOT reachable by consumers today: LiteRtConversationBranching is internal, and the client pins its live-
+    // conversation cache to a single entry (LiteRtConversationStore.LiveConversationCapacity == 1). Both are
+    // held back by the same upstream limitation — LiteRT-LM does not yet preserve a suspended conversation's
+    // state when another advances (see the Upstream_..._Sentinel test and docs/roadmap.md).
+    //
+    // So they carry an ADDITIONAL gate, LITERTLM_TEST_MULTICONV=1 (on top of the model gate), and are expected
+    // to pass only once upstream preserves suspended state. They reach the internal branching type and the
+    // larger-capacity client seam via InternalsVisibleTo (LiteRtLmSharp.Extensions.AI grants it to
+    // LiteRtLmSharp.Tests): the internal LiteRtChatClient(engine, liveConversationCapacity, …) ctor builds a
+    // client whose cache holds more than one live conversation, above the production cap of one.
+    //
+    // WHEN UPSTREAM FIXES SUSPENDED-STATE PRESERVATION: raise LiteRtConversationStore.LiveConversationCapacity,
+    // make LiteRtConversationBranching public, drop this LITERTLM_TEST_MULTICONV gate, and re-expose the fork
+    // docs/CHANGELOG. Full steps: docs/roadmap.md.
+    private static bool MultiConvEnabled => Environment.GetEnvironmentVariable("LITERTLM_TEST_MULTICONV") == "1";
+    private const string MultiConvSkip =
+        "Set LITERTLM_TEST_MULTICONV=1 to run the parked multi-conversation / forking tests (they exercise the " +
+        "future-ready machinery and pass only when upstream LiteRT-LM preserves suspended-conversation state).";
+
+    /// <summary><c>GetService(typeof(LiteRtConversationBranching))</c> returns a branching instance in the
+    /// stateful mode and <c>null</c> in the stateless mode; the standard <see cref="ChatClientMetadata"/> and
+    /// self lookups are unchanged in both. (LiteRtConversationBranching is internal — reachable here only via
+    /// InternalsVisibleTo.)</summary>
+    [SkippableFact]
+    public async Task Fork_GetService_ReturnsBranchingOnlyInStatefulMode()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        Skip.If(!MultiConvEnabled, MultiConvSkip);
+        await Task.CompletedTask;
+
+        using var engine = LiteRtEngine.Load(Options());
+
+        // Stateless (default): no live conversations, so no branching service.
+        using (var stateless = new LiteRtChatClient(engine))
+        {
+            Assert.Null(stateless.GetService(typeof(LiteRtConversationBranching)));
+            // Existing GetService behaviors are intact.
+            Assert.NotNull(stateless.GetService(typeof(ChatClientMetadata)));
+            Assert.Same(stateless, stateless.GetService(typeof(IChatClient)));
+        }
+
+        // Stateful: the branching hatch is available.
+        using (var stateful = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions()))
+        {
+            object? svc = stateful.GetService(typeof(LiteRtConversationBranching));
+            Assert.IsType<LiteRtConversationBranching>(svc);
+            // A keyed lookup still returns null, and the metadata/self lookups are unchanged.
+            Assert.Null(stateful.GetService(typeof(LiteRtConversationBranching), serviceKey: "k"));
+            Assert.NotNull(stateful.GetService(typeof(ChatClientMetadata)));
+            Assert.Same(stateful, stateful.GetService(typeof(IChatClient)));
+        }
+    }
+
+    /// <summary>Forking a <c>ConversationId</c> the client never issued throws <see cref="ArgumentException"/>
+    /// with the "no live conversation" wording (the same failure a continuation of an unknown id gives).</summary>
+    [SkippableFact]
+    public async Task Fork_UnknownId_Throws()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        Skip.If(!MultiConvEnabled, MultiConvSkip);
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
+
+        ArgumentException ex = await Assert.ThrowsAsync<ArgumentException>(
+            () => branching.ForkAsync("does-not-exist"));
+        Assert.Contains("No live conversation", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("does-not-exist", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// DIVERGENCE: seed a fact on the base, fork it, then tell the base ("branch A") a second fact and query the
+    /// fork ("branch B"). The fork recalls the pre-fork fact but not branch A's post-fork fact, and the base is
+    /// unaffected (it holds both facts). Proves the branch is independent native state sharing only the prefix.
+    /// </summary>
+    [SkippableFact]
+    public async Task Fork_Divergence_BranchKnowsSeededFact_NotPostForkFact_ParentUnaffected()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        Skip.If(!MultiConvEnabled, MultiConvSkip);
+
+        using var engine = LiteRtEngine.Load(Options());
+        // Base + branch must be live at once, above the production single-conversation cap — use the internal
+        // capacity seam (parked capability, gated on LITERTLM_TEST_MULTICONV).
+        using var client = new LiteRtChatClient(engine, liveConversationCapacity: 4);
+        var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
+
+        // Seed the shared context on the base conversation.
+        var seed = new List<ChatMessage>
+        {
+            new(ChatRole.System, "You are concise. Answer in one short sentence."),
+            new(ChatRole.User, "Remember two facts as I give them. Fact one: my favorite color is teal. Acknowledge briefly."),
+        };
+        ChatResponse baseSeed = await client.GetResponseAsync(seed, new ChatOptions { Temperature = 0.2f, MaxOutputTokens = 64 });
+        string baseId = baseSeed.ConversationId!;
+        Assert.False(string.IsNullOrEmpty(baseId));
+
+        // Fork the base BEFORE the second fact — the branch shares only the teal fact.
+        string branchId = await branching.ForkAsync(baseId);
+        Assert.NotEqual(baseId, branchId);
+
+        // Add a second fact to the BASE only (branch A).
+        await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Fact two: my lucky number is 42. Acknowledge briefly.")],
+            new ChatOptions { Temperature = 0.2f, MaxOutputTokens = 64, ConversationId = baseId });
+
+        // Branch B knows the seeded fact...
+        ChatResponse branchColor = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is my favorite color? Answer with just the color.")],
+            new ChatOptions { Temperature = 0.2f, MaxOutputTokens = 64, ConversationId = branchId });
+        Assert.Contains("teal", branchColor.Text, StringComparison.OrdinalIgnoreCase);
+
+        // ...but NOT the post-fork fact that was only told to the base.
+        ChatResponse branchNumber = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is my lucky number? If I never told you, say you don't know.")],
+            new ChatOptions { Temperature = 0.2f, MaxOutputTokens = 64, ConversationId = branchId });
+        Assert.DoesNotContain("42", branchNumber.Text, StringComparison.Ordinal);
+
+        // The parent (base) is unaffected — it holds BOTH facts.
+        ChatResponse baseNumber = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is my lucky number? Answer with just the number.")],
+            new ChatOptions { Temperature = 0.2f, MaxOutputTokens = 64, ConversationId = baseId });
+        Assert.Contains("42", baseNumber.Text, StringComparison.Ordinal);
+    }
+
+    /// <summary>A fork counts toward the live-conversation cache capacity: with a capacity of 2 (via the
+    /// internal test seam), holding a base + one fork and then forking again evicts the least-recently-used
+    /// conversation (the first fork), whose id then no longer resumes, while the base and the newest fork remain
+    /// live.</summary>
+    [SkippableFact]
+    public async Task Fork_CountsTowardEviction()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        Skip.If(!MultiConvEnabled, MultiConvSkip);
+
+        using var engine = LiteRtEngine.Load(Options());
+        // Capacity exactly 2 (via the internal seam) so the third live conversation evicts the LRU — the
+        // parked multi-conversation machinery under test.
+        using var client = new LiteRtChatClient(engine, liveConversationCapacity: 2);
+        var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
+
+        // Base conversation (1 live).
+        ChatResponse baseResp = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember the base.")], new ChatOptions { MaxOutputTokens = 16 });
+        string baseId = baseResp.ConversationId!;
+
+        // First fork (2 live: base + fork1). Looking up base to fork it promotes it to most-recently-used, so
+        // the just-added fork1 is MRU and base is next; fork1 is now the least-recently-used.
+        string fork1 = await branching.ForkAsync(baseId);
+
+        // Second fork of base (would be 3 live): forking looks up base (promoting it), then adds fork2, which
+        // pushes the store over the cap and evicts the LRU — fork1.
+        string fork2 = await branching.ForkAsync(baseId);
+
+        // fork1 was evicted: resuming it throws.
+        await Assert.ThrowsAsync<ArgumentException>(() => client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "still there?")],
+            new ChatOptions { MaxOutputTokens = 16, ConversationId = fork1 }));
+
+        // The base and the newest fork are still live and resumable.
+        ChatResponse okBase = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "ok?")], new ChatOptions { MaxOutputTokens = 16, ConversationId = baseId });
+        Assert.Equal(baseId, okBase.ConversationId);
+        ChatResponse okFork2 = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "ok?")], new ChatOptions { MaxOutputTokens = 16, ConversationId = fork2 });
+        Assert.Equal(fork2, okFork2.ConversationId);
+    }
+
+    /// <summary>
+    /// A function-calling continuation works on a FORK: fork after the model has emitted a tool call, then send
+    /// the tool result on the fork's id. The branch resolves the tool name from the parent's copied
+    /// call-id → name map (the assistant tool-call turn is not resent on a continuation), so the model answers.
+    /// </summary>
+    [SkippableFact]
+    public async Task Fork_ToolContinuation_WorksOnBranch()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        Skip.If(OperatingSystem.IsLinux(),
+            "EnableConstrainedDecoding (recommended with tools) is blocked on linux-x64 — see docs.");
+        Skip.If(Environment.GetEnvironmentVariable("LITERTLM_TEST_TOOLS") != "1",
+            "Set LITERTLM_TEST_TOOLS=1 (with a version-matched native binary) to run tool tests.");
+        Skip.If(!MultiConvEnabled, MultiConvSkip);
+
+        using var engine = LiteRtEngine.Load(Options());
+        // Base + fork live at once, above the production single-conversation cap — internal capacity seam.
+        using var client = new LiteRtChatClient(engine, liveConversationCapacity: 4);
+        var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
+
+        AIFunction weather = AIFunctionFactory.Create(
+            (string city) => $"22 degrees and sunny in {city}",
+            name: "get_weather", description: "Gets the current weather for a given city.");
+        var toolOptions = new LiteRtChatOptions
+        {
+            Tools = [weather],
+            MaxOutputTokens = 256,
+            EnableConstrainedDecoding = true,
+        };
+
+        // Turn 1 on the base: drive the tool call MANUALLY (no UseFunctionInvocation) so we can fork between the
+        // tool call and its result. The client records the synthesized call-id → name on the base's entry.
+        ChatResponse call = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is the weather in Paris? Use the get_weather tool.")], toolOptions);
+        string baseId = call.ConversationId!;
+        FunctionCallContent fcc = Assert.Single(call.Messages[^1].Contents.OfType<FunctionCallContent>());
+
+        // Fork after the tool-call turn — the parent's call-id → name map is copied onto the branch.
+        string branchId = await branching.ForkAsync(baseId);
+
+        // Send the tool RESULT on the FORK's id. SplitContinuation must resolve "get_weather" from the copied
+        // map (the assistant tool-call turn is not resent), and the model produces a final answer.
+        var toolResult = new ChatMessage(ChatRole.Tool, (IList<AIContent>)
+            [new FunctionResultContent(fcc.CallId!, "22 degrees and sunny in Paris")]);
+        ChatResponse answer = await client.GetResponseAsync(
+            [toolResult], new ChatOptions { MaxOutputTokens = 256, ConversationId = branchId });
+
+        Assert.Equal(branchId, answer.ConversationId);
+        Assert.False(string.IsNullOrWhiteSpace(answer.Text), "Expected a final answer after the tool result on the fork.");
     }
 }

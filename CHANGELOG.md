@@ -20,8 +20,11 @@ match). The managed surface is source-compatible with 1.0.0 — all changes belo
   `SupportedAudioLoraRanks`, plus per-conversation `LiteRtConversationOptions.LoraPath` /
   `AudioLoraPath` (the adapter file is opened when the conversation is created, so a bad path fails fast
   with `LiteRtException`). Requires a LoRA-enabled model; supported-ranks are only honored on the GPU
-  (Artisan) backend. Not yet validated end-to-end against a real adapter — the plumbing is in place and
-  failure modes are surfaced coherently.
+  (Artisan) backend. **The TEXT LoRA path is stubbed in the LiteRT-LM v0.14.0 runtime**: loading a valid
+  text adapter succeeds at conversation creation, but the first generation fails upstream with
+  `Lora is not supported` (tracked internally by Google). The audio LoRA path is wired upstream. Our surface
+  is ready either way — the adapter loads and, where the runtime stubs generation, the failure is surfaced
+  coherently as a `LiteRtException`.
 - **`LiteRtConversation.RenderPreface()`** — renders the templated conversation preface (system message
   + tools + history) to a string without sending, complementing `RenderMessage`. Pair with
   `LiteRtEngine.Tokenize` to measure the preamble's token cost.
@@ -46,11 +49,13 @@ match). The managed surface is source-compatible with 1.0.0 — all changes belo
   function-result message(s) on its next iteration, multi-round tool loops become incremental automatically.
   The conversation's session settings (sampler, thinking, tools, constrained decoding, system message,
   template values) are fixed when it is created; on a continuation those per-request knobs are ignored (only
-  the per-send `MaxOutputTokens` still applies) and a system message throws. Live conversations are held in
-  an LRU cache bounded by `MaxLiveConversations` (default 8); creating a new one beyond the cap evicts and
-  disposes the least-recently-used, and a request naming an evicted or unknown id throws `ArgumentException`.
-  Disposing the client disposes all live conversations. `ChatResponse.Usage.TotalTokenCount` now reflects the
-  conversation's cumulative total across the stateful thread. See `docs/extensions-ai.md`.
+  the per-send `MaxOutputTokens` still applies) and a system message throws. This mode keeps a **single** live
+  conversation: starting a new conversation (a call without a `ConversationId`) replaces the previous one, and
+  resuming a replaced (or never-issued) id throws `ArgumentException`. Multi-live-conversation support is held
+  back by a current LiteRT-LM runtime limitation (a suspended conversation's state is not preserved when
+  another advances), so there is no knob to raise the limit. Disposing the client disposes the live
+  conversation. `ChatResponse.Usage.TotalTokenCount` now reflects the conversation's cumulative total across
+  the stateful thread. See `docs/extensions-ai.md`.
 - **`.NET AI connectors` — per-client conversation-options template** — `LiteRtChatClient` takes an
   optional `LiteRtConversationOptions optionsTemplate`, and the DI registrations expose it too
   (`AddLiteRtChatClient(...)` and Semantic Kernel's `AddLiteRtChatCompletion(...)`). It surfaces the

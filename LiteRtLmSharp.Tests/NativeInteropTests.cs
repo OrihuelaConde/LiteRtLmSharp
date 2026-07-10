@@ -1672,6 +1672,7 @@ public sealed class EngineTuningTests
             ParallelFileSectionLoading = false,                 // load sections sequentially
             PrefillChunkSize = 128,                             // CPU prefill chunking
             ActivationDataType = LiteRtActivationDataType.Float32,
+            NumThreads = 4,                                     // explicit CPU executor thread count (v0.14.0)
         });
 
         using var conv = engine.CreateConversation();
@@ -1715,5 +1716,117 @@ public sealed class EngineTuningTests
         Assert.Equal(256, bench!.LastPrefillTokenCount);
         Assert.Equal(64, bench.LastDecodeTokenCount);
         Assert.True(bench.LastDecodeTokensPerSecond > 0, "Expected a decode throughput measurement.");
+    }
+}
+
+/// <summary>
+/// A SENTINEL for an upstream LiteRT-LM limitation: the runtime does not yet preserve a suspended
+/// conversation's state when another conversation advances (interleaved use silently corrupts the parked
+/// one). Because of it, our Microsoft.Extensions.AI stateful mode is hard-limited to one live conversation
+/// and the forking hatch is kept internal (see <see cref="LiteRtLmSharp.Extensions.AI.LiteRtStatefulConversationOptions"/>
+/// and docs/roadmap.md). This test pins the CURRENT (broken) upstream behavior at the core
+/// <see cref="LiteRtEngine"/> / <see cref="LiteRtConversation"/> level, no MEAI involved. Loads its own engine
+/// (one engine alive at a time; the assembly disables parallelization). Skipped unless LITERTLM_TEST_MODEL is set.
+/// </summary>
+public sealed class UpstreamSuspendedStateSentinelTests
+{
+    /// <summary>
+    /// Interleave two live conversations from one engine: seed a fact on A, advance B, then ask A for the fact.
+    /// Upstream loses A's suspended state when B advances, so A does NOT recall the number — we assert exactly
+    /// that. This test is EXPECTED TO PASS while the bug exists.
+    ///
+    /// THE DAY THIS TEST FAILS (A suddenly recalls "42"), upstream has fixed suspended-state preservation. When
+    /// that happens, the multi-conversation mitigation can be lifted:
+    ///   1. raise LiteRtConversationStore.LiveConversationCapacity above 1;
+    ///   2. make LiteRtLmSharp.Extensions.AI.LiteRtConversationBranching public again;
+    ///   3. drop the LITERTLM_TEST_MULTICONV gate on the parked fork / multi-conversation tests in
+    ///      ExtensionsAiStatefulModelTests and re-run them as real coverage;
+    ///   4. restore the fork bullet in CHANGELOG.md and the Forking section in docs/extensions-ai.md;
+    ///   5. update this test to assert POSITIVE recall (A returns "42").
+    /// Full steps and the upstream tracking live in docs/roadmap.md.
+    /// </summary>
+    [SkippableFact]
+    public void Upstream_InterleavedConversations_StillLoseSuspendedState_Sentinel()
+    {
+        string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
+        Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        LiteRtEngine.SetMinLogLevel(3);
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = model!,
+            Backend = LiteRtBackend.Cpu,
+            MaxNumTokens = 2048,
+        });
+
+        // Two live conversations on the same engine.
+        using var convA = engine.CreateConversation();
+        using var convB = engine.CreateConversation();
+
+        // Seed a fact on A, then ADVANCE B (the interleaving that corrupts A's suspended state upstream).
+        convA.Send("Remember this: my lucky number is 42. Acknowledge briefly.");
+        convB.Send("Hello — please introduce yourself in one short sentence.");
+
+        // Ask A for the fact. If upstream preserved suspended state, A would answer 42.
+        var reply = convA.Send("What is my lucky number? Answer with just the number.");
+
+        // CURRENT upstream behavior: A's state was lost, so it does NOT recall 42. See the class/method docs
+        // for what to change the day this assertion starts failing.
+        Assert.DoesNotContain("42", reply.Text, StringComparison.Ordinal);
+    }
+}
+
+/// <summary>
+/// Pins the upstream LiteRT-LM v0.14.0 TEXT-LoRA stub (b/462499294): loading a valid text-LoRA adapter
+/// succeeds at conversation creation, but the FIRST generation fails with "Lora is not supported". This
+/// complements <c>Lora_NonexistentAdapterPath_ThrowsCoherentException</c> (which pins the bad-path failure)
+/// by pinning the valid-adapter-but-stubbed-runtime failure — proving our surface is ready and fails
+/// coherently. Requires the LoRA stub artifacts <c>test_lm_lora.litertlm</c> and
+/// <c>test_lora_rank32_f16_all_ones.tflite</c> sitting NEXT TO the LITERTLM_TEST_MODEL file (they are
+/// gitignored); skipped unless both exist. Loads its own engine. Skipped unless LITERTLM_TEST_MODEL is set.
+/// </summary>
+public sealed class LoraStubPinTests
+{
+    /// <summary>
+    /// Pins the upstream text-LoRA stub (b/462499294): with a VALID adapter and a LoRA-enabled model,
+    /// the adapter file opens fine but <see cref="LiteRtEngine.CreateConversation"/> fails — the native
+    /// conversation create builds the session context, where the v0.14.0 runtime rejects text LoRA
+    /// unconditionally (native stderr: "INVALID_ARGUMENT: Lora is not supported.", verified 2026-07-10;
+    /// the C API surfaces it only as a null conversation). The failure is distinguishable from a BAD
+    /// adapter path, which throws from <c>set_lora_path</c> with a message naming the path. WHEN THIS
+    /// TEST STARTS FAILING (creation succeeds), upstream has implemented text LoRA: re-test positively
+    /// (assert the adapter actually changes generation) and update the LoRA note in CHANGELOG.md / docs.
+    /// See docs/roadmap.md.
+    /// </summary>
+    [SkippableFact]
+    public void Lora_ValidTextAdapter_ConversationCreateHitsUpstreamStub()
+    {
+        string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
+        Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        // The stub artifacts sit next to the configured test model (gitignored). Gate on their existence.
+        string dir = Path.GetDirectoryName(Path.GetFullPath(model!))!;
+        string loraModel = Path.Combine(dir, "test_lm_lora.litertlm");
+        string loraAdapter = Path.Combine(dir, "test_lora_rank32_f16_all_ones.tflite");
+        Skip.If(!File.Exists(loraModel) || !File.Exists(loraAdapter),
+            "Place test_lm_lora.litertlm and test_lora_rank32_f16_all_ones.tflite next to LITERTLM_TEST_MODEL to run.");
+
+        LiteRtEngine.SetMinLogLevel(3);
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = loraModel,
+            Backend = LiteRtBackend.Cpu,
+            MaxNumTokens = 512,
+            LoraRank = 32,
+        });
+
+        var ex = Assert.Throws<LiteRtException>(
+            () => engine.CreateConversation(new LiteRtConversationOptions { LoraPath = loraAdapter }));
+        // The generic create-failure message — NOT the set_lora_path failure (that one names the path),
+        // proving the adapter file itself was accepted and the rejection came from the runtime stub.
+        Assert.Contains("litert_lm_conversation_create returned null", ex.Message);
+        Assert.DoesNotContain("set_lora_path", ex.Message);
     }
 }

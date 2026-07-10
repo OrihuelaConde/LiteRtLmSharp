@@ -23,28 +23,18 @@ public class StatefulConversationMappingTests
 {
     private static readonly IReadOnlyDictionary<string, string> NoKnownCalls = new Dictionary<string, string>(0);
 
-    // ─────────────────────── Options validation ───────────────────────
+    // ─────────────────────── Options ───────────────────────
 
+    // LiteRtStatefulConversationOptions is now purely the opt-in token for the stateful mode: the former
+    // MaxLiveConversations knob was removed because the mode is hard-limited to one live conversation while
+    // upstream LiteRT-LM cannot preserve a suspended conversation's state (see docs/roadmap.md). The internal
+    // single-conversation capacity lives on LiteRtConversationStore.LiveConversationCapacity.
     [Fact]
-    public void Options_Default_MaxLiveConversationsIsEight()
+    public void Options_IsConstructible_AsOptInToken()
     {
-        Assert.Equal(8, new LiteRtStatefulConversationOptions().MaxLiveConversations);
-    }
-
-    [Fact]
-    public void Options_PositiveMaxLiveConversations_IsAccepted()
-    {
-        Assert.Equal(3, new LiteRtStatefulConversationOptions { MaxLiveConversations = 3 }.MaxLiveConversations);
-        Assert.Equal(1, new LiteRtStatefulConversationOptions { MaxLiveConversations = 1 }.MaxLiveConversations);
-    }
-
-    [Theory]
-    [InlineData(0)]
-    [InlineData(-1)]
-    [InlineData(-100)]
-    public void Options_NonPositiveMaxLiveConversations_Throws(int value)
-    {
-        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtStatefulConversationOptions { MaxLiveConversations = value });
+        Assert.NotNull(new LiteRtStatefulConversationOptions());
+        // Value semantics of the record are intact even with no members.
+        Assert.Equal(new LiteRtStatefulConversationOptions(), new LiteRtStatefulConversationOptions());
     }
 
     // ─────────────────────── Continuation mapping: user turn ───────────────────────
@@ -156,7 +146,7 @@ public class StatefulConversationMappingTests
     public void AddLiteRtChatClient_FromOptions_WithStateful_RegistersOneEngineAndClient()
     {
         var options = new LiteRtEngineOptions { ModelPath = "does-not-exist.litertlm" };
-        var stateful = new LiteRtStatefulConversationOptions { MaxLiveConversations = 4 };
+        var stateful = new LiteRtStatefulConversationOptions();
 
         var services = new ServiceCollection();
         services.AddLiteRtChatClient(options, statefulConversations: stateful);   // lazy engine; never loaded here
