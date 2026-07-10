@@ -152,6 +152,20 @@ jobs:
           } > release-body.md
           echo "release body: $(wc -l < release-body.md) lines"
 
+      # Belt-and-braces with the changelog check above: the CHANGELOG-section validation passes even
+      # when PKG_VERSION was already shipped (its section is still there), so also fail if the v<version>
+      # tag already exists. Runs BEFORE the NuGet push, because publishing an already-shipped version is a
+      # no-op at best (versions are immutable) and would fail the later tag/release step after the push.
+      - name: Fail if tag v${{ env.PKG_VERSION }} already exists
+        if: inputs.push
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/v${PKG_VERSION}" >/dev/null 2>&1; then
+            echo "::error::Tag v${PKG_VERSION} already exists; that version already shipped (NuGet versions are immutable). Bump <Version> in Directory.Build.props before publishing."
+            exit 1
+          fi
+          echo "Tag v${PKG_VERSION} does not exist yet; OK to publish."
+
       # Trusted Publishing: exchange the GitHub OIDC token for a 1-hour nuget.org API key
       # (policy configured on nuget.org under the OrihuelaConde account for this workflow file).
       - name: NuGet login (OIDC -> temp API key)

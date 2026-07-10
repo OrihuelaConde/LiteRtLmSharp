@@ -3,15 +3,17 @@
 > Source of truth: [`c/engine.h`](https://github.com/google-ai-edge/LiteRT-LM/blob/main/c/engine.h)
 > in the official repo. This document summarizes the ABI as **verified** against the real binary.
 
-> **Current state (v0.13.1, self-built binaries):** the findings about the community binary
+> **Current state (v0.14.0, self-built binaries):** the findings about the community binary
 > `0.12.0-a` and the interim commit `032334d8` (`conversation_config_create` crash, missing
 > `get_token_count`, blocking `send_message` returning null, streaming segfault) are
 > **HISTORICAL** — all resolved by compiling our own binaries from the `v0.13.1` tag with the
 > matching header. Today config/system-prompt/sampler, tools, streaming and token count work on
 > all 5 platforms. Speculative decoding, the benchmark API, and the engine cache-dir setting were
 > bound on 2026-06-15; multimodal image/audio messages on 2026-06-17; the tokenizer surface
-> (tokenize/detokenize + start/stop tokens) on 2026-06-19 (see
-> [`roadmap.md`](roadmap.md) for the C-API coverage count, now 67/89, and the
+> (tokenize/detokenize + start/stop tokens) on 2026-06-19; and the v0.14.0 surface (LoRA, CPU thread
+> counts, per-send output cap, tool-call streaming, preface rendering, plus the internal sampler-builder
+> migration) on 2026-07-10 (see [`roadmap.md`](roadmap.md) for the C-API coverage count, now 84/109, the
+> [v0.14.0 ABI changes](#v0140-abi-changes-sampler-struct--opaque-builder) section below, and the
 > [multimodal section](#multimodal-messages-image--audio--verified-wire-format) below). The notes
 > below are kept as a diagnostic record.
 >
@@ -113,9 +115,33 @@ typedef void (*LiteRtLmStreamCallback)(void* callback_data, const char* chunk,
 
 ## Key header types/structs
 - `LiteRtLmSamplerParams { LiteRtLmSamplerType type; int32 top_k; float top_p; float temperature; int32 seed; }`
-- `LiteRtLmSamplerType`: 0 Unspecified, 1 TopK, 2 TopP, 3 Greedy.
+  (**pre-v0.14.0 shape**; v0.14.0 removed this by-value struct in favor of an opaque builder, see
+  [v0.14.0 ABI changes](#v0140-abi-changes-sampler-struct--opaque-builder) below).
+- `LiteRtLmSamplerType`: 0 Unspecified, 1 TopK, 2 TopP, 3 Greedy. **v0.14.0 dropped the `Unspecified`
+  member** (see below); the public `LiteRtSamplerType.Unspecified` is retained at `0`.
 - `LiteRtLmInputData { LiteRtLmInputDataType type; const void* data; size_t size; }` (multimodal; text=UTF-8).
 - `LiteRtLmInputDataType`: Text, Image, ImageEnd, Audio, AudioEnd.
+
+## v0.14.0 ABI changes (sampler struct → opaque builder)
+
+The binding is pinned to **LiteRT-LM v0.14.0** (repinned from v0.13.1 on 2026-07-10). v0.14.0 grew the C
+API from 89 to 109 functions (84 now bound). The one **breaking** ABI change the binding depends on:
+
+- **Sampler params: by-value struct → opaque builder.** v0.14.0 removed the by-value `LiteRtLmSamplerParams`
+  struct (the pre-v0.14.0 shape above) and replaced it with an opaque builder: `sampler_params_create` +
+  `set_top_k` / `set_top_p` / `set_temperature` / `set_seed`, copied into the session config and deleted
+  immediately. The binding was rewired to the builder (**required migration**; the by-value struct is gone).
+  The native enum also **dropped its `Unspecified` member**; the public `LiteRtSamplerType.Unspecified` is
+  retained (value `0`) and now sends **no** sampler params at all (the executor's internal default), which
+  is the same effective behavior as v0.13.1, where the unspecified type made the native sampler factory
+  defer to the executor. (The old doc claim that the engine resolved `Unspecified` to `TopP` was false.)
+
+**Version match is mandatory.** Because the binding now calls the v0.14.0 builder functions (and the other
+16 newly bound entry points), it requires **version-matched v0.14.0+ native binaries**. Run it against
+older natives (v0.13.1 or earlier) and the first call into a missing function throws
+**`EntryPointNotFoundException`**, the same skew failure mode documented for `get_token_count` on
+`0.12.0-a` above. Always restore the `native-v<tag>` release that matches the managed package
+(the `LiteRtLmSharp.runtime.<rid>` package version); never mix versions.
 
 ## Empirical findings on the prebuilt `native-v0.12.0-a` binary (VERIFIED at runtime)
 
@@ -271,8 +297,8 @@ It was not managed code (worked on `0.12.0-a`), not the WebGPU sampler (#2073), 
 `get_token_count` now exported (89 funcs), and the streaming→tools sequence in one process
 (which used to segfault) passes. Test suite 4/4 on v0.13.1.
 
-> Lesson: pin to a **release tag**, never an arbitrary commit — more stable and it is the sync
-> target with Google. `build-native.yml` uses `v0.13.1` by default.
+> Lesson: pin to a **release tag**, never an arbitrary commit (more stable, and it is the sync
+> target with Google). `build-native.yml` uses `v0.14.0` by default.
 
 ## Tokenizer (tokenize / detokenize / start-stop tokens) — verified
 
@@ -341,8 +367,12 @@ litert_lm_detokenize_result_delete(d);
 > `absl::InitializeLog()` (straight to STDERR); our log level cannot silence them.
 
 ## Official shared-library status
-- Today the C API ships only as a Bazel `cc_library` (`:engine`, `:engine_cpu`) and
-  `add_litertlm_library(... STATIC)` in CMake → there is **no** official shared-lib target.
-  Tracking: issue #2154 / PR #2155.
+- **As of v0.14.0 upstream ships its own shared-lib target**: `cc_binary litert-lm` in `c/BUILD`, the
+  Python-wheel build. Earlier tags shipped only the Bazel `cc_library` (`:engine`, `:engine_cpu`) and
+  `add_litertlm_library(... STATIC)` in CMake, with no shared-lib target (tracked as issue #2154 / PR
+  #2155). We still build our **own** target via `native/patch_c_api.sh`, because the wheel target does not
+  carry the Windows `.def`, the `LiteRt*` wildcard exports or the companion rpath our per-RID packages
+  need; the patch's idempotence guard now greps for **our** target name (not the absence of any shared-lib
+  target).
 - PoC mitigation was consuming flutter_gemma's `LiteRtLm.dll`/`.so` (verified). Production:
   our own build (docs/native-build.md).

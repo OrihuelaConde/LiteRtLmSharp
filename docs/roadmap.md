@@ -1,6 +1,6 @@
 # Project status and roadmap
 
-Last updated: 2026-07-02. Source of truth for "what's done and what's pending".
+Last updated: 2026-07-10. Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -17,7 +17,7 @@ Last updated: 2026-07-02. Source of truth for "what's done and what's pending".
 decoding; real-hardware results are from dev machines/devices. macOS GPU
 specifics and dates are in [§macOS validation](#actionable-next-steps-suggested-order) below.</sub>
 
-Native binaries are pinned to **LiteRT-LM v0.13.1**.
+Native binaries are pinned to **LiteRT-LM v0.14.0** (repinned from v0.13.1 on 2026-07-10).
 
 ## Versioning policy
 
@@ -40,7 +40,8 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | AOT/trim-friendly (`[LibraryImport]`, `[UnmanagedCallersOnly]`, no reflection) | ✅ |
 | Multimodal messages (image/audio attachments, vision/audio backend, visual token budget) | ✅ |
 | Tokenize/detokenize + start/stop tokens (exact token counting, no inference) | ✅ |
-| Render a message to its templated prompt (`RenderMessage`) for debugging / exact-cost budgeting | ✅ |
+| Render a message (`RenderMessage`) or the whole preface (`RenderPreface`) to its templated prompt for debugging / exact-cost budgeting | ✅ |
+| CPU thread counts, LoRA adapters (engine ranks + per-conversation paths), per-send output cap, tool-call streaming (v0.14.0 surface) | ✅ |
 | .NET AI integrations: `Microsoft.Extensions.AI` `IChatClient` (+ Agent Framework) and a Semantic Kernel connector (separate packages) | ✅ |
 
 Known constraints (documented in the README): one engine ALIVE at a time (reloading after
@@ -49,10 +50,13 @@ switching model/backend without restarting); conversations are not thread-safe; 
 is the total context window; VC++ Redistributable required on win-x64; Android GPU requires
 `<uses-native-library>` in the app manifest.
 
-## C API coverage (audit 2026-06-12, header v0.13.1)
+## C API coverage (audit 2026-07-10, header v0.14.0)
 
-**67 of 89 `litert_lm_*` functions bound** (everything we bind exists in the header — no
-drift). The remaining 22 group into the areas below, in suggested priority order:
+**84 of 109 `litert_lm_*` functions bound** (everything we bind exists in the header, no
+drift). v0.14.0 grew the surface 89 → 109; the 17 newly bound functions are the ✅ rows added
+below (LoRA, tool-call streaming, CPU thread counts, per-send output cap, preface rendering, and
+the internal sampler-builder migration). The remaining 25 group into the areas below, in suggested
+priority order:
 
 ### High value (user-facing features)
 
@@ -64,6 +68,8 @@ drift). The remaining 22 group into the areas below, in suggested priority order
 | ✅ Engine cache dir | `engine_settings_set_cache_dir` | **Done 2026-06-15** (`LiteRtEngineOptions.CacheDir`, + `CacheDisabled`/`CacheInMemory` sentinels). Persistent compiled-shader/weight cache → faster GPU re-init; also the fix for speculative decoding on WebGPU (set `CacheDisabled`). |
 | ✅ Speculative decoding | `engine_settings_set_enable_speculative_decoding` | **Done 2026-06-15** (`EnableSpeculativeDecoding`). Measured (gemma-4-E2B): desktop CPU **regresses** (~0.78×); desktop **WebGPU works** with `CacheDir=CacheDisabled` but doesn't help here (0.85× in a fair cache-off A/B; CPU-sampling fallback) — the disk-cache requirement is an upstream issue, see watchlist; accelerators are the expected ~3× win. See [speculative-decoding.md](speculative-decoding.md). |
 | ✅ Multimodal messages | `engine_settings_set_max_num_images`, `conversation_optional_args_create/delete/set_visual_token_budget` | **Done 2026-06-17.** `LiteRtAttachment` (`Image`/`ImageFile`/`Audio`/`AudioFile`) + `Send`/`SendMessage`/`SendMessageStreamingAsync` attachment overloads build the content-part wire format (`{"type":"image"\|"audio","blob":<base64>\|"path":<file>}`, byte-verified against `runtime/conversation/.../data_utils.cc`); `LiteRtEngineOptions.VisionBackend`/`AudioBackend` enable the encoders via the already-bound `engine_settings_create`; `LiteRtConversationOptions.VisualTokenBudget` → `optional_args`. **Validated against gemma-4-E2B-it (2026-06-17): vision+audio on CPU across linux-x64/win-x64/osx-arm64 and vision on the osx-arm64 GPU leg (model-tests run 27712370474), plus win-x64 GPU locally.** An image adds a ~261-token vision block (28 → 289) and the model answered "…a solid, vibrant **red** color"; a real spoken 5→0 countdown adds ~130 audio tokens (35 → 165) and the model transcribed "Five, four, three, two, one, zero." Vision runs on GPU. **Gemma 4's audio sub-model is CPU-constrained** (`audio_backend="gpu"` → `engine_create` fails with "Audio backend constraint mismatch. Model requires one of [cpu]") — a model property, not a platform one (the model-tests macOS GPU leg confirms the same skip), so MAUI runs audio on CPU when the main backend is GPU. MAUI Chat tab gains 📷/🎵 attach buttons + a modality label (gated on model capability). `set_max_num_images` is bound for Kotlin-binding parity but legacy-only per the header. |
+| ✅ LoRA adapters | `engine_settings_set_lora_rank`, `set_supported_lora_ranks`, `set_audio_lora_rank`, `set_supported_audio_lora_ranks`, `session_config_set_lora_path`, `session_config_set_audio_lora_path` | **Done 2026-07-10** (`LiteRtEngineOptions.LoraRank`/`SupportedLoraRanks`/`AudioLoraRank`/`SupportedAudioLoraRanks` + `LiteRtConversationOptions.LoraPath`/`AudioLoraPath`). The adapter file is opened when the conversation is created, so a bad path fails fast with `LiteRtException`. Requires a LoRA-enabled model; the supported-ranks lists are only honored on the GPU (Artisan) backend. **Not yet validated end-to-end against a real adapter** (no adapter artifact on hand), but the plumbing is in place and the failure modes surface coherently. |
+| ✅ Tool-call streaming | `conversation_config_set_stream_tool_calls` | **Done 2026-07-10** (`LiteRtConversationOptions.StreamToolCalls` + `LiteRtStreamChunkKind.ToolCallDelta`). Streams the raw, unparsed text of a tool call as the model generates it (incremental progress fragments on the native `tool_call` channel), ahead of the usual complete parsed `ToolCall` chunk. Opt-in, off by default; progress display only, act on the final parsed chunk. |
 
 ### Medium value (developer utilities)
 
@@ -74,17 +80,22 @@ drift). The remaining 22 group into the areas below, in suggested priority order
 | ✅ KV-cache thinking filter | `conversation_config_set_filter_channel_content_from_kv_cache` | **Done 2026-06-16** (`LiteRtConversationOptions.FilterThinkingFromKvCache`). Drops thinking-channel tokens from the KV cache so a long reasoning block does not consume the context window; companion to `EnableThinking`. |
 | ✅ Prompt debugging | `conversation_render_message_to_string` | **Done 2026-06-20** (`LiteRtConversation.RenderMessage(text)` + raw `RenderMessageRaw(json)`). Returns the exact templated prompt a message would produce, without sending (KV cache untouched). Pairs with the tokenizer: render → `Tokenize` → exact per-turn cost including the chat template. The returned native string is conversation-owned (valid until the next render), copied out immediately. Validated on win-x64 CPU with gemma-4-E2B-it. |
 | ✅ Engine tuning | `engine_settings_set_prefill_chunk_size`, `set_parallel_file_section_loading`, `set_activation_data_type` | **Done 2026-06-20** (`LiteRtEngineOptions.PrefillChunkSize` (CPU/dynamic), `ParallelFileSectionLoading` (bool?, default on), `ActivationDataType` (`LiteRtActivationDataType` F32/F16/I16/I8)). CPU prefill chunking, load parallelism, activation precision. Smoke-tested on win-x64 CPU (engine loads + generates with all three applied). |
+| ✅ CPU thread counts (2) | `engine_settings_set_num_threads`, `set_audio_num_threads` | **Done 2026-07-10** (`LiteRtEngineOptions.NumThreads`/`AudioNumThreads`). CPU text / audio executor thread counts (`null` = engine default). CPU-backend only: no-op on non-CPU backends, and the audio one applies only when an audio executor is configured; non-positive values are rejected. See [engine-tuning.md](engine-tuning.md). |
+| ✅ Per-send output cap | `conversation_optional_args_set_max_output_tokens` | **Done 2026-07-10** (`LiteRtSendOptions.MaxOutputTokens`). Overrides the conversation-level `MaxOutputTokens` for a single send; the runtime resolves the per-send value over the session value. |
+| ✅ Preface rendering | `conversation_render_preface_to_string` | **Done 2026-07-10** (`LiteRtConversation.RenderPreface()`). Renders the templated conversation preface (system message + tools + history) to a string without sending (companion to `RenderMessage`); pair with `LiteRtEngine.Tokenize` to measure the preamble's token cost. Also the tool that diagnosed the `SystemMessage` fix. See [conversation-state.md](conversation-state.md). |
+| ✅ Sampler builder (6) | `sampler_params_create`/`_delete`, `set_top_k`/`set_top_p`/`set_temperature`/`set_seed` | **Done 2026-07-10** (internal migration, no public surface change). v0.14.0 replaced the by-value `LiteRtLmSamplerParams` struct with an opaque builder (create + setters, copied into the session config then deleted); the binding was rewired to it. The native enum dropped its `unspecified` member, so `LiteRtSamplerType.Unspecified` is retained (value `0`) and now sends **no** sampler params at all (the executor's internal default), matching the pre-v0.14.0 effective behavior. |
 
 ### Low priority (advanced / niche)
 
 | Feature | Functions | Notes |
 |---|---|---|
-| Raw Session API (11) | `engine_create_session`, `session_run_prefill`, `session_run_decode(_async)`, `session_generate_content(_stream)`, `session_run_text_scoring`, `session_cancel_process`, `session_config_set_apply_prompt_template`, `session_delete`, `session_get_benchmark_info` | Low-level prefill/decode bypassing chat templates; includes text scoring (log-prob ranking) and the raw no-template mode. |
+| Raw Session API (13) | `engine_create_session`, `session_run_prefill`, `session_run_decode(_async)`, `session_generate_content(_stream)`, `session_run_text_scoring`, `session_cancel_process`, `session_config_set_apply_prompt_template`, `session_delete`, `session_get_benchmark_info`, `input_data_create`/`_delete` | Low-level prefill/decode bypassing chat templates; includes text scoring (log-prob ranking) and the raw no-template mode. v0.14.0 added `input_data_create`/`_delete` and changed the `run_prefill`/`generate_content` signatures; still out of scope (the Conversation API covers our use cases). |
 | Responses introspection (10) | `responses_*` | Candidates, scores, per-token logits — only meaningful with the Session API. |
+| Raw-FD engine load | `engine_settings_create_from_raw_file_descriptor` | **Deferred** (new in v0.14.0). Loads a model from an open file descriptor (mainly Android `content://` scenarios); the path-based `engine_settings_create` covers the desktop/MAUI paths we ship. |
 | ✅ Benchmark fake tokens | `engine_settings_set_num_prefill_tokens`, `set_num_decode_tokens` | **Done 2026-06-20** (`LiteRtEngineOptions.BenchmarkPrefillTokens` / `BenchmarkDecodeTokens`). Synthetic-token benchmarking: the prompt is padded/truncated to the prefill count and decode runs exactly the decode count (ignoring the stop token), so `GetBenchmarkInfo` reports throughput at FIXED counts — content-independent device benchmarking. **Confirmed observable through the Conversation API** (not a benchmark-main-only path): both fields feed `EngineSettings::benchmark_params_`, read by the default `EngineAdvancedImpl`/`SessionAdvanced` (source trace + win-x64 probe: a tiny "Hi" reports 256/64). Setting either also flips benchmark mode on; the reply is not a real answer. |
 | NPU dispatch dir | `engine_settings_set_litert_dispatch_lib_dir` | Qualcomm/Intel NPU dispatch library location. |
 
-> Note: the C API has **no embeddings functions** at v0.13.1 (flutter_gemma implements
+> Note: the C API still has **no embeddings functions** at v0.14.0 (flutter_gemma implements
 > embeddings via a separate native library, not this header), so embeddings stay out of
 > scope until upstream exposes them.
 
@@ -203,10 +214,12 @@ drift). The remaining 22 group into the areas below, in suggested priority order
    4096. When a send still fails (not multimodal / backend unset / context can't hold the media) the
    binding wraps it in a managed `LiteRtException` naming those causes on both the blocking and streaming
    paths. See [native-abi.md](native-abi.md#multimodal-messages-image--audio--verified-wire-format).
-   The remaining binding areas are the smaller medium-value utilities
-   (prompt rendering for debugging; engine tuning knobs: prefill chunk size, parallel file loading,
-   activation dtype) and — once a stable v0.14.x lands — the new C-API surface (LoRA adapters,
-   request-level max-output-tokens, FD-based load; see the watchlist).
+   The medium-value utilities are all bound (prompt rendering for debugging; engine tuning knobs:
+   prefill chunk size, parallel file loading, activation dtype). **The v0.14.0 repin (2026-07-10)
+   landed the new C-API surface**: LoRA adapters, CPU thread counts, per-send max-output-tokens,
+   tool-call streaming and preface rendering, taking coverage to **84/109**. FD-based load
+   (`engine_settings_create_from_raw_file_descriptor`, mainly Android `content://`) is the one
+   deferred item left; the raw Session API and responses introspection stay out of scope.
    `android-x64` for emulators; Desktop meta-package;
    ✅ ~~CONTRIBUTING + issue templates~~ (2026-06-11: CONTRIBUTING.md, issue forms, PR template,
    SECURITY.md, Discussions enabled); scheduled smoke-test workflow that consumes the published
@@ -285,19 +298,17 @@ AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AO
 
 ## Watchlist (re-check periodically)
 
-**Last re-checked: 2026-06-24** — no actionable upstream change since the 2026-06-19 sweep. Still NO
-stable v0.14.x (only the `v0.14.0-alpha.0` pre-release, which ships just the `litert_lm_main.macos_arm64`
-CLI — nothing to repin to), so we stay pinned to v0.13.1; every issue below remains open with no new
-engagement. `main` is now ~121 commits ahead of v0.13.1 and active (22-24 Jun): a second GPU-cache fix
-(`0a6590988`, "Fixed the GPU cache file handling issue", 2026-06-23) touches
-`runtime/executor/llm_executor_settings_utils.cc` — the #2572 root-cause file — alongside `4aa96a019`;
-**diff both before dropping the `CacheDir` workaround once a stable v0.14.x tags.**
+**Last re-checked: 2026-07-10.** The repin trigger FIRED: LiteRT-LM tagged a stable **v0.14.0** and we
+repinned to it on 2026-07-10 (self-built `native-v0.14.0`; C API 89 → 109, 84 bound; CI green on all
+three OSes including the model tests). The tag lands several watched fixes, so each issue below is
+re-stated against v0.14.0. Note that penalties / no-repeat-ngram sampling did NOT reach the C API in this
+tag, so they stay unbound.
 
-- **[LiteRT-LM#2211](https://github.com/google-ai-edge/LiteRT-LM/issues/2211)** — GPU samplers
-  missing `DT_NEEDED` (our patchelf is the workaround). If Google ships fixed prebuilts or a
-  fix, **drop the patchelf** from the android job. Also watch the related #2241, #1860 and the
-  OpenCL bug #1850 (`Invalid command queue` — did not reproduce on our Adreno 650 test device,
-  but hits other Adreno GPUs).
+- **[LiteRT-LM#2211](https://github.com/google-ai-edge/LiteRT-LM/issues/2211)**: **unchanged at
+  v0.14.0.** GPU samplers still ship missing `DT_NEEDED` (our patchelf is the workaround). If Google
+  ships fixed prebuilts or a fix, **drop the patchelf** from the android job. Also watch the related
+  #2241, #1860 and the OpenCL bug #1850 (`Invalid command queue`, which did not reproduce on our Adreno
+  650 test device, but hits other Adreno GPUs).
 - **[LiteRT-LM#2552](https://github.com/google-ai-edge/LiteRT-LM/pull/2552)** — our PR to be
   listed in upstream's Supported Language APIs table (announced in #2535). Watch for review
   feedback.
@@ -309,11 +320,16 @@ engagement. `main` is now ~121 commits ahead of v0.13.1 and active (22-24 Jun): 
   wheel works (embeds the provider from internal source); same-rev Windows DLL works.
   **Our binding ships a TEMPORARY GUARD**: `EnableConstrainedDecoding = true` on linux-x64
   throws `PlatformNotSupportedException` instead of dying (LiteRtConversation.Create).
-  **When Google republishes a fixed linux prebuilt: rebuild natives, re-run the Docker
-  repro (scripts in `%TEMP%\litert-repro`), and REMOVE the guard + the `<remarks>` on
-  `LiteRtConversationOptions.EnableConstrainedDecoding`.** Meanwhile the real constrained
-  loop IS exercised on each push in CI on win-x64 and osx-arm64 (`model-tests.yml` matrix); linux-x64
-  asserts the guard throws. Android is NOT affected
+  **Re-tested 2026-07-10 at v0.14.0: STILL BROKEN, guard stays.** The Docker repro run with our
+  v0.14.0 engine **and** the v0.14.0 provider blob (rev `075e6021`) exited 139 with the identical
+  SIGSEGV fingerprint (engine + conversation create fine, the FST builds, crash at the first
+  constrained send). That kills the matched-engine hypothesis: no *public* provider blob works on any
+  engine we can build (Google's wheel passes only because it embeds the provider from internal source),
+  so version-matching the natives is not the fix. The guard and the `<remarks>` on
+  `LiteRtConversationOptions.EnableConstrainedDecoding` remain. Next actionable is a follow-up upstream
+  comment carrying the two-era (v0.13.1 + v0.14.0) repro matrix, to be drafted with the repo maintainer.
+  Meanwhile the real constrained loop IS exercised on each push in CI on win-x64 and osx-arm64
+  (`model-tests.yml` matrix); linux-x64 asserts the guard throws. Android is NOT affected
   (tools validated on physical device, CPU and GPU; upstream #1859 looks like a
   custom-model issue, discarded).
 - **Speculative decoding + WebGPU needs the disk cache off** (root-caused 2026-06-15) — on the
@@ -339,6 +355,9 @@ engagement. `main` is now ~121 commits ahead of v0.13.1 and active (22-24 Jun): 
   NOT fix this. ✅ **Filed [#2572](https://github.com/google-ai-edge/LiteRT-LM/issues/2572)**
   (2026-06-15), cross-ref #2503/#2461; named the `CreateCompilationOptions` GPU-branch `cache_suffix`
   omission. flutter_gemma has no matching report. Full write-up: [speculative-decoding.md](speculative-decoding.md).
+  **v0.14.0 status:** the #2572 GPU-cache-handling fix IS in the tag. Re-testing whether the
+  `CacheDir=CacheDisabled` workaround for GPU + speculative decoding can now be dropped is in progress
+  this session; **the workaround stays until the re-test confirms it.**
 - **[LiteRT-LM#2073](https://github.com/google-ai-edge/LiteRT-LM/issues/2073)** — WebGPU TopK sampler
   exports only **3/7** C-ABI functions on **macOS/Windows** (Linux/Android ship 7) → `sampler_factory`
   can't resolve `LiteRtTopKWebGpuSampler_UpdateConfig` (+ 3 others) and **falls back to CPU sampling**.
@@ -352,7 +371,14 @@ engagement. `main` is now ~121 commits ahead of v0.13.1 and active (22-24 Jun): 
   loop more. ✅ **Commented our Windows/WebGPU v0.13.1 repro on #2073** (2026-06-15,
   [issuecomment-4705832501](https://github.com/google-ai-edge/LiteRT-LM/issues/2073#issuecomment-4705832501));
   verified the export lists ourselves (`webgpu_exported_symbols.lds`/`windows_exported_symbols.def` = 3,
-  `metal_exported_symbols.lds` = 7 at v0.13.1). Watch for an upstream re-export.
+  `metal_exported_symbols.lds` = 7 at v0.13.1). **Re-verified at v0.14.0: still NOT fixed.** The
+  windows/webgpu export lists are unchanged at 3/7, so the desktop-GPU CPU-sampling fallback stays. No
+  upstream re-export yet; keep watching.
+- **[LiteRT-LM#2080](https://github.com/google-ai-edge/LiteRT-LM/issues/2080)**: sampler params were
+  not being read from the runtime config on some paths. **PARTIALLY addressed in v0.14.0**:
+  `InitializeSampler` now reads the `runtime_config` sampler params when present. Re-measuring the
+  associated digit-corruption symptom (the "B6" case) on the GPU backend is in progress this session;
+  status will be settled once that A/B completes.
 - **New LiteRT-LM tags** — automated: `upstream-watch.yml` (Mon/Thu) opens a checklist issue
   when upstream publishes a release.
 - **flutter_gemma** — releases/issues as a recipe source (e.g. their #270/#214 anticipated our
@@ -372,6 +398,12 @@ engagement. `main` is now ~121 commits ahead of v0.13.1 and active (22-24 Jun): 
 - **Self-built** native binaries from release tags (never loose commits — lesson from the
   streaming segfault at `032334d8`), via `native/patch_c_api.sh` + `build-native.yml`
   (`platforms` input to avoid rebuilding existing assets; the release accumulates assets).
+  v0.14.0 now ships its **own** shared-lib target (`cc_binary litert-lm` in `c/BUILD`, the
+  Python-wheel build), but `patch_c_api.sh` keeps adding **our** target, because it needs the Windows
+  `.def`, the `LiteRt*` wildcard exports and the companion rpath that the wheel target does not
+  provide; so the patch's idempotence guard now greps for our target name (not the absence of any
+  shared-lib target). v0.14.0 also ships a new `libwebgpu_dawn` shared lib on every desktop platform,
+  now carried in the release tarballs and picked up by the collect globs.
 - LLamaSharp-style distribution: pure managed + per-RID `runtime.<rid>` packages, all sharing
   one version per release (see Versioning policy above).
 - Desktop (linux/win/macOS) links `libLiteRt` as a separate shared lib (`litert_link_capi_so`

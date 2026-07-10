@@ -105,7 +105,11 @@ This keeps SK's history and the model's KV cache in lockstep (SK owns the histor
 is an `O(history)` prefill per turn — fine for typical chats; for very long conversations, drive the native
 [`LiteRtConversation`](conversation-state.md) API directly. Calls are **serialized** (one live engine per
 process; conversations are not thread-safe), and the engine lifecycle is handled by the
-[Extensions.AI registration](extensions-ai.md) the connector builds on.
+[Extensions.AI registration](extensions-ai.md) the connector builds on. A `ChatHistory` system message is
+restored through that same History path, so this connector was **never** affected by the pre-v0.14.0
+`LiteRtConversationOptions.SystemMessage` bug. And any `LiteRtEngineOptions` you pass to
+`AddLiteRtChatCompletion`, including the v0.14.0 additions (`NumThreads`, LoRA ranks), flows straight
+through.
 
 ## Function calling
 
@@ -219,7 +223,7 @@ text). See [docs/extensions-ai.md](extensions-ai.md#multimodal-image--audio) for
 - **Multimodal** (image / audio) is supported (see [Multimodal](#multimodal-image--audio)).
 - **Text generation** (`ITextGenerationService`) is not provided — Semantic Kernel and the wider .NET AI
   stack are chat-centric; use chat completion.
-- **Embeddings** are not provided (the LiteRT-LM C API exposes none at v0.13.1).
+- **Embeddings** are not provided (the LiteRT-LM C API exposes none at v0.14.0).
 - **Not AOT/trim-clean.** Semantic Kernel itself is not; the core `LiteRtLmSharp` package stays
   AOT/trim-friendly, this companion does not carry that guarantee.
 

@@ -251,6 +251,12 @@ When streaming, the usage arrives as a final `UsageContent` update, which MEAI a
 - **Message roles.** `system` / `user` / `assistant` / `tool` are handled. The list must end with a user
   message, or a tool message (the function-calling continuation, appended by `UseFunctionInvocation()` /
   Semantic Kernel); the assistant tool-call turn is restored as history and the tool results are returned.
+  A `system` message is restored through the [`History`](conversation-state.md) path (as a leading
+  `LiteRtMessage.System(...)`), so this connector was **never** affected by the pre-v0.14.0
+  `LiteRtConversationOptions.SystemMessage` bug; it does not use that property.
+- **Engine options.** Any `LiteRtEngineOptions` you pass to `AddLiteRtChatClient` / `new LiteRtChatClient`
+  flows straight through, including the ones added in v0.14.0 (`NumThreads` / `AudioNumThreads`, the LoRA
+  ranks); the connector surface is unchanged.
 - **Testing your app code.** `IChatClient` is the intended seam for unit tests: have your code depend on
   `IChatClient` and substitute a mock/stub in tests — no model file or native binaries needed. The core
   types (`LiteRtEngine` / `LiteRtConversation`) are sealed and bound to the native runtime; code that
@@ -260,7 +266,7 @@ When streaming, the usage arrives as a final `UsageContent` update, which MEAI a
 ## Scope
 
 - **Tool calling** is supported (see [Function calling](#function-calling-tools)).
-- **Embeddings**: the LiteRT-LM C API exposes no embeddings functions at v0.13.1, so there is no
+- **Embeddings**: the LiteRT-LM C API exposes no embeddings functions at v0.14.0, so there is no
   `IEmbeddingGenerator`.
 - **Not AOT/trim-clean.** The core `LiteRtLmSharp` package stays AOT/trim-friendly; this companion does not
   carry that guarantee.

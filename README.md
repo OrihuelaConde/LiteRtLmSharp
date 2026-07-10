@@ -355,7 +355,7 @@ tests, set `LITERTLM_TEST_MODEL` (and `LITERTLM_TEST_TOOLS=1`) to a `.litertlm` 
 - [`build-native.yml`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/.github/workflows/build-native.yml)
   — builds `libLiteRtLm.so` / `LiteRtLm.dll` from a pinned LiteRT-LM tag via
   [`native/patch_c_api.sh`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/native/patch_c_api.sh)
-  (adds the shared-lib target upstream lacks — issue #2154), publishes a `native-<tag>` release.
+  (adds our own shared-lib target with Windows exports and a companion rpath, on top of the tag), publishes a `native-<tag>` release.
 - [`pack-nuget.yml`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/.github/workflows/pack-nuget.yml)
   — packs the managed + per-RID runtime packages.
 - [`ci.yml`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/.github/workflows/ci.yml)

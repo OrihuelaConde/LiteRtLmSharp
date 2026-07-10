@@ -70,6 +70,38 @@ ParallelFileSectionLoading = false,   // serial, single-threaded load
 - **When to set `false`:** single-threaded environments (e.g. WASM without pthreads), or to avoid the
   brief concurrent IO/thread peak during init, accepting a slower start.
 
+## CPU thread counts: `NumThreads` / `AudioNumThreads`
+
+How many CPU threads the text and audio executors use. `null` (default) lets the engine pick its own
+count.
+
+```csharp
+NumThreads = 4,        // text executor CPU threads
+AudioNumThreads = 2,   // audio executor CPU threads (only when audio is enabled)
+```
+
+- **CPU backend only.** These set the thread counts for the CPU/XNNPACK executors and are a **no-op on
+  non-CPU backends** (GPU and NPU manage their own parallelism). `AudioNumThreads` applies only when an
+  audio executor is configured (`AudioBackend` set); otherwise it is ignored.
+- **Non-positive values are rejected**: pass a positive count, or leave it `null` for the default.
+- **When to set it:** pin the engine to a subset of cores on a busy machine, or tune throughput on a
+  device where the default (all cores) contends with the rest of the app. More threads help prefill and
+  decode up to the memory-bandwidth limit; past that they only add scheduling contention.
+
+## LoRA adapters: engine ranks and adapter paths
+
+Loading a low-rank adaptation on top of a LoRA-enabled base model has two layers, both added in v0.14.0:
+
+- **Engine-level** `LiteRtEngineOptions.LoraRank` / `SupportedLoraRanks` (and the `AudioLoraRank` /
+  `SupportedAudioLoraRanks` variants) declare the adapter rank(s) the engine compiles for. The
+  supported-ranks lists are only honored on the **GPU (Artisan) backend**.
+- **Per-conversation** `LiteRtConversationOptions.LoraPath` / `AudioLoraPath` point at the adapter file,
+  which is opened when the conversation is created, so a bad path **fails fast** with `LiteRtException`
+  at `CreateConversation`, not mid-generation.
+
+Requires a LoRA-enabled model. This path is **not yet validated end-to-end** against a real adapter (no
+adapter artifact on hand), but the plumbing is in place and the failure modes surface coherently.
+
 ## Benchmarking
 
 ### Measuring real runs — `EnableBenchmark`
