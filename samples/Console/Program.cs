@@ -20,6 +20,7 @@ using LiteRtLmSharp.Sample;
 //                          LiteRtLmSharp.Sample <model.litertlm> --spec     (speculative decoding)
 //                          LiteRtLmSharp.Sample <model.litertlm> --thinking (reasoning mode)
 //                          LiteRtLmSharp.Sample <model.litertlm> --backend gpu --context 8192
+//                          LiteRtLmSharp.Sample <model.litertlm> --threads 4 (CPU executor thread count)
 
 Console.OutputEncoding = Encoding.UTF8;
 LiteRtEngine.SetMinLogLevel(3); // WARNING+ (early native logs still print to stderr)
@@ -60,7 +61,8 @@ while (true)
             : cache == LiteRtCache.Default ? ""
             : $", cache {cache}";
         Ui.Info($"\nLoading model ({Path.GetFileName(modelPath)}, {backend}, ctx {contextTokens}"
-            + $"{(speculative ? ", speculative" : "")}{(thinking ? ", thinking" : "")}{cacheNote}) …");
+            + $"{(speculative ? ", speculative" : "")}{(thinking ? ", thinking" : "")}{cacheNote}"
+            + $"{(cli.Threads is { } threads ? $", {threads} threads" : "")}) …");
         var sw = Stopwatch.StartNew();
 
         engine = LiteRtEngine.Load(new LiteRtEngineOptions
@@ -71,6 +73,7 @@ while (true)
             EnableSpeculativeDecoding = speculative, // MTP drafter → faster decode (supported models)
             EnableBenchmark = true,     // so the gauge can show decode tok/s and time-to-first-token
             Cache = cache,              // Default = next to model; Disabled for GPU+spec
+            NumThreads = cli.Threads,   // CPU text-executor thread count; null = engine default (CPU-only, no-op on GPU)
         });
 
         Ui.Success($"Engine ready in {sw.Elapsed.TotalSeconds:F1}s.\n");
@@ -86,7 +89,7 @@ while (true)
         // Scripted modes (kept for testing/automation).
         if (cli.ToolsMode)
         {
-            RunToolsDemo(engine);
+            await RunToolsDemo(engine);
             return 0;
         }
         if (cli.OneShotPrompt is not null)
@@ -133,7 +136,7 @@ static async Task<bool> MainMenuAsync(
             switch (Ui.Pick(1, 7))
             {
                 case 1: await ChatLoopAsync(chat, contextTokens); break;
-                case 2: RunToolsDemo(engine); break;
+                case 2: await RunToolsDemo(engine); break;
                 case 3: RunTokenizerDemo(engine); break;
                 case 4: chat.Dispose(); chat = NewChat(engine, thinking); Ui.Success("Started a fresh conversation."); break;
                 case 5: return true;
@@ -254,9 +257,10 @@ static string BenchSuffix(LiteRtConversation chat)
 
 // ──────────────────── Function calling (tools) ────────────────────
 
-static void RunToolsDemo(LiteRtEngine engine)
+static async Task RunToolsDemo(LiteRtEngine engine)
 {
-    Ui.Info("\nFunction-calling demo — asks the model for the weather, runs a mock tool, feeds it back.\n");
+    Ui.Info("\nFunction-calling demo — asks the model for the weather, runs a mock tool, feeds it back.\n"
+        + "Streams the tool call as the model builds it (StreamToolCalls), then runs the parsed call.\n");
 
     // 1. Describe the tool (JSON Schema parameters, OpenAI/Gemini style).
     var weatherTool = new LiteRtTool(
@@ -266,24 +270,51 @@ static void RunToolsDemo(LiteRtEngine engine)
         {"type":"object","properties":{"location":{"type":"string","description":"City, e.g. Tokyo"},"unit":{"type":"string","enum":["celsius","fahrenheit"]}},"required":["location"]}
         """);
 
-    // 2. Tools are fixed per conversation; constrained decoding forces well-formed calls.
+    // 2. Tools are fixed per conversation; constrained decoding forces well-formed calls. StreamToolCalls
+    //    makes SendStreamingAsync surface the raw tool-call text as it is generated (ToolCallDelta chunks),
+    //    ahead of the complete, parsed ToolCall chunk — a live progress view of the call forming.
     using var conv = engine.CreateConversation(new LiteRtConversationOptions
     {
         SystemMessage = "You are a helpful assistant. Use the available tools when needed.",
         Tools = [weatherTool],
         EnableConstrainedDecoding = true,
+        StreamToolCalls = true,
         MaxOutputTokens = 256,
     });
 
     const string prompt = "What's the weather in Tokyo in celsius?";
     Ui.Write("You: ", ConsoleColor.Cyan); Console.WriteLine(prompt);
 
-    // 3. The model either answers directly or asks us to run tools.
-    LiteRtResponse response = conv.Send(prompt);
-    if (response.IsToolCall)
+    // 3. Stream the reply. ToolCallDelta chunks are raw, unparsed progress fragments — print them as a live
+    //    "building the call" line, but NEVER act on them; act on the complete ToolCall chunk that follows.
+    //    Answer chunks appear instead when the model just answers without calling a tool.
+    var toolCalls = new List<LiteRtToolCall>();
+    bool building = false, answering = false;
+    await foreach (LiteRtStreamChunk chunk in conv.SendStreamingAsync(prompt))
+    {
+        switch (chunk.Kind)
+        {
+            case LiteRtStreamChunkKind.ToolCallDelta:
+                if (!building) { Ui.Write("  building call: ", ConsoleColor.DarkMagenta); building = true; }
+                Ui.Write(chunk.Text, ConsoleColor.DarkMagenta); // live fragments as the model writes the call
+                break;
+            case LiteRtStreamChunkKind.ToolCall:
+                if (building) Console.WriteLine();
+                toolCalls.AddRange(chunk.ToolCalls); // the parsed call — this is what we execute
+                break;
+            case LiteRtStreamChunkKind.Answer:
+                if (!answering) { if (building) Console.WriteLine(); Ui.Write("Model (no tool call): ", ConsoleColor.Green); answering = true; }
+                Console.Write(chunk.Text);
+                break;
+        }
+    }
+    if (answering) Console.WriteLine();
+
+    // 4. Run each parsed call and feed the results back; the model writes the final answer.
+    if (toolCalls.Count > 0)
     {
         var results = new List<LiteRtToolResult>();
-        foreach (LiteRtToolCall call in response.ToolCalls)
+        foreach (LiteRtToolCall call in toolCalls)
         {
             Ui.WriteLine($"  → tool call: {call.Name}({call.ArgumentsJson})", ConsoleColor.Magenta);
             string result = ExecuteTool(call); // ← your code runs the tool
@@ -291,14 +322,10 @@ static void RunToolsDemo(LiteRtEngine engine)
             results.Add(new LiteRtToolResult(call.Name, result));
         }
 
-        // 4. Feed the results back; the model writes the final answer.
         Ui.Write("Model: ", ConsoleColor.Green);
-        Console.WriteLine(conv.SendToolResults(results).Text);
-    }
-    else
-    {
-        Ui.Write("Model (no tool call): ", ConsoleColor.Green);
-        Console.WriteLine(response.Text);
+        // Per-send cap: the tool call needed room (conversation cap 256), but the final summary can be
+        // short — LiteRtSendOptions.MaxOutputTokens overrides the conversation cap for this one send.
+        Console.WriteLine(conv.SendToolResults(results, new LiteRtSendOptions { MaxOutputTokens = 128 }).Text);
     }
 }
 
@@ -341,11 +368,29 @@ static void RunTokenizerDemo(LiteRtEngine engine)
     Ui.WriteLine($"  stop tokens: {(stops.Length > 0 ? stops : "(none)")}", ConsoleColor.Gray);
 
     // 4. The model never sees the raw text — it sees it wrapped in the chat template. Render the same
-    //    text (without sending) and tokenize THAT for the real per-turn cost, template included.
-    using var conv = engine.CreateConversation();
+    //    text (without sending) and tokenize THAT for the real per-turn cost, template included. Give the
+    //    conversation a system message so the preface in step 5 has something to render.
+    using var conv = engine.CreateConversation(new LiteRtConversationOptions
+    {
+        SystemMessage = "You are a concise, helpful assistant.",
+    });
     string templated = conv.RenderMessage(text);
     Ui.WriteLine($"  templated prompt — {engine.Tokenize(templated).Length} tokens (what the model actually sees):", ConsoleColor.White);
     Ui.WriteLine("  " + templated.TrimEnd().Replace("\n", "\n  "), ConsoleColor.DarkGray);
+
+    // 5. The preface is the templated preamble before the first user turn (system message + any tools +
+    //    restored history). RenderPreface shows it without sending; tokenize it for the up-front cost the
+    //    system prompt adds once per conversation. Complements RenderMessage; needs the v0.14.0+ runtime.
+    try
+    {
+        string preface = conv.RenderPreface();
+        Ui.WriteLine($"  preface: {engine.Tokenize(preface).Length} tokens (system prompt, rendered once up front):", ConsoleColor.White);
+        Ui.WriteLine("  " + preface.TrimEnd().Replace("\n", "\n  "), ConsoleColor.DarkGray);
+    }
+    catch (EntryPointNotFoundException)
+    {
+        Ui.WriteLine("  (RenderPreface needs the v0.14.0+ native runtime)", ConsoleColor.DarkGray);
+    }
 }
 
 // First few token ids, abbreviated so a long input stays readable.

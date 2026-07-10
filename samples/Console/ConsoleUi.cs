@@ -9,12 +9,13 @@ namespace LiteRtLmSharp.Sample;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// <summary>Parsed command-line arguments for the scripted (non-interactive) modes.</summary>
-record CliArgs(string? ModelPath, string Backend, string? OneShotPrompt, bool ToolsMode, int ContextTokens, bool Speculative, bool Thinking, LiteRtCache? Cache)
+record CliArgs(string? ModelPath, string Backend, string? OneShotPrompt, bool ToolsMode, int ContextTokens, bool Speculative, bool Thinking, LiteRtCache? Cache, int? Threads)
 {
     public static CliArgs Parse(string[] args)
     {
         string? model = null, prompt = null;
         LiteRtCache? cache = null;
+        int? threads = null;
         string backend = "cpu";
         bool tools = false, spec = false, thinking = false;
         int ctx = 4096;
@@ -29,6 +30,8 @@ record CliArgs(string? ModelPath, string Backend, string? OneShotPrompt, bool To
                 case "--thinking": thinking = true; break;
                 case "--backend" when i + 1 < args.Length: backend = args[++i]; break;
                 case "--context" when i + 1 < args.Length && int.TryParse(args[i + 1], out int c): ctx = c; i++; break;
+                // --threads <n>: CPU executor thread count (null leaves the engine default; CPU-backend only).
+                case "--threads" when i + 1 < args.Length && int.TryParse(args[i + 1], out int th): threads = th; i++; break;
                 // --cache <disk|no|memory|PATH>: disk = default (next to model), no/memory map to the
                 // engine sentinels, anything else is treated as a cache directory path.
                 case "--cache" when i + 1 < args.Length: cache = CacheArg(args[++i]); break;
@@ -36,7 +39,7 @@ record CliArgs(string? ModelPath, string Backend, string? OneShotPrompt, bool To
             }
         }
         if (rest.Count > 0) { model = rest[0]; if (rest.Count > 1) prompt = string.Join(' ', rest.Skip(1)); }
-        return new CliArgs(model, backend, prompt, tools, ctx, spec, thinking, cache);
+        return new CliArgs(model, backend, prompt, tools, ctx, spec, thinking, cache, threads);
     }
 
     private static LiteRtCache? CacheArg(string v) => v.ToLowerInvariant() switch
