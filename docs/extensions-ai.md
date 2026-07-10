@@ -221,6 +221,72 @@ content-less `ChatResponseUpdate` whose `AdditionalProperties` carries the fragm
 that the following tool-call update carries. Without `StreamToolCalls` no such updates are emitted, so it is
 invisible unless you opt in.
 
+## Stateful conversations (opt-in)
+
+By default the client is **stateless**: it rebuilds a fresh `LiteRtConversation` from the full message list
+every call (see [Design](#design)). You can instead opt into **stateful conversations**, where the client
+keeps the live native conversation alive between calls and resumes it, so each turn re-prefills only the new
+messages rather than the whole thread. This is Microsoft.Extensions.AI's canonical stateful-provider contract,
+built on `ChatResponse.ConversationId` / `ChatOptions.ConversationId`.
+
+Pass a `LiteRtStatefulConversationOptions` to the constructor (or a DI registration) to turn it on:
+
+```csharp
+using LiteRtLmSharp;
+using LiteRtLmSharp.Extensions.AI;
+using Microsoft.Extensions.AI;
+
+using IChatClient client = new LiteRtChatClient(
+    engine, modelId: "gemma-4-E2B-it",
+    statefulConversations: new LiteRtStatefulConversationOptions { MaxLiveConversations = 8 });
+
+// ... or via DI (the option flows to the registered client):
+services.AddLiteRtChatClient(engineOptions, statefulConversations: new LiteRtStatefulConversationOptions());
+```
+
+Then follow the canonical MEAI loop: the first response carries a `ConversationId`; set it on the options and
+send only the new user message on each subsequent turn.
+
+```csharp
+var options = new ChatOptions();
+List<ChatMessage> outgoing = [new(ChatRole.User, "Remember that my favorite color is teal.")];
+
+while (true)
+{
+    ChatResponse response = await client.GetResponseAsync(outgoing, options);
+    Console.WriteLine(response.Text);
+
+    // Reuse the id and send ONLY the next turn's new messages (the live conversation keeps the rest):
+    options.ConversationId = response.ConversationId;
+    outgoing = [new(ChatRole.User, Console.ReadLine()!)];
+}
+```
+
+Because the response now carries a non-null `ConversationId`, `UseFunctionInvocation()` becomes incremental
+too: `FunctionInvokingChatClient` sends only the new function-result message(s) on its next iteration (with
+the id set) instead of replaying the accumulated history, so multi-round tool loops resume the same live
+conversation with no extra work on your part.
+
+What is fixed once a conversation is created (and therefore **ignored** on a continuation, i.e. any call that
+carries a `ConversationId`):
+
+- the sampler, thinking mode, tools, constrained decoding, the system message, and any template values;
+- only the per-send `ChatOptions.MaxOutputTokens` still applies on a continuation (it is resolved per send);
+- a **system message on a continuation throws** `InvalidOperationException` (the preface cannot be rewritten).
+  To change any fixed setting, start a new conversation by omitting `ConversationId`.
+
+Lifetime and eviction:
+
+- live conversations are held in an LRU cache bounded by `MaxLiveConversations` (default 8);
+- creating a new conversation beyond the cap evicts and disposes the least-recently-used one;
+- a request whose `ConversationId` was evicted, or was never issued by this client, throws
+  `ArgumentException`;
+- disposing the client disposes every live conversation. There is no time-based expiry in this mode, so size
+  the cap for your concurrency.
+
+`ChatResponse.Usage.TotalTokenCount` in this mode is the conversation's **cumulative** KV-cache size, so it
+grows across the thread (rather than resetting per call as in the stateless mode).
+
 ## Multimodal (image / audio)
 
 On a multimodal model, attach an image or audio clip to the final user message as a `DataContent` (inline
@@ -276,11 +342,13 @@ When streaming, the usage arrives as a final `UsageContent` update, which MEAI a
 
 ## Design
 
-- **Stateless.** `IChatClient` hands the full message list every call, so the client rebuilds a *fresh*
-  `LiteRtConversation` each time — prior messages restored as
+- **Stateless by default.** `IChatClient` hands the full message list every call, so the client rebuilds a
+  *fresh* `LiteRtConversation` each time — prior messages restored as
   [`History`](conversation-state.md) (replayed through prefill), the final user turn sent. This keeps the
   caller's history and the model's KV cache in lockstep. The cost is an `O(history)` prefill per turn; for
-  very long chats, drive the native [`LiteRtConversation`](conversation-state.md) API directly.
+  very long chats, opt into [stateful conversations](#stateful-conversations-opt-in) (keep the live native
+  conversation alive between calls and re-prefill only the new turn) or drive the native
+  [`LiteRtConversation`](conversation-state.md) API directly.
 - **Serialized.** LiteRtLmSharp allows one live engine per process and conversations are not thread-safe, so
   the client serializes calls through an internal `SemaphoreSlim`.
 - **Engine ownership.** Pass a `LiteRtEngine` you own (you dispose it), or register from

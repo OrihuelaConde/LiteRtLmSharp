@@ -33,6 +33,24 @@ match). The managed surface is source-compatible with 1.0.0 — all changes belo
   `LiteRtStreamChunkKind.ToolCallDelta` chunks (incremental, unparsed progress fragments) before the
   usual complete `ToolCall` chunk. Default off — without it a tool-call block keeps today's behavior
   (silence until the parsed call arrives whole). Progress display only; act on the final parsed chunk.
+- **`.NET AI connectors` — opt-in stateful conversations (MEAI `ConversationId` contract)** —
+  `LiteRtChatClient` can now keep the live native `LiteRtConversation` alive between calls instead of
+  rebuilding it from the full message list each turn. Opt in with a new `LiteRtStatefulConversationOptions`
+  on the constructor and on both `AddLiteRtChatClient(...)` and Semantic Kernel's `AddLiteRtChatCompletion(...)`
+  overloads (an appended optional parameter; `null` = today's stateless behavior, byte-identical). When
+  enabled the client implements Microsoft.Extensions.AI's canonical stateful-provider contract: the first
+  call (no `ChatOptions.ConversationId`) returns a `ChatResponse.ConversationId`, and setting that id on the
+  next request sends only the not-yet-seen messages (typically just the new user turn) to resume the live
+  conversation with no history re-prefill, so each turn costs only its own tokens. Because a non-null
+  `ConversationId` makes `FunctionInvokingChatClient` (`UseFunctionInvocation()`) send only the new
+  function-result message(s) on its next iteration, multi-round tool loops become incremental automatically.
+  The conversation's session settings (sampler, thinking, tools, constrained decoding, system message,
+  template values) are fixed when it is created; on a continuation those per-request knobs are ignored (only
+  the per-send `MaxOutputTokens` still applies) and a system message throws. Live conversations are held in
+  an LRU cache bounded by `MaxLiveConversations` (default 8); creating a new one beyond the cap evicts and
+  disposes the least-recently-used, and a request naming an evicted or unknown id throws `ArgumentException`.
+  Disposing the client disposes all live conversations. `ChatResponse.Usage.TotalTokenCount` now reflects the
+  conversation's cumulative total across the stateful thread. See `docs/extensions-ai.md`.
 - **`.NET AI connectors` — per-client conversation-options template** — `LiteRtChatClient` takes an
   optional `LiteRtConversationOptions optionsTemplate`, and the DI registrations expose it too
   (`AddLiteRtChatClient(...)` and Semantic Kernel's `AddLiteRtChatCompletion(...)`). It surfaces the

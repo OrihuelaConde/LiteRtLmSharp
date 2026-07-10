@@ -19,16 +19,21 @@ public static class LiteRtChatClientServiceCollectionExtensions
     /// <param name="engine">The loaded engine (you dispose it, after the container-resolved client).</param>
     /// <param name="modelId">Optional model id surfaced on the chat client's metadata.</param>
     /// <param name="optionsTemplate">Optional per-client conversation-options template applied to every call
-    /// (see <see cref="LiteRtChatClient(LiteRtEngine, string, LiteRtConversationOptions)"/> for the merge rules).
+    /// (see <see cref="LiteRtChatClient(LiteRtEngine, string, LiteRtConversationOptions, LiteRtStatefulConversationOptions)"/> for the merge rules).
     /// Must not set <see cref="LiteRtConversationOptions.History"/> / <see cref="LiteRtConversationOptions.HistoryJson"/>
     /// (history is per-call) — rejected here, at registration.</param>
+    /// <param name="statefulConversations">Optional opt-in to stateful conversations (see
+    /// <see cref="LiteRtStatefulConversationOptions"/>). <c>null</c> (default) = stateless, today's behavior.
+    /// After enabling, propagate <c>response.ConversationId</c> into <c>ChatOptions.ConversationId</c> and send
+    /// only the new messages each turn (the <see cref="LiteRtChatClient"/> constructor docs show the loop);
+    /// function-invocation and agent-thread layers do this automatically.</param>
     /// <exception cref="ArgumentException">The template sets <c>History</c> or <c>HistoryJson</c>.</exception>
-    public static IServiceCollection AddLiteRtChatClient(this IServiceCollection services, LiteRtEngine engine, string? modelId = null, LiteRtConversationOptions? optionsTemplate = null)
+    public static IServiceCollection AddLiteRtChatClient(this IServiceCollection services, LiteRtEngine engine, string? modelId = null, LiteRtConversationOptions? optionsTemplate = null, LiteRtStatefulConversationOptions? statefulConversations = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(engine);
         LiteRtChatMapping.ValidateTemplate(optionsTemplate);   // fail at registration, not first use
-        return Register(services, _ => engine, modelId, optionsTemplate);
+        return Register(services, _ => engine, modelId, optionsTemplate, statefulConversations);
     }
 
     /// <summary>Registers a <see cref="LiteRtChatClient"/> from <paramref name="options"/>; the container loads,
@@ -39,17 +44,22 @@ public static class LiteRtChatClientServiceCollectionExtensions
     /// <param name="eager">When <c>true</c>, load the engine now (a bad model path/backend throws here);
     /// otherwise it is loaded lazily on first use.</param>
     /// <param name="optionsTemplate">Optional per-client conversation-options template applied to every call
-    /// (see <see cref="LiteRtChatClient(LiteRtEngine, string, LiteRtConversationOptions)"/> for the merge rules).
+    /// (see <see cref="LiteRtChatClient(LiteRtEngine, string, LiteRtConversationOptions, LiteRtStatefulConversationOptions)"/> for the merge rules).
     /// Must not set <see cref="LiteRtConversationOptions.History"/> / <see cref="LiteRtConversationOptions.HistoryJson"/>
     /// (history is per-call) — rejected here, at registration.</param>
+    /// <param name="statefulConversations">Optional opt-in to stateful conversations (see
+    /// <see cref="LiteRtStatefulConversationOptions"/>). <c>null</c> (default) = stateless, today's behavior.
+    /// After enabling, propagate <c>response.ConversationId</c> into <c>ChatOptions.ConversationId</c> and send
+    /// only the new messages each turn (the <see cref="LiteRtChatClient"/> constructor docs show the loop);
+    /// function-invocation and agent-thread layers do this automatically.</param>
     /// <exception cref="ArgumentException">The template sets <c>History</c> or <c>HistoryJson</c>.</exception>
-    public static IServiceCollection AddLiteRtChatClient(this IServiceCollection services, LiteRtEngineOptions options, string? modelId = null, bool eager = false, LiteRtConversationOptions? optionsTemplate = null)
+    public static IServiceCollection AddLiteRtChatClient(this IServiceCollection services, LiteRtEngineOptions options, string? modelId = null, bool eager = false, LiteRtConversationOptions? optionsTemplate = null, LiteRtStatefulConversationOptions? statefulConversations = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
         LiteRtChatMapping.ValidateTemplate(optionsTemplate);   // fail at registration, not first use
         RegisterSharedEngine(services, options, eager);
-        return Register(services, static sp => sp.GetRequiredService<LiteRtEngine>(), modelId, optionsTemplate);
+        return Register(services, static sp => sp.GetRequiredService<LiteRtEngine>(), modelId, optionsTemplate, statefulConversations);
     }
 
     // One engine per process: register the shared engine singleton once (idempotent), owned by the container.
@@ -69,11 +79,11 @@ public static class LiteRtChatClientServiceCollectionExtensions
         }
     }
 
-    private static IServiceCollection Register(IServiceCollection services, Func<IServiceProvider, LiteRtEngine> engine, string? modelId, LiteRtConversationOptions? optionsTemplate)
+    private static IServiceCollection Register(IServiceCollection services, Func<IServiceProvider, LiteRtEngine> engine, string? modelId, LiteRtConversationOptions? optionsTemplate, LiteRtStatefulConversationOptions? statefulConversations)
     {
         // TryAdd so the IChatClient is registered once (one engine/gate per process); the Semantic Kernel
         // package reusing this shares the one client.
-        services.TryAddSingleton<IChatClient>(sp => new LiteRtChatClient(engine(sp), modelId, optionsTemplate));
+        services.TryAddSingleton<IChatClient>(sp => new LiteRtChatClient(engine(sp), modelId, optionsTemplate, statefulConversations));
         return services;
     }
 }

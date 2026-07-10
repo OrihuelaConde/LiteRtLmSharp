@@ -67,6 +67,83 @@ internal static class LiteRtChatMapping
             $"(the last message's role was '{last.Role.Value}').", nameof(messages));
     }
 
+    /// <summary>
+    /// Maps a <b>continuation</b> request on an existing stateful conversation (the caller set
+    /// <see cref="ChatOptions.ConversationId"/>) to the action that triggers generation. Unlike
+    /// <see cref="Split"/>, there is <b>no</b> history: the live native conversation already holds every prior
+    /// turn, so per the MEAI stateful contract the incoming <paramref name="messages"/> are only the ones the
+    /// provider has not seen yet — typically the new user turn, or the results of executed tools (the
+    /// function-calling continuation). The last message decides the trigger: a <see cref="ChatRole.User"/>
+    /// message sends its text (and any image/audio); a <see cref="ChatRole.Tool"/> message returns its
+    /// function results. Any assistant / model turn in the incoming list is ignored (the native conversation
+    /// already holds it, and <c>FunctionInvokingChatClient</c> does not resend it). A
+    /// <see cref="ChatRole.System"/> message throws <see cref="InvalidOperationException"/>: a live
+    /// conversation's preface is fixed at creation and cannot be rewritten mid-thread.
+    /// </summary>
+    /// <param name="messages">The new, not-yet-seen messages for this turn.</param>
+    /// <param name="knownCallIdToName">The synthesized-call-id → tool-name map accumulated on the stored
+    /// conversation as it emitted tool calls. Authoritative for resolving a <see cref="FunctionResultContent"/>'s
+    /// tool name, because the assistant turn that named the call is not resent on a continuation.</param>
+    /// <exception cref="ArgumentException">The list is empty, ends with an unsupported role, or a final tool
+    /// message carried no results.</exception>
+    /// <exception cref="InvalidOperationException">A system message was included.</exception>
+    public static SendTrigger SplitContinuation(
+        IEnumerable<ChatMessage> messages, IReadOnlyDictionary<string, string> knownCallIdToName)
+    {
+        ArgumentNullException.ThrowIfNull(messages);
+        IReadOnlyList<ChatMessage> list = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
+        if (list.Count == 0)
+            throw new ArgumentException(
+                "The continuation message list is empty; send the new user message (or the tool results).",
+                nameof(messages));
+
+        // A system message cannot re-preface a live conversation (the preface is fixed at creation).
+        foreach (ChatMessage m in list)
+            if (m.Role == ChatRole.System)
+                throw new InvalidOperationException(
+                    "A system message cannot be sent on an existing stateful conversation (ChatOptions." +
+                    "ConversationId is set): the system prompt is fixed when the conversation is created. " +
+                    "On a continuation send ONLY the new messages (typically just the latest user turn or " +
+                    "the tool results), not the full history. Start a new conversation (omit ConversationId) " +
+                    "to change the system prompt.");
+
+        // Resolve tool names from the conversation's accumulated map first (the assistant tool-call turn is
+        // not resent on a continuation), supplemented by any FunctionCallContent present in this list.
+        IReadOnlyDictionary<string, string> callIdToName = MergeCallIdToName(knownCallIdToName, list);
+
+        ChatMessage last = list[list.Count - 1];
+
+        if (last.Role == ChatRole.Tool)
+        {
+            IReadOnlyList<LiteRtToolResult> results = ToToolResults(last, callIdToName);
+            if (results.Count == 0)
+                throw new ArgumentException(
+                    "The final tool message carried no function results to return to the model.", nameof(messages));
+            return new SendTrigger(null, results, null);
+        }
+
+        if (last.Role == ChatRole.User)
+            return new SendTrigger(last.Text ?? string.Empty, null, ToAttachments(last));
+
+        throw new ArgumentException(
+            $"A continuation request must end with a user message, or a tool message carrying function results " +
+            $"(the last message's role was '{last.Role.Value}').", nameof(messages));
+    }
+
+    /// <summary>Overlays any <see cref="FunctionCallContent"/> ids found in <paramref name="list"/> onto the
+    /// conversation's accumulated <paramref name="known"/> map (the list wins for a shared id), returning the
+    /// combined view. Returns <paramref name="known"/> unchanged when the list adds nothing.</summary>
+    private static IReadOnlyDictionary<string, string> MergeCallIdToName(
+        IReadOnlyDictionary<string, string> known, IReadOnlyList<ChatMessage> list)
+    {
+        Dictionary<string, string>? merged = null;
+        foreach (ChatMessage m in list)
+            foreach (AIContent c in m.Contents)
+                if (c is FunctionCallContent { CallId: { Length: > 0 } id } call)
+                    (merged ??= new Dictionary<string, string>(known, StringComparer.Ordinal))[id] = call.Name;
+        return merged ?? known;
+    }
+
     /// <summary>Maps every <see cref="FunctionCallContent"/>'s <c>CallId</c> in the conversation to its tool name.</summary>
     private static IReadOnlyDictionary<string, string> BuildCallIdToName(IReadOnlyList<ChatMessage> list)
     {
