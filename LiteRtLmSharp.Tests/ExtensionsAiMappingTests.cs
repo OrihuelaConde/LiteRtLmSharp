@@ -56,19 +56,45 @@ public class ExtensionsAiMappingTests
     }
 
     [Fact]
-    public void ToConversationOptions_MapsSamplerAndMaxTokens()
+    public void ToConversationOptions_MapsSampler_AndDoesNotCarryMaxTokens()
     {
         var opts = new ChatOptions { Temperature = 0.3f, TopP = 0.8f, TopK = 20, MaxOutputTokens = 128 };
 
         LiteRtConversationOptions? conv = LiteRtChatMapping.ToConversationOptions([], opts);
 
         Assert.NotNull(conv);
-        Assert.Equal(128, conv!.MaxOutputTokens);
+        // MaxOutputTokens is a MEAI per-request option and maps to the per-send cap (ToSendOptions), not the
+        // conversation-level session config — so the conversation options never carry it.
+        Assert.Equal(0, conv!.MaxOutputTokens);
         Assert.NotNull(conv.Sampler);
         Assert.Equal(LiteRtSamplerType.TopP, conv.Sampler!.Strategy);
         Assert.Equal(0.3f, conv.Sampler.Temperature, 3);
         Assert.Equal(0.8f, conv.Sampler.TopP, 3);
         Assert.Equal(20, conv.Sampler.TopK);
+    }
+
+    [Fact]
+    public void ToConversationOptions_OnlyMaxTokens_ReturnsNull()
+    {
+        // With no history/sampler/thinking/tools/constrained set, an output cap alone no longer forces a
+        // conversation config: the cap rides the per-send options instead, so a plain conversation is created.
+        Assert.Null(LiteRtChatMapping.ToConversationOptions([], new ChatOptions { MaxOutputTokens = 256 }));
+    }
+
+    [Fact]
+    public void ToSendOptions_MapsMaxOutputTokens()
+    {
+        LiteRtSendOptions? send = LiteRtChatMapping.ToSendOptions(new ChatOptions { MaxOutputTokens = 128 });
+        Assert.NotNull(send);
+        Assert.Equal(128, send!.MaxOutputTokens);
+    }
+
+    [Fact]
+    public void ToSendOptions_NoMaxTokens_ReturnsNull()
+    {
+        Assert.Null(LiteRtChatMapping.ToSendOptions(null));
+        Assert.Null(LiteRtChatMapping.ToSendOptions(new ChatOptions()));
+        Assert.Null(LiteRtChatMapping.ToSendOptions(new ChatOptions { Temperature = 0.5f }));
     }
 
     [Fact]
@@ -227,7 +253,9 @@ public class ExtensionsAiMappingTests
     public void ToTools_None_AdvertisesNoTools()
     {
         AIFunction fn = AIFunctionFactory.Create((string city) => "x", name: "get_weather", description: "d");
-        var opts = new ChatOptions { Tools = [fn], ToolMode = ChatToolMode.None, MaxOutputTokens = 50 };
+        // Temperature keeps the conversation options non-null (the output cap now rides the per-send options,
+        // so it no longer forces a config); the point of the test is that None advertises no tools.
+        var opts = new ChatOptions { Tools = [fn], ToolMode = ChatToolMode.None, Temperature = 0.5f };
 
         LiteRtConversationOptions? conv = LiteRtChatMapping.ToConversationOptions([], opts);
         Assert.NotNull(conv);
@@ -340,6 +368,50 @@ public class ExtensionsAiMappingTests
         Assert.Equal(120L, u.TotalTokenCount!.Value);
         Assert.Equal(30L, u.InputTokenCount!.Value);
         Assert.Equal(90L, u.OutputTokenCount!.Value);
+    }
+
+    // ─────────────────────── Streaming chunk → MEAI content mapping ───────────────────────
+
+    [Fact]
+    public void ToStreamingTextContent_AnswerDelta_BecomesTextContent()
+    {
+        AIContent? content = LiteRtChatMapping.ToStreamingTextContent(LiteRtStreamChunk.Answer("hi"));
+        TextContent text = Assert.IsType<TextContent>(content);
+        Assert.Equal("hi", text.Text);
+    }
+
+    [Fact]
+    public void ToStreamingTextContent_ThinkingDelta_BecomesReasoningContent()
+    {
+        AIContent? content = LiteRtChatMapping.ToStreamingTextContent(LiteRtStreamChunk.Thinking("pondering"));
+        TextReasoningContent reasoning = Assert.IsType<TextReasoningContent>(content);
+        Assert.Equal("pondering", reasoning.Text);
+    }
+
+    [Fact]
+    public void ToStreamingTextContent_ToolCallChunk_IsIgnored()
+    {
+        // ToolCall chunks are surfaced separately by the client (FunctionCallContent + finish reason), so the
+        // text-content mapper contributes nothing for them.
+        var chunk = LiteRtStreamChunk.Tools([new LiteRtToolCall("get_weather", "{}")]);
+        Assert.Null(LiteRtChatMapping.ToStreamingTextContent(chunk));
+    }
+
+    [Fact]
+    public void ToStreamingTextContent_ToolCallDelta_IsIgnored()
+    {
+        // Defensive: the opt-in v0.14.0 ToolCallDelta progress fragment must never reach the text stream (the
+        // connector never enables StreamToolCalls, but if a ToolCallDelta ever appeared it is dropped, not
+        // mis-surfaced as answer/reasoning text — an unknown chunk kind can't break streaming).
+        LiteRtStreamChunk delta = LiteRtStreamChunk.ToolCallDelta("""{"name":"get_""");
+        Assert.Equal(LiteRtStreamChunkKind.ToolCallDelta, delta.Kind);
+        Assert.Null(LiteRtChatMapping.ToStreamingTextContent(delta));
+    }
+
+    [Fact]
+    public void ToStreamingTextContent_EmptyTextDelta_IsIgnored()
+    {
+        Assert.Null(LiteRtChatMapping.ToStreamingTextContent(default));   // default(chunk) = Answer with empty text
     }
 
     // ─────────────────────── Multimodal (image / audio) ───────────────────────

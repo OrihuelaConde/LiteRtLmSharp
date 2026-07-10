@@ -50,6 +50,13 @@ match). The managed surface is source-compatible with 1.0.0 — all changes belo
 
 ### Changed
 
+- **`.NET AI connector` maps `ChatOptions.MaxOutputTokens` per-send (internal)** — the
+  Microsoft.Extensions.AI `LiteRtChatClient` now maps the MEAI per-request `MaxOutputTokens` to the
+  v0.14.0 per-send cap (`LiteRtSendOptions.MaxOutputTokens`) instead of the conversation-level session
+  config. Behavior-neutral (the client already creates a fresh conversation per call), a more faithful
+  match for MEAI's per-request semantics, and it avoids allocating a session config when the output cap
+  is the only option set. Multimodal-safe: a multimodal engine forces the session config into existence
+  regardless, so the encoder still loads.
 - **Sampler params migration (internal)** — v0.14.0 replaced the by-value `LiteRtLmSamplerParams` struct
   with an opaque builder API (`sampler_params_create` + `set_top_k/top_p/temperature/seed`, copied into
   the session config then deleted). The binding was rewired to the builder; no public surface change.

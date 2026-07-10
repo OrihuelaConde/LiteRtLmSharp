@@ -85,6 +85,9 @@ public sealed class LiteRtChatClient : IChatClient
         // (the native API has no forced tool choice). No-op for Auto/None.
         history = LiteRtChatMapping.WithRequiredToolInstruction(history, options);
         LiteRtConversationOptions? convOptions = LiteRtChatMapping.ToConversationOptions(history, options);
+        // ChatOptions.MaxOutputTokens is a MEAI per-request option, so it maps to the native per-send cap
+        // rather than the conversation-level session config (see LiteRtChatMapping.ToConversationOptions).
+        LiteRtSendOptions? sendOptions = LiteRtChatMapping.ToSendOptions(options);
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -94,8 +97,8 @@ public sealed class LiteRtChatClient : IChatClient
             // (OperationCanceledException). A tool-results trigger is the function-calling continuation:
             // the assistant tool-call turn was restored as history above.
             LiteRtResponse response = trigger.IsToolResults
-                ? await conv.SendToolResultsAsync(trigger.ToolResults!, options: null, cancellationToken).ConfigureAwait(false)
-                : await conv.SendAsync(trigger.UserText!, trigger.Attachments, options: null, cancellationToken).ConfigureAwait(false);
+                ? await conv.SendToolResultsAsync(trigger.ToolResults!, sendOptions, cancellationToken).ConfigureAwait(false)
+                : await conv.SendAsync(trigger.UserText!, trigger.Attachments, sendOptions, cancellationToken).ConfigureAwait(false);
 
             // Reasoning ("thinking") becomes TextReasoningContent (excluded from ChatResponse.Text but kept on
             // Contents). The reply is then either tool calls (FunctionCallContent) or the answer text.
@@ -150,6 +153,9 @@ public sealed class LiteRtChatClient : IChatClient
         // (the native API has no forced tool choice). No-op for Auto/None.
         history = LiteRtChatMapping.WithRequiredToolInstruction(history, options);
         LiteRtConversationOptions? convOptions = LiteRtChatMapping.ToConversationOptions(history, options);
+        // ChatOptions.MaxOutputTokens is a MEAI per-request option, so it maps to the native per-send cap
+        // rather than the conversation-level session config (see LiteRtChatMapping.ToConversationOptions).
+        LiteRtSendOptions? sendOptions = LiteRtChatMapping.ToSendOptions(options);
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         LiteRtConversation? conv = null;
@@ -163,7 +169,7 @@ public sealed class LiteRtChatClient : IChatClient
                 // single awaitable send surfaced as updates (the answer after a tool round is typically short);
                 // the token cancels it mid-generation like the streaming path.
                 LiteRtResponse continuation = await conv.SendToolResultsAsync(
-                    trigger.ToolResults!, options: null, cancellationToken).ConfigureAwait(false);
+                    trigger.ToolResults!, sendOptions, cancellationToken).ConfigureAwait(false);
                 foreach (ChatResponseUpdate update in ToUpdates(continuation))
                     yield return update;
                 yield return UsageUpdate(conv!);
@@ -171,8 +177,8 @@ public sealed class LiteRtChatClient : IChatClient
             }
 
             IAsyncEnumerable<LiteRtStreamChunk> stream = trigger.HasAttachments
-                ? conv.SendStreamingAsync(trigger.UserText!, trigger.Attachments!, options: null, cancellationToken)
-                : conv.SendStreamingAsync(trigger.UserText!, cancellationToken);
+                ? conv.SendStreamingAsync(trigger.UserText!, trigger.Attachments!, sendOptions, cancellationToken)
+                : conv.SendStreamingAsync(trigger.UserText!, attachments: null, sendOptions, cancellationToken);
 
             int toolCallIndex = 0;   // monotonic across the whole stream so synthesized call ids stay unique
             bool sawAnswer = false, sawReasoning = false, sawToolCall = false;
@@ -198,12 +204,9 @@ public sealed class LiteRtChatClient : IChatClient
                     continue;
                 }
 
-                AIContent? content = chunk.Kind switch
-                {
-                    LiteRtStreamChunkKind.Answer when chunk.Text.Length > 0 => new TextContent(chunk.Text),
-                    LiteRtStreamChunkKind.Thinking when chunk.Text.Length > 0 => new TextReasoningContent(chunk.Text),
-                    _ => null,
-                };
+                // Answer/Thinking deltas map to text/reasoning content; every other kind (including an opt-in
+                // ToolCallDelta progress fragment, or any future kind) is ignored so it can't break the stream.
+                AIContent? content = LiteRtChatMapping.ToStreamingTextContent(chunk);
                 if (content is not null)
                 {
                     if (content is TextReasoningContent) sawReasoning = true; else sawAnswer = true;

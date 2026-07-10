@@ -184,29 +184,66 @@ internal static class LiteRtChatMapping
 
     /// <summary>
     /// Builds the <see cref="LiteRtConversationOptions"/> for a request, or <c>null</c> when there is nothing
-    /// to set (no history, options, or tools) so a plain conversation is created.
+    /// to set (no history, sampler, thinking, tools, or constrained decoding) so a plain conversation is created.
     /// </summary>
+    /// <remarks>
+    /// <see cref="ChatOptions.MaxOutputTokens"/> is deliberately <b>not</b> mapped here — it is a MEAI
+    /// per-request option, so the connector maps it to the native per-send cap (see <see cref="ToSendOptions"/>)
+    /// rather than the conversation-level session config. The client creates a fresh conversation per call, so
+    /// the two scopes are behaviorally identical for the output cap; per-send is the more faithful mapping and
+    /// avoids allocating a session config when the output cap is the only option set. This is safe for the
+    /// multimodal encoder side effect: a multimodal engine forces the session config into existence regardless
+    /// (see <c>LiteRtConversation.Create</c>'s <c>engineIsMultimodal</c> branch), so dropping the output cap
+    /// from these options can never flip that behavior; the per-send cap likewise never creates a session config.
+    /// </remarks>
     public static LiteRtConversationOptions? ToConversationOptions(IReadOnlyList<LiteRtMessage> history, ChatOptions? options)
     {
         LiteRtSamplerParams? sampler = ToSampler(options);
         bool? enableThinking = GetEnableThinking(options);
         bool constrained = GetConstrainedDecoding(options);
         IReadOnlyList<LiteRtTool>? tools = ToTools(options);
-        int maxOutput = options?.MaxOutputTokens ?? 0;
 
-        if (history.Count == 0 && sampler is null && maxOutput == 0 && enableThinking is null && tools is null && !constrained)
+        if (history.Count == 0 && sampler is null && enableThinking is null && tools is null && !constrained)
             return null;
 
         return new LiteRtConversationOptions
         {
             History = history.Count > 0 ? history : null,
             Sampler = sampler,
-            MaxOutputTokens = maxOutput,
             EnableThinking = enableThinking,
             Tools = tools,
             EnableConstrainedDecoding = constrained,
         };
     }
+
+    /// <summary>
+    /// Builds the per-send <see cref="LiteRtSendOptions"/> for a request from the MEAI per-request options, or
+    /// <c>null</c> when there is nothing to set. Maps <see cref="ChatOptions.MaxOutputTokens"/> to the native
+    /// per-send output cap (<see cref="LiteRtSendOptions.MaxOutputTokens"/>) — see <see cref="ToConversationOptions"/>
+    /// for why the per-send scope is used.
+    /// </summary>
+    public static LiteRtSendOptions? ToSendOptions(ChatOptions? options)
+    {
+        int maxOutput = options?.MaxOutputTokens ?? 0;
+        return maxOutput > 0 ? new LiteRtSendOptions { MaxOutputTokens = maxOutput } : null;
+    }
+
+    /// <summary>
+    /// Maps one streamed <see cref="LiteRtStreamChunk"/> to the MEAI content it contributes to a
+    /// <see cref="ChatResponseUpdate"/>'s text stream, or <c>null</c> when the chunk contributes nothing there.
+    /// An <see cref="LiteRtStreamChunkKind.Answer"/> delta becomes <see cref="TextContent"/>; a
+    /// <see cref="LiteRtStreamChunkKind.Thinking"/> delta becomes <see cref="TextReasoningContent"/>. Every other
+    /// kind is deliberately ignored (returns <c>null</c>): <see cref="LiteRtStreamChunkKind.ToolCall"/> chunks are
+    /// handled separately by the client (they carry <see cref="FunctionCallContent"/> and a finish reason), and a
+    /// <see cref="LiteRtStreamChunkKind.ToolCallDelta"/> raw progress fragment — or any chunk kind a future native
+    /// version adds — is dropped rather than mis-surfaced, so an unknown chunk can never break the stream.
+    /// </summary>
+    public static AIContent? ToStreamingTextContent(LiteRtStreamChunk chunk) => chunk.Kind switch
+    {
+        LiteRtStreamChunkKind.Answer when chunk.Text.Length > 0 => new TextContent(chunk.Text),
+        LiteRtStreamChunkKind.Thinking when chunk.Text.Length > 0 => new TextReasoningContent(chunk.Text),
+        _ => null,
+    };
 
     /// <summary>
     /// Maps the function tools in <see cref="ChatOptions.Tools"/> to native <see cref="LiteRtTool"/>s (non-function
