@@ -61,10 +61,18 @@ jobs:
         run: bash native/patch_c_api.sh /tmp/LiteRT-LM
 
       - name: Build libLiteRtLm.so
+        # litert_runtime_link_mode=dynamic is REQUIRED alongside litert_link_capi_so since the
+        # v0.14.0 @litert pin: without it the LiteRT runtime silently static-links INTO
+        # libLiteRtLm even with litert_link_capi_so=true, producing TWO runtimes in-process
+        # (the embedded one + the shipped libLiteRt the samplers import) — mixed GPU state and
+        # an access violation in the WebGPU delegate on Windows. The define trio mirrors
+        # upstream's own dynamic-linking CI jobs (ci-build*.yml at v0.14.0).
         run: |
           cd /tmp/LiteRT-LM
           bazelisk build -c opt --strip=always \
             --define=litert_link_capi_so=true \
+            --define=litert_runtime_link_mode=dynamic \
+            --define=resolve_symbols_in_exec=false \
             //c:libLiteRtLm.dylib
 
       - name: Collect artifacts
@@ -113,6 +121,10 @@ jobs:
       - name: Build LiteRtLm.dll
         # resolve_symbols_in_exec=false is required on Windows — without it Bazel
         # cannot resolve LiteRt* imports at link time (unresolved externals).
+        # litert_runtime_link_mode=dynamic is REQUIRED since the v0.14.0 @litert pin —
+        # without it the LiteRT runtime static-links into LiteRtLm.dll while the TopK
+        # samplers import the separate libLiteRt.dll: two runtimes in one process and a
+        # 0xC0000005 in the WebGPU delegate at engine_create (root-caused 2026-07-10).
         run: |
           cd C:\LiteRT-LM
           bazel --output_base="$env:BAZEL_OUTPUT_BASE" `
@@ -123,6 +135,7 @@ jobs:
             --features=archive_param_file `
             --spawn_strategy=local `
             --define=litert_link_capi_so=true `
+            --define=litert_runtime_link_mode=dynamic `
             --define=resolve_symbols_in_exec=false `
             //c:libLiteRtLm.dylib
 
@@ -261,10 +274,17 @@ jobs:
         # conditions (:resolve_symbols_in_exec and :macos) -> "illegal ambiguous match".
         # Google's own CI-Mac dylib pass uses this exact define pair. The patch adds
         # -rpath @loader_path so companion dylibs resolve from the same directory.
+        # litert_runtime_link_mode=dynamic added for the v0.14.0 @litert pin (see the linux/
+        # windows build steps). On macOS the static-embed failure mode was MASKED in CI: the
+        # WebGPU accelerator resolves LiteRt* via dlsym against our exported wildcard symbols,
+        # so it happened to bind the embedded copy — but the Metal sampler loads
+        # @rpath/libLiteRt.dylib by install name and would hit the two-runtime mismatch on
+        # real Apple Silicon hardware. Dynamic mode keeps every companion on ONE runtime.
         run: |
           cd /tmp/LiteRT-LM
           bazelisk build -c opt --strip=always \
             --define=litert_link_capi_so=true \
+            --define=litert_runtime_link_mode=dynamic \
             --define=resolve_symbols_in_exec=false \
             //c:libLiteRtLm.dylib
 
