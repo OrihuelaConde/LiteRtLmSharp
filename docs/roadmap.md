@@ -390,9 +390,12 @@ Google to publish an official prebuilt C-API shared lib — would let us drop pa
   windows/webgpu export lists are unchanged at 3/7, so the desktop-GPU CPU-sampling fallback stays.
   NEW: [#2745](https://github.com/google-ai-edge/LiteRT-LM/issues/2745) (2026-07-07, assigned)
   confirms the 4 missing symbols EXIST in the binaries but are local/unexported — so the fix is an
-  8-line export-list change. **Candidate: a trivial upstream PR adding the 4 symbols to both lists**
-  (drafted with the user; note upstream's stated inability to merge external PRs — it would still
-  document the fix for the assignee).
+  8-line export-list change. ✅ **Filed [PR #2801](https://github.com/google-ai-edge/LiteRT-LM/pull/2801)**
+  (2026-07-10): adds the 4 symbols to `webgpu_exported_symbols.lds` + `windows_exported_symbols.def`,
+  mirroring the Metal list, and notes the prebuilt-rebuild requirement and the #2080 interaction.
+  Upstream may mirror it internally rather than merge; either way the fix is on record. When rebuilt
+  sampler prebuilts ship: re-verify 7/7 exports, re-measure B6 and speculative decoding on GPU
+  (real GPU sampling changes both pictures).
 - **[LiteRT-LM#2080](https://github.com/google-ai-edge/LiteRT-LM/issues/2080)**: sampler params were
   not being read from the runtime config on some paths. **PARTIALLY addressed in v0.14.0**:
   `InitializeSampler` now reads the `runtime_config` sampler params when present. Re-measuring the
