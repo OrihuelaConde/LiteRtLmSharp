@@ -101,6 +101,23 @@ priority order:
 
 ## Actionable next steps (suggested order)
 
+0. **1.1.0 release runbook (NEXT SESSION; version deliberately not cut yet — the `[Unreleased]`
+   section stays open in case the maintainer finds more while working downstream).** Everything
+   else is ready: master is green on 3 OSes with the full v0.14.0 feature set, natives published,
+   docs current. To cut and publish:
+   (a) bump `<Version>` to 1.1.0 + refresh `PackageReleaseNotes` in `Directory.Build.props`;
+   (b) rename CHANGELOG `[Unreleased]` → `[1.1.0] — <date>` (re-read it start to end first — it is
+   the release body);
+   (c) add the README compat row `1.1.0 | v0.14.0`;
+   (d) dispatch `pack-nuget.yml` with `push=false` → inspect artifacts (XML docs inside, versions,
+   no iOS) — note the new tag-exists guard will pass (no `v1.1.0` tag yet);
+   (e) ConsumerSmoke from a local feed (the 1.0.0 procedure: core chat/streaming/cancellation +
+   IChatClient incl. the new stateful mode + SK kernel);
+   (f) `push=true` ONLY with the maintainer's explicit publish OK (`native_ref` defaults from the
+   props = v0.14.0);
+   (g) post-publish: re-run the smoke against the public nuget.org feed (`--no-cache`), then the
+   docs/memory consolidation pass.
+
 1. ✅ ~~Android GPU sampling~~: verified on a physical device — the patched samplers load (no
    CPU-sampling fallback) and output is correct. ✅ ~~Roadmap follow-up: expose
    `EnableSpeculativeDecoding`~~ — **done 2026-06-15** alongside the benchmark API, an A/B model
@@ -357,8 +374,9 @@ shipping NEW native surface, check ALL of:
   state preservation**: the sentinel model test (interleaved-loss pin) starts FAILING → verify with
   the multi-conv gated tests (`LITERTLM_TEST_MULTICONV=1`), raise the store capacity, make
   `LiteRtConversationBranching` public, restore its docs/CHANGELOG entries, re-run the fork
-  divergence suite. Candidate upstream engagement: a status question + the pure-Python wheel repro
-  (drafted with the user before posting).
+  divergence suite. ✅ **Filed [#2807](https://github.com/google-ai-edge/LiteRT-LM/issues/2807)**
+  (2026-07-10): status question + the pure-Python wheel repro + the ask to fail loudly instead of
+  answering incorrectly while unfinished. Watch for a maintainer response.
 
 - **[LiteRT-LM#2211](https://github.com/google-ai-edge/LiteRT-LM/issues/2211)**: **unchanged at
   v0.14.0.** GPU samplers still ship missing `DT_NEEDED` (our patchelf is the workaround). If Google
