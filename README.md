@@ -40,6 +40,7 @@ version number**. Which LiteRT-LM native build each release wraps:
 
 | LiteRtLmSharp | LiteRT-LM native |
 |---|---|
+| 1.1.0 | v0.14.0 |
 | 1.0.0 | v0.13.1 |
 | 0.1.0-preview.3 | v0.13.1 |
 | 0.1.0-preview.2 | v0.13.1 |

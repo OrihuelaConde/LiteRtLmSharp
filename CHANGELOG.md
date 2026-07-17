@@ -6,7 +6,7 @@ LiteRT-LM native version it wraps (see the compatibility table in the [README](R
 managed `LiteRtLmSharp` package and every `LiteRtLmSharp.runtime.<rid>` package share one version and
 are published together.
 
-## [Unreleased]
+## [1.1.0] — 2026-07-17
 
 Requires **LiteRT-LM v0.14.0** native binaries (the `LiteRtLmSharp.runtime.<rid>` packages bump to
 match). The managed surface is source-compatible with 1.0.0 — all changes below are additive.
