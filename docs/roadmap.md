@@ -43,6 +43,7 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Render a message (`RenderMessage`) or the whole preface (`RenderPreface`) to its templated prompt for debugging / exact-cost budgeting | ✅ |
 | CPU thread counts, LoRA adapters (engine ranks + per-conversation paths), per-send output cap, tool-call streaming (v0.14.0 surface) | ✅ |
 | .NET AI integrations: `Microsoft.Extensions.AI` `IChatClient` (+ Agent Framework) and a Semantic Kernel connector (separate packages) | ✅ |
+| KV overflow guard (`LiteRtContextOverflowException`): sends clamp their reply to the remaining context and throw instead of overflowing the KV cache, which the native runtime does not police (heap corruption + deferred `0xC0000005`/`0xC0000374` crash — found as B9 by the Memorias consumer, 2026-07-13, in a stateful tool loop). Same-turn signal: `LiteRtConversation.IsContextFull` (true exactly when the next send would throw) → `ChatFinishReason.Length` in the MEAI client, overriding `ToolCalls` on a full conversation. Armed by an explicit `MaxNumTokens`; pure binding, no new native surface. **Done 2026-07-15** | ✅ |
 
 Known constraints (documented in the README): one engine ALIVE at a time (reloading after
 `Dispose` works — verified on win-x64 cpu→cpu and cpu→gpu; this is Edge Gallery's pattern for
@@ -315,7 +316,31 @@ AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AO
 
 ## Watchlist (re-check periodically)
 
-**Last re-checked: 2026-07-10.** The repin trigger FIRED: LiteRT-LM tagged a stable **v0.14.0** and we
+**Last re-checked: 2026-07-17.** Full sweep results:
+
+- **Gemma 4 weight refresh (announced 2026-07-15, official @googlegemma post): NOT yet available for
+  us.** Google silently updated the Gemma 4 weights under the same names (tool-calling fixes, agentic
+  gains, vision resolution, FA4 on Hopper — the tool-calling fixes are the part that matters to this
+  stack). The refresh landed in the `google/gemma-4-*` HF repos (E2B-it lastModified 2026-07-15), but
+  the **`litert-community` `.litertlm` conversions still predate it** (E2B-it-litert-lm last commit
+  2026-07-10 — device variants only; E4B-it-litert-lm 2026-06-01). Verified byte-exact: our local
+  `models/gemma-4-E2B-it.litertlm` (2,588,147,712 B) and `gemma-4-E4B-it.litertlm` (3,659,530,240 B)
+  match current HF main — we are up to date with everything that EXISTS in `.litertlm` form.
+  **Action when litert-community re-converts** (watch the two repos' commits): re-download E2B/E4B,
+  re-run the model suite, and flag the era change to the Memorias consumer (new weights = new era =
+  full re-benchmark; the tool-calling fixes could move its A4/A16-class rotating failures).
+- **#2807 (multi-conv state loss, ours): TRIAGED** — labeled + assigned 2026-07-13 (nireekshak), no
+  comment yet. First movement; keep watching for the activation checklist below.
+- **PR #2801 (sampler exports, ours):** open, no review, no comments (unchanged since filing).
+- **#2073 / #2080 / PR #2081 (GPU sampler):** no movement (last real comment 2026-06-19: another user
+  confirms GPU params still ignored in 0.13.1 Python). #2081 still unmerged.
+- **#2149 (CPU decode crash):** our 2026-07-10 v0.14.0 data table is still the last comment.
+- **#2529 (prebuilt C API lib):** new voice 2026-07-10 — Uralstech wants a prebuilt multiplatform C
+  lib to build a **Unity C# package via DllImport**. Community-relevant: a prospective C#/.NET
+  consumer adjacent to this binding.
+- **Releases:** none after v0.14.0 (2026-07-08) — no repin trigger.
+
+Previous re-check (2026-07-10): The repin trigger FIRED: LiteRT-LM tagged a stable **v0.14.0** and we
 repinned to it on 2026-07-10 (self-built `native-v0.14.0`; C API 89 → 109, 84 bound; CI green on all
 three OSes including the model tests). The tag lands several watched fixes, so each issue below is
 re-stated against v0.14.0. Note that penalties / no-repeat-ngram sampling did NOT reach the C API in this
