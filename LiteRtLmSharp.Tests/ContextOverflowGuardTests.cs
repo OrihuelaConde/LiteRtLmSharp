@@ -159,6 +159,10 @@ public sealed class ContextOverflowModelTests
             // 20 capped turns are far more than the small context can hold; the guard must fire first.
             for (int i = 0; i < 20 && overflow is null; i++)
             {
+                // Raw stdout, not ITestOutputHelper: xunit's buffered output dies with the host if the
+                // native layer crashes — this line is the last-known-state marker in the CI log (an
+                // intermittent testhost crash was seen here on CI win-x64, 2026-07-17).
+                Console.WriteLine($"[overflow-guard] turn {i}: TokenCount={conv.TokenCount} IsContextFull={fullSignaled}");
                 try
                 {
                     conv.Send("Tell me more about the sea and its many storied voyages.");

@@ -94,12 +94,46 @@ jobs:
         include: ${{ fromJson(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    # B9 forensics (2026-07-17: one intermittent testhost crash in the overflow-guard test on
+    # win-x64; the VSTest blame dump carried no exception context, so the NTSTATUS is unknown):
+    # have the CLR write its own minidump on a fatal crash — createdump includes the exception
+    # stream. Type 1 (Mini) on purpose: a heap dump would embed the ~2.6 GB model. diag/ is
+    # uploaded with the test results.
+    env:
+      DOTNET_DbgEnableMiniDump: '1'
+      DOTNET_DbgMiniDumpType: '1'
+      DOTNET_DbgMiniDumpName: ${{ github.workspace }}/diag/createdump-%p.dmp
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+
+      # Sample available memory / test-process working set / disk every 5 s for the whole job
+      # (covers model download + build + tests) so a recurrence of the B9 crash can be correlated
+      # with runner resource pressure. Summarized and uploaded by the teardown step below.
+      - name: Start resource sampler
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force diag | Out-Null
+          $p = Start-Process pwsh -ArgumentList '-NoProfile','-File','scripts/ci/sample-resources.ps1','-OutFile','diag/resources.csv' -PassThru
+          $p.Id | Set-Content diag/sampler.pid
+          Write-Host "Sampler running (pid $($p.Id))"
+
+      # Fail-fast terminations (e.g. heap corruption 0xC0000374) bypass the CLR's unhandled-
+      # exception path, so createdump never fires for them — WER LocalDumps catches those.
+      - name: Enable WER crash dumps (win)
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'diag/wer'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\testhost.exe'
+          New-Item -Path $key -Force | Out-Null
+          Set-ItemProperty $key DumpFolder $dir
+          Set-ItemProperty $key DumpType 1
+          Set-ItemProperty $key DumpCount 3
 
       - name: Restore native binaries (${{ matrix.rid }})
         shell: bash
@@ -202,6 +236,24 @@ jobs:
             --blame-hang --blame-hang-dump-type mini --blame-hang-timeout 10m \
             --results-directory TestResults-gpu
 
+      - name: Stop sampler and summarize resources
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path diag/sampler.pid) {
+            try { Stop-Process -Id (Get-Content diag/sampler.pid) -Force -ErrorAction Stop } catch {}
+            Remove-Item diag/sampler.pid
+          }
+          if (Test-Path diag/resources.csv) {
+            $rows = Import-Csv diag/resources.csv
+            if ($rows) {
+              $min = ($rows | ForEach-Object { [int]$_.availMemMB } | Measure-Object -Minimum).Minimum
+              Write-Host "Resource samples: $($rows.Count); minimum available memory: $min MB"
+              Write-Host '--- last 10 samples ---'
+              $rows | Select-Object -Last 10 | Format-Table -AutoSize | Out-String | Write-Host
+            }
+          }
+
       - name: Upload test results and crash/hang dumps
         if: always()
         uses: actions/upload-artifact@v4
@@ -210,6 +262,7 @@ jobs:
           path: |
             TestResults
             TestResults-gpu
+            diag
           if-no-files-found: ignore
           # Crash/hang dumps can reach ~750 MB; free on public repos but keep retention short.
           retention-days: 7
