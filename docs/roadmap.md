@@ -344,6 +344,19 @@ AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AO
   lib to build a **Unity C# package via DllImport**. Community-relevant: a prospective C#/.NET
   consumer adjacent to this binding.
 - **Releases:** none after v0.14.0 (2026-07-08) — no repin trigger.
+- **PrismML Bonsai (1-bit/ternary Qwen3.6, Apache 2.0 — the "27B on a phone" model, reported
+  Apple-evaluation talks) on LiteRT-LM: two triggers to watch.** No official `.litertlm` exists;
+  a faithful port is blocked on the runtime (LiteRT has no sub-2-bit kernels; ternary weights fit
+  int4 exactly but at ~2.3× Bonsai's packing — 27B ternary 5.9 GB → ~13.5 GB int4, desktop-only,
+  which defeats the model's point; 8B/4B/1.7B at int4 would be the realistic conversions). The
+  toolchain is otherwise public (litert-torch has qwen/qwen3 conversion examples; Bonsai publishes
+  unpacked/AWQ weights). Triggers: (1) **LiteRT ships sub-2-bit/ternary kernels** — the real
+  unlock; (2) **[Tdamre/Bonsai-27B-litert-lm](https://huggingface.co/Tdamre/Bonsai-27B-litert-lm)
+  completes the full 64-layer model** (today it is a 4-layer structural prototype built with
+  litert-torch-nightly — proof the pipeline works, not a usable model). Either firing → grab the
+  `.litertlm`, run it through our model suite (nothing to change binding-side, same as
+  Ministral/Phi), and tell the Memorias consumer (which can meanwhile try Bonsai via its Ollama
+  provider — the GGUF releases run there today).
 
 Previous re-check (2026-07-10): The repin trigger FIRED: LiteRT-LM tagged a stable **v0.14.0** and we
 repinned to it on 2026-07-10 (self-built `native-v0.14.0`; C API 89 → 109, 84 bound; CI green on all
