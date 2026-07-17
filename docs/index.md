@@ -44,6 +44,8 @@ feature with runnable snippets; the guides here go deeper per topic.
 
 ## Where to go next
 
+- **[Chat & generation](chat.md)** — function calling, reasoning mode, multimodal (image/audio),
+  token counting.
 - **[Microsoft.Extensions.AI integration](extensions-ai.md)** — plug the model into the .NET AI
   ecosystem as an `IChatClient` (Agent Framework, Semantic Kernel, MEAI middleware).
 - **[Semantic Kernel connector](semantic-kernel.md)** — `IChatCompletionService` over the same bridge.

@@ -21,7 +21,8 @@
     <RepositoryUrl>https://github.com/OrihuelaConde/LiteRtLmSharp</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>litert;litert-lm;llm;gemma;on-device;inference;ai;maui</PackageTags>
-    <!-- Every package embeds the repo-root README (shown on nuget.org). -->
+    <!-- Every package embeds a dedicated concise README (shown on nuget.org, which renders no
+         HTML — the repo-root README uses an HTML hero). Packed below as README.md. -->
     <PackageReadmeFile>README.md</PackageReadmeFile>
 
     <!-- Appended to every package Description. Keep in sync with NOTICE / README. -->
@@ -30,7 +31,7 @@
 
   <!-- Ship the README and legal files inside every package (PackagePath="" = nupkg root). -->
   <ItemGroup>
-    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)packaging\nuget-readme.md" Pack="true" PackagePath="README.md" Visible="false" />
     <None Include="$(MSBuildThisFileDirectory)LICENSE.txt" Pack="true" PackagePath="" Visible="false" />
     <None Include="$(MSBuildThisFileDirectory)NOTICE" Pack="true" PackagePath="" Visible="false" />
     <None Include="$(MSBuildThisFileDirectory)THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="" Visible="false" />

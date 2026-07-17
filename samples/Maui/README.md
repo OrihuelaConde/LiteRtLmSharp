@@ -3,6 +3,15 @@
 On-device LLM chat app: download/manage Gemma 4 `.litertlm` models and chat with streaming,
 all running locally via LiteRtLmSharp.
 
+<!-- PHASE 2 PLACEHOLDER: screenshot row — Models / Chat (with 📷 attachment) / Tools tabs
+<p align="center">
+  <img src="../../docs/images/maui-models.png" width="230" alt="Models tab" />
+  <img src="../../docs/images/maui-chat.png" width="230" alt="Chat tab" />
+  <img src="../../docs/images/maui-tools.png" width="230" alt="Tools tab" />
+</p>
+-->
+
+
 - **Models tab** — catalog of Gemma 4 models from `litert-community` (Hugging Face): download with
   progress + resume, delete, pick CPU/GPU and load. Loading while another model is active swaps
   the engine in-place (no app restart) — same pattern as Google's Edge Gallery. When you load an

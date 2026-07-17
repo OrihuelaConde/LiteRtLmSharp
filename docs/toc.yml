@@ -1,5 +1,7 @@
 - name: Guides
   items:
+    - name: Chat & generation
+      href: chat.md
     - name: Microsoft.Extensions.AI (IChatClient)
       href: extensions-ai.md
     - name: Semantic Kernel

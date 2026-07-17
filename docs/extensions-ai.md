@@ -145,7 +145,7 @@ the decoder isn't forced. In practice a capable model calls the tool when the re
 it, but may ignore the instruction for a clearly-unrelated prompt. (Semantic Kernel's
 `FunctionChoiceBehavior.Auto()/None()/Required()` map to these same modes.)
 
-> The native [LiteRtLmSharp tools API](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/README.md#function-calling) is still available for full control
+> The native [LiteRtLmSharp tools API](chat.md#function-calling) is still available for full control
 > (constrained decoding, custom tool-call parsing); the chat client is the MEAI-idiomatic path on top of it.
 
 ## Reasoning ("thinking")
