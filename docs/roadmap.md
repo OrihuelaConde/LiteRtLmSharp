@@ -102,10 +102,15 @@ priority order:
 
 ## Actionable next steps (suggested order)
 
-0. **1.1.0 release runbook (NEXT SESSION; version deliberately not cut yet — the `[Unreleased]`
-   section stays open in case the maintainer finds more while working downstream).** Everything
-   else is ready: master is green on 3 OSes with the full v0.14.0 feature set, natives published,
-   docs current. To cut and publish:
+0. ✅ **1.1.0 RELEASED — 2026-07-17.** The deliberate wait paid off: dogfooding the stateful mode in
+   the Memorias consumer surfaced B9 (KV overflow → native heap corruption), which shipped fixed —
+   guard + same-turn `IsContextFull`/`FinishReason.Length` signal, hardened by an 8-angle adversarial
+   review (10 findings applied) — instead of as a 1.1.1 patch. Runbook executed as written: (a)-(c)
+   version/CHANGELOG/README, (d) dry-run + artifact inspection (7 packages, XML docs, no iOS),
+   (e) ConsumerSmoke from a local feed (core chat/streaming/cancellation + IChatClient stateless AND
+   stateful recall + SK — all green), (f) push=true via Trusted Publishing with the maintainer's GO,
+   (g) tag `v1.1.0` + GitHub release with assets, then the smoke re-run against the PUBLIC nuget.org
+   feed with a purged cache — all green. Original runbook (kept for the next release):
    (a) bump `<Version>` to 1.1.0 + refresh `PackageReleaseNotes` in `Directory.Build.props`;
    (b) rename CHANGELOG `[Unreleased]` → `[1.1.0] — <date>` (re-read it start to end first — it is
    the release body);
