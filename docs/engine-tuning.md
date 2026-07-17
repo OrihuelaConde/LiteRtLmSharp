@@ -25,14 +25,43 @@ using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 ```
 
 - **Only the GPU backend honors this, and only as F32 vs F16.** `Float32` runs activations at full
-  precision — higher quality, more memory, slower. `Float16` (the GPU default for text) is faster and
-  uses half the activation memory, with a small precision loss.
+  precision — higher quality, more memory. `Float16` (the GPU default for text) uses half the
+  activation memory, with a precision loss that is NOT always small (below).
 - **On CPU it is a no-op** — the CPU/XNNPACK path does not read it.
 - **`Int16` / `Int8` are accepted but not distinctly implemented** by the shipped executors: on GPU they
   fold into F16, on CPU they are ignored. They exist only to mirror the native enum — do not expect
   8/16-bit activation quantization from them.
 - **When to set it:** choose `Float32` on GPU if you see quality/precision issues, or on a GPU whose
   driver lacks reliable FP16. Otherwise leave it unset.
+
+### The F16 default corrupts structured output on desktop GPU — set `Float32` if you see it
+
+If your GPU outputs show **corrupted digit sequences** (dates like `206-15-2023` or `195959-06-17`,
+truncated or looping numbers), **degraded reasoning** versus the same model on CPU, or results that
+**vary run-to-run at temperature 0**, the cause is very likely the default **F16 activations**, not
+your prompts and not the model. This failure mode is widely reported against LiteRT-LM but hard to
+find the real knob for (upstream threads blame the sampler DLL, suggest repetition penalties, or go
+unanswered — see google-ai-edge/LiteRT-LM#2637, #2727, #2202, and the export-gap/sampler issues
+#2073/#2080), so it is documented here with what we measured:
+
+- On win-x64 WebGPU (RTX 3080, temp 0), a 16-check benchmark of structured extraction from free text
+  FAILS 13/16 with rotating errors on default F16 — digit sequences corrupted **at emission** (before
+  any post-processing), dates resolved against the wrong reference, relations between extracted
+  entities inverted or attached to the wrong entity — and passes **16/16 across 3 consecutive runs
+  with `Float32`**, with clean digits in the raw output and **no measurable speed cost** on that GPU
+  (~32 s either way; F32 compute was not the bottleneck).
+- The same F16→F32 flip reproduces on a **non-Gemma model** (Ministral-3-3B q4: 13/16 → 16/16), so it
+  is a property of the GPU text executor's precision, not of one model family.
+- F16 did not only corrupt digits — it degraded reasoning quality (which entity a fact belongs to,
+  which date a relative expression resolves to), which is easy to misattribute to the model or the
+  prompt.
+- CPU is immune (the knob is GPU-only, and the CPU path never showed the corruption).
+
+**Recommendation:** for any GPU workload where output fidelity matters more than activation memory —
+structured output, function calling, dates/numbers, JSON — set
+`ActivationDataType = LiteRtActivationDataType.Float32` and A/B it once on your target GPU. The cost
+is activation memory (roughly double) and possibly speed on GPUs with weak F32 throughput; on desktop
+discrete GPUs we measured the speed cost as nil.
 
 ## Prefill chunk size — `PrefillChunkSize`
 
