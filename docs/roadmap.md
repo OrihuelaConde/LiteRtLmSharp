@@ -114,7 +114,10 @@ priority order:
    (a) bump `<Version>` to 1.1.0 + refresh `PackageReleaseNotes` in `Directory.Build.props`;
    (b) rename CHANGELOG `[Unreleased]` → `[1.1.0] — <date>` (re-read it start to end first — it is
    the release body);
-   (c) add the README compat row `1.1.0 | v0.14.0`;
+   (c) add the README compat row `1.1.0 | v0.14.0`, and bump the version in every install
+   snippet: README quick start + `docs/index.md` + the `PackageReference` blocks in
+   `docs/{android,extensions-ai,semantic-kernel,packaging}.md` (grep the old version; the
+   guides shipped stale preview versions until the 2026-07-17 sweep);
    (d) dispatch `pack-nuget.yml` with `push=false` → inspect artifacts (XML docs inside, versions,
    no iOS) — note the new tag-exists guard will pass (no `v1.1.0` tag yet);
    (e) ConsumerSmoke from a local feed (the 1.0.0 procedure: core chat/streaming/cancellation +

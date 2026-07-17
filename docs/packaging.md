@@ -5,6 +5,8 @@ LLamaSharp-style model: **one pure managed package + per-RID native runtime pack
 | Package | Contents | TFM |
 |---|---|---|
 | `LiteRtLmSharp` | Managed assembly only (`lib/net10.0/LiteRtLmSharp.dll`). No natives. | net10.0 |
+| `LiteRtLmSharp.Extensions.AI` | `IChatClient` connector (Microsoft.Extensions.AI). Depends on `LiteRtLmSharp` (same version). | net10.0 |
+| `LiteRtLmSharp.SemanticKernel` | `IChatCompletionService` connector, built on `LiteRtLmSharp.Extensions.AI` (same version). | net10.0 |
 | `LiteRtLmSharp.runtime.win-x64` | `runtimes/win-x64/native/*.dll` (LiteRtLm + companions + DXC). No lib. | (native-only) |
 | `LiteRtLmSharp.runtime.linux-x64` | `runtimes/linux-x64/native/*.so`. No lib. | (native-only) |
 | `LiteRtLmSharp.runtime.android-arm64` | `runtimes/android-arm64/native/*.so` (packed into the APK as `lib/arm64-v8a/`). | (native-only) |
@@ -22,7 +24,7 @@ LLamaSharp-style model: **one pure managed package + per-RID native runtime pack
 > `docs/roadmap.md`). Every package ships `README.md`, `LICENSE.txt`, `NOTICE` and
 > `THIRD-PARTY-NOTICES.md` at its root.
 
-**All six packages share one version per release** (enforced by the single `Version` in
+**All packages share one version per release** (enforced by the single `Version` in
 `Directory.Build.props`) and that version is **independent of the LiteRT-LM native version**,
 which is pinned via `LiteRtLmVersion` and surfaced in the package release notes and the README
 compatibility table. Install the managed and runtime packages with the same version number.
@@ -30,8 +32,8 @@ compatibility table. Install the managed and runtime packages with the same vers
 ## Consumption (including MAUI)
 
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="0.1.0-preview.1" />
-<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="0.1.0-preview.1" />
+<PackageReference Include="LiteRtLmSharp" Version="1.1.0" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.1.0" />
 <!-- and/or linux-x64 / android-arm64 / osx-arm64, per target -->
 ```
 
@@ -44,12 +46,13 @@ picks its RID, like LLamaSharp).
 
 ## Producing the packages
 
-1. **Native build** (`build-native.yml`) pinned to a tag (`v0.13.1`) with `publish_release` →
-   creates the `native-v0.13.1` release with the `litertlm-*.tar.gz` assets.
+1. **Native build** (`build-native.yml`) pinned to a tag (`v0.14.0`, the current pin) with
+   `publish_release` → creates the `native-v0.14.0` release with the `litertlm-*.tar.gz` assets.
 2. **Pack** (`pack-nuget.yml`): downloads those assets, lays them into
    `runtimes/<rid>/native/`, runs `dotnet pack` with the given `package_version`, uploads the
-   `.nupkg`s as an artifact, and (optionally, `push=true` + `NUGET_API_KEY` secret) publishes
-   to nuget.org.
+   `.nupkg`s as an artifact, and (optionally, `push=true`) publishes to nuget.org via
+   **Trusted Publishing** (the GitHub OIDC token is exchanged for a short-lived API key with
+   `NuGet/login` — no stored secret).
 
 Locally: `dotnet pack LiteRtLmSharp/LiteRtLmSharp.csproj -c Release -o .nupkgs` (managed) and
 the projects under `packaging/` (these need the natives already present in

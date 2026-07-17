@@ -7,7 +7,7 @@
 inference (e.g. Gemma) for any .NET app, including MAUI. P/Invoke over LiteRT-LM's C API, with native
 binaries distributed per-RID as NuGet packages (LLamaSharp-style).
 
-> Status: **stable (1.0)**. Chat (blocking, awaitable + cancellable, streaming), function calling,
+> Status: **stable (1.x)**. Chat (blocking, awaitable + cancellable, streaming), function calling,
 > multimodal (image/audio, including restored multi-turn history), conversation restore/clone,
 > reasoning mode, tokenizer, speculative decoding and benchmarking.
 >
@@ -30,8 +30,8 @@ binaries distributed per-RID as NuGet packages (LLamaSharp-style).
 ## Quick start
 
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="1.0.0" />
-<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.0.0" />
+<PackageReference Include="LiteRtLmSharp" Version="1.1.0" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.1.0" />
 <!-- or LiteRtLmSharp.runtime.linux-x64 / android-arm64 / osx-arm64, per target -->
 ```
 

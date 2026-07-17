@@ -20,7 +20,7 @@ missing).
 ## How to run it
 
 GitHub → **Actions** tab → *Build LiteRT-LM native libraries* → **Run workflow**:
-- `litertlm_version`: ref to build. Default: **`v0.13.1`** (always pin to a **release tag**,
+- `litertlm_version`: ref to build. Default: **`v0.14.0`** (always pin to a **release tag**,
   never a loose commit — the interim commit `032334d8` cost us a streaming segfault).
 - `platforms`: comma-separated list (`linux-x64,win-x64,android-arm64,macos-arm64,ios-arm64`)
   or `all`. **Build only the platforms you need** — the release **accumulates** assets and
