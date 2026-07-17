@@ -292,6 +292,28 @@ suspended-conversation state. There is no public knob to raise the limit. See
 `ChatResponse.Usage.TotalTokenCount` in this mode is the conversation's **cumulative** KV-cache size, so it
 grows across the thread (rather than resetting per call as in the stateless mode).
 
+**The context limit is a hard wall — let the guard police it.** A long stateful thread (a multi-round tool
+loop especially) eventually approaches the engine's `MaxNumTokens`, and the native runtime does not check
+it: an unguarded overflow corrupts native memory and crashes the process on a later call. Load the engine
+with an **explicit** `MaxNumTokens` (as the snippets above do) to arm the binding's KV overflow guard:
+replies are clamped to the remaining context, and a send that no longer fits throws
+`LiteRtContextOverflowException` instead (sends carrying media are the exception — their prefill cost is
+not measurable managed-side, so they get only the conversation-full check; leave headroom when
+attachments are in play). What happens to the live conversation depends on which rejection you got: a
+**"message doesn't fit"** rejection happens before any native work, so the conversation survives — retry
+the same `ConversationId` with a shorter message. A **"context is full"** rejection is terminal: the
+client evicts the live conversation (resuming its id throws `ArgumentException`, like any evicted id) —
+start a new conversation, carrying over a summary or a trimmed history if the thread must continue.
+
+You do not have to wait for that exception to find out: **a reply that filled the context carries
+`ChatFinishReason.Length` in the same turn** (on the blocking response, and on the final update of a
+clamped stream — whose only other symptom is that it just stops). Treat `Length` as "this conversation is
+over": even when the response carries tool calls, sending their results would throw, which is why `Length`
+deliberately wins over `ToolCalls` there. Note that `FunctionInvokingChatClient` loops on function-call
+content regardless of finish reason, so an unattended tool loop still terminates in the exception; the
+signal is for callers who look. To act *before* hitting the wall, track `Usage.TotalTokenCount` against
+`MaxNumTokens` and wind down early.
+
 ## Multimodal (image / audio)
 
 On a multimodal model, attach an image or audio clip to the final user message as a `DataContent` (inline

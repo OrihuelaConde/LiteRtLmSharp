@@ -13,6 +13,39 @@ match). The managed surface is source-compatible with 1.0.0 — all changes belo
 
 ### Added
 
+- **KV overflow guard** — the native runtime does not police `LiteRtEngineOptions.MaxNumTokens`: a send
+  that grows the conversation past it writes beyond the allocated KV cache and corrupts native memory
+  (typically a deferred `0xC0000005`/`0xC0000374` process crash on a later call — reachable from a long
+  function-calling loop in the stateful mode). When the engine is loaded with an explicit `MaxNumTokens`,
+  every send now measures its real prefill cost (render + tokenize, no inference), clamps the reply's
+  decode budget to the remaining context via the per-send output cap, and throws the new
+  `LiteRtContextOverflowException` (with `TokenCount`/`MaxNumTokens`) once the conversation is full or the
+  message cannot fit — instead of crashing the process. `LiteRtException` is now unsealed so the new
+  exception derives from it (existing `catch (LiteRtException)` handlers keep working). In the
+  Extensions.AI stateful mode the full conversation is evicted on throw, like a cancelled one. The
+  measurement is best-effort: messages with media, sends carrying `SendRaw`'s per-send `extraContext`,
+  and natives that cannot render/tokenize keep only the already-full hard stop (their prefill cost is not
+  measurable managed-side — leave headroom under the limit on those paths). In the stateful mode, a
+  "message doesn't fit" rejection happens before any native work and keeps the live conversation
+  resumable (retry the id with a shorter message); only a "context is full" rejection evicts it. Without
+  an explicit `MaxNumTokens` the limit is internal to the engine (the C API has no getter) and behavior
+  is unchanged. Measured overhead (gemma-4-E2B, win-x64 CPU): ~0.2 ms per mid-conversation send, ~4 ms on
+  the first send of a conversation carrying a ~1.4k-token preface — the render + tokenize run no
+  inference, and the token count is read off the native result without copying the id array.
+
+  The guard also signals **in the same turn** that a reply hit the wall, so callers never depend on the
+  next call's exception to learn the conversation is over: the new **`LiteRtConversation.IsContextFull`**
+  is `true` exactly when the next send would throw — a clamped reply is detected exactly, from the guard's
+  own counts (tolerating measurement drift up to the safety margin either way), with a `TokenCount`
+  threshold as the backstop that also covers unmeasured media sends. Check it right after a send, or after
+  a stream completes; it shares its predicate with the guard's hard stop, so the two can never disagree. The
+  Extensions.AI client maps it to **`ChatFinishReason.Length`** on the clamped response (and on the final
+  update of a clamped stream). `Length` deliberately wins over `ToolCalls` there: even a complete tool
+  call cannot be continued on a full conversation — sending its results would throw — so `Length` is the
+  cue to wind the thread down. Note that `FunctionInvokingChatClient` loops on function-call content
+  regardless of finish reason, so an unattended tool loop still ends in the (clean, evicting)
+  `LiteRtContextOverflowException`; the signal is for callers who look.
+
 - **CPU thread counts** — `LiteRtEngineOptions.NumThreads` and `AudioNumThreads` set the CPU text /
   audio executor thread counts (`null` = engine default). CPU-backend knobs: no-op on non-CPU backends,
   and the audio one only applies when an audio executor is configured. Non-positive values are rejected.

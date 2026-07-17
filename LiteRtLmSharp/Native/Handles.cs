@@ -50,7 +50,9 @@ internal sealed class EngineHandle(nint handle) : LiteRtLmHandle(handle)
         LiteRtLmNative.litert_lm_engine_delete(handle);
         // Free the one-engine slot only after the native engine is destroyed (ordering matters: a new
         // engine must not be created while this one's native object still exists). This runs on Dispose
-        // and on finalization, so even a forgotten/GC'd engine releases the slot.
+        // and on finalization, so even a forgotten/GC'd engine releases the slot — but note that every
+        // LiteRtConversation strongly references its engine (for the KV overflow guard), so finalization
+        // can only happen once no conversation objects remain reachable either.
         EngineLiveness.Release();
         return true;
     }

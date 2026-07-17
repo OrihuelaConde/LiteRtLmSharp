@@ -51,6 +51,20 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// conversation's cumulative KV-cache size, so across a stateful thread it grows with each turn (it now spans
 /// calls rather than resetting per call as in the stateless mode).
 /// </para>
+/// <para>
+/// <b>Context limit.</b> Because the conversation grows across calls, a long thread (or tool loop) eventually
+/// approaches the engine's <see cref="LiteRtEngineOptions.MaxNumTokens"/> — watch
+/// <see cref="UsageDetails.TotalTokenCount"/> against it. Load the engine with an <b>explicit</b>
+/// <c>MaxNumTokens</c> to arm the binding's KV overflow guard: replies are clamped to the remaining context
+/// and a send on a full conversation throws <see cref="LiteRtContextOverflowException"/> instead of
+/// corrupting the native runtime (unguarded, the overflow crashes the process on a later call). A reply that
+/// filled the context carries <see cref="ChatFinishReason.Length"/> <b>in the same turn</b> (deliberately
+/// overriding <see cref="ChatFinishReason.ToolCalls"/> — a full conversation cannot be continued, so treat
+/// <c>Length</c> as "this thread is over"). A "message doesn't fit" rejection happens before any native
+/// work and <b>keeps the live conversation resumable</b> — retry the id with a shorter message; a "context
+/// is full" rejection is terminal and evicts it like a cancelled one — resuming its id then throws
+/// <see cref="ArgumentException"/>; start a new conversation, summarizing or trimming what must carry over.
+/// </para>
 /// </remarks>
 public sealed record LiteRtStatefulConversationOptions
 {

@@ -235,10 +235,18 @@ public sealed class LiteRtChatClient : IChatClient
             {
                 response = await SendCoreAsync(conv, trigger, sendOptions, cancellationToken).ConfigureAwait(false);
             }
+            catch (LiteRtContextOverflowException) when (!conv.IsContextFull)
+            {
+                // The overflow guard rejected the message BEFORE any native work ("message doesn't fit"):
+                // the live conversation is untouched and stays resumable — the caller can retry this id
+                // with a shorter message, exactly as the exception's own guidance suggests.
+                throw;
+            }
             catch
             {
-                // A failed/cancelled send leaves the native conversation consumed (sending on it again would
-                // hang), so evict and dispose it — a later resume of this id then throws cleanly.
+                // Any other failure (cancellation, native error, or the guard's context-FULL rejection)
+                // leaves the conversation consumed or terminal, so evict and dispose it — a later resume
+                // of this id then throws cleanly.
                 _store!.Remove(id);
                 throw;
             }
@@ -371,6 +379,8 @@ public sealed class LiteRtChatClient : IChatClient
         // surface a Length finish reason so callers can detect it (and raise the budget) instead of a silent empty.
         if (finishReason is null && string.IsNullOrEmpty(response.Text) && response.Thinking is { Length: > 0 })
             chatResponse.FinishReason = ChatFinishReason.Length;
+        if (ContextFullFinishReason(conv) is { } contextFull)
+            chatResponse.FinishReason = contextFull;
         chatResponse.Usage = ReadUsage(conv);
         if (chatResponse.Usage.OutputTokenCount is null)
             (chatResponse.AdditionalProperties ??= new())[LiteRtChatMapping.UsageBenchmarkNoteKey] = LiteRtChatMapping.UsageBenchmarkNote;
@@ -441,19 +451,45 @@ public sealed class LiteRtChatClient : IChatClient
             storedId = id;
 
             LiteRtSendOptions? sendOptions = LiteRtChatMapping.ToSendOptions(options);
-            await foreach (ChatResponseUpdate update in
-                StreamReplyAsync(conv, trigger, sendOptions, entry.RecordToolCall, cancellationToken).ConfigureAwait(false))
+            // Enumerated by hand (not await-foreach) because C# forbids `yield return` inside a try that
+            // has a catch, and the MoveNext needs one: the overflow guard's pre-native "message doesn't
+            // fit" rejection must NOT evict the untouched, still-resumable conversation.
+            IAsyncEnumerator<ChatResponseUpdate> updates = StreamReplyAsync(
+                conv, trigger, sendOptions, entry.RecordToolCall, cancellationToken).GetAsyncEnumerator(cancellationToken);
+            try
             {
-                update.ConversationId = id;
-                yield return update;
+                while (true)
+                {
+                    ChatResponseUpdate update;
+                    try
+                    {
+                        if (!await updates.MoveNextAsync().ConfigureAwait(false))
+                            break;
+                        update = updates.Current;
+                    }
+                    catch (LiteRtContextOverflowException) when (!conv.IsContextFull)
+                    {
+                        // Pre-native rejection: nothing was streamed and the conversation is untouched —
+                        // keep it resumable (the caller can retry this id with a shorter message).
+                        completed = true;
+                        throw;
+                    }
+                    update.ConversationId = id;
+                    yield return update;
+                }
+                completed = true;
             }
-            completed = true;
+            finally
+            {
+                await updates.DisposeAsync().ConfigureAwait(false);
+            }
         }
         finally
         {
-            // A stream that did not complete cleanly (cancelled, or the consumer broke out early) leaves the
-            // native conversation consumed — sending on it again would hang — so evict and dispose it. A clean
-            // completion keeps it alive for the next turn.
+            // A stream that did not complete cleanly (cancelled, the consumer broke out early, or a
+            // mid-stream failure) leaves the native conversation consumed — sending on it again would
+            // hang — so evict and dispose it. A clean completion, or the guard's pre-native rejection
+            // above, keeps it alive for the next turn.
             if (!completed && storedId is not null)
                 _store!.Remove(storedId);
             ReleaseGate();
@@ -563,15 +599,31 @@ public sealed class LiteRtChatClient : IChatClient
     }
 
     /// <summary>A final streaming update carrying the turn's token <see cref="UsageContent"/> (and, when the
-    /// input/output split is absent, the benchmark note in its <c>AdditionalProperties</c>).</summary>
+    /// input/output split is absent, the benchmark note in its <c>AdditionalProperties</c>), plus the
+    /// <see cref="ContextFullFinishReason"/> signal when the context filled up during the stream — on
+    /// coalescing it wins over an earlier <c>ToolCalls</c> update, per that policy.</summary>
     private ChatResponseUpdate UsageUpdate(LiteRtConversation conv)
     {
         UsageDetails usage = ReadUsage(conv);
         var update = new ChatResponseUpdate { Role = ChatRole.Assistant, ModelId = ModelId, Contents = [new UsageContent(usage)] };
         if (usage.OutputTokenCount is null)
             (update.AdditionalProperties ??= new())[LiteRtChatMapping.UsageBenchmarkNoteKey] = LiteRtChatMapping.UsageBenchmarkNote;
+        if (ContextFullFinishReason(conv) is { } contextFull)
+            update.FinishReason = contextFull;
         return update;
     }
+
+    /// <summary>
+    /// THE context-full finish-reason policy, written once for both the blocking response and the final
+    /// streaming update: when the conversation's context filled up during the turn (the reply was likely
+    /// clamped by the KV overflow guard and the next send on it is guaranteed to throw), the turn carries
+    /// <see cref="ChatFinishReason.Length"/> — deliberately OVERRIDING <see cref="ChatFinishReason.ToolCalls"/>,
+    /// because even a complete tool call cannot be continued on a full conversation (sending its results
+    /// would throw); Length is the caller's same-turn cue to wind the thread down instead of discovering
+    /// the wall on the next call. Returns <c>null</c> (leave the content-derived reason) otherwise.
+    /// </summary>
+    private static ChatFinishReason? ContextFullFinishReason(LiteRtConversation conv)
+        => conv.IsContextFull ? ChatFinishReason.Length : null;
 
     /// <summary>
     /// Reads the just-completed turn's token usage off the (still-live) conversation. <c>TotalTokenCount</c>

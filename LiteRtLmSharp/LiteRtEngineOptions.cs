@@ -58,6 +58,15 @@ public sealed record LiteRtEngineOptions
     /// window costs more memory and a slower prefill, so prefer the smallest that fits your use case. For
     /// <b>multimodal</b> input leave room for the media on top of the text — an image expands to roughly
     /// 256 vision tokens — for which 4096 is a comfortable starting point.
+    /// <para><b>Setting this also arms the binding's KV overflow guard.</b> The native runtime does not
+    /// police the limit: a send that grows past it writes beyond the allocated cache and corrupts native
+    /// memory (typically a deferred <c>0xC0000005</c> process crash on a later call). With an explicit
+    /// value here, the send methods instead clamp each reply to the remaining context and throw
+    /// <see cref="LiteRtContextOverflowException"/> when the conversation is full. <b>The clamp cannot
+    /// cover sends whose prefill cost is unmeasurable managed-side</b> — media attachments and
+    /// <c>SendRaw</c>'s per-send <c>extraContext</c> get only the conversation-full check, so keep extra
+    /// headroom under the limit on those paths (an image is roughly 256 tokens). With 0 the effective
+    /// limit is internal to the engine (the C API exposes no getter), so the guard stays off.</para>
     /// </remarks>
     public int MaxNumTokens { get; init; }
 

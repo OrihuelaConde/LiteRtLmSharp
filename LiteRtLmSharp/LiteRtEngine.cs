@@ -23,13 +23,26 @@ public sealed class LiteRtEngine : IDisposable
     // works — Google's Edge Gallery switches model/backend exactly this way (engine.close() +
     // new Engine). The process-wide gate (EngineLiveness) is acquired here and released when the
     // native engine is destroyed (EngineHandle.ReleaseHandle), so a forgotten/GC'd engine also frees
-    // the slot — callers get a clear exception instead of a hang.
+    // the slot — callers get a clear exception instead of a hang. NOTE: every conversation holds a
+    // strong reference to its engine (it needs the tokenizer and context limit for the KV overflow
+    // guard — and finalizing an engine whose native conversations are still alive would be a
+    // use-after-free anyway), so the GC recovery only applies once no conversation objects remain
+    // reachable either. Disposing conversations and the engine remains the contract.
 
-    private LiteRtEngine(EngineHandle engine, bool isMultimodal)
+    private LiteRtEngine(EngineHandle engine, bool isMultimodal, int maxNumTokens)
     {
         _engine = engine;
         _isMultimodal = isMultimodal;
+        MaxNumTokens = maxNumTokens;
     }
+
+    /// <summary>The native engine handle, for conversations spawned from this engine.</summary>
+    internal EngineHandle Handle => _engine;
+
+    /// <summary>The context limit the engine was loaded with (<see cref="LiteRtEngineOptions.MaxNumTokens"/>);
+    /// 0 when the caller left the engine default, whose value the C API does not expose — the KV overflow
+    /// guard is only active when this is known.</summary>
+    internal int MaxNumTokens { get; }
 
     /// <summary>Sets the global minimum log level (0=VERBOSE … 5=FATAL, 1000=SILENT).</summary>
     /// <exception cref="DllNotFoundException">The native LiteRT-LM library could not be loaded; the
@@ -117,7 +130,8 @@ public sealed class LiteRtEngine : IDisposable
 
             return new LiteRtEngine(
                 new EngineHandle(enginePtr),
-                isMultimodal: options.VisionBackend is not null || options.AudioBackend is not null);
+                isMultimodal: options.VisionBackend is not null || options.AudioBackend is not null,
+                maxNumTokens: options.MaxNumTokens);
         }
         catch
         {
@@ -151,7 +165,7 @@ public sealed class LiteRtEngine : IDisposable
     public LiteRtConversation CreateConversation(LiteRtConversationOptions? options = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return LiteRtConversation.Create(_engine, options, _isMultimodal);
+        return LiteRtConversation.Create(this, options, _isMultimodal);
     }
 
     /// <summary>
@@ -185,6 +199,22 @@ public sealed class LiteRtEngine : IDisposable
         // The pointer is into the result's internal buffer; copy out before the handle disposes it.
         Marshal.Copy(tokensPtr, tokens, 0, checked((int)count));
         return tokens;
+    }
+
+    /// <summary>Counts <paramref name="text"/>'s tokens without materializing the id array — the native
+    /// result already carries the count, so this skips the managed copy <see cref="Tokenize"/> pays.
+    /// Used by the KV overflow guard on every measured send.</summary>
+    /// <exception cref="LiteRtException">The native tokenizer call failed.</exception>
+    internal int CountTokens(string text)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        nint resultPtr = LiteRtLmNative.litert_lm_engine_tokenize(_engine.Ptr, text);
+        if (resultPtr == nint.Zero)
+            throw new LiteRtException("litert_lm_engine_tokenize returned null.");
+
+        using var result = new TokenizeResultHandle(resultPtr);
+        return checked((int)LiteRtLmNative.litert_lm_tokenize_result_get_num_tokens(result.Ptr));
     }
 
     /// <summary>

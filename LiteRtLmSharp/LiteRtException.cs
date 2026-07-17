@@ -1,7 +1,7 @@
 namespace LiteRtLmSharp;
 
 /// <summary>Raised when a LiteRT-LM native call fails.</summary>
-public sealed class LiteRtException : Exception
+public class LiteRtException : Exception
 {
     /// <summary>Creates the exception with a message describing the native failure.</summary>
     public LiteRtException(string message) : base(message) { }

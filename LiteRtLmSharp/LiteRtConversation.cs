@@ -15,9 +15,18 @@ public sealed class LiteRtConversation : IDisposable
     private readonly ConversationHandle _conversation;
     private readonly ConversationConfigHandle? _config;
     private readonly SessionConfigHandle? _sessionConfig;
+    // The engine this conversation was spawned from: carries the configured context limit
+    // (MaxNumTokens, 0 = unknown) and the tokenizer the overflow guard measures prefill with.
+    // Inherited by Clone(). Conversations are documented to be disposed before their engine, so the
+    // guard treats a disposed engine as "cannot measure" rather than an error.
+    private readonly LiteRtEngine _engineOwner;
     // Image prefill budget (from LiteRtConversationOptions.VisualTokenBudget); 0 = engine default.
     // Applied per send by building a native optional-args object. Inherited by Clone().
     private readonly int _visualTokenBudget;
+    // Conversation-level output cap (LiteRtConversationOptions.MaxOutputTokens); 0 = engine default.
+    // The native session config already enforces it — this copy only lets the overflow guard pick the
+    // smaller of the caller's cap and the remaining context budget. Inherited by Clone().
+    private readonly int _maxOutputTokens;
     // Channel name the native side streams raw tool-call text on (LiteRtConversationOptions.StreamToolCalls);
     // null = the feature is off and channel content routes to Thinking as before. Inherited by Clone().
     private readonly string? _toolCallStreamChannel;
@@ -30,17 +39,20 @@ public sealed class LiteRtConversation : IDisposable
 
     private LiteRtConversation(
         ConversationHandle conversation, ConversationConfigHandle? config, SessionConfigHandle? sessionConfig,
-        int visualTokenBudget = 0, string? toolCallStreamChannel = null)
+        LiteRtEngine engineOwner, int visualTokenBudget = 0, int maxOutputTokens = 0,
+        string? toolCallStreamChannel = null)
     {
         _conversation = conversation;
         _config = config;
         _sessionConfig = sessionConfig;
+        _engineOwner = engineOwner;
         _visualTokenBudget = visualTokenBudget;
+        _maxOutputTokens = maxOutputTokens;
         _toolCallStreamChannel = toolCallStreamChannel;
     }
 
     internal static LiteRtConversation Create(
-        EngineHandle engine, LiteRtConversationOptions? options, bool engineIsMultimodal = false)
+        LiteRtEngine engine, LiteRtConversationOptions? options, bool engineIsMultimodal = false)
     {
         // TEMPORARY GUARD — remove when upstream republishes a fixed linux prebuilt.
         // The linux-x64 libGemmaModelConstraintProvider.so shipped with LiteRT-LM v0.13.1
@@ -189,12 +201,13 @@ public sealed class LiteRtConversation : IDisposable
                     LiteRtLmNative.litert_lm_conversation_config_set_messages(configPtr, historyJson);
             }
 
-            nint convPtr = LiteRtLmNative.litert_lm_conversation_create(engine.Ptr, configPtr);
+            nint convPtr = LiteRtLmNative.litert_lm_conversation_create(engine.Handle.Ptr, configPtr);
             if (convPtr == nint.Zero)
                 throw new LiteRtException("litert_lm_conversation_create returned null.");
 
             return new LiteRtConversation(
-                new ConversationHandle(convPtr), config, sessionConfig, options?.VisualTokenBudget ?? 0,
+                new ConversationHandle(convPtr), config, sessionConfig, engine,
+                options?.VisualTokenBudget ?? 0, options?.MaxOutputTokens ?? 0,
                 options?.StreamToolCalls == true ? ToolCallStreamChannelName : null);
         }
         catch
@@ -208,7 +221,10 @@ public sealed class LiteRtConversation : IDisposable
     /// <summary>
     /// Tokens currently held in this conversation's KV cache (prefill + decode, accumulated across
     /// turns). When this approaches the engine's <see cref="LiteRtEngineOptions.MaxNumTokens"/> the
-    /// context is full and further generation degrades — manage history before that point.
+    /// context is full and further generation degrades — manage history before that point. When the
+    /// engine was loaded with an explicit <c>MaxNumTokens</c>, the send methods guard the limit and
+    /// throw <see cref="LiteRtContextOverflowException"/> rather than let a send overflow the cache
+    /// (which corrupts the native runtime).
     /// </summary>
     public int TokenCount
     {
@@ -218,6 +234,21 @@ public sealed class LiteRtConversation : IDisposable
             return LiteRtLmNative.litert_lm_conversation_get_token_count(_conversation.Ptr);
         }
     }
+
+    /// <summary>
+    /// Whether this conversation's context is full: a completed send was detected to have run its reply
+    /// into the KV overflow guard's ceiling (exact detection from the guard's own counts), or
+    /// <see cref="TokenCount"/> has reached that ceiling (the engine's
+    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> minus a small reserved margin). When <c>true</c>,
+    /// the reply that got here was likely truncated by the guard's decode clamp (mid-sentence text, or a
+    /// stream that just stopped), and the <b>next</b> send is guaranteed to throw
+    /// <see cref="LiteRtContextOverflowException"/> — check this right after a send (or after a stream
+    /// completes) to learn in the same turn that the conversation is over, instead of discovering it on the
+    /// next call. Always <c>false</c> when the engine was loaded without an explicit <c>MaxNumTokens</c>
+    /// (the limit is then internal to the engine and the guard is off).
+    /// </summary>
+    public bool IsContextFull
+        => _sawCeiling || LiteRtContextGuard.IsContextFull(TokenCount, _engineOwner.MaxNumTokens);
 
     /// <summary>
     /// Returns benchmark timings (prefill/decode tokens-per-second, time-to-first-token, init
@@ -292,11 +323,12 @@ public sealed class LiteRtConversation : IDisposable
         // The clone is a fully independent native conversation; it does not share or need the parent's
         // config handles (those are only read at create time). Each conversation frees its own native
         // object on Dispose, so the clone outlives a disposed parent as long as the engine is alive.
-        // It inherits the parent's visual token budget and tool-call stream channel so attachments and
+        // It inherits the parent's engine (context limit + tokenizer for the overflow guard), visual
+        // token budget, output cap and tool-call stream channel so attachments, the guard and
         // streaming behave the same on the branch (the native clone copies the config, channel included).
         return new LiteRtConversation(
-            new ConversationHandle(clonedPtr), config: null, sessionConfig: null, _visualTokenBudget,
-            _toolCallStreamChannel);
+            new ConversationHandle(clonedPtr), config: null, sessionConfig: null, _engineOwner,
+            _visualTokenBudget, _maxOutputTokens, _toolCallStreamChannel);
     }
 
     /// <summary>Sends a user message and returns the reply (blocking). The answer text is
@@ -314,21 +346,32 @@ public sealed class LiteRtConversation : IDisposable
     /// matching modality enabled (see <see cref="LiteRtEngineOptions.VisionBackend"/> /
     /// <see cref="LiteRtEngineOptions.AudioBackend"/>) on a multimodal model.
     /// </summary>
+    /// <exception cref="LiteRtContextOverflowException">Sending would overflow the KV cache sized by
+    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/>; the conversation is full and must be replaced.
+    /// Only thrown when the engine was loaded with an explicit <c>MaxNumTokens</c>.</exception>
     public LiteRtResponse Send(
         string text, IReadOnlyList<LiteRtAttachment>? attachments, LiteRtSendOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(text);
-        return LiteRtResponse.Parse(SendRaw(LiteRtJson.UserMessage(text, attachments), extraContext: null, options));
+        // The typed overloads know whether the send carries media — no JSON probing needed.
+        return LiteRtResponse.Parse(SendRawCore(
+            LiteRtJson.UserMessage(text, attachments), extraContext: null, options,
+            unmeasured: attachments is { Count: > 0 }));
     }
 
     /// <summary>
     /// Sends the results of executed tools back to the model and returns its next response.
     /// Call after a <see cref="LiteRtResponse"/> with <see cref="LiteRtResponse.IsToolCall"/> = true.
     /// </summary>
+    /// <exception cref="LiteRtContextOverflowException">Sending would overflow the KV cache sized by
+    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> — the guard that keeps a long tool loop from
+    /// crashing the native runtime. Only thrown when the engine was loaded with an explicit
+    /// <c>MaxNumTokens</c>.</exception>
     public LiteRtResponse SendToolResults(IEnumerable<LiteRtToolResult> results, LiteRtSendOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(results);
-        return LiteRtResponse.Parse(SendRaw(LiteRtJson.ToolResults(results), extraContext: null, options));
+        return LiteRtResponse.Parse(SendRawCore(
+            LiteRtJson.ToolResults(results), extraContext: null, options, unmeasured: false));
     }
 
     /// <summary>
@@ -415,22 +458,139 @@ public sealed class LiteRtConversation : IDisposable
             cancellationToken.ThrowIfCancellationRequested();
             return response;
         }
-        catch (LiteRtException) when (cancellationToken.IsCancellationRequested)
+        // LiteRtContextOverflowException is excluded: the overflow guard throws it BEFORE the native send,
+        // so a concurrent cancel did not cause it — translating it would discard the context-full
+        // diagnosis (TokenCount/MaxNumTokens) and leave the caller retrying against an invisible wall.
+        catch (LiteRtException e) when (cancellationToken.IsCancellationRequested
+                                        && e is not LiteRtContextOverflowException)
         {
             throw new OperationCanceledException(
                 "The generation was cancelled (LiteRtConversation.CancelProcess).", cancellationToken);
         }
     }
 
+    // Set by GuardContextOverflow on each measured, ceiling-clamped send (pre-send token count, measured
+    // prefill, imposed decode budget) and consumed after the send completes to detect — exactly, not by
+    // threshold — that the reply saturated its budget and the context is full. Conversations are not
+    // thread-safe (documented), so plain fields are safe here.
+    private (int Used, int Input, int Budget)? _ceilingProbe;
+    // Latched true once a send is detected to have filled the context (probe above, ± the guard's safety
+    // margin of measurement drift). A context never shrinks, so the latch never resets.
+    private bool _sawCeiling;
+
+    /// <summary>
+    /// The KV overflow guard (see <see cref="LiteRtContextOverflowException"/>), run before every send.
+    /// Active only when the engine was loaded with an explicit <see cref="LiteRtEngineOptions.MaxNumTokens"/>
+    /// (the C API exposes no getter for the engine's internal default, so an unset limit is unknowable).
+    /// Two layers:
+    /// (1) a hard stop — a conversation at the guard ceiling (the shared predicate behind
+    ///     <see cref="IsContextFull"/>, so signal and stop can never disagree) throws instead of reaching
+    ///     native code, which is the exact state that crashes the runtime on the next send (B9);
+    /// (2) a decode clamp — the message's real prefill cost is measured (render + tokenize, no inference)
+    ///     and the remaining context becomes this send's <c>max_output_tokens</c>, so decode physically
+    ///     cannot grow the KV cache past the limit. A message whose prefill alone leaves no room throws.
+    /// The measurement is best-effort: sends flagged <paramref name="unmeasured"/> (media attachments or a
+    /// per-send extra context, whose token costs are not measurable managed-side) and natives that cannot
+    /// render/tokenize fall back to layer (1) alone — leave headroom under the limit for those.
+    /// </summary>
+    private LiteRtSendOptions? GuardContextOverflow(string messageJson, LiteRtSendOptions? options, bool unmeasured)
+    {
+        int limit = _engineOwner.MaxNumTokens;
+        if (limit <= 0)
+            return options;
+
+        _ceilingProbe = null;
+        int used = TokenCount;
+        if (_sawCeiling)
+            LiteRtContextGuard.ThrowContextFull(used, limit);
+        LiteRtContextGuard.ThrowIfContextFull(used, limit);
+
+        if (unmeasured)
+            return options;
+
+        int inputTokens;
+        try
+        {
+            // The native render returns exactly what the next send would prefill: on a conversation whose
+            // preface (system + tools + history) has not been consumed by a first send yet, the rendered
+            // string INCLUDES it (verified empirically on v0.14.0); after the first send it is the turn
+            // alone. So one render measures the whole prefill in either state.
+            string rendered = RenderMessageRaw(messageJson);
+            // An empty render for a non-empty message means the template did not actually process it —
+            // measuring 0 would inflate the decode budget, so treat it as unmeasurable instead.
+            if (rendered.Length == 0)
+                return options;
+            inputTokens = _engineOwner.CountTokens(rendered);
+        }
+        catch (Exception e) when (e is LiteRtException or EntryPointNotFoundException or ObjectDisposedException)
+        {
+            // Older natives without the render/tokenize entry points, a message shape the template cannot
+            // render, or an engine disposed out of order: the guard cannot measure, the hard stop above
+            // still protects the known-fatal state.
+            return options;
+        }
+
+        int budget = LiteRtContextGuard.DecodeBudget(used, limit, inputTokens);
+        int callerCap = options is { MaxOutputTokens: > 0 } ? options.MaxOutputTokens : _maxOutputTokens;
+        int effective = LiteRtContextGuard.EffectiveOutputCap(budget, callerCap);
+        if (effective == callerCap)
+            return options;   // the caller's own tighter cap ends the reply, not the context ceiling
+
+        // The ceiling-derived budget is the cap: arm the post-send probe that detects — from exact counts,
+        // tolerating measurement drift up to the safety margin in either direction — whether the reply
+        // saturated it, i.e. the context is now full and the reply was likely truncated.
+        _ceilingProbe = (used, inputTokens, effective);
+        return (options ?? new LiteRtSendOptions()) with { MaxOutputTokens = effective };
+    }
+
+    /// <summary>Consumes the pending ceiling probe after a completed send: latches the context-full state
+    /// when the KV cache grew by at least the measured prefill plus the imposed decode budget (less the
+    /// safety margin, absorbing measurement drift) — the reply ran to the ceiling rather than ending on
+    /// its own. Never throws (runs on success paths).</summary>
+    private void CompleteCeilingProbe()
+    {
+        if (_ceilingProbe is not { } probe)
+            return;
+        _ceilingProbe = null;
+        try
+        {
+            if (TokenCount - probe.Used >= probe.Input + probe.Budget - LiteRtContextGuard.SafetyMargin)
+                _sawCeiling = true;
+        }
+        catch (ObjectDisposedException) { }
+    }
+
     /// <summary>
     /// Low-level escape hatch: sends a raw message JSON and returns the raw response JSON.
     /// Use when you need full control over the wire format.
     /// </summary>
+    /// <exception cref="LiteRtContextOverflowException">Sending would overflow the KV cache sized by
+    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> — the conversation is full (or the message's
+    /// prefill leaves no room to reply); continuing would corrupt the native runtime. Only thrown when
+    /// the engine was loaded with an explicit <c>MaxNumTokens</c>. A send carrying media or a non-null
+    /// <paramref name="extraContext"/> gets only the conversation-full check (its prefill cost is not
+    /// measurable managed-side) — leave headroom under the limit for those.</exception>
     public string SendRaw(string messageJson, string? extraContext = null, LiteRtSendOptions? options = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(messageJson);
+        // Raw JSON is the one entry point that must probe for media itself (the typed overloads know
+        // their attachments). extraContext is prefilled by the native send but invisible to the render
+        // measurement, so it also makes the send unmeasurable.
+        return SendRawCore(
+            messageJson, extraContext, options,
+            unmeasured: extraContext is not null || MessageHasMedia(messageJson));
+    }
 
+    /// <summary>The shared blocking-send core behind <see cref="SendRaw"/> and the typed overloads, which
+    /// already know whether the send is measurable (<paramref name="unmeasured"/>) without probing JSON.</summary>
+    private string SendRawCore(
+        string messageJson, string? extraContext, LiteRtSendOptions? options, bool unmeasured)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(messageJson);
+
+        options = GuardContextOverflow(messageJson, options, unmeasured);
         using ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs(options);
         nint responsePtr = LiteRtLmNative.litert_lm_conversation_send_message(
             _conversation.Ptr, messageJson, extraContext, optionalArgs?.Ptr ?? nint.Zero);
@@ -450,7 +610,11 @@ public sealed class LiteRtConversation : IDisposable
 
         using var response = new JsonResponseHandle(responsePtr);
         nint strPtr = LiteRtLmNative.litert_lm_json_response_get_string(response.Ptr);
-        return Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
+        string result = Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
+        // The send completed: detect (from exact counts) whether the reply ran to the ceiling-derived
+        // decode budget, latching the context-full state the same turn it happens.
+        CompleteCeilingProbe();
+        return result;
     }
 
     /// <summary>
@@ -459,8 +623,12 @@ public sealed class LiteRtConversation : IDisposable
     /// <see cref="LiteRtEngine.Tokenize"/> to measure a turn's real token cost with the chat template
     /// included, or to inspect how a system prompt / history shape the rendered turn.
     /// </summary>
-    /// <remarks>Wraps a native entry point Google still marks experimental in its own bindings; the
-    /// rendered format may change with the native runtime version.</remarks>
+    /// <remarks>The rendered string is exactly what the next send would prefill: on a conversation whose
+    /// preface (system message + tools + history) has not been consumed by a first send yet, it
+    /// <b>includes the preface</b>; after the first send it is the turn alone — do not add
+    /// <see cref="RenderPreface"/> on top when measuring a first send's cost. Wraps a native entry point
+    /// Google still marks experimental in its own bindings; the rendered format may change with the
+    /// native runtime version.</remarks>
     public string RenderMessage(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
@@ -523,16 +691,19 @@ public sealed class LiteRtConversation : IDisposable
         "(an image is roughly 256 tokens).";
 
     /// <summary>
-    /// Whether a user-message JSON carries an image/audio content part. Used only on a send-failure path
-    /// to decide whether to attach <see cref="MultimodalSendHint"/>, so the JSON parse never costs a
-    /// normal send. Tolerant of malformed input (returns false).
+    /// Whether a user-message JSON carries an image/audio content part. Probed by the public
+    /// <see cref="SendRaw"/> escape hatch for the overflow guard (the typed overloads know their
+    /// attachments without parsing) and on a send-failure path to decide whether to attach
+    /// <see cref="MultimodalSendHint"/>. Tolerant of any input shape (malformed JSON and non-object
+    /// roots return false — raw callers may send shapes the binding never emits).
     /// </summary>
     internal static bool MessageHasMedia(string messageJson)
     {
         try
         {
             using var doc = JsonDocument.Parse(messageJson);
-            if (!doc.RootElement.TryGetProperty("content", out JsonElement content)
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("content", out JsonElement content)
                 || content.ValueKind != JsonValueKind.Array)
                 return false;
 
@@ -610,6 +781,9 @@ public sealed class LiteRtConversation : IDisposable
         ArgumentNullException.ThrowIfNull(text);
 
         string messageJson = LiteRtJson.UserMessage(text, attachments);
+        // Same KV overflow guard as the blocking path; throws (on the consumer's first MoveNext)
+        // before any native state is touched. The typed signature knows whether media is attached.
+        options = GuardContextOverflow(messageJson, options, unmeasured: attachments is { Count: > 0 });
 
         var channel = Channel.CreateUnbounded<LiteRtStreamChunk>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
@@ -661,6 +835,13 @@ public sealed class LiteRtConversation : IDisposable
                         while (channel.Reader.TryRead(out _)) { }
                 }
                 catch { /* the cancel error is expected here; the consumer already gave up */ }
+            }
+            else if (channel.Reader.Completion.IsCompletedSuccessfully)
+            {
+                // The stream ran to its natural end: same ceiling detection as the blocking path, so a
+                // clamped stream (which just stops, with no error) still latches IsContextFull same-turn.
+                // Abandoned/faulted streams skip it — the conversation is consumed anyway.
+                CompleteCeilingProbe();
             }
             if (gcHandle.IsAllocated)
                 gcHandle.Free();
