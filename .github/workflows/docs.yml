@@ -1,0 +1,58 @@
+name: docs
+
+# Builds the DocFX site (docs/ markdown + API reference from the XML docs of the three managed
+# projects) and deploys it to GitHub Pages at https://orihuelaconde.github.io/LiteRtLmSharp/.
+# Metadata extraction compiles the managed projects only — no native binaries needed.
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'docs/**'
+      - 'LiteRtLmSharp/**'
+      - 'LiteRtLmSharp.Extensions.AI/**'
+      - 'LiteRtLmSharp.SemanticKernel/**'
+      - '.config/dotnet-tools.json'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One Pages deployment at a time; don't cancel a deploy mid-flight.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build site
+        run: |
+          dotnet tool restore
+          dotnet docfx docs/docfx.json
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

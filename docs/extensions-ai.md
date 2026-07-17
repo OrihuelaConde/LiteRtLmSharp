@@ -145,7 +145,7 @@ the decoder isn't forced. In practice a capable model calls the tool when the re
 it, but may ignore the instruction for a clearly-unrelated prompt. (Semantic Kernel's
 `FunctionChoiceBehavior.Auto()/None()/Required()` map to these same modes.)
 
-> The native [LiteRtLmSharp tools API](../README.md#function-calling) is still available for full control
+> The native [LiteRtLmSharp tools API](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/README.md#function-calling) is still available for full control
 > (constrained decoding, custom tool-call parsing); the chat client is the MEAI-idiomatic path on top of it.
 
 ## Reasoning ("thinking")
@@ -287,7 +287,7 @@ conversation advances, so keeping two live conversations and interleaving them w
 parked one's answers. The single-conversation limit is deliberate; a bounded multi-conversation cache (and a
 conversation-forking hatch) already exists internally and will be enabled once upstream preserves
 suspended-conversation state. There is no public knob to raise the limit. See
-[`docs/roadmap.md`](roadmap.md).
+[`docs/roadmap.md`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md).
 
 `ChatResponse.Usage.TotalTokenCount` in this mode is the conversation's **cumulative** KV-cache size, so it
 grows across the thread (rather than resetting per call as in the stateless mode).
@@ -407,6 +407,6 @@ When streaming, the usage arrives as a final `UsageContent` update, which MEAI a
 
 ## Sample
 
-The Semantic Kernel console sample in [`samples/SemanticKernel`](../samples/SemanticKernel) also resolves
+The Semantic Kernel console sample in [`samples/SemanticKernel`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/SemanticKernel) also resolves
 the underlying `IChatClient` from the kernel — see [docs/semantic-kernel.md](semantic-kernel.md) for the
 Semantic Kernel layer.

@@ -13,6 +13,10 @@
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 
+# DocFX output (docs.yml builds and deploys these; docs/api is the generated API metadata)
+docs/_site/
+docs/api/
+
 # Mono auto generated files
 mono_crash.*
 

@@ -67,7 +67,7 @@ become the conversation's preface and are prefilled when the conversation is cre
 `ToMessage()` keeps the assistant's tool calls so a function-calling conversation restores correctly,
 and it **drops the reasoning ("thinking") trace** on purpose. Replaying a long thinking block would
 re-consume the context window for no benefit, which is the same reason
-[`FilterThinkingFromKvCache`](../README.md#reasoning-mode-thinking) exists. Pass
+[`FilterThinkingFromKvCache`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/README.md#reasoning-mode-thinking) exists. Pass
 `ToMessage(includeToolCalls: false)` if you want text only.
 
 A full tools round-trip looks like this:

@@ -12,7 +12,7 @@
 > bound on 2026-06-15; multimodal image/audio messages on 2026-06-17; the tokenizer surface
 > (tokenize/detokenize + start/stop tokens) on 2026-06-19; and the v0.14.0 surface (LoRA, CPU thread
 > counts, per-send output cap, tool-call streaming, preface rendering, plus the internal sampler-builder
-> migration) on 2026-07-10 (see [`roadmap.md`](roadmap.md) for the C-API coverage count, now 84/109, the
+> migration) on 2026-07-10 (see [`roadmap.md`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md) for the C-API coverage count, now 84/109, the
 > [v0.14.0 ABI changes](#v0140-abi-changes-sampler-struct--opaque-builder) section below, and the
 > [multimodal section](#multimodal-messages-image--audio--verified-wire-format) below). The notes
 > below are kept as a diagnostic record.

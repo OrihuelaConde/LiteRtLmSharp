@@ -1,0 +1,46 @@
+{
+  "$schema": "https://raw.githubusercontent.com/dotnet/docfx/main/schemas/docfx.schema.json",
+  "metadata": [
+    {
+      "src": [
+        {
+          "src": "..",
+          "files": [
+            "LiteRtLmSharp/LiteRtLmSharp.csproj",
+            "LiteRtLmSharp.Extensions.AI/LiteRtLmSharp.Extensions.AI.csproj",
+            "LiteRtLmSharp.SemanticKernel/LiteRtLmSharp.SemanticKernel.csproj"
+          ]
+        }
+      ],
+      "dest": "api"
+    }
+  ],
+  "build": {
+    "content": [
+      {
+        "files": ["**/*.{md,yml}"],
+        "exclude": ["_site/**", "roadmap.md"]
+      }
+    ],
+    "resource": [
+      {
+        "files": ["images/**"]
+      }
+    ],
+    "output": "_site",
+    "template": ["default", "modern"],
+    "globalMetadata": {
+      "_appName": "LiteRtLmSharp",
+      "_appTitle": "LiteRtLmSharp",
+      "_appFooter": "LiteRtLmSharp — .NET bindings for Google's LiteRT-LM. Apache-2.0.",
+      "_enableSearch": true,
+      "_gitContribute": {
+        "repo": "https://github.com/OrihuelaConde/LiteRtLmSharp",
+        "branch": "master"
+      }
+    },
+    "sitemap": {
+      "baseUrl": "https://orihuelaconde.github.io/LiteRtLmSharp"
+    }
+  }
+}

@@ -1,0 +1,24 @@
+- name: Guides
+  items:
+    - name: Microsoft.Extensions.AI (IChatClient)
+      href: extensions-ai.md
+    - name: Semantic Kernel
+      href: semantic-kernel.md
+    - name: Conversation state — restore & clone
+      href: conversation-state.md
+    - name: Engine tuning
+      href: engine-tuning.md
+    - name: Speculative decoding
+      href: speculative-decoding.md
+    - name: Android
+      href: android.md
+- name: Internals
+  items:
+    - name: Native ABI
+      href: native-abi.md
+    - name: Building the native runtime
+      href: native-build.md
+    - name: Packaging
+      href: packaging.md
+- name: API Reference
+  href: api/

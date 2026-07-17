@@ -260,7 +260,7 @@ text). See [docs/extensions-ai.md](extensions-ai.md#multimodal-image--audio) for
 
 ## Sample
 
-A runnable console sample is in [`samples/SemanticKernel`](../samples/SemanticKernel): it builds a kernel with
+A runnable console sample is in [`samples/SemanticKernel`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/SemanticKernel): it builds a kernel with
 `AddLiteRtChatCompletion` and demonstrates a prompt function, a streaming prompt, a multi-turn streaming
-chat, and function calling (a `[KernelFunction]` plugin) — pass `--interactive` for a chat loop. See its [README](../samples/SemanticKernel/README.md) for how to
+chat, and function calling (a `[KernelFunction]` plugin) — pass `--interactive` for a chat loop. See its [README](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/samples/SemanticKernel/README.md) for how to
 run it. The broader Microsoft.Extensions.AI / Agent Framework story is in [docs/extensions-ai.md](extensions-ai.md).
