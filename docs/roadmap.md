@@ -102,8 +102,12 @@ priority order:
 
 ## Actionable next steps (suggested order)
 
--1. ✅ **GPU native-layout fix — 1.1.1 patch candidate (implemented AND E2E-verified 2026-07-18;
-   release pending).**
+-1. ✅ **1.1.1 RELEASED — 2026-07-18** (GPU native-layout fix). Published to nuget.org (all 7
+   packages, shared-version policy; runtimes carry the same v0.14.0 natives), tag `v1.1.1` +
+   GitHub release with assets. Post-publish smoke against the public feed (`--no-cache`, indexed
+   in ~4 min): GPU raw + GPU IChatClient (21 Dawn init lines each) + CPU Semantic Kernel — all
+   generating. This release also fixes the packaged README: 1.1.0 shipped the repo-root README
+   (HTML hero nuget.org can't render); 1.1.1 embeds the dedicated `packaging/nuget-readme.md`.
    The first downstream NuGet adoption hit `litert_lm_engine_create returned null` with `Backend=Gpu`
    on Windows, framework-dependent: the engine's own runtime `LoadLibrary` of the accelerators
    (`libLiteRtWebGpuAccelerator.dll` ← libLiteRt, `libLiteRtTopKWebGpuSampler.dll` ← LiteRtLm,
