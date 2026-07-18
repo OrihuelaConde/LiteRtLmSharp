@@ -222,10 +222,13 @@ jobs:
           if ($code -eq 0) {
             Write-Host 'GPU leg: FULL pass — a usable adapter exists on this runner (WARP or hardware) and generation succeeded.'
           } elseif ($dawn -gt 0) {
-            Write-Host 'GPU leg: LOAD-PATH pass — the accelerator libraries were found and initialized; engine creation then failed for lack of a usable GPU adapter, which is expected on this runner.'
+            Write-Host 'GPU leg: LOAD-PATH pass — the accelerator libraries were found and initialized; the engine then failed for lack of a usable GPU, which is expected on this runner.'
           } else {
             throw 'GPU leg FAILED: zero WebGPU/Dawn stderr lines — the GPU accelerator libraries never loaded from the NuGet layout (the exact bug class the 1.1.1 fix addresses).'
           }
+          # GitHub's pwsh shell appends `exit $LASTEXITCODE`, which would resurface the exe's
+          # expected non-zero exit after a load-path pass — end with an explicit success.
+          exit 0
 
   publish:
     needs: [pack, consumer-smoke]
