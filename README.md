@@ -19,8 +19,7 @@
 [**Changelog**](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/CHANGELOG.md) ·
 [**Roadmap**](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md)
 
-<!-- PHASE 2 PLACEHOLDER: hero GIF — streaming chat in the MAUI sample on Android (docs/images/maui-chat-hero.gif)
-     <img src="docs/images/maui-chat-hero.gif" width="340" alt="Streaming chat fully on-device in the MAUI sample" /> -->
+<img src="docs/images/maui-chat-hero.gif" width="340" alt="Streaming chat fully on-device in the MAUI sample (Android, GPU backend)" />
 
 </div>
 
@@ -121,15 +120,11 @@ conversations** (MEAI `ConversationId`) are supported — see the
 
 ## Samples
 
-<!-- PHASE 2 PLACEHOLDER: screenshot row — MAUI Models tab (download/manage), Chat tab with 📷 attachment,
-     Tools tab (function calling); Android + Windows side by side (docs/images/maui-models.png,
-     docs/images/maui-chat.png, docs/images/maui-tools.png)
 <p align="center">
   <img src="docs/images/maui-models.png" width="230" alt="Models tab — download and manage Gemma models" />
-  <img src="docs/images/maui-chat.png" width="230" alt="Chat tab — streaming with image attachment" />
-  <img src="docs/images/maui-tools.png" width="230" alt="Tools tab — on-device function calling" />
+  <img src="docs/images/maui-chat.png" width="230" alt="Chat tab — multimodal: image attachment answered on-device" />
+  <img src="docs/images/maui-tools.png" width="230" alt="Tools tab — on-device function calling against real device APIs" />
 </p>
--->
 
 - [`samples/Maui`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/Maui) — full
   Android/Windows chat app: model download with resume, streaming, multimodal attachments, function

@@ -51,6 +51,11 @@ small models it is the difference between reliable and flaky arguments. If you u
 [Microsoft.Extensions.AI or Semantic Kernel connectors](extensions-ai.md#function-calling-tools),
 their auto-invocation layers sit on top of this same API.
 
+<p align="center">
+  <img src="images/maui-tools-demo.gif" width="270" alt="The MAUI sample's Tools tab: the model calls the device battery API and answers with the real value" />
+</p>
+<p align="center"><sub>Function calling on a phone: the model calls the device's real battery API and answers with the result.</sub></p>
+
 ## Reasoning mode (thinking)
 
 Models with a reasoning template (the Gemma builds) can be told to think before answering:
