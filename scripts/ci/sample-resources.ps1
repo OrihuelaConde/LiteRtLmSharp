@@ -1,5 +1,5 @@
 # Samples runner resource state to a CSV until killed. Started as a background process by
-# model-tests.yml (B9 forensics: an intermittent native crash in the overflow-guard test on
+# model-tests.yml (crash forensics: an intermittent native crash in the overflow-guard test on
 # 2026-07-17 left no way to tell whether the shared runner was under memory pressure).
 # Cross-platform: pwsh on the ubuntu/windows/macos runner images.
 param(

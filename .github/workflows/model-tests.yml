@@ -94,7 +94,7 @@ jobs:
         include: ${{ fromJson(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    # B9 forensics (2026-07-17: one intermittent testhost crash in the overflow-guard test on
+    # Crash forensics (2026-07-17: one intermittent testhost crash in the overflow-guard test on
     # win-x64; the VSTest blame dump carried no exception context, so the NTSTATUS is unknown):
     # have the CLR write its own minidump on a fatal crash — createdump includes the exception
     # stream. Type 1 (Mini) on purpose: a heap dump would embed the ~2.6 GB model. diag/ is
@@ -111,7 +111,7 @@ jobs:
           dotnet-version: '10.0.x'
 
       # Sample available memory / test-process working set / disk every 5 s for the whole job
-      # (covers model download + build + tests) so a recurrence of the B9 crash can be correlated
+      # (covers model download + build + tests) so a recurrence of the overflow-guard crash can be correlated
       # with runner resource pressure. Summarized and uploaded by the teardown step below.
       - name: Start resource sampler
         shell: pwsh

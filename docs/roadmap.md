@@ -43,7 +43,7 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Render a message (`RenderMessage`) or the whole preface (`RenderPreface`) to its templated prompt for debugging / exact-cost budgeting | ✅ |
 | CPU thread counts, LoRA adapters (engine ranks + per-conversation paths), per-send output cap, tool-call streaming (v0.14.0 surface) | ✅ |
 | .NET AI integrations: `Microsoft.Extensions.AI` `IChatClient` (+ Agent Framework) and a Semantic Kernel connector (separate packages) | ✅ |
-| KV overflow guard (`LiteRtContextOverflowException`): sends clamp their reply to the remaining context and throw instead of overflowing the KV cache, which the native runtime does not police (heap corruption + deferred `0xC0000005`/`0xC0000374` crash — found as B9 by the Memorias consumer, 2026-07-13, in a stateful tool loop). Same-turn signal: `LiteRtConversation.IsContextFull` (true exactly when the next send would throw) → `ChatFinishReason.Length` in the MEAI client, overriding `ToolCalls` on a full conversation. Armed by an explicit `MaxNumTokens`; pure binding, no new native surface. **Done 2026-07-15** | ✅ |
+| KV overflow guard (`LiteRtContextOverflowException`): sends clamp their reply to the remaining context and throw instead of overflowing the KV cache, which the native runtime does not police (heap corruption + deferred `0xC0000005`/`0xC0000374` crash — found by a downstream consumer app, 2026-07-13, in a stateful tool loop). Same-turn signal: `LiteRtConversation.IsContextFull` (true exactly when the next send would throw) → `ChatFinishReason.Length` in the MEAI client, overriding `ToolCalls` on a full conversation. Armed by an explicit `MaxNumTokens`; pure binding, no new native surface. **Done 2026-07-15** | ✅ |
 
 Known constraints (documented in the README): one engine ALIVE at a time (reloading after
 `Dispose` works — verified on win-x64 cpu→cpu and cpu→gpu; this is Edge Gallery's pattern for
@@ -102,8 +102,36 @@ priority order:
 
 ## Actionable next steps (suggested order)
 
+-1. ✅ **GPU native-layout fix — 1.1.1 patch candidate (implemented AND E2E-verified 2026-07-18;
+   release pending).**
+   The first downstream NuGet adoption hit `litert_lm_engine_create returned null` with `Backend=Gpu`
+   on Windows, framework-dependent: the engine's own runtime `LoadLibrary` of the accelerators
+   (`libLiteRtWebGpuAccelerator.dll` ← libLiteRt, `libLiteRtTopKWebGpuSampler.dll` ← LiteRtLm,
+   `dxcompiler.dll`/`dxil.dll` ← Dawn at first shader compile — all confirmed by PE import-table +
+   strings analysis) searches exe dir + PATH, never NuGet's `runtimes/win-x64/native/`. CPU works
+   (static imports resolve via the altered search path); ProjectReference never saw it (flat dev
+   copy, `Pack=false`). **Fix (managed-only; the runtime packages bump to 1.1.1 per the
+   shared-version policy but carry the same v0.14.0 natives — runtime 1.1.0 + base 1.1.1 also
+   works):**
+   `NativeLibraryResolver.PreloadCompanions` now also runs on Windows — preloads companions by
+   absolute path so later by-name loads hit the loader's already-loaded-module short-circuit
+   (flag-independent, unlike `AddDllDirectory`); skips the unreferenced non-`lib`-prefixed twin
+   DLLs (avoid double-mapping Dawn) and only applies to the `runtimes/` layout (flat exe-dir
+   already works natively; sweeping the app output would load unrelated DLLs). Unit tests green.
+   **E2E verified 2026-07-18** via the consumer-harness verify script (`.tmp/consumer/`,
+   gemma-4-E2B): negative control
+   on 1.1.0 GPU fails with 0 Dawn lines (reproduces the bug); packed 1.1.1 GPU generates text with
+   the 21 healthy WebGPU/Dawn init lines — real generation, so the lazy dxc shader-compile path is
+   proven, not just engine_create; CPU leg passes (side effect: GPU stack now mapped, ~8 dawn
+   mentions on stderr, no behavior change); `dotnet publish` leg passes. Full suite 200 passed /
+   20 skipped (platform-gated) / 0 failed, model tests included. **Next:** release runbook (see
+   step 0) with maintainer GO; afterwards the consumer app drops its temporary flatten-natives
+   workaround + repins + re-runs its GPU smoke. Follow-ups worth considering:
+   GPU leg in the consumer-smoke CI (CPU-only CI is why this escaped), and dropping the ~2× dead
+   non-prefixed twin DLLs from the win-x64 runtime package (needs its own compat check).
+
 0. ✅ **1.1.0 RELEASED — 2026-07-17.** The deliberate wait paid off: dogfooding the stateful mode in
-   the Memorias consumer surfaced B9 (KV overflow → native heap corruption), which shipped fixed —
+   a downstream consumer app surfaced the KV-overflow bug (→ native heap corruption), which shipped fixed —
    guard + same-turn `IsContextFull`/`FinishReason.Length` signal, hardened by an 8-angle adversarial
    review (10 findings applied) — instead of as a 1.1.1 patch. Runbook executed as written: (a)-(c)
    version/CHANGELOG/README, (d) dry-run + artifact inspection (7 packages, XML docs, no iOS),
@@ -336,8 +364,8 @@ AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AO
   `models/gemma-4-E2B-it.litertlm` (2,588,147,712 B) and `gemma-4-E4B-it.litertlm` (3,659,530,240 B)
   match current HF main — we are up to date with everything that EXISTS in `.litertlm` form.
   **Action when litert-community re-converts** (watch the two repos' commits): re-download E2B/E4B,
-  re-run the model suite, and flag the era change to the Memorias consumer (new weights = new era =
-  full re-benchmark; the tool-calling fixes could move its A4/A16-class rotating failures).
+  re-run the model suite, and flag the era change to the downstream consumer app (new weights = new era =
+  full re-benchmark; the tool-calling fixes could move its rotating tool-calling failures).
 - **#2807 (multi-conv state loss, ours): TRIAGED** — labeled + assigned 2026-07-13 (nireekshak), no
   comment yet. First movement; keep watching for the activation checklist below.
 - **PR #2801 (sampler exports, ours):** open, no review, no comments (unchanged since filing).
@@ -359,8 +387,8 @@ AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AO
   completes the full 64-layer model** (today it is a 4-layer structural prototype built with
   litert-torch-nightly — proof the pipeline works, not a usable model). Either firing → grab the
   `.litertlm`, run it through our model suite (nothing to change binding-side, same as
-  Ministral/Phi), and tell the Memorias consumer (which can meanwhile try Bonsai via its Ollama
-  provider — the GGUF releases run there today).
+  Ministral/Phi), and tell the downstream consumer app (which can meanwhile try Bonsai via its
+  Ollama provider — the GGUF releases run there today).
 
 Previous re-check (2026-07-10): The repin trigger FIRED: LiteRT-LM tagged a stable **v0.14.0** and we
 repinned to it on 2026-07-10 (self-built `native-v0.14.0`; C API 89 → 109, 84 bound; CI green on all
@@ -504,12 +532,12 @@ shipping NEW native surface, check ALL of:
   (2026-07-10): adds the 4 symbols to `webgpu_exported_symbols.lds` + `windows_exported_symbols.def`,
   mirroring the Metal list, and notes the prebuilt-rebuild requirement and the #2080 interaction.
   Upstream may mirror it internally rather than merge; either way the fix is on record. When rebuilt
-  sampler prebuilts ship: re-verify 7/7 exports, re-measure B6 and speculative decoding on GPU
+  sampler prebuilts ship: re-verify 7/7 exports, re-measure the digit-corruption case and speculative decoding on GPU
   (real GPU sampling changes both pictures).
 - **[LiteRT-LM#2080](https://github.com/google-ai-edge/LiteRT-LM/issues/2080)**: sampler params were
   not being read from the runtime config on some paths. **PARTIALLY addressed in v0.14.0**:
   `InitializeSampler` now reads the `runtime_config` sampler params when present. Re-measuring the
-  associated digit-corruption symptom (the "B6" case) on the GPU backend is in progress this session;
+  associated digit-corruption symptom on the GPU backend is in progress this session;
   status will be settled once that A/B completes.
 - **New LiteRT-LM tags** — automated: `upstream-watch.yml` (Mon/Thu) opens a checklist issue
   when upstream publishes a release.

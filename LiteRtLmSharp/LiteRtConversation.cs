@@ -485,7 +485,7 @@ public sealed class LiteRtConversation : IDisposable
     /// Two layers:
     /// (1) a hard stop — a conversation at the guard ceiling (the shared predicate behind
     ///     <see cref="IsContextFull"/>, so signal and stop can never disagree) throws instead of reaching
-    ///     native code, which is the exact state that crashes the runtime on the next send (B9);
+    ///     native code, which is the exact state that crashes the runtime on the next send;
     /// (2) a decode clamp — the message's real prefill cost is measured (render + tokenize, no inference)
     ///     and the remaining context becomes this send's <c>max_output_tokens</c>, so decode physically
     ///     cannot grow the KV cache past the limit. A message whose prefill alone leaves no room throws.

@@ -27,7 +27,7 @@ internal static class LiteRtContextGuard
         => maxNumTokens > 0 && tokenCount >= maxNumTokens - SafetyMargin;
 
     /// <summary>Throws when the conversation's context is full (see <see cref="IsContextFull"/>) — the
-    /// state B9 showed crashes the native runtime on the next send. No-op when the limit is unknown (≤ 0).</summary>
+    /// state shown in the field to crash the native runtime on the next send. No-op when the limit is unknown (≤ 0).</summary>
     internal static void ThrowIfContextFull(int tokenCount, int maxNumTokens)
     {
         if (IsContextFull(tokenCount, maxNumTokens))

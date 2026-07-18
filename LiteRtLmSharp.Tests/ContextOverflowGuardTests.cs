@@ -7,7 +7,7 @@ namespace LiteRtLmSharp.Tests;
 /// Pure unit tests for the KV overflow guard's arithmetic (<see cref="LiteRtContextGuard"/>) — the
 /// thresholds behind <see cref="LiteRtContextOverflowException"/>. No model needed, so these always
 /// run in CI. The live end-to-end behavior (a conversation grown to the limit throws instead of
-/// crashing the native runtime — B9) is covered by <see cref="ContextOverflowModelTests"/>.
+/// crashing the native runtime) is covered by <see cref="ContextOverflowModelTests"/>.
 /// </summary>
 public class ContextOverflowGuardTests
 {
@@ -24,7 +24,7 @@ public class ContextOverflowGuardTests
     [Theory]
     [InlineData(FullAt, 4096)]      // exactly at the ceiling — where a clamped send lands by construction
     [InlineData(4096, 4096)]        // at the hard limit
-    [InlineData(4440, 4096)]        // past the limit — the exact B9 state (crashed 0xC0000005 unguarded)
+    [InlineData(4440, 4096)]        // past the limit — the exact field-reported state (crashed 0xC0000005 unguarded)
     public void ThrowIfContextFull_AtOrPastTheCeiling_Throws(int used, int limit)
     {
         var ex = Assert.Throws<LiteRtContextOverflowException>(
@@ -67,7 +67,7 @@ public class ContextOverflowGuardTests
             tokenCount: 0, maxNumTokens: 100 + LiteRtContextGuard.SafetyMargin + 1, inputTokens: 100));
 
     /// <summary>The message fits the cache but leaves no room to decode → reject before native code.
-    /// This is the B9 shape: a fat tool result landing on a nearly-full tool-loop conversation.</summary>
+    /// This is the original overflow shape: a fat tool result landing on a nearly-full tool-loop conversation.</summary>
     [Fact]
     public void DecodeBudget_MessageLeavesNoRoomToReply_Throws()
     {
@@ -107,7 +107,7 @@ public class ContextOverflowGuardTests
 }
 
 /// <summary>
-/// End-to-end regression tests for B9 (a stateful tool loop grew the live conversation past
+/// End-to-end regression tests for the KV-overflow crash (a stateful tool loop grew the live conversation past
 /// MaxNumTokens = 4096 and the next call killed the process with 0xC0000005 / 0xC0000374 heap
 /// corruption). With the guard, a conversation driven into its context limit throws
 /// <see cref="LiteRtContextOverflowException"/> and the engine stays healthy. Uses its OWN small
@@ -140,7 +140,7 @@ public sealed class ContextOverflowModelTests
     /// <summary>
     /// Drives a conversation into its context limit with repeated sends. Every send must either
     /// complete with the KV cache still inside the limit (the decode clamp at work) or throw the
-    /// overflow exception — never crash the process (the unguarded B9 outcome). Afterwards the engine
+    /// overflow exception — never crash the process (the unguarded outcome). Afterwards the engine
     /// must still serve a fresh conversation.
     /// </summary>
     [SkippableFact]
@@ -278,7 +278,7 @@ public sealed class ContextOverflowModelTests
     }
 
     /// <summary>
-    /// The guard must measure tool-results sends too (the exact path that motivated B9): a fat tool
+    /// The guard must measure tool-results sends too (the exact path that motivated the guard): a fat tool
     /// result that cannot fit is rejected up front — proving the native render handles the tool role —
     /// and the conversation survives to take the real (small) result afterwards.
     /// </summary>
