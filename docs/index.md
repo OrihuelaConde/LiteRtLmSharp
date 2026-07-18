@@ -10,7 +10,7 @@ running locally, no server.
 
 <p align="center">
   <img src="images/maui-chat-hero.gif" width="270" alt="Streaming chat on-device in the MAUI sample (Android)" />
-  <img src="images/windows-chat.png" width="580" alt="The same app on Windows — multimodal chat on GPU at 68 tok/s" />
+  <img src="images/windows-chat.png" width="435" alt="The same app on Windows — multimodal chat on GPU at 68 tok/s" />
 </p>
 <p align="center"><sub>The same MAUI sample app, on an Android phone and on Windows (GPU) — both fully on-device.</sub></p>
 
