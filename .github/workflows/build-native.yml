@@ -152,14 +152,11 @@ jobs:
 
           $prebuilt = 'C:\LiteRT-LM\prebuilt\windows_x86_64'
           # Copy every prebuilt DLL as-is (satisfies LiteRtLm.dll's PE imports,
-          # which reference the original lib*-prefixed names).
-          Get-ChildItem "$prebuilt\*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination artifacts\ -Force
-          # Also ship prefixless copies of the lib* accelerators (matches the
-          # filenames the NativeLibraryResolver / default loader probe for).
-          Get-ChildItem 'artifacts\lib*.dll' | ForEach-Object {
-            $stripped = $_.Name -replace '^lib',''
-            Copy-Item $_.FullName "artifacts\$stripped" -Force
-          }
+          # which reference the original lib*-prefixed names). Only the lib*-prefixed
+          # names are shipped: PE import-table + strings analysis (2026-07-18) shows both
+          # the static imports and every runtime LoadLibrary in the binaries reference the
+          # lib* names exclusively, and the managed resolver only probes LiteRtLm.dll —
+          # the prefixless copies this step used to add were ~26 MB of dead weight.
           # DXC runtime (x64).
           foreach ($dxc in 'dxil.dll','dxcompiler.dll') {
             $src = Get-ChildItem -Recurse -Filter $dxc -Path dxc | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1

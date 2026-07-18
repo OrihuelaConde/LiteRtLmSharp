@@ -343,7 +343,9 @@ litert_lm_detokenize_result_delete(d);
 - Verified: with `Backend="gpu"` the log selects the discrete GPU (e.g.
   `NVIDIA RTX 3080, backend=Direct3D 12`) and runs the transformer layers on GPU
   (`delegate_webgpu.cc`, `delegate_kernel.cc`). Enabling companions (already shipped):
-  `LiteRtWebGpuAccelerator.dll` + `dxcompiler.dll`/`dxil.dll` (DirectX Shader Compiler).
+  `libLiteRtWebGpuAccelerator.dll` (loaded at runtime by base name from libLiteRt) +
+  `dxcompiler.dll`/`dxil.dll` (DirectX Shader Compiler, loaded lazily by Dawn at the first
+  shader compile).
 - Seeing "Created TensorFlow Lite XNNPACK delegate for CPU" alongside is normal: non-GPU ops +
   mmap'd embeddings run on CPU (mixed delegation). The bulk (matmuls) runs on GPU. Init is
   slower than CPU (~1.6 s vs ~0.2 s) due to weight upload and kernel compilation.

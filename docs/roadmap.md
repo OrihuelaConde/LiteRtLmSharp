@@ -130,9 +130,14 @@ priority order:
    mentions on stderr, no behavior change); `dotnet publish` leg passes. Full suite 200 passed /
    20 skipped (platform-gated) / 0 failed, model tests included. **Next:** release runbook (see
    step 0) with maintainer GO; afterwards the consumer app drops its temporary flatten-natives
-   workaround + repins + re-runs its GPU smoke. Follow-ups worth considering:
-   GPU leg in the consumer-smoke CI (CPU-only CI is why this escaped), and dropping the ~2× dead
-   non-prefixed twin DLLs from the win-x64 runtime package (needs its own compat check).
+   workaround + repins + re-runs its GPU smoke. Follow-ups — BOTH PREPARED 2026-07-18:
+   (1) pack-nuget.yml now runs a consumer-smoke job (windows-latest) that gates the publish job:
+   CPU legs generate through all three package layers from the packed feed, and a GPU leg asserts
+   the accelerator LOAD PATH (WebGPU/Dawn init lines on stderr — needs no physical GPU; zero
+   lines is the exact signature of this bug class). (2) build-native.yml no longer ships the
+   prefixless twin DLL copies (~26 MB dead weight; PE/strings-verified unreferenced) — takes
+   effect at the next natives rebuild, and the win-x64 package slims from ~54 to ~28 MB then; the
+   resolver's twin filter keeps handling old tarballs either way.
 
 0. ✅ **1.1.0 RELEASED — 2026-07-17.** The deliberate wait paid off: dogfooding the stateful mode in
    a downstream consumer app surfaced the KV-overflow bug (→ native heap corruption), which shipped fixed —
