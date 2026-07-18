@@ -194,6 +194,60 @@ public class NativeResolverMessageTests
     }
 }
 
+/// <summary>
+/// The Windows companion-preload selection behind the NuGet-layout GPU fix (engine creation failed for
+/// NuGet consumers because the engine's runtime LoadLibrary of the accelerators never searches
+/// the <c>runtimes/&lt;rid&gt;/native</c> folder). Pure selection logic — the actual preload runs
+/// in every native-path test on this box via <see cref="NativeLibraryResolver.Initialize"/>.
+/// </summary>
+public class WindowsCompanionSelectionTests
+{
+    // The exact win-x64 runtime-package inventory as of 1.1.0.
+    private static readonly string[] Win64Natives =
+    [
+        "dxcompiler.dll", "dxil.dll",
+        "GemmaModelConstraintProvider.dll", "libGemmaModelConstraintProvider.dll",
+        "libLiteRt.dll", "LiteRt.dll",
+        "libLiteRtTopKWebGpuSampler.dll", "LiteRtTopKWebGpuSampler.dll",
+        "libLiteRtWebGpuAccelerator.dll", "LiteRtWebGpuAccelerator.dll",
+        "libwebgpu_dawn.dll", "webgpu_dawn.dll",
+        "LiteRtLm.dll",
+    ];
+
+    [Fact]
+    public void SelectsLibPrefixedAndUnpairedOnly_ExcludingMain()
+    {
+        var dir = "C:\\app\\runtimes\\win-x64\\native";
+        var selected = NativeLibraryResolver
+            .SelectWindowsCompanions(Win64Natives.Select(n => Path.Combine(dir, n)), "LiteRtLm.dll")
+            .Select(p => Path.GetFileName(p))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Everything the native code references at runtime by name must be preloaded — including
+        // dxcompiler/dxil, which Dawn loads lazily at first shader compile (no lib-twin, no PE import).
+        Assert.Equal(
+        [
+            "dxcompiler.dll", "dxil.dll",
+            "libGemmaModelConstraintProvider.dll", "libLiteRt.dll",
+            "libLiteRtTopKWebGpuSampler.dll", "libLiteRtWebGpuAccelerator.dll",
+            "libwebgpu_dawn.dll",
+        ], selected.Order(StringComparer.OrdinalIgnoreCase).ToArray());
+
+        // The unreferenced non-prefixed twins must NOT be loaded — a second Dawn instance means a
+        // second copy of its process-global GPU state.
+        Assert.DoesNotContain("webgpu_dawn.dll", selected);
+        Assert.DoesNotContain("LiteRtLm.dll", selected);
+    }
+
+    [Fact]
+    public void KeepsNonPrefixedDllWhenNoTwinExists()
+    {
+        string[] files = ["C:\\d\\LiteRtLm.dll", "C:\\d\\somelib.dll"];
+        var selected = NativeLibraryResolver.SelectWindowsCompanions(files, "LiteRtLm.dll").ToArray();
+        Assert.Equal(["C:\\d\\somelib.dll"], selected);
+    }
+}
+
 public class MultimodalMessageJsonTests
 {
     private static readonly byte[] Bytes = [0xDE, 0xAD, 0xBE, 0xEF];

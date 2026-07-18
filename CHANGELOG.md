@@ -6,6 +6,36 @@ LiteRT-LM native version it wraps (see the compatibility table in the [README](R
 managed `LiteRtLmSharp` package and every `LiteRtLmSharp.runtime.<rid>` package share one version and
 are published together.
 
+## [1.1.1] — 2026-07-18
+
+Managed-only fix. The `LiteRtLmSharp.runtime.<rid>` packages bump to 1.1.1 per the shared-version
+policy but contain the same LiteRT-LM v0.14.0 natives as 1.1.0 — a 1.1.0 runtime package alongside
+the 1.1.1 base package also works.
+
+### Fixed
+
+- **GPU engine creation failed for NuGet consumers on Windows** — a framework-dependent app
+  consuming `LiteRtLmSharp` + `LiteRtLmSharp.runtime.win-x64` with `Backend = Gpu` got
+  `LiteRtException: litert_lm_engine_create returned null` (native stderr: `Failed to create
+  engine: INTERNAL`, zero WebGPU/Dawn init lines). The NuGet layout puts the natives only under
+  `runtimes/win-x64/native/`; the resolver loaded the main `LiteRtLm.dll` from there (and its
+  static PE imports followed via the altered search path — which is why CPU worked), but the
+  engine loads its accelerators **dynamically at runtime by base name**
+  (`libLiteRtWebGpuAccelerator.dll` from libLiteRt, `libLiteRtTopKWebGpuSampler.dll` from
+  LiteRtLm, and `dxcompiler.dll`/`dxil.dll` from Dawn's shader compiler), and that native
+  `LoadLibrary` searches the exe directory + PATH — never the `runtimes/` subfolder. The resolver
+  now pre-loads the companion DLLs by absolute path on Windows too (as it already did on
+  Linux/macOS), so every later by-name load resolves via the OS loader's already-loaded-module
+  short-circuit, regardless of the search flags the native code uses. The byte-identical
+  non-`lib`-prefixed twin DLLs the package ships are skipped (nothing references them; loading
+  both would map a second copy of Dawn and its process-global GPU state). The preload applies only
+  to the `runtimes/` layout: natives placed flat next to the executable already resolve via the
+  native search order (exe directory first), and sweeping the app output would load unrelated
+  DLLs. Side effect: CPU-only Windows consumers now map the GPU stack (Dawn, DXC) at first use
+  of the library — a startup time/working-set cost, not a behavior change; Dawn touches no GPU
+  until an adapter is requested, and load failures are ignored as before. ProjectReference consumers never saw the
+  bug because the repo build copies the natives flat next to the app.
+
 ## [1.1.0] — 2026-07-17
 
 Requires **LiteRT-LM v0.14.0** native binaries (the `LiteRtLmSharp.runtime.<rid>` packages bump to
