@@ -2,7 +2,10 @@ name: Watch upstream LiteRT-LM releases
 
 # Twice a week, compare the latest LiteRT-LM release tag against the version we pin in
 # Directory.Build.props (<LiteRtLmVersion>). If upstream is ahead and there is no open
-# issue for it yet, open one with the update checklist. Costs seconds of ubuntu time.
+# issue for it yet, open one with the update checklist. Issues the watcher filed earlier
+# are closed automatically once the pin catches up to the version they reported (issue #3
+# lingered 11 days after the v0.14.0 repin because nothing closed it). Costs seconds of
+# ubuntu time.
 
 on:
   schedule:
@@ -30,6 +33,21 @@ jobs:
           if [ -z "$pinned" ] || [ -z "$latest" ]; then
             echo "::error::Could not determine versions"; exit 1
           fi
+
+          # Close previously filed update issues that the current pin resolves: an issue is done
+          # exactly when the version it announced is <= the pinned one (sort -V handles v-prefixed
+          # semver; equality included).
+          gh issue list --state open --search 'in:title "Upstream LiteRT-LM"' \
+            --json number,title --jq '.[] | "\(.number)\t\(.title)"' |
+          while IFS=$'\t' read -r num title; do
+            ver=$(echo "$title" | sed -n 's/^Upstream LiteRT-LM \([^ ]*\) released.*/\1/p')
+            [ -z "$ver" ] && continue
+            if [ "$(printf '%s\n%s\n' "$ver" "$pinned" | sort -V | tail -n1)" = "$pinned" ]; then
+              echo "Closing stale issue #$num ($ver <= pinned $pinned)"
+              gh issue close "$num" --comment "Resolved: the repo now pins \`$pinned\` (this issue reported \`$ver\`). Closed automatically by upstream-watch."
+            fi
+          done
+
           if [ "$pinned" = "$latest" ]; then
             echo "Up to date."; exit 0
           fi
