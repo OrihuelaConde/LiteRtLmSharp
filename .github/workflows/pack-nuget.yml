@@ -4,6 +4,11 @@ name: Pack NuGet packages
 # (LiteRtLmSharp.runtime.win-x64 / .linux-x64). Native binaries are pulled from the GitHub Release
 # produced by build-native.yml (tag native-<native_ref>), so run that first.
 #
+# Structure: pack -> consumer-smoke -> publish. The smoke consumes the just-packed nupkgs from a
+# local feed on windows-latest like a real framework-dependent app (real generation on CPU through
+# all three package layers, plus a GPU accelerator LOAD-PATH assertion that needs no physical GPU)
+# and gates the publish job — a package whose native layout is broken never reaches nuget.org.
+#
 # Run manually from the Actions tab.
 
 on:
@@ -26,12 +31,21 @@ on:
         type: boolean
         default: false
 
+env:
+  MODEL_FILE: gemma-4-E2B-it.litertlm
+  MODEL_URL: https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm
+  # LFS oid of the file on Hugging Face; also guards against a cached/partial download. Same
+  # values as model-tests.yml so both workflows share one model cache entry.
+  MODEL_SHA256: 181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c
+
 jobs:
   pack:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # create the v<version> tag + GitHub release on push
-      id-token: write  # OIDC token for nuget.org Trusted Publishing
+      contents: read
+    outputs:
+      package_version: ${{ steps.versions.outputs.package_version }}
+      native_ref: ${{ steps.versions.outputs.native_ref }}
     steps:
       - uses: actions/checkout@v4
 
@@ -40,6 +54,7 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Resolve versions
+        id: versions
         # Inputs if given, else the single source of truth in Directory.Build.props.
         run: |
           set -euo pipefail
@@ -50,6 +65,8 @@ jobs:
           echo "package_version=$pkg / native_ref=$ref"
           echo "PKG_VERSION=$pkg" >> "$GITHUB_ENV"
           echo "NATIVE_REF=$ref" >> "$GITHUB_ENV"
+          echo "package_version=$pkg" >> "$GITHUB_OUTPUT"
+          echo "native_ref=$ref" >> "$GITHUB_OUTPUT"
 
       - name: Download native binaries from release native-${{ env.NATIVE_REF }}
         env:
@@ -131,11 +148,111 @@ jobs:
             artifacts/*.nupkg
             artifacts/*.snupkg
 
+  # Consumes the just-packed packages from a local feed like a real framework-dependent app —
+  # i.e. through the NuGet runtimes/<rid>/native layout, which the repo's own test suite never
+  # exercises (it runs against a flat dev copy of the natives). Two kinds of assertion:
+  #  - CPU legs (raw / IChatClient / Semantic Kernel): real generation through each package layer.
+  #  - GPU leg: the runner has no GPU, so the assertion is the accelerator LOAD PATH, not
+  #    generation: with Backend=Gpu the engine must at least emit WebGPU/Dawn init lines on
+  #    stderr (the accelerator DLLs were found and loaded). Zero lines + failure is the exact
+  #    signature of the 1.1.1 bug class — accelerators unreachable in the NuGet layout — which a
+  #    CPU-only smoke can never catch. If Dawn finds a usable adapter (e.g. D3D12 WARP), the leg
+  #    passes outright on exit 0.
+  consumer-smoke:
+    needs: pack
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      PKG_VERSION: ${{ needs.pack.outputs.package_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nupkgs-${{ env.PKG_VERSION }}
+          path: feed
+
+      - name: Cache model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: models/${{ env.MODEL_FILE }}
+          key: litertlm-model-${{ env.MODEL_SHA256 }}
+
+      - name: Download model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p models
+          curl -fL --retry 3 --retry-delay 15 -o "models/$MODEL_FILE" "$MODEL_URL"
+
+      - name: Verify model checksum
+        shell: bash
+        run: echo "$MODEL_SHA256  models/$MODEL_FILE" | sha256sum -c -
+
+      - name: Build smoke app against the packed feed
+        run: dotnet build .github/consumer-smoke -c Release -p:LiteRtLmSharpVersion=${{ env.PKG_VERSION }}
+
+      - name: 'CPU legs: raw + IChatClient + Semantic Kernel (real generation)'
+        shell: pwsh
+        run: |
+          $exe = '.github/consumer-smoke/bin/Release/net10.0/ConsumerSmoke.exe'
+          $model = "models/$env:MODEL_FILE"
+          foreach ($mode in 'raw','meai','sk') {
+            & $exe $model cpu $mode
+            if ($LASTEXITCODE -ne 0) { throw "CPU/$mode leg failed (exit $LASTEXITCODE)" }
+          }
+
+      - name: 'GPU leg: accelerator load path'
+        shell: pwsh
+        run: |
+          $exe = '.github/consumer-smoke/bin/Release/net10.0/ConsumerSmoke.exe'
+          $model = "models/$env:MODEL_FILE"
+          & $exe $model gpu raw 2> gpu-stderr.txt
+          $code = $LASTEXITCODE
+          Get-Content gpu-stderr.txt
+          $dawn = (Select-String -Path gpu-stderr.txt -Pattern 'dawn|WebGPU' -AllMatches | Measure-Object).Count
+          Write-Host "gpu exit=$code, WebGPU/Dawn stderr lines=$dawn"
+          if ($code -eq 0) {
+            Write-Host 'GPU leg: FULL pass — a usable adapter exists on this runner (WARP or hardware) and generation succeeded.'
+          } elseif ($dawn -gt 0) {
+            Write-Host 'GPU leg: LOAD-PATH pass — the accelerator libraries were found and initialized; engine creation then failed for lack of a usable GPU adapter, which is expected on this runner.'
+          } else {
+            throw 'GPU leg FAILED: zero WebGPU/Dawn stderr lines — the GPU accelerator libraries never loaded from the NuGet layout (the exact bug class the 1.1.1 fix addresses).'
+          }
+
+  publish:
+    needs: [pack, consumer-smoke]
+    if: inputs.push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # create the v<version> tag + GitHub release
+      id-token: write  # OIDC token for nuget.org Trusted Publishing
+    env:
+      PKG_VERSION: ${{ needs.pack.outputs.package_version }}
+      NATIVE_REF: ${{ needs.pack.outputs.native_ref }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nupkgs-${{ env.PKG_VERSION }}
+          path: artifacts
+
       # The GitHub release body is this version's CHANGELOG section, so the notes are readable on the
       # release page itself. Runs BEFORE the NuGet push on purpose: a missing section fails the run
       # while nothing has been published yet (NuGet versions are immutable).
       - name: Prepare release notes from CHANGELOG
-        if: inputs.push
         run: |
           awk -v ver="${PKG_VERSION}" '
             index($0, "## [" ver "]") == 1 { found=1; next }
@@ -157,7 +274,6 @@ jobs:
       # tag already exists. Runs BEFORE the NuGet push, because publishing an already-shipped version is a
       # no-op at best (versions are immutable) and would fail the later tag/release step after the push.
       - name: Fail if tag v${{ env.PKG_VERSION }} already exists
-        if: inputs.push
         run: |
           set -euo pipefail
           if git ls-remote --exit-code --tags origin "refs/tags/v${PKG_VERSION}" >/dev/null 2>&1; then
@@ -169,14 +285,12 @@ jobs:
       # Trusted Publishing: exchange the GitHub OIDC token for a 1-hour nuget.org API key
       # (policy configured on nuget.org under the OrihuelaConde account for this workflow file).
       - name: NuGet login (OIDC -> temp API key)
-        if: inputs.push
         uses: NuGet/login@v1
         id: nuget_login
         with:
           user: OrihuelaConde
 
       - name: Push to nuget.org
-        if: inputs.push
         run: |
           dotnet nuget push 'artifacts/*.nupkg' --api-key "${{ steps.nuget_login.outputs.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json --skip-duplicate
@@ -185,7 +299,6 @@ jobs:
       # pushed to nuget.org (an auditable mirror; nuget.org stays the canonical source). Runs after the
       # NuGet push so a failed push never leaves a tagged release without packages.
       - name: Tag and publish the GitHub release
-        if: inputs.push
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

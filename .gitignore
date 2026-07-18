@@ -386,3 +386,4 @@ artifacts/
 
 # Claude Code machine-local settings (shared .claude/settings.json may be committed)
 .claude/settings.local.json
+feed/
