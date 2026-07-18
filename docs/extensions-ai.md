@@ -20,9 +20,9 @@ helpers), and the Semantic Kernel connector is built on top of it.
 | `LiteRtLmSharp.Extensions.AI` | `LiteRtLmSharp` (same version) + `Microsoft.Extensions.AI.Abstractions` 10.7.0 + `Microsoft.Extensions.DependencyInjection.Abstractions` 10.0.9 | `net10.0` |
 
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="1.1.0" />
-<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.1.0" />
-<PackageReference Include="LiteRtLmSharp.Extensions.AI" Version="1.1.0" />
+<PackageReference Include="LiteRtLmSharp" Version="1.1.1" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.1.1" />
+<PackageReference Include="LiteRtLmSharp.Extensions.AI" Version="1.1.1" />
 ```
 
 ## Quick start

@@ -17,8 +17,8 @@ running locally, no server.
 ## Install
 
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="1.1.0" />
-<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.1.0" />
+<PackageReference Include="LiteRtLmSharp" Version="1.1.1" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.1.1" />
 <!-- or LiteRtLmSharp.runtime.linux-x64 / android-arm64 / osx-arm64, per target -->
 ```
 

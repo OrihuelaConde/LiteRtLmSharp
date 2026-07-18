@@ -35,8 +35,8 @@ preload does not apply (no candidate dir) and is not needed: `libLiteRtLm.so` ha
 
 ## Consumption (MAUI / .NET Android)
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="1.1.0" />
-<PackageReference Include="LiteRtLmSharp.runtime.android-arm64" Version="1.1.0" />
+<PackageReference Include="LiteRtLmSharp" Version="1.1.1" />
+<PackageReference Include="LiteRtLmSharp.runtime.android-arm64" Version="1.1.1" />
 ```
 The `.litertlm` model (~2.5 GB for E2B) is **not packed** into the APK: download it to app
 storage on first run and pass its path to `LiteRtEngine.Load`.

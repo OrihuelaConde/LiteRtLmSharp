@@ -42,8 +42,8 @@ runtime package ships once on-device validation lands.</sub>
 ## Quick start
 
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="1.1.0" />
-<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.1.0" />
+<PackageReference Include="LiteRtLmSharp" Version="1.1.1" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.1.1" />
 <!-- or LiteRtLmSharp.runtime.linux-x64 / android-arm64 / osx-arm64, per target -->
 ```
 
@@ -52,6 +52,7 @@ version number**. Which LiteRT-LM native build each release wraps:
 
 | LiteRtLmSharp | LiteRT-LM native |
 |---|---|
+| 1.1.1 | v0.14.0 |
 | 1.1.0 | v0.14.0 |
 | 1.0.0 | v0.13.1 |
 | 0.1.0-preview.3 | v0.13.1 |
