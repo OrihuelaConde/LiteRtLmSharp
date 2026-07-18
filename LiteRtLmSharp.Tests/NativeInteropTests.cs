@@ -242,9 +242,11 @@ public class WindowsCompanionSelectionTests
     [Fact]
     public void KeepsNonPrefixedDllWhenNoTwinExists()
     {
-        string[] files = ["C:\\d\\LiteRtLm.dll", "C:\\d\\somelib.dll"];
+        // Path.Combine (not literal "C:\..." strings) so the paths parse on every OS — the suite
+        // runs the selection logic on linux/macOS CI legs too, where '\' is not a separator.
+        string[] files = [Path.Combine("d", "LiteRtLm.dll"), Path.Combine("d", "somelib.dll")];
         var selected = NativeLibraryResolver.SelectWindowsCompanions(files, "LiteRtLm.dll").ToArray();
-        Assert.Equal(["C:\\d\\somelib.dll"], selected);
+        Assert.Equal([Path.Combine("d", "somelib.dll")], selected);
     }
 }
 
