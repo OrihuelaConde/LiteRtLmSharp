@@ -36,15 +36,14 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// <see cref="ChatOptions.ConversationId"/>).
 /// </para>
 /// <para>
-/// <b>One live conversation at a time.</b> This mode keeps a <b>single</b> live conversation alive. Starting a
-/// new conversation — any call <i>without</i> a <see cref="ChatOptions.ConversationId"/> — <b>replaces</b> the
-/// previous one: the replaced conversation is disposed, and a later request that carries its id throws
-/// <see cref="ArgumentException"/> (as does an id this client never issued). Disposing the client disposes the
-/// live conversation. This limit is deliberate: upstream LiteRT-LM does not yet preserve a suspended
-/// conversation's state when another conversation advances, so keeping two live conversations and interleaving
-/// them would silently corrupt the parked one's answers. A bounded multi-conversation cache exists internally
-/// (the future-ready machinery is in place) and will be enabled once upstream preserves suspended-conversation
-/// state — see <c>docs/roadmap.md</c>. There is no public knob to raise the limit.
+/// <b>Lifetime and eviction.</b> Live conversations are held in an LRU cache bounded by
+/// <see cref="MaxLiveConversations"/>. Creating a new conversation beyond that cap evicts and disposes the
+/// least-recently-used one; a request whose <see cref="ChatOptions.ConversationId"/> was evicted (or was
+/// never issued by this client) throws <see cref="ArgumentException"/>. Disposing the client disposes all
+/// live conversations. There is no time-based expiry in this mode — size the cap for your concurrency.
+/// (Multiple live conversations require native LiteRT-LM v0.15.0+: earlier runtimes silently lost a
+/// suspended conversation's state when another advanced, and this mode was hard-limited to one live
+/// conversation until the fix shipped.)
 /// </para>
 /// <para>
 /// <b>Token usage.</b> <see cref="ChatResponse.Usage"/>'s <see cref="UsageDetails.TotalTokenCount"/> is the
@@ -68,8 +67,24 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// </remarks>
 public sealed record LiteRtStatefulConversationOptions
 {
-    // Intentionally empty: this record is purely the opt-in token for the stateful mode. The former
-    // MaxLiveConversations knob was removed because the mode is hard-limited to one live conversation while
-    // upstream LiteRT-LM cannot preserve a suspended conversation's state (see the type doc and docs/roadmap.md).
-    // The internal live-conversation capacity lives on LiteRtConversationStore.LiveConversationCapacity.
+    private readonly int _maxLiveConversations = 8;
+
+    /// <summary>
+    /// The maximum number of live native conversations kept alive at once (an LRU cache). Creating a new
+    /// conversation beyond this cap evicts and disposes the least-recently-used one, after which a request
+    /// carrying that conversation's id throws <see cref="ArgumentException"/>. Must be at least 1. Defaults
+    /// to 8.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The value is less than 1.</exception>
+    public int MaxLiveConversations
+    {
+        get => _maxLiveConversations;
+        init
+        {
+            if (value < 1)
+                throw new ArgumentOutOfRangeException(
+                    nameof(value), value, "MaxLiveConversations must be at least 1.");
+            _maxLiveConversations = value;
+        }
+    }
 }

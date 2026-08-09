@@ -146,19 +146,19 @@ public sealed class ExtensionsAiStatefulModelTests
             () => client.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")], options));
     }
 
-    /// <summary>The stateful mode keeps a <b>single</b> live conversation: starting a second conversation (a
-    /// call without a <c>ConversationId</c>) implicitly replaces the first, so resuming the first id then throws
-    /// while the second remains resumable. No public knob is involved — this is the deliberate
-    /// single-conversation contract (upstream LiteRT-LM cannot yet preserve a suspended conversation's state; a
-    /// bounded multi-conversation cache is parked behind that limitation — see docs/roadmap.md).</summary>
+    /// <summary>LRU eviction at the cap: with <c>MaxLiveConversations = 1</c>, starting a second conversation
+    /// (a call without a <c>ConversationId</c>) evicts and disposes the first, so resuming the first id throws
+    /// while the second remains resumable. (Also the former hard-wired contract of the parked single-conversation
+    /// era, now reachable only by choosing capacity 1.)</summary>
     [SkippableFact]
-    public async Task Stateful_StartingSecondConversation_ReplacesFirst_OldIdThrows()
+    public async Task Stateful_SecondConversationBeyondCap_EvictsFirst_OldIdThrows()
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
         using var engine = LiteRtEngine.Load(Options());
-        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        using var client = new LiteRtChatClient(engine,
+            statefulConversations: new LiteRtStatefulConversationOptions { MaxLiveConversations = 1 });
         var options = new ChatOptions { MaxOutputTokens = 16 };
 
         ChatResponse first = await client.GetResponseAsync([new ChatMessage(ChatRole.User, "Remember A.")], options);
@@ -166,7 +166,7 @@ public sealed class ExtensionsAiStatefulModelTests
         Assert.False(string.IsNullOrEmpty(first.ConversationId));
         Assert.NotEqual(first.ConversationId, second.ConversationId);
 
-        // Only one live conversation is kept, so starting the second replaced the first — resuming it now throws.
+        // Capacity 1: starting the second conversation evicted the first — resuming it now throws.
         var resumeFirst = new ChatOptions { MaxOutputTokens = 16, ConversationId = first.ConversationId };
         await Assert.ThrowsAsync<ArgumentException>(
             () => client.GetResponseAsync([new ChatMessage(ChatRole.User, "what did I say?")], resumeFirst));
@@ -175,40 +175,31 @@ public sealed class ExtensionsAiStatefulModelTests
         var resumeSecond = new ChatOptions { MaxOutputTokens = 16, ConversationId = second.ConversationId };
         ChatResponse ok = await client.GetResponseAsync([new ChatMessage(ChatRole.User, "ok?")], resumeSecond);
         Assert.Equal(second.ConversationId, ok.ConversationId);
+
+        // And at the DEFAULT capacity (8), a second conversation does NOT evict the first — both stay live.
+        using var roomy = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        ChatResponse a = await roomy.GetResponseAsync([new ChatMessage(ChatRole.User, "Remember A.")], options);
+        ChatResponse b = await roomy.GetResponseAsync([new ChatMessage(ChatRole.User, "Remember B.")], options);
+        var resumeA = new ChatOptions { MaxOutputTokens = 16, ConversationId = a.ConversationId };
+        ChatResponse aStillLive = await roomy.GetResponseAsync([new ChatMessage(ChatRole.User, "ok?")], resumeA);
+        Assert.Equal(a.ConversationId, aStillLive.ConversationId);
     }
 
-    // ─────────────────────── Forking + multi-conversation (PARKED capability) ───────────────────────
+    // ─────────────────────── Forking + multi-conversation ───────────────────────
     //
-    // The tests below exercise the PARKED multi-live-conversation / forking machinery, which is intentionally
-    // NOT reachable by consumers today: LiteRtConversationBranching is internal, and the client pins its live-
-    // conversation cache to a single entry (LiteRtConversationStore.LiveConversationCapacity == 1). Both are
-    // held back by the same upstream limitation — LiteRT-LM does not yet preserve a suspended conversation's
-    // state when another advances (see the Upstream_..._Sentinel test and docs/roadmap.md).
-    //
-    // So they carry an ADDITIONAL gate, LITERTLM_TEST_MULTICONV=1 (on top of the model gate), and are expected
-    // to pass only once upstream preserves suspended state. They reach the internal branching type and the
-    // larger-capacity client seam via InternalsVisibleTo (LiteRtLmSharp.Extensions.AI grants it to
-    // LiteRtLmSharp.Tests): the internal LiteRtChatClient(engine, liveConversationCapacity, …) ctor builds a
-    // client whose cache holds more than one live conversation, above the production cap of one.
-    //
-    // WHEN UPSTREAM FIXES SUSPENDED-STATE PRESERVATION: raise LiteRtConversationStore.LiveConversationCapacity,
-    // make LiteRtConversationBranching public, drop this LITERTLM_TEST_MULTICONV gate, and re-expose the fork
-    // docs/CHANGELOG. Full steps: docs/roadmap.md.
-    private static bool MultiConvEnabled => Environment.GetEnvironmentVariable("LITERTLM_TEST_MULTICONV") == "1";
-    private const string MultiConvSkip =
-        "Set LITERTLM_TEST_MULTICONV=1 to run the parked multi-conversation / forking tests (they exercise the " +
-        "future-ready machinery and pass only when upstream LiteRT-LM preserves suspended-conversation state).";
+    // These tests exercise the multi-live-conversation / forking surface, unlocked with the v0.15.0
+    // repin: the native runtime now preserves a suspended conversation's state when another advances
+    // (verified by the Upstream_..._Sentinel canary below and the interleave recall tests here). They
+    // were parked behind LITERTLM_TEST_MULTICONV=1 from 2026-07-10 until that fix shipped.
 
     /// <summary><c>GetService(typeof(LiteRtConversationBranching))</c> returns a branching instance in the
     /// stateful mode and <c>null</c> in the stateless mode; the standard <see cref="ChatClientMetadata"/> and
-    /// self lookups are unchanged in both. (LiteRtConversationBranching is internal — reachable here only via
-    /// InternalsVisibleTo.)</summary>
+    /// self lookups are unchanged in both.</summary>
     [SkippableFact]
     public async Task Fork_GetService_ReturnsBranchingOnlyInStatefulMode()
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
-        Skip.If(!MultiConvEnabled, MultiConvSkip);
         await Task.CompletedTask;
 
         using var engine = LiteRtEngine.Load(Options());
@@ -241,7 +232,6 @@ public sealed class ExtensionsAiStatefulModelTests
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
-        Skip.If(!MultiConvEnabled, MultiConvSkip);
 
         using var engine = LiteRtEngine.Load(Options());
         using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
@@ -263,12 +253,11 @@ public sealed class ExtensionsAiStatefulModelTests
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
-        Skip.If(!MultiConvEnabled, MultiConvSkip);
 
         using var engine = LiteRtEngine.Load(Options());
-        // Base + branch must be live at once, above the production single-conversation cap — use the internal
-        // capacity seam (parked capability, gated on LITERTLM_TEST_MULTICONV).
-        using var client = new LiteRtChatClient(engine, liveConversationCapacity: 4);
+        // Base + branch must be live at once, above the production single-conversation cap — raise the
+        // live-conversation cap via the public knob.
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions { MaxLiveConversations = 4 });
         var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
 
         // Seed the shared context on the base conversation.
@@ -318,12 +307,11 @@ public sealed class ExtensionsAiStatefulModelTests
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
-        Skip.If(!MultiConvEnabled, MultiConvSkip);
 
         using var engine = LiteRtEngine.Load(Options());
         // Capacity exactly 2 (via the internal seam) so the third live conversation evicts the LRU — the
         // parked multi-conversation machinery under test.
-        using var client = new LiteRtChatClient(engine, liveConversationCapacity: 2);
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions { MaxLiveConversations = 2 });
         var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
 
         // Base conversation (1 live).
@@ -367,11 +355,10 @@ public sealed class ExtensionsAiStatefulModelTests
             "EnableConstrainedDecoding (recommended with tools) is blocked on linux-x64 — see docs.");
         Skip.If(Environment.GetEnvironmentVariable("LITERTLM_TEST_TOOLS") != "1",
             "Set LITERTLM_TEST_TOOLS=1 (with a version-matched native binary) to run tool tests.");
-        Skip.If(!MultiConvEnabled, MultiConvSkip);
 
         using var engine = LiteRtEngine.Load(Options());
         // Base + fork live at once, above the production single-conversation cap — internal capacity seam.
-        using var client = new LiteRtChatClient(engine, liveConversationCapacity: 4);
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions { MaxLiveConversations = 4 });
         var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
 
         AIFunction weather = AIFunctionFactory.Create(

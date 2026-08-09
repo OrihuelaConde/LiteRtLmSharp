@@ -275,19 +275,40 @@ carries a `ConversationId`):
 - a **system message on a continuation throws** `InvalidOperationException` (the preface cannot be rewritten).
   To change any fixed setting, start a new conversation by omitting `ConversationId`.
 
-One live conversation at a time:
+Lifetime and eviction:
 
-- this mode keeps a **single** live conversation. Starting a new conversation (a call **without** a
-  `ConversationId`) replaces the previous one: the replaced conversation is disposed, and a later request that
-  carries its id throws `ArgumentException` (as does an id this client never issued);
-- disposing the client disposes the live conversation. There is no time-based expiry in this mode.
+- live conversations are held in an LRU cache bounded by `MaxLiveConversations` (default 8);
+- creating a new conversation beyond the cap evicts and disposes the least-recently-used one;
+- a request whose `ConversationId` was evicted, or was never issued by this client, throws
+  `ArgumentException`;
+- disposing the client disposes every live conversation. There is no time-based expiry in this mode, so size
+  the cap for your concurrency.
 
-**Why only one?** Upstream LiteRT-LM does not yet preserve a suspended conversation's state when another
-conversation advances, so keeping two live conversations and interleaving them would silently corrupt the
-parked one's answers. The single-conversation limit is deliberate; a bounded multi-conversation cache (and a
-conversation-forking hatch) already exists internally and will be enabled once upstream preserves
-suspended-conversation state. There is no public knob to raise the limit. See
-[`docs/roadmap.md`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md).
+> Multiple live conversations require **native LiteRT-LM v0.15.0+**. Earlier runtimes silently lost a
+> suspended conversation's state whenever another conversation advanced, so this mode was hard-limited to a
+> single live conversation (and forking was unavailable) until that fix shipped.
+
+### Forking a conversation
+
+In the stateful mode the client also offers a provider-specific **forking** hatch: branch a live conversation
+into an independent copy that shares the parent's prefilled context (a cheap native KV-cache clone — no
+re-prefill of the shared prefix) and diverges from there. Useful for exploring several continuations of one
+prompt (best-of-N, A/B prompting, tree search) without re-establishing the common prefix each time.
+
+```csharp
+var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
+
+ChatResponse seeded = await client.GetResponseAsync(seedMessages, options);
+string branchId = await branching.ForkAsync(seeded.ConversationId!);
+
+// The branch id behaves like any other ConversationId: resume it, re-fork it, or let it be evicted.
+options.ConversationId = branchId;
+```
+
+`GetService(typeof(LiteRtConversationBranching))` returns the hatch only in the stateful mode (`null`
+otherwise — there are no live conversations to fork). The fork counts toward `MaxLiveConversations` like any
+other live conversation, and it inherits the parent's synthesized-call-id map, so function-calling
+continuations keep resolving on the branch.
 
 `ChatResponse.Usage.TotalTokenCount` in this mode is the conversation's **cumulative** KV-cache size, so it
 grows across the thread (rather than resetting per call as in the stateless mode).

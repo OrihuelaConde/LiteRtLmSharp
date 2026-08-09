@@ -110,15 +110,9 @@ public sealed class LiteRtChatClient : IChatClient
     /// <b>After enabling, propagate the id</b>: copy <c>response.ConversationId</c> into
     /// <c>options.ConversationId</c> and send <b>only the new messages</b> each turn — that is what makes
     /// turns incremental. If the id is never propagated (or the full history keeps being resent) the answers
-    /// stay correct, but every call pays the full stateless re-prefill. Higher-level consumers
-    /// (<c>FunctionInvokingChatClient</c>, agent-framework threads) propagate the id automatically.
-    /// </para>
-    /// <para>
-    /// <b>One live conversation.</b> The stateful mode keeps a single live conversation: a call without a
-    /// <see cref="ChatOptions.ConversationId"/> starts a new one that <b>replaces</b> the previous, whose id
-    /// then throws on resume. This limit is deliberate — upstream LiteRT-LM does not yet preserve a suspended
-    /// conversation's state when another advances (see <see cref="LiteRtStatefulConversationOptions"/> and
-    /// <c>docs/roadmap.md</c>).
+    /// stay correct, but every call pays the full stateless re-prefill <i>plus</i> live conversations pile up
+    /// in the LRU with no benefit. Higher-level consumers (<c>FunctionInvokingChatClient</c>, agent-framework
+    /// threads) propagate the id automatically.
     /// </para>
     /// <example>
     /// <code>
@@ -139,36 +133,11 @@ public sealed class LiteRtChatClient : IChatClient
         _engine = engine;
         _metadata = new ChatClientMetadata("litert-lm", null, modelId);
         _optionsTemplate = optionsTemplate;
-        // The stateful mode keeps exactly one live conversation: upstream LiteRT-LM cannot yet preserve a
-        // suspended conversation's state when another advances, so a second live conversation would be silently
-        // corrupted. The LRU store is future-ready machinery pinned to a single entry — see
-        // LiteRtConversationStore.LiveConversationCapacity and docs/roadmap.md.
         _store = statefulConversations is null
             ? null
-            : new LiteRtConversationStore(LiteRtConversationStore.LiveConversationCapacity);
-        // The forking service exists only when there are live conversations to fork (stateful mode). The type is
-        // internal — unreachable by consumers — but still wired through GetService for the parked capability.
+            : new LiteRtConversationStore(statefulConversations.MaxLiveConversations);
+        // The forking service exists only when there are live conversations to fork (stateful mode).
         _branching = _store is null ? null : new LiteRtConversationBranching(this);
-    }
-
-    /// <summary>
-    /// Test-only seam (internal; <c>InternalsVisibleTo</c> LiteRtLmSharp.Tests): a stateful client whose live-
-    /// conversation cache holds up to <paramref name="liveConversationCapacity"/> conversations, above the
-    /// production cap of one (<see cref="LiteRtConversationStore.LiveConversationCapacity"/>). It exists solely
-    /// so the parked multi-conversation and forking tests (gated on <c>LITERTLM_TEST_MULTICONV</c>) can exercise
-    /// the future-ready machinery. Consumers cannot reach it and always get the single-live-conversation
-    /// contract. See <c>docs/roadmap.md</c>.
-    /// </summary>
-    internal LiteRtChatClient(
-        LiteRtEngine engine, int liveConversationCapacity, LiteRtConversationOptions? optionsTemplate = null)
-    {
-        ArgumentNullException.ThrowIfNull(engine);
-        LiteRtChatMapping.ValidateTemplate(optionsTemplate);
-        _engine = engine;
-        _metadata = new ChatClientMetadata("litert-lm", null, null);
-        _optionsTemplate = optionsTemplate;
-        _store = new LiteRtConversationStore(liveConversationCapacity);
-        _branching = new LiteRtConversationBranching(this);
     }
 
     private string? ModelId => _metadata.DefaultModelId;

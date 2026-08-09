@@ -54,6 +54,17 @@ are published together.
   conversation's first call (or the conversation-options template must set `ConstraintProvider`).
 - Semantic Kernel connector: `LiteRtPromptExecutionSettings.PresencePenalty` / `FrequencyPenalty`
   (the standard `presence_penalty` / `frequency_penalty` keys, read by SK's adapter).
+- **Multiple live stateful conversations** (`Microsoft.Extensions.AI` connector): the stateful mode's
+  live-conversation cache is no longer hard-limited to one —
+  `LiteRtStatefulConversationOptions.MaxLiveConversations` (LRU cap, default 8) is public again.
+  LiteRT-LM v0.15.0 fixed the upstream state loss that forced the limit: a suspended conversation now
+  keeps its own turns when another conversation advances (verified by an interleaved-recall canary test
+  and the full multi-conversation suite; the limitation shipped guarded since 1.1.0).
+- **Conversation forking** (`Microsoft.Extensions.AI` connector): `LiteRtConversationBranching` —
+  obtained via `GetService(typeof(LiteRtConversationBranching))` on a stateful client — forks a live
+  conversation into an independent branch that shares the parent's prefilled context (native KV-cache
+  clone, no re-prefill) and diverges from there. Implemented and validated since 2026-07-10, held
+  internal until the native runtime could preserve suspended-conversation state (v0.15.0+).
 
 ## [1.1.1] — 2026-07-18
 
