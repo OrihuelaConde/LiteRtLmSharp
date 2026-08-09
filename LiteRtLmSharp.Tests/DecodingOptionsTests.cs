@@ -207,26 +207,28 @@ public sealed class DecodingModelTests(EngineFixture fixture) : IClassFixture<En
 
         const string prompt = "Repeat the word echo exactly ten times, separated by single spaces, nothing else.";
 
-        // The ban operates on TOKEN bigrams. SentencePiece gives the leading word a different token
-        // than the " echo" repetitions ([echo][▁echo][▁echo]...), so THREE string-level "echo"s are
-        // reachable without repeating a token bigram — the fourth is not (it would complete an
-        // already-seen ([▁echo],[▁echo])). Assert on the 4-run: present in the baseline, impossible
-        // with the ban. (Observed banned output: "echo echo echo ech echo" — the model is forced to
-        // break the pattern exactly at the bigram boundary.)
-        const string fourRun = "echo echo echo echo";
-
+        // The ban operates on TOKEN bigrams, and no STRING-level property survives it reliably: the
+        // model escapes the banned ([▁echo],[▁echo]) bigram through neighboring tokens that still
+        // read as the word — observed escapes include "echo echo echo ech echo" (local win-x64) and
+        // "echo echo echo echoe echo" (CI win-x64/macOS), where "echoe" starts with "echo" and so
+        // still CONTAINS a 4-run substring despite zero repeated token bigrams. The honest,
+        // platform-stable assertion is behavioral: under the engine's deterministic seed-0 default
+        // sampling, the same prompt on a fresh conversation reproduces the baseline byte-for-byte —
+        // unless the ngram config actually reaches the decode and masks logits, in which case the
+        // output MUST diverge.
+        string baselineText;
         using (var baseline = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 64 }))
         {
-            string text = baseline.Send(prompt).Text ?? "";
-            Skip.If(!text.Contains(fourRun, StringComparison.OrdinalIgnoreCase),
-                $"Baseline did not produce the repetition (got: '{text}') — cannot exercise the ngram ban meaningfully.");
+            baselineText = baseline.Send(prompt).Text ?? "";
+            Skip.If(!baselineText.Contains("echo echo echo echo", StringComparison.OrdinalIgnoreCase),
+                $"Baseline did not produce the repetition (got: '{baselineText}') — cannot exercise the ngram ban meaningfully.");
         }
 
         using var constrained = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 64 });
         string banned = constrained.Send(prompt, attachments: null,
             new LiteRtSendOptions { NoRepeatNgram = new LiteRtNoRepeatNgramOptions { NgramSize = 2 } }).Text ?? "";
 
-        Assert.DoesNotContain(fourRun, banned, StringComparison.OrdinalIgnoreCase);
+        Assert.NotEqual(baselineText, banned);
     }
 
     /// <summary>The thinking token budget must bound the reasoning block: with a small budget the
