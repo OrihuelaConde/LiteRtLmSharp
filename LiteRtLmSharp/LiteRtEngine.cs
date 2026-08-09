@@ -111,6 +111,12 @@ public sealed class LiteRtEngine : IDisposable
                 LiteRtLmNative.litert_lm_engine_settings_set_num_threads(settings.Ptr, numThreads);
             if (options.AudioNumThreads is { } audioNumThreads)
                 LiteRtLmNative.litert_lm_engine_settings_set_audio_num_threads(settings.Ptr, audioNumThreads);
+            if (options.GpuDecodeStepsPerSync is { } gpuSteps)
+                LiteRtLmNative.litert_lm_engine_settings_set_gpu_decode_steps_per_sync(settings.Ptr, gpuSteps);
+            if (options.GpuWaitForWeightUploads is { } gpuWait)
+                LiteRtLmNative.litert_lm_engine_settings_set_gpu_wait_for_weight_uploads(settings.Ptr, gpuWait);
+            if (options.UseRingbuffersLocalAttention is { } ringbuffers)
+                LiteRtLmNative.litert_lm_engine_settings_set_use_ringbuffers_local_attention(settings.Ptr, ringbuffers);
             if (options.LoraRank is { } loraRank)
                 LiteRtLmNative.litert_lm_engine_settings_set_lora_rank(settings.Ptr, loraRank);
             if (options.AudioLoraRank is { } audioLoraRank)

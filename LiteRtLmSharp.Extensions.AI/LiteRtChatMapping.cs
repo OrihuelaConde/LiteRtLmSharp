@@ -281,8 +281,12 @@ internal static class LiteRtChatMapping
     /// <item><b>MaxOutputTokens</b>: the template's conversation-level value is honored as the session default;
     /// <see cref="ChatOptions.MaxOutputTokens"/> continues to map per-send (see below), overriding it.</item>
     /// <item><b>LoraPath</b> / <b>AudioLoraPath</b> / <b>StreamToolCalls</b> / <b>VisualTokenBudget</b> /
-    /// <b>FilterThinkingFromKvCache</b> / <b>ExtraContext</b>: template only — MEAI has no per-request surface
-    /// for them.</item>
+    /// <b>FilterThinkingFromKvCache</b> / <b>ExtraContext</b> / <b>ThinkingTokenBudget</b> /
+    /// <b>PromptTemplate</b>: template only — MEAI has no per-request surface for them.</item>
+    /// <item><b>ConstraintProvider</b>: armed automatically (LlGuidance) when the request carries a
+    /// JSON-schema <see cref="ChatOptions.ResponseFormat"/> (see <see cref="ToConstraint"/>), else taken from
+    /// the template — the template form matters in stateful mode, where the provider must exist from the
+    /// conversation's first call for later schema-constrained calls to work.</item>
     /// </list>
     /// </para>
     /// <para>
@@ -324,10 +328,21 @@ internal static class LiteRtChatMapping
         int visualTokenBudget = template?.VisualTokenBudget ?? 0;
         bool filterThinkingFromKvCache = template?.FilterThinkingFromKvCache ?? false;
         string? extraContext = template?.ExtraContext;
+        int? thinkingTokenBudget = template?.ThinkingTokenBudget;
+        string? promptTemplate = template?.PromptTemplate;
+
+        // A JSON-schema ResponseFormat needs the LlGuidance provider on the conversation so the
+        // per-send constraint (ToSendOptions) has something to enforce it. The template can also
+        // pre-arm the provider — useful in stateful mode, where the conversation is created on the
+        // first call and a later call cannot add the provider retroactively.
+        LiteRtConstraintProvider? constraintProvider =
+            (ToConstraint(options) is not null ? LiteRtConstraintProvider.LlGuidance : (LiteRtConstraintProvider?)null)
+            ?? template?.ConstraintProvider;
 
         if (history.Count == 0 && sampler is null && enableThinking is null && tools is null && !constrained
             && systemMessage is null && maxOutputTokens == 0 && loraPath is null && audioLoraPath is null
-            && !streamToolCalls && visualTokenBudget == 0 && !filterThinkingFromKvCache && extraContext is null)
+            && !streamToolCalls && visualTokenBudget == 0 && !filterThinkingFromKvCache && extraContext is null
+            && thinkingTokenBudget is null && promptTemplate is null && constraintProvider is null)
             return null;
 
         return new LiteRtConversationOptions
@@ -345,6 +360,9 @@ internal static class LiteRtChatMapping
             VisualTokenBudget = visualTokenBudget,
             FilterThinkingFromKvCache = filterThinkingFromKvCache,
             ExtraContext = extraContext,
+            ThinkingTokenBudget = thinkingTokenBudget,
+            PromptTemplate = promptTemplate,
+            ConstraintProvider = constraintProvider,
         };
     }
 
@@ -377,8 +395,43 @@ internal static class LiteRtChatMapping
     public static LiteRtSendOptions? ToSendOptions(ChatOptions? options)
     {
         int maxOutput = options?.MaxOutputTokens ?? 0;
-        return maxOutput > 0 ? new LiteRtSendOptions { MaxOutputTokens = maxOutput } : null;
+
+        // MEAI's FrequencyPenalty / PresencePenalty are the OpenAI-style subtractive penalties — the
+        // exact semantics of the native repetition-penalty config's matching fields (v0.15.0+).
+        LiteRtRepetitionPenaltyOptions? penalties =
+            options is { FrequencyPenalty: not null } or { PresencePenalty: not null }
+                ? new LiteRtRepetitionPenaltyOptions
+                {
+                    FrequencyPenalty = options.FrequencyPenalty ?? 0f,
+                    PresencePenalty = options.PresencePenalty ?? 0f,
+                }
+                : null;
+
+        LiteRtConstraint? constraint = ToConstraint(options);
+
+        if (maxOutput <= 0 && penalties is null && constraint is null)
+            return null;
+        return new LiteRtSendOptions
+        {
+            MaxOutputTokens = maxOutput > 0 ? maxOutput : 0,
+            RepetitionPenalties = penalties,
+            Constraint = constraint,
+        };
     }
+
+    /// <summary>
+    /// Maps a JSON-schema <see cref="ChatOptions.ResponseFormat"/> to a native LlGuidance constraint
+    /// (v0.15.0+): the schema is enforced during sampling, so the reply is guaranteed to be a
+    /// conforming JSON document — real structured output, not prompt hope. Schema-less
+    /// <see cref="ChatResponseFormatJson"/> ("JSON mode") and text format map to <c>null</c>
+    /// (unconstrained): without a schema there is nothing precise to enforce, and the pre-v0.15.0
+    /// behavior (prompt-driven) is preserved. In stateful mode the constraint requires the
+    /// conversation to have the provider from its first call (see <see cref="ToConversationOptions"/>).
+    /// </summary>
+    internal static LiteRtConstraint? ToConstraint(ChatOptions? options) =>
+        options?.ResponseFormat is ChatResponseFormatJson { Schema: { } schema }
+            ? LiteRtConstraint.FromJsonSchema(schema.GetRawText())
+            : null;
 
     /// <summary>
     /// Maps one streamed <see cref="LiteRtStreamChunk"/> to the MEAI content it contributes to a

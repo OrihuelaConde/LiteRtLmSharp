@@ -6,6 +6,55 @@ LiteRT-LM native version it wraps (see the compatibility table in the [README](R
 managed `LiteRtLmSharp` package and every `LiteRtLmSharp.runtime.<rid>` package share one version and
 are published together.
 
+## [Unreleased]
+
+### Changed
+
+- **Native binaries repinned to LiteRT-LM v0.15.0** (from v0.14.0). The C API grew 109 → 140
+  functions with no removals; the only signature changes formalize two `int` parameters into enums
+  with identical values (`set_activation_data_type`, `set_min_log_level`), so every previously bound
+  function keeps its ABI. The **streaming callback ABI did change** — v0.15.0 passes an opaque
+  stream-chunk object read through getters instead of `(text, is_final, error_msg)` parameters — and
+  the binding's internal callback was rewritten to match; the managed streaming API and chunk
+  semantics (including the max-tokens and cancellation error strings) are unchanged. Because of the
+  callback change, this release's managed assembly requires the v0.15.0 natives (the
+  `LiteRtLmSharp.runtime.*` packages of the same version) and is not compatible with v0.14.0-native
+  runtime packages.
+- Native build: dropped the `litert_link_capi_so` define (removed upstream at v0.15.0);
+  `litert_runtime_link_mode=dynamic` + `resolve_symbols_in_exec=false` remain and mirror upstream's
+  own dynamic-linking CI configuration.
+
+### Added
+
+- **Per-send decoding controls** on `LiteRtSendOptions` (all require native v0.15.0+, and apply to
+  one send's generated output):
+  - `RepetitionPenalties` — multiplicative (HuggingFace-style) repetition penalty plus subtractive
+    (OpenAI-style) presence/frequency penalties, with a configurable recent-tokens window.
+  - `NoRepeatNgram` — bans repeating n-grams of a configured size during decode.
+  - `SuppressTokens` — token ids whose logits are forced to `-inf` on every decode step.
+  - `EnableThinking` / `ThinkingTokenBudget` — per-send reasoning-mode override and budget.
+  - `Constraint` — a regex or JSON-Schema output constraint (see the constraint provider below).
+- `LiteRtConversationOptions.ThinkingTokenBudget` — caps how many tokens the model spends on its
+  thinking block (enforced token-by-token natively), independent of `MaxOutputTokens`.
+- `LiteRtConversationOptions.PromptTemplate` — overrides the model's chat template with a custom
+  Jinja template string.
+- **Custom constrained decoding (LlGuidance)**: `LiteRtConversationOptions.ConstraintProvider` +
+  `LiteRtConstraint.FromRegex(...)` / `FromJsonSchema(...)` per send force the output to match a
+  regular expression or conform to a JSON Schema. Mutually exclusive with the tool-calling
+  `EnableConstrainedDecoding` path. The LlGuidance engine is compiled into the native library from
+  source, so it does not depend on the platform prebuilt that keeps tool-calling constrained
+  decoding blocked on linux-x64.
+- Engine options: `GpuDecodeStepsPerSync` and `GpuWaitForWeightUploads` (Artisan GPU backend), and
+  `UseRingbuffersLocalAttention` (ringbuffer KV cache for local-attention layers — lower memory on
+  long contexts).
+- `Microsoft.Extensions.AI` connector: `ChatOptions.FrequencyPenalty` / `PresencePenalty` now map to
+  the native penalties, and a JSON-schema `ChatOptions.ResponseFormat` is now **enforced during
+  sampling** via LlGuidance — the reply is guaranteed to be a conforming JSON document (previously
+  the schema only influenced the prompt). In stateful mode the schema format must be present on the
+  conversation's first call (or the conversation-options template must set `ConstraintProvider`).
+- Semantic Kernel connector: `LiteRtPromptExecutionSettings.PresencePenalty` / `FrequencyPenalty`
+  (the standard `presence_penalty` / `frequency_penalty` keys, read by SK's adapter).
+
 ## [1.1.1] — 2026-07-18
 
 Managed-only fix. The `LiteRtLmSharp.runtime.<rid>` packages bump to 1.1.1 per the shared-version

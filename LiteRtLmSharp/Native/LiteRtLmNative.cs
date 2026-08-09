@@ -116,6 +116,25 @@ internal static unsafe partial class LiteRtLmNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_engine_settings_set_num_decode_tokens(nint settings, int num_decode_tokens);
 
+    /// <summary>Decode steps per GPU sync. Only honored by the Artisan GPU backend (v0.15.0+).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_gpu_decode_steps_per_sync(nint settings, int num_decode_steps_per_sync);
+
+    /// <summary>Whether to wait for GPU weight uploads. Only honored by the Artisan GPU backend (v0.15.0+).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_gpu_wait_for_weight_uploads(
+        nint settings, [MarshalAs(UnmanagedType.U1)] bool wait_for_weight_uploads);
+
+    /// <summary>Ringbuffer KV cache for local-attention layers (lower memory, no instant rewind).
+    /// Backend-agnostic in interface but currently only the Artisan GPU backend implements it;
+    /// unsupported models/backends log a warning and ignore it (v0.15.0+).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_use_ringbuffers_local_attention(
+        nint settings, [MarshalAs(UnmanagedType.U1)] bool use_ringbuffers_local_attention);
+
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_engine_settings_delete(nint settings);
@@ -249,6 +268,26 @@ internal static unsafe partial class LiteRtLmNative
     internal static partial void litert_lm_conversation_config_set_stream_tool_calls(
         nint config, [MarshalAs(UnmanagedType.U1)] bool stream_tool_calls, string channel_name);
 
+    /// <summary>Overrides the prompt template (e.g. a Jinja template string) for this conversation.
+    /// Unset = the model's / engine's default template (v0.15.0+).</summary>
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_conversation_config_set_prompt_template(nint config, string prompt_template);
+
+    /// <summary>Copies the opaque thinking config (enable flag + token budget) into the conversation
+    /// config; the caller keeps ownership and deletes it afterwards. Null clears (v0.15.0+).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_conversation_config_set_thinking_config(nint config, nint thinking_config);
+
+    /// <summary>Selects the constraint provider for custom constrained decoding (LlGuidance). Takes a
+    /// POINTER to the enum value so null can unset it. Mutually exclusive with
+    /// <see cref="litert_lm_conversation_config_set_enable_constrained_decoding"/> (tool-calling
+    /// constrained decoding) per upstream docs (v0.15.0+).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_conversation_config_set_constraint_provider(nint config, int* provider_type);
+
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_conversation_config_delete(nint config);
@@ -280,6 +319,141 @@ internal static unsafe partial class LiteRtLmNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_conversation_optional_args_set_max_output_tokens(
         nint optional_args, int max_output_tokens);
+
+    /// <summary>Copies the repetition-penalty config into the optional args (deep copy; the caller
+    /// keeps ownership of the config). Applies to this one send's decode. Null clears (v0.15.0+).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_conversation_optional_args_set_repetition_penalty_config(
+        nint optional_args, nint repetition_penalty_config);
+
+    /// <summary>Copies the no-repeat-ngram config into the optional args (deep copy). Applies to this
+    /// one send's decode. Null clears (v0.15.0+).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_conversation_optional_args_set_no_repeat_ngram_config(
+        nint optional_args, nint no_repeat_ngram_config);
+
+    /// <summary>Copies the suppress-tokens config into the optional args (deep copy). Applies to this
+    /// one send's decode. Null or an empty inner set clears (v0.15.0+).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_conversation_optional_args_set_suppress_tokens_config(
+        nint optional_args, nint suppress_tokens_config);
+
+    /// <summary>Copies the thinking config into the optional args for this one send, overriding the
+    /// conversation-level thinking config (conversation.cc ResolveThinkingConfig: per-send wins).
+    /// Null clears (v0.15.0+).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_conversation_optional_args_set_thinking_config(
+        nint optional_args, nint thinking_config);
+
+    /// <summary>Sets a per-send output constraint (regex or JSON Schema string) enforced by the
+    /// conversation's constraint provider. Only meaningful when the conversation was created with a
+    /// constraint provider (LlGuidance) (v0.15.0+).</summary>
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_conversation_optional_args_set_constraint(
+        nint optional_args, LiteRtLmConstraintType constraint_type, string constraint_string);
+
+    // --- Decoding configs (v0.15.0 opaque builders) -----------------------
+    // Same lifetime pattern as the sampler params: create, set fields, attach to the optional args /
+    // conversation config (which deep-copies), then delete immediately — the caller retains ownership.
+
+    /// <summary>Allocates a repetition-penalty config (defaults: repetition 1.0 = off, presence 0.0,
+    /// frequency 0.0, window 0 = infinite). Caller frees with
+    /// <see cref="litert_lm_repetition_penalty_config_delete"/>. Null on failure.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_repetition_penalty_config_create();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_repetition_penalty_config_delete(nint config);
+
+    /// <summary>Multiplicative repetition penalty (HuggingFace style): 1.0 = off; must be >= 1.0
+    /// (values below are clamped to 1.0 during execution).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_repetition_penalty_config_set_repetition_penalty(nint config, float repetition_penalty);
+
+    /// <summary>Subtractive presence penalty (OpenAI style): applied once if the token appeared in the window.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_repetition_penalty_config_set_presence_penalty(nint config, float presence_penalty);
+
+    /// <summary>Subtractive frequency penalty (OpenAI style): scaled by the token's occurrence count in the window.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_repetition_penalty_config_set_frequency_penalty(nint config, float frequency_penalty);
+
+    /// <summary>Generated-history window for the penalties. 0 = infinite; negatives clamp to 0.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_repetition_penalty_config_set_window_size(nint config, int window_size);
+
+    /// <summary>Allocates a no-repeat-ngram config. Caller frees with
+    /// <see cref="litert_lm_no_repeat_ngram_config_delete"/>. Null on failure.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_no_repeat_ngram_config_create();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_no_repeat_ngram_config_delete(nint config);
+
+    /// <summary>Ngram size banned from repeating: completing an already-seen ngram of this size forces
+    /// the candidate token's logit to -inf. &lt;= 0 disables.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_no_repeat_ngram_config_set_no_repeat_ngram_size(nint config, int no_repeat_ngram_size);
+
+    /// <summary>Generated-history window for ngram tracking. 0 = infinite; clamped up to the ngram size.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_no_repeat_ngram_config_set_window_size(nint config, int window_size);
+
+    /// <summary>Allocates a suppress-tokens config. Caller frees with
+    /// <see cref="litert_lm_suppress_tokens_config_delete"/>. Null on failure.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_suppress_tokens_config_create();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_suppress_tokens_config_delete(nint config);
+
+    /// <summary>Token ids whose logits are forced to -inf on every decode step. Null/0 clears.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_suppress_tokens_config_set_suppress_tokens(
+        nint config, int* suppress_tokens, nuint num_tokens);
+
+    /// <summary>Allocates a thinking config. NOTE the native default ctor is enabled + infinite budget
+    /// (-1); the binding always sets both fields explicitly. Caller frees with
+    /// <see cref="litert_lm_thinking_config_delete"/>. Null on failure.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_thinking_config_create();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_thinking_config_delete(nint config);
+
+    /// <summary>Whether thinking/reasoning generation is enabled (feeds the template's
+    /// <c>enable_thinking</c> variable unless explicit extra context already sets it).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_thinking_config_set_enable_thinking(
+        nint config, [MarshalAs(UnmanagedType.U1)] bool enable_thinking);
+
+    /// <summary>Token budget for the thinking block (-1 = infinite; 0 = treated as no budget by the
+    /// task layer). Enforced token-by-token against the model's thinking start/end token ids
+    /// (runtime/core/tasks.cc).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_thinking_config_set_thinking_token_budget(nint config, int thinking_token_budget);
 
     // --- Conversation ----------------------------------------------------
 
@@ -313,12 +487,38 @@ internal static unsafe partial class LiteRtLmNative
     internal static partial nint litert_lm_conversation_send_message(
         nint conversation, string message_json, string? extra_context, nint optional_args);
 
-    /// <summary>Streaming send. <paramref name="callback"/> is an unmanaged function pointer.</summary>
+    /// <summary>Streaming send. <paramref name="callback"/> is an unmanaged function pointer with the
+    /// v0.15.0 <c>LiteRtLmStreamCallback</c> shape: <c>(void* callback_data,
+    /// const LiteRtLmStreamChunk* chunk)</c>. The chunk object is only valid for the duration of the
+    /// call — read it via the <c>litert_lm_stream_chunk_*</c> getters and copy the strings out.
+    /// (v0.14.0 passed <c>(callback_data, text, is_final, error_msg)</c> directly; v0.15.0 moved the
+    /// same three fields behind the opaque chunk.)</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial int litert_lm_conversation_send_message_stream(
         nint conversation, string message_json, string? extra_context, nint optional_args,
-        delegate* unmanaged[Cdecl]<nint, nint, byte, nint, void> callback, nint callback_data);
+        delegate* unmanaged[Cdecl]<nint, nint, void> callback, nint callback_data);
+
+    // --- Stream chunk (v0.15.0) ------------------------------------------
+    // Read-only views into the chunk passed to the stream callback; the returned strings are owned
+    // by the chunk and only valid during the callback invocation.
+
+    /// <summary>The chunk's text content (a full message-JSON piece), or null for error/metadata-only
+    /// chunks (including every is_final chunk, which carries no text).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_stream_chunk_get_text(nint chunk);
+
+    /// <summary>True on the last chunk of the stream (done, max-tokens, cancelled or error).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool litert_lm_stream_chunk_is_final(nint chunk);
+
+    /// <summary>The chunk's error message, or null when there is no error.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_stream_chunk_get_error(nint chunk);
 
     /// <summary>Renders a message JSON to its templated prompt string (does not send). The returned
     /// pointer is owned by the conversation and valid only until the next render call or the
@@ -498,5 +698,21 @@ internal enum LiteRtLmTokenUnionType
 {
     String = 0,
     Ids = 1,
+}
+
+/// <summary>Mirrors <c>LiteRtLmConstraintType</c> in engine.h (v0.15.0): the shape of a per-send
+/// output constraint string.</summary>
+internal enum LiteRtLmConstraintType
+{
+    None = 0,
+    Regex = 1,
+    JsonSchema = 2,
+}
+
+/// <summary>Mirrors <c>LiteRtLmConstraintProviderType</c> in engine.h (v0.15.0). LlGuidance is the
+/// only provider the C API exposes (compiled from the llguidance Rust crate — no prebuilt blob).</summary>
+internal enum LiteRtLmConstraintProviderType
+{
+    LlGuidance = 1,
 }
 
