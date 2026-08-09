@@ -1,6 +1,6 @@
 # Project status and roadmap
 
-Last updated: 2026-07-10. Source of truth for "what's done and what's pending".
+Last updated: 2026-08-09. Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -235,7 +235,8 @@ priority order:
    `0.1.0-preview.1` published to nuget.org via Trusted Publishing (OIDC, no API key),
    consumer smoke test passed, announced in #2535 and listing PR opened
    ([LiteRT-LM#2552](https://github.com/google-ai-edge/LiteRT-LM/pull/2552)).
-   Pending follow-up: request the `LiteRtLmSharp.` ID prefix reservation on nuget.org.
+   ✅ Follow-up done: the `LiteRtLmSharp.` ID prefix reservation on nuget.org was granted on
+   2026-06-16.
 4. **Upstream reports**: (a) ✅ posted to #1881 — Vulkan/Dawn FP16 shaders fail on older Adreno
    and the engine emits silent garbage instead of an error/fallback; (b) dropped — the
    `uses-native-library` requirement is documented in upstream's Kotlin getting-started docs;
@@ -545,9 +546,13 @@ shipping NEW native surface, check ALL of:
   (real GPU sampling changes both pictures).
 - **[LiteRT-LM#2080](https://github.com/google-ai-edge/LiteRT-LM/issues/2080)**: sampler params were
   not being read from the runtime config on some paths. **PARTIALLY addressed in v0.14.0**:
-  `InitializeSampler` now reads the `runtime_config` sampler params when present. Re-measuring the
-  associated digit-corruption symptom on the GPU backend is in progress this session;
-  status will be settled once that A/B completes.
+  `InitializeSampler` now reads the `runtime_config` sampler params when present. **The
+  digit-corruption A/B was settled 2026-07-17**: the residual deterministic corruption on desktop
+  GPU is caused by the **F16 activation default** of the GPU text executor, not by sampler params —
+  `ActivationDataType = Float32` takes a 16-check structured-extraction benchmark from 13/16
+  (rotating errors) to 16/16 across 3 runs, replicated on a non-Gemma model (Ministral-3-3B), with
+  no measurable speed cost on an RTX 3080. Documented in [engine-tuning.md](engine-tuning.md)
+  (which also cross-refs the upstream threads that misattribute this symptom: #2637/#2727/#2202).
 - **New LiteRT-LM tags** — automated: `upstream-watch.yml` (Mon/Thu) opens a checklist issue
   when upstream publishes a release.
 - **flutter_gemma** — releases/issues as a recipe source (e.g. their #270/#214 anticipated our
