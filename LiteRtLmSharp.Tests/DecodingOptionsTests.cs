@@ -152,14 +152,20 @@ public class DecodingOptionsMappingTests
 
 /// <summary>
 /// Model-backed scenarios for the v0.15.0 decoding features (suppress tokens, no-repeat-ngram,
-/// thinking budget, LlGuidance constraints). Set LITERTLM_TEST_MODEL to run; all sends use greedy
-/// sampling so the baselines are deterministic.
+/// thinking budget, LlGuidance constraints). Set LITERTLM_TEST_MODEL to run; sends rely on the
+/// engine's default sampling (deterministic at the seed-0 default) — see the sampler note below.
 /// </summary>
 public sealed class DecodingModelTests(EngineFixture fixture) : IClassFixture<EngineFixture>
 {
     private readonly EngineFixture _fixture = fixture;
 
-    private static readonly LiteRtSamplerParams Greedy = new() { Strategy = LiteRtSamplerType.Greedy };
+    // No explicit sampler anywhere in these tests: the engine's internal default sampling is
+    // deterministic at its seed-0 default, and an explicit Greedy/TopK sampler CANNOT be used on the
+    // CPU backend — the native CPU sampler factory only implements TopP (both v0.14.0 and v0.15.0;
+    // sampler_factory.cc CreateCpuSampler), so a send that needs a fresh Greedy/TopK sampler fails
+    // with UNIMPLEMENTED "Sampler type: N not implemented yet" (and whether it needs one is
+    // order-dependent: an earlier TopP/default conversation leaves a sampler behind that later
+    // conversations silently reuse). Verified against both native eras on win-x64 CPU, 2026-08-09.
 
     /// <summary>Suppressing every token id of the expected answer word must keep that word out of the
     /// reply — the most directly observable of the new logit processors (the id's logit is forced to
@@ -172,7 +178,7 @@ public sealed class DecodingModelTests(EngineFixture fixture) : IClassFixture<En
 
         const string prompt = "What is the capital of France? Reply with just the city name.";
 
-        using (var baseline = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Greedy, MaxOutputTokens = 32 }))
+        using (var baseline = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 32 }))
         {
             string text = baseline.Send(prompt).Text ?? "";
             Skip.If(!text.Contains("Paris", StringComparison.OrdinalIgnoreCase),
@@ -183,7 +189,7 @@ public sealed class DecodingModelTests(EngineFixture fixture) : IClassFixture<En
         // SentencePiece leading-space marker).
         int[] banned = [.. engine.Tokenize(" Paris"), .. engine.Tokenize("Paris")];
 
-        using var constrained = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Greedy, MaxOutputTokens = 32 });
+        using var constrained = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 32 });
         string suppressed = constrained.Send(prompt, attachments: null,
             new LiteRtSendOptions { SuppressTokens = banned }).Text ?? "";
 
@@ -201,18 +207,26 @@ public sealed class DecodingModelTests(EngineFixture fixture) : IClassFixture<En
 
         const string prompt = "Repeat the word echo exactly ten times, separated by single spaces, nothing else.";
 
-        using (var baseline = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Greedy, MaxOutputTokens = 64 }))
+        // The ban operates on TOKEN bigrams. SentencePiece gives the leading word a different token
+        // than the " echo" repetitions ([echo][▁echo][▁echo]...), so THREE string-level "echo"s are
+        // reachable without repeating a token bigram — the fourth is not (it would complete an
+        // already-seen ([▁echo],[▁echo])). Assert on the 4-run: present in the baseline, impossible
+        // with the ban. (Observed banned output: "echo echo echo ech echo" — the model is forced to
+        // break the pattern exactly at the bigram boundary.)
+        const string fourRun = "echo echo echo echo";
+
+        using (var baseline = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 64 }))
         {
             string text = baseline.Send(prompt).Text ?? "";
-            Skip.If(!text.Contains("echo echo echo", StringComparison.OrdinalIgnoreCase),
+            Skip.If(!text.Contains(fourRun, StringComparison.OrdinalIgnoreCase),
                 $"Baseline did not produce the repetition (got: '{text}') — cannot exercise the ngram ban meaningfully.");
         }
 
-        using var constrained = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Greedy, MaxOutputTokens = 64 });
+        using var constrained = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 64 });
         string banned = constrained.Send(prompt, attachments: null,
             new LiteRtSendOptions { NoRepeatNgram = new LiteRtNoRepeatNgramOptions { NgramSize = 2 } }).Text ?? "";
 
-        Assert.DoesNotContain("echo echo echo", banned, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(fourRun, banned, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>The thinking token budget must bound the reasoning block: with a small budget the
@@ -230,7 +244,6 @@ public sealed class DecodingModelTests(EngineFixture fixture) : IClassFixture<En
 
         using var conv = engine.CreateConversation(new LiteRtConversationOptions
         {
-            Sampler = Greedy,
             EnableThinking = true,
             ThinkingTokenBudget = budget,
             MaxOutputTokens = 512,
@@ -255,7 +268,6 @@ public sealed class DecodingModelTests(EngineFixture fixture) : IClassFixture<En
 
         using var conv = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions
         {
-            Sampler = Greedy,
             ConstraintProvider = LiteRtConstraintProvider.LlGuidance,
             MaxOutputTokens = 16,
         });
@@ -279,7 +291,6 @@ public sealed class DecodingModelTests(EngineFixture fixture) : IClassFixture<En
 
         using var conv = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions
         {
-            Sampler = Greedy,
             ConstraintProvider = LiteRtConstraintProvider.LlGuidance,
             MaxOutputTokens = 64,
         });

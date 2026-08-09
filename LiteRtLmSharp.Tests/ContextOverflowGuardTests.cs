@@ -11,18 +11,22 @@ namespace LiteRtLmSharp.Tests;
 /// </summary>
 public class ContextOverflowGuardTests
 {
-    // The full/not-full boundary is maxNumTokens - SafetyMargin, shared by the pre-send hard stop and
+    // The full/not-full boundary: full once fewer than MinPrefillReserve entries remain (the
+    // v0.15.0+ executor rejects any prefill below the model's smallest prefill-signature length).
+    // LastSendable is the highest count that is still not full; shared by the pre-send hard stop and
     // the public IsContextFull signal so the two can never disagree.
-    private const int FullAt = 4096 - LiteRtContextGuard.SafetyMargin;
+    private const int LastSendable = 4096 - LiteRtContextGuard.MinPrefillReserve;
+    private const int FullAt = LastSendable + 1;
 
     [Theory]
-    [InlineData(0, 4096)]           // fresh conversation
-    [InlineData(FullAt - 1, 4096)]  // one below the shared ceiling — the budget stage decides, not the hard stop
+    [InlineData(0, 4096)]            // fresh conversation
+    [InlineData(LastSendable, 4096)] // exactly MinPrefillReserve remaining — the budget stage decides, not the hard stop
     public void ThrowIfContextFull_UnderTheCeiling_DoesNotThrow(int used, int limit)
         => LiteRtContextGuard.ThrowIfContextFull(used, limit);
 
     [Theory]
-    [InlineData(FullAt, 4096)]      // exactly at the ceiling — where a clamped send lands by construction
+    [InlineData(FullAt, 4096)]      // one entry short of the reserve — the executor would reject the prefill
+    [InlineData(4096 - LiteRtContextGuard.SafetyMargin, 4096)] // where a clamped send lands by construction
     [InlineData(4096, 4096)]        // at the hard limit
     [InlineData(4440, 4096)]        // past the limit — the exact field-reported state (crashed 0xC0000005 unguarded)
     public void ThrowIfContextFull_AtOrPastTheCeiling_Throws(int used, int limit)
@@ -43,7 +47,7 @@ public class ContextOverflowGuardTests
     /// <summary>The signal and the hard stop share one predicate: IsContextFull true ⇔ the next send throws.</summary>
     [Theory]
     [InlineData(0, 4096, false)]
-    [InlineData(FullAt - 1, 4096, false)]
+    [InlineData(LastSendable, 4096, false)]
     [InlineData(FullAt, 4096, true)]
     [InlineData(4096, 4096, true)]
     [InlineData(4440, 4096, true)]
@@ -187,7 +191,7 @@ public sealed class ContextOverflowModelTests
         // reached by a previous send), IsContextFull must have said so right after that send — the caller
         // never needs the next-turn exception to learn the conversation is over. (A throw below the
         // ceiling is the "message doesn't fit" path, which is same-call by nature.)
-        if (overflow.TokenCount >= SmallContext - LiteRtContextGuard.SafetyMargin)
+        if (overflow.TokenCount > SmallContext - LiteRtContextGuard.MinPrefillReserve)
             Assert.True(fullSignaled, "The context filled up without IsContextFull signaling it in the same turn.");
 
         // The whole point of the guard: the engine (and the process) survive the full conversation.
