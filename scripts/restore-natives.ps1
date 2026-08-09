@@ -12,7 +12,7 @@ Usage:
   pwsh scripts/restore-natives.ps1 -All
 #>
 param(
-    [string]$Version = 'v0.14.0',
+    [string]$Version = 'v0.15.0',
     [ValidateSet('win-x64', 'linux-x64', 'android-arm64', 'osx-arm64', 'ios-arm64')]
     [string[]]$Rid,
     [switch]$All
@@ -63,6 +63,10 @@ foreach ($r in $Rid) {
 
     # iOS ships .xcframeworks (not a runtimes/<rid>/native dlopen layout); extract at the rid root.
     $dest = if ($r -eq 'ios-arm64') { Join-Path $repoRoot "runtimes/$r" } else { Join-Path $repoRoot "runtimes/$r/native" }
+    # Start from a clean directory: a version switch would otherwise leave stale binaries from the
+    # previous native set behind (found the hard way on the v0.14.0 -> v0.15.0 repin, where the
+    # since-dropped prefixless twin DLLs survived the restore).
+    Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $dest | Out-Null
     tar -xzf $file -C $dest
     Get-ChildItem $dest -Filter '._*' | Remove-Item -Force   # macOS AppleDouble metadata

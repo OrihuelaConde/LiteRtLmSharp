@@ -43,7 +43,7 @@ on:
 
 env:
   # Keep in sync with Directory.Build.props <LiteRtLmVersion>.
-  NATIVE_REF: v0.14.0
+  NATIVE_REF: v0.15.0
   MODEL_FILE: gemma-4-E2B-it.litertlm
   MODEL_URL: https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm
   # LFS oid of the file on Hugging Face; also guards against a cached/partial download.
