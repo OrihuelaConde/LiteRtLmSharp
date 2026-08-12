@@ -191,6 +191,33 @@ is **best-effort** on-device — the connector instructs the model to call a fun
 but cannot *force* a call the way a cloud API's server-enforced `tool_choice: "required"` does. See
 [Tool choice](extensions-ai.md#function-calling-tools) for the per-mode behavior.
 
+## Structured output (`response_format`)
+
+A raw JSON-Schema `JsonElement` under the standard `response_format` execution-settings key is
+**enforced during sampling** (native LiteRT-LM v0.15.0+): SK's adapter converts it into a
+Microsoft.Extensions.AI schema `ResponseFormat`, and the connector arms the LlGuidance constraint
+provider so the reply is guaranteed to be a conforming JSON document.
+
+```csharp
+using JsonDocument schema = JsonDocument.Parse(
+    """{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}""");
+
+var settings = new LiteRtPromptExecutionSettings
+{
+    MaxTokens = 64,
+    ExtensionData = new Dictionary<string, object> { ["response_format"] = schema.RootElement },
+};
+// result[0].Content parses as JSON conforming to the schema — enforced, not prompted.
+```
+
+Supported shapes (verified against a real model): the **raw schema element** shown above works; an
+OpenAI-style `{"type":"json_schema","json_schema":{...}}` envelope does **not** (SK forwards the
+whole envelope as the schema and the constraint compiler rejects it — the send fails); a plain
+`"json_object"` string is JSON *mode*, which is not enforced (prompt-driven only). The same rules
+and caveats as the MEAI connector apply — most importantly, **not combinable with function calling
+on the same request** (see the [structured output section](extensions-ai.md#structured-output-responseformat)
+of the Extensions.AI guide).
+
 ## Reasoning (thinking) and the output-token budget
 
 With `EnableThinking = true` the model emits a reasoning trace **before** the answer, and that trace shares

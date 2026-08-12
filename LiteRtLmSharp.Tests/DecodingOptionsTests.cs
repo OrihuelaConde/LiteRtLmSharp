@@ -4,6 +4,8 @@ using LiteRtLmSharp;
 using LiteRtLmSharp.Extensions.AI;
 using LiteRtLmSharp.SemanticKernel;
 using Microsoft.Extensions.AI;
+using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.ChatCompletion;
 using Xunit;
 
 namespace LiteRtLmSharp.Tests;
@@ -183,6 +185,163 @@ public class DecodingOptionsMappingTests
 }
 
 /// <summary>
+/// Model-backed END-TO-END tests of the v0.15.0 decoding features through the connectors: MEAI
+/// (ChatOptions penalties, stateless JSON-schema ResponseFormat) and Semantic Kernel (the typed
+/// penalty execution settings through SK's adapter). Engine knobs smoke included. Each test loads
+/// its own engine (one engine alive at a time; no shared fixture — parallelization is disabled).
+/// </summary>
+public sealed class DecodingConnectorModelTests
+{
+    private static string? Model => Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
+    private static string Backend => Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu";
+
+    private static LiteRtEngineOptions Options() => new()
+    {
+        ModelPath = Model!,
+        Backend = LiteRtBackend.Parse(Backend),
+        MaxNumTokens = 2048,
+    };
+
+    /// <summary>The v0.15.0 engine knobs (Artisan GPU sync/upload, ringbuffer local attention) are
+    /// accepted end to end: on the desktop backends they are documented no-ops, so the observable is
+    /// that the engine loads and generates with all three set (the plumb reaches native without
+    /// error). Real behavioral validation needs an Android/Artisan device.</summary>
+    [SkippableFact]
+    public void EngineLoad_WithArtisanKnobsAndRingbuffers_LoadsAndGenerates()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = Model!,
+            Backend = LiteRtBackend.Parse(Backend),
+            MaxNumTokens = 1024,
+            GpuDecodeStepsPerSync = 4,
+            GpuWaitForWeightUploads = true,
+            UseRingbuffersLocalAttention = true,
+        });
+        using var conv = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
+        Assert.False(string.IsNullOrWhiteSpace(conv.Send("Reply with one short word: hello").Text));
+    }
+
+    /// <summary>MEAI stateless path: a JSON-schema ResponseFormat produces schema-conforming JSON
+    /// (the client arms LlGuidance per call and attaches the schema as the per-send constraint).</summary>
+    [SkippableFact]
+    public async Task Meai_Stateless_SchemaResponseFormat_ProducesConformingJson()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine);
+        using JsonDocument schema = JsonDocument.Parse(
+            """{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}""");
+
+        ChatResponse response = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is the capital of France? Answer as JSON.")],
+            new ChatOptions
+            {
+                MaxOutputTokens = 64,
+                ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement),
+            });
+
+        using JsonDocument parsed = JsonDocument.Parse(response.Text.Trim());
+        Assert.Equal(JsonValueKind.String, parsed.RootElement.GetProperty("city").ValueKind);
+    }
+
+    /// <summary>MEAI penalties reach the native decode: under deterministic default sampling, the
+    /// same repetition-inducing request diverges from its baseline when
+    /// <see cref="ChatOptions.FrequencyPenalty"/>/<see cref="ChatOptions.PresencePenalty"/> are set.</summary>
+    [SkippableFact]
+    public async Task Meai_PenaltiesOnChatOptions_AlterDeterministicOutput()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine);
+        ChatMessage[] messages =
+            [new(ChatRole.User, "Repeat the word echo exactly ten times, separated by single spaces, nothing else.")];
+
+        ChatResponse baseline = await client.GetResponseAsync(messages, new ChatOptions { MaxOutputTokens = 64 });
+        Skip.If(string.IsNullOrEmpty(baseline.Text), "Baseline produced no text — cannot compare.");
+
+        ChatResponse penalized = await client.GetResponseAsync(messages, new ChatOptions
+        {
+            MaxOutputTokens = 64,
+            FrequencyPenalty = 1.5f,
+            PresencePenalty = 1.0f,
+        });
+
+        Assert.NotEqual(baseline.Text, penalized.Text);
+    }
+
+    /// <summary>Semantic Kernel structured output end to end: a raw JSON-Schema
+    /// <see cref="System.Text.Json.JsonElement"/> under the standard <c>response_format</c>
+    /// execution-settings key flows through SK's converter into a MEAI schema ResponseFormat and is
+    /// enforced by the LlGuidance constraint. (Probed shapes: the raw schema element WORKS; an
+    /// OpenAI-style <c>{"type":"json_schema",...}</c> envelope does NOT — SK forwards the whole
+    /// envelope as the schema and the constraint compiler rejects it; a plain <c>"json_object"</c>
+    /// string is JSON mode, which is not enforced.)</summary>
+    [SkippableFact]
+    public async Task Sk_ResponseFormatSchema_IsEnforced()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, modelId: "litert-test");
+        IChatCompletionService chat = client.AsChatCompletionService();
+
+        using JsonDocument schema = JsonDocument.Parse(
+            """{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}""");
+        var settings = new LiteRtPromptExecutionSettings
+        {
+            MaxTokens = 64,
+            ExtensionData = new Dictionary<string, object> { ["response_format"] = schema.RootElement },
+        };
+        var history = new ChatHistory();
+        history.AddUserMessage("What is the capital of France? Answer as JSON.");
+
+        IReadOnlyList<ChatMessageContent> result = await chat.GetChatMessageContentsAsync(history, settings);
+        using JsonDocument parsed = JsonDocument.Parse(result[0].Content!.Trim());
+        Assert.Equal(JsonValueKind.String, parsed.RootElement.GetProperty("city").ValueKind);
+    }
+
+    /// <summary>Semantic Kernel end to end: the typed penalty settings flow through SK's
+    /// PromptExecutionSettings → ChatOptions converter into the native decode (same
+    /// divergence-from-deterministic-baseline observable as the MEAI test).</summary>
+    [SkippableFact]
+    public async Task Sk_PenaltySettings_FlowThroughAdapter_AndAlterOutput()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, modelId: "litert-test");
+        IChatCompletionService chat = client.AsChatCompletionService();
+
+        var history = new ChatHistory();
+        history.AddUserMessage("Repeat the word echo exactly ten times, separated by single spaces, nothing else.");
+
+        IReadOnlyList<ChatMessageContent> baseline = await chat.GetChatMessageContentsAsync(
+            history, new LiteRtPromptExecutionSettings { MaxTokens = 64 });
+        Skip.If(string.IsNullOrEmpty(baseline[0].Content), "Baseline produced no text — cannot compare.");
+
+        IReadOnlyList<ChatMessageContent> penalized = await chat.GetChatMessageContentsAsync(
+            history, new LiteRtPromptExecutionSettings
+            {
+                MaxTokens = 64,
+                FrequencyPenalty = 1.5f,
+                PresencePenalty = 1.0f,
+            });
+
+        Assert.NotEqual(baseline[0].Content, penalized[0].Content);
+    }
+}
+
+/// <summary>
 /// Model-backed scenarios for the v0.15.0 decoding features (suppress tokens, no-repeat-ngram,
 /// thinking budget, LlGuidance constraints). Set LITERTLM_TEST_MODEL to run; sends rely on the
 /// engine's default sampling (deterministic at the seed-0 default) — see the sampler note below.
@@ -334,6 +493,94 @@ public sealed class DecodingModelTests(EngineFixture fixture) : IClassFixture<En
 
         using JsonDocument doc = JsonDocument.Parse(text.Trim());
         Assert.Equal(JsonValueKind.String, doc.RootElement.GetProperty("city").ValueKind);
+    }
+
+    /// <summary>The repetition penalties must reach the decode: under the engine's deterministic
+    /// seed-0 default sampling, the same repetition-inducing prompt reproduces the baseline exactly —
+    /// unless the penalty config alters the logits, in which case the output MUST diverge (same
+    /// behavioral-assertion rationale as the ngram test above).</summary>
+    [SkippableFact]
+    public void Send_WithRepetitionPenalties_AltersDeterministicOutput()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        var engine = _fixture.Engine!;
+
+        const string prompt = "Repeat the word echo exactly ten times, separated by single spaces, nothing else.";
+
+        string baseline;
+        using (var conv = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 64 }))
+            baseline = conv.Send(prompt).Text ?? "";
+        Skip.If(baseline.Length == 0, "Baseline produced no text — cannot compare.");
+
+        using var penalized = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 64 });
+        string withPenalties = penalized.Send(prompt, attachments: null, new LiteRtSendOptions
+        {
+            RepetitionPenalties = new LiteRtRepetitionPenaltyOptions
+            {
+                FrequencyPenalty = 1.5f,
+                PresencePenalty = 1.0f,
+            },
+        }).Text ?? "";
+
+        Assert.NotEqual(baseline, withPenalties);
+    }
+
+    /// <summary>Per-send thinking override, OFF direction: a conversation created with thinking ON
+    /// answers a send that sets <c>EnableThinking = false</c> without a thinking trace.</summary>
+    [SkippableFact]
+    public void Send_PerSendThinkingFalse_SuppressesThinkingOnThinkingConversation()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        var engine = _fixture.Engine!;
+        const string prompt = "What is 17 times 23? Think it through, then answer.";
+
+        using (var thinking = engine.CreateConversation(new LiteRtConversationOptions
+               { EnableThinking = true, MaxOutputTokens = 512 }))
+        {
+            var withThinking = thinking.Send(prompt);
+            Skip.If(string.IsNullOrEmpty(withThinking.Thinking),
+                "Model produced no thinking trace with thinking on — the override is not exercisable.");
+        }
+
+        using var overridden = engine.CreateConversation(new LiteRtConversationOptions
+        { EnableThinking = true, MaxOutputTokens = 512 });
+        var response = overridden.Send(prompt, attachments: null,
+            new LiteRtSendOptions { EnableThinking = false });
+
+        Assert.True(string.IsNullOrEmpty(response.Thinking),
+            $"Per-send EnableThinking=false did not suppress the thinking trace (got {response.Thinking?.Length} chars).");
+    }
+
+    /// <summary>Per-send thinking override, ON direction: a conversation created without thinking
+    /// produces a thinking trace on a send that sets <c>EnableThinking = true</c>.</summary>
+    [SkippableFact]
+    public void Send_PerSendThinkingTrue_EnablesThinkingOnPlainConversation()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var conv = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 512 });
+        var response = conv.Send("What is 17 times 23? Think it through, then answer.",
+            attachments: null, new LiteRtSendOptions { EnableThinking = true });
+
+        Assert.False(string.IsNullOrEmpty(response.Thinking),
+            "Per-send EnableThinking=true did not produce a thinking trace on a plain conversation.");
+    }
+
+    /// <summary>The custom prompt template override reaches the renderer: RenderMessage on a
+    /// conversation created with a sentinel-bearing Jinja template shows the sentinel (no decode —
+    /// the render path is the observable).</summary>
+    [SkippableFact]
+    public void CreateConversation_WithPromptTemplate_RenderReflectsIt()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        const string template =
+            "<<CUSTOM-TEMPLATE>>{% for message in messages %}[{{ message['role'] }}]{% endfor %}<<END>>";
+        using var conv = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions
+        { PromptTemplate = template });
+
+        string rendered = conv.RenderMessage("hello");
+        Assert.Contains("<<CUSTOM-TEMPLATE>>", rendered, StringComparison.Ordinal);
     }
 
     /// <summary>A per-send constraint on a conversation created without a constraint provider must be
