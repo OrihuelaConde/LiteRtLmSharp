@@ -23,6 +23,18 @@ are published together.
 - Native build: dropped the `litert_link_capi_so` define (removed upstream at v0.15.0);
   `litert_runtime_link_mode=dynamic` + `resolve_symbols_in_exec=false` remain and mirror upstream's
   own dynamic-linking CI configuration.
+- **KV overflow guard recalibrated to v0.15.0's prefill planning.** The native executor now plans
+  prefill in fixed work groups taken from the model's prefill signatures and rejects any send with
+  fewer free KV entries than the smallest signature (~128 in the current gemma conversions) — a
+  clean native failure where pre-v0.15.0 runtimes corrupted memory. The guard's context-full
+  threshold reserves that minimum (so `IsContextFull` / `ChatFinishReason.Length` signal up to 112
+  tokens earlier than before and a conversation's usable context shrinks accordingly), the
+  message-fit check accounts for the work-group rounding (an input's plan consumes whole signature
+  lengths), and a `MaxNumTokens` below the minimum work group is rejected with a message naming the
+  real problem. The typed `LiteRtContextOverflowException` and same-turn `IsContextFull` contract
+  are unchanged. Note the reserve constant matches the current gemma `.litertlm` conversions; a
+  model with a larger smallest signature can still fail a send natively (with a plain
+  `LiteRtException`) slightly before the typed rejection.
 
 ### Added
 
@@ -50,8 +62,11 @@ are published together.
 - `Microsoft.Extensions.AI` connector: `ChatOptions.FrequencyPenalty` / `PresencePenalty` now map to
   the native penalties, and a JSON-schema `ChatOptions.ResponseFormat` is now **enforced during
   sampling** via LlGuidance — the reply is guaranteed to be a conforming JSON document (previously
-  the schema only influenced the prompt). In stateful mode the schema format must be present on the
-  conversation's first call (or the conversation-options template must set `ConstraintProvider`).
+  the schema only influenced the prompt). Constraints and tools are mutually exclusive (the schema
+  masks the tool-call format), so a request carrying both throws `ArgumentException`; in stateful
+  mode the schema format must be present on the conversation's first call (or the
+  conversation-options template must set `ConstraintProvider`) — a schema-only continuation on a
+  provider-less conversation is rejected in MEAI vocabulary and leaves the conversation resumable.
 - Semantic Kernel connector: `LiteRtPromptExecutionSettings.PresencePenalty` / `FrequencyPenalty`
   (the standard `presence_penalty` / `frequency_penalty` keys, read by SK's adapter).
 - **Multiple live stateful conversations** (`Microsoft.Extensions.AI` connector): the stateful mode's

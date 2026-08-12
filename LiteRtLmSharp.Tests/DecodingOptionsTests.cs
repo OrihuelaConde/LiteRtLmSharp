@@ -137,6 +137,38 @@ public class DecodingOptionsMappingTests
     }
 
     [Fact]
+    public void ToConversationOptions_ToolsPlusSchemaResponseFormat_ThrowsInMeaiVocabulary()
+    {
+        using JsonDocument schema = JsonDocument.Parse("""{"type":"object"}""");
+        var options = new ChatOptions
+        {
+            ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement),
+            Tools = [AIFunctionFactory.Create((string city) => city, name: "get_weather")],
+        };
+
+        // The schema masks every sampled token, so a tool call could never be emitted — reject the
+        // combination up front, naming the two ChatOptions properties (not core binding types).
+        var ex = Assert.Throws<ArgumentException>(() => LiteRtChatMapping.ToConversationOptions([], options));
+        Assert.Contains("ResponseFormat", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Tools", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ToConversationOptions_SchemaDropsToolCallingConstrainedDecoding()
+    {
+        using JsonDocument schema = JsonDocument.Parse("""{"type":"object"}""");
+        // A template recommending tool-calling constrained decoding must not make a schema request
+        // throw the core mutual-exclusion: without tools the flag is meaningless and the schema wins.
+        var template = new LiteRtConversationOptions { EnableConstrainedDecoding = true };
+        LiteRtConversationOptions? conv = LiteRtChatMapping.ToConversationOptions(
+            [], new ChatOptions { ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement) }, template);
+
+        Assert.NotNull(conv);
+        Assert.Equal(LiteRtConstraintProvider.LlGuidance, conv!.ConstraintProvider);
+        Assert.False(conv.EnableConstrainedDecoding);
+    }
+
+    [Fact]
     public void SkSettings_PenaltyProperties_WriteWellKnownKeysAndRoundTrip()
     {
         var s = new LiteRtPromptExecutionSettings { PresencePenalty = 0.4f, FrequencyPenalty = 0.9f };

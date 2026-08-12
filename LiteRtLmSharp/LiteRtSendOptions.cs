@@ -46,25 +46,46 @@ public sealed record LiteRtSendOptions
     /// </summary>
     public LiteRtNoRepeatNgramOptions? NoRepeatNgram { get; init; }
 
+    private readonly int[]? _suppressTokens;
+
     /// <summary>
     /// Token ids banned from this send's decode: every listed id's logit is forced to -inf on each
     /// step. <c>null</c>/empty (default) = none. Find ids with <see cref="LiteRtEngine.Tokenize"/>
-    /// (note most words tokenize differently with/without a leading space). Requires native
-    /// LiteRT-LM v0.15.0+.
+    /// (note most words tokenize differently with/without a leading space). The list is copied at
+    /// initialization (later mutation of the source list has no effect) and ids must be
+    /// non-negative; out-of-vocabulary ids are ignored by the native layer (bounds-checked there).
+    /// Requires native LiteRT-LM v0.15.0+.
     /// </summary>
-    public IReadOnlyList<int>? SuppressTokens { get; init; }
+    /// <exception cref="System.ArgumentOutOfRangeException">Any id is negative.</exception>
+    public IReadOnlyList<int>? SuppressTokens
+    {
+        get => _suppressTokens;
+        init
+        {
+            if (value is null)
+            {
+                _suppressTokens = null;
+                return;
+            }
+            int[] copy = [.. value];
+            foreach (int id in copy)
+                ArgumentOutOfRangeException.ThrowIfNegative(id);
+            _suppressTokens = copy;
+        }
+    }
 
     /// <summary>
     /// Per-send thinking override: <c>true</c>/<c>false</c> turns the model's reasoning mode on/off
     /// for this send only, overriding the conversation-level
-    /// <see cref="LiteRtConversationOptions.EnableThinking"/>. <c>null</c> (default) = inherit.
-    /// Requires native LiteRT-LM v0.15.0+.
+    /// <see cref="LiteRtConversationOptions.EnableThinking"/>. <c>null</c> (default) = inherit the
+    /// conversation-level value. Requires native LiteRT-LM v0.15.0+.
     /// </summary>
     /// <remarks>
-    /// Maps to the per-send thinking config (<c>conversation_optional_args_set_thinking_config</c>),
-    /// which the runtime resolves ahead of the conversation-level config. An explicit
-    /// <c>enable_thinking</c> in the conversation's <see cref="LiteRtConversationOptions.ExtraContext"/>
-    /// still wins over both (the template merge keeps existing keys).
+    /// The native per-send thinking config replaces the conversation-level one wholesale, so the
+    /// binding composes it: an unset field inherits the conversation-level value before the config
+    /// is built (a raw <c>enable_thinking</c> key set only via
+    /// <see cref="LiteRtConversationOptions.ExtraContext"/> is not visible to this composition —
+    /// prefer the typed <see cref="LiteRtConversationOptions.EnableThinking"/>).
     /// </remarks>
     public bool? EnableThinking { get; init; }
 
@@ -73,7 +94,10 @@ public sealed record LiteRtSendOptions
     /// <summary>
     /// Per-send thinking token budget, overriding the conversation-level
     /// <see cref="LiteRtConversationOptions.ThinkingTokenBudget"/> for this send. <c>null</c>
-    /// (default) = inherit; <c>-1</c> = explicitly infinite. Requires native LiteRT-LM v0.15.0+.
+    /// (default) = inherit the conversation-level value; <c>-1</c> = explicitly infinite; <c>0</c>
+    /// is treated by the native layer as "no budget". A budget on a send whose effective
+    /// <see cref="EnableThinking"/> is unset at both levels implies thinking ON for that send.
+    /// Requires native LiteRT-LM v0.15.0+.
     /// </summary>
     /// <exception cref="System.ArgumentOutOfRangeException">The value is negative and not -1.</exception>
     public int? ThinkingTokenBudget
@@ -94,5 +118,11 @@ public sealed record LiteRtSendOptions
     /// throws <see cref="LiteRtException"/>. <c>null</c> (default) = unconstrained. Requires native
     /// LiteRT-LM v0.15.0+.
     /// </summary>
+    /// <remarks>
+    /// The constraint masks <b>every</b> generated token to pattern-conforming continuations, so on a
+    /// conversation with <see cref="LiteRtConversationOptions.Tools"/> a constrained send cannot emit
+    /// a tool call — the model is forced into the pattern instead. Constrain only the sends whose
+    /// reply must match the pattern; run tool rounds unconstrained.
+    /// </remarks>
     public LiteRtConstraint? Constraint { get; init; }
 }

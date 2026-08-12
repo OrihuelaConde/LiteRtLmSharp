@@ -148,6 +148,37 @@ it, but may ignore the instruction for a clearly-unrelated prompt. (Semantic Ker
 > The native [LiteRtLmSharp tools API](chat.md#function-calling) is still available for full control
 > (constrained decoding, custom tool-call parsing); the chat client is the MEAI-idiomatic path on top of it.
 
+## Structured output (`ResponseFormat`)
+
+A JSON-schema `ChatOptions.ResponseFormat` is **enforced during sampling** (native LiteRT-LM v0.15.0+):
+the client arms the LlGuidance constraint provider on the conversation and attaches the schema as a
+per-send constraint, so every token the model emits is masked to schema-conforming continuations — the
+reply is *guaranteed* to be a JSON document matching the schema, not just nudged toward it.
+
+```csharp
+ChatResponse r = await client.GetResponseAsync(messages, new ChatOptions
+{
+    ResponseFormat = ChatResponseFormat.ForJsonSchema(mySchemaJsonElement),
+});
+// r.Text parses as JSON conforming to mySchemaJsonElement — enforced, not prompted.
+```
+
+Rules and caveats:
+
+- **Schema-less `ChatResponseFormat.Json` ("JSON mode") is not enforced** — without a schema there is
+  nothing precise to constrain, so it keeps the previous prompt-driven behavior.
+- **Not combinable with `Tools`.** The schema masks every generated token, which makes emitting a
+  tool call impossible, so a request carrying both throws `ArgumentException`. Run the tool phase
+  first, then request the schema-formatted answer in a separate call.
+- **Stateful mode: the schema must be present on the conversation's first call** (the constraint
+  provider is fixed at creation). A schema arriving only on a continuation throws `ArgumentException`
+  and leaves the conversation resumable; to make every conversation schema-capable, set
+  `LiteRtConversationOptions.ConstraintProvider = LiteRtConstraintProvider.LlGuidance` on the
+  client's conversation-options template.
+- When a schema request is active, the tool-calling `enable_constrained_decoding` knob is dropped for
+  that conversation (the two constrained-decoding modes are mutually exclusive natively, and the
+  tool path is meaningless without tools).
+
 ## Reasoning ("thinking")
 
 Enable the model's reasoning mode with **`LiteRtChatOptions`** — a `ChatOptions` subtype that adds the one knob
@@ -271,7 +302,11 @@ What is fixed once a conversation is created (and therefore **ignored** on a con
 carries a `ConversationId`):
 
 - the sampler, thinking mode, tools, constrained decoding, the system message, and any template values;
-- only the per-send `ChatOptions.MaxOutputTokens` still applies on a continuation (it is resolved per send);
+- options that map to native **per-send** settings still apply on a continuation: `MaxOutputTokens`,
+  `FrequencyPenalty`/`PresencePenalty`, and a JSON-schema `ResponseFormat` (see the structured-output note
+  below — the conversation must have carried a schema on its **first** call, or the client's options template
+  must set `ConstraintProvider`; otherwise the continuation throws `ArgumentException` and the conversation
+  stays resumable);
 - a **system message on a continuation throws** `InvalidOperationException` (the preface cannot be rewritten).
   To change any fixed setting, start a new conversation by omitting `ConversationId`.
 

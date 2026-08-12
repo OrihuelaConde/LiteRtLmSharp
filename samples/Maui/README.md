@@ -33,7 +33,7 @@ Native binaries restored at `runtimes/<rid>/native/` (the samples reference the 
 project so they always exercise the current source; consumers should use the NuGet packages
 instead — see the repo README):
 
-- Android: extract `litertlm-android_arm64.tar.gz` from the `native-v0.14.0` GitHub release into
+- Android: extract `litertlm-android_arm64.tar.gz` from the `native-v0.15.0` GitHub release into
   `runtimes/android-arm64/native/`
 - Windows: `litertlm-windows_x86_64.tar.gz` into `runtimes/win-x64/native/`
 

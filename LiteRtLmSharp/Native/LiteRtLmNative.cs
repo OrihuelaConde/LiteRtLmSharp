@@ -503,20 +503,27 @@ internal static unsafe partial class LiteRtLmNative
     // Read-only views into the chunk passed to the stream callback; the returned strings are owned
     // by the chunk and only valid during the callback invocation.
 
+    // The three getters run on the per-token hot path (once each per streamed chunk) and are pure
+    // field reads on the native side (engine.cc: `return chunk ? chunk->text : nullptr;`) — never
+    // blocking, never calling back into managed — so they qualify for [SuppressGCTransition].
+
     /// <summary>The chunk's text content (a full message-JSON piece), or null for error/metadata-only
     /// chunks (including every is_final chunk, which carries no text).</summary>
     [LibraryImport(Library)]
+    [SuppressGCTransition]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial nint litert_lm_stream_chunk_get_text(nint chunk);
 
     /// <summary>True on the last chunk of the stream (done, max-tokens, cancelled or error).</summary>
     [LibraryImport(Library)]
+    [SuppressGCTransition]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     [return: MarshalAs(UnmanagedType.U1)]
     internal static partial bool litert_lm_stream_chunk_is_final(nint chunk);
 
     /// <summary>The chunk's error message, or null when there is no error.</summary>
     [LibraryImport(Library)]
+    [SuppressGCTransition]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial nint litert_lm_stream_chunk_get_error(nint chunk);
 
@@ -709,10 +716,4 @@ internal enum LiteRtLmConstraintType
     JsonSchema = 2,
 }
 
-/// <summary>Mirrors <c>LiteRtLmConstraintProviderType</c> in engine.h (v0.15.0). LlGuidance is the
-/// only provider the C API exposes (compiled from the llguidance Rust crate — no prebuilt blob).</summary>
-internal enum LiteRtLmConstraintProviderType
-{
-    LlGuidance = 1,
-}
 

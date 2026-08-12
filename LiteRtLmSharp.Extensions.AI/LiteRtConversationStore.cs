@@ -29,6 +29,13 @@ internal sealed class LiteRtConversationStore
         /// <summary>The live native conversation.</summary>
         public LiteRtConversation Conversation { get; }
 
+        /// <summary>Whether the conversation was created with a custom constraint provider (LlGuidance),
+        /// i.e. whether per-send constraints (a JSON-schema <c>ResponseFormat</c>) can be enforced on it.
+        /// Set when the conversation is stored; copied to forks. Lets the client reject a constrained
+        /// continuation on a provider-less conversation BEFORE any native work — in MEAI vocabulary and
+        /// without destroying the (untouched, perfectly resumable) live conversation.</summary>
+        public bool HasConstraintProvider { get; set; }
+
         /// <summary>Records a synthesized call id and the tool name it stands for (idempotent; last write wins).</summary>
         public void RecordToolCall(string callId, string name)
             => (_callIdToName ??= new Dictionary<string, string>(StringComparer.Ordinal))[callId] = name;

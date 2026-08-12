@@ -63,15 +63,27 @@ foreach ($r in $Rid) {
 
     # iOS ships .xcframeworks (not a runtimes/<rid>/native dlopen layout); extract at the rid root.
     $dest = if ($r -eq 'ios-arm64') { Join-Path $repoRoot "runtimes/$r" } else { Join-Path $repoRoot "runtimes/$r/native" }
-    # Start from a clean directory: a version switch would otherwise leave stale binaries from the
-    # previous native set behind (found the hard way on the v0.14.0 -> v0.15.0 repin, where the
-    # since-dropped prefixless twin DLLs survived the restore).
-    Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force $dest | Out-Null
-    tar -xzf $file -C $dest
-    Get-ChildItem $dest -Filter '._*' | Remove-Item -Force   # macOS AppleDouble metadata
+
+    # Extract to a STAGING dir first, then swap into place. Two failure modes this avoids (both
+    # found in review): a failed tar after an in-place delete would leave an EMPTY native dir with
+    # exit 0, and a delete that silently fails on a file locked by testhost/VS would leave stale
+    # binaries from the previous native set mixed with the new (the v0.14.0 -> v0.15.0 repin hit
+    # exactly that with the since-dropped prefixless twin DLLs). -LiteralPath everywhere so a repo
+    # path containing PowerShell wildcard characters cannot turn the delete into a silent no-op.
+    $staging = Join-Path $tmp "extract-$r"
+    if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+    New-Item -ItemType Directory -Force $staging | Out-Null
+    tar -xzf $file -C $staging
+    if ($LASTEXITCODE -ne 0) { throw "tar failed for $asset (exit $LASTEXITCODE)" }
+    Get-ChildItem $staging -Filter '._*' | Remove-Item -Force   # macOS AppleDouble metadata
+
+    # Swap: clean the destination (NO SilentlyContinue — a locked file must fail loudly, not leave
+    # a mixed tree; close the process holding runtimes/<rid> and re-run), then move the staging in.
+    if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+    New-Item -ItemType Directory -Force (Split-Path -Parent $dest) | Out-Null
+    Move-Item -LiteralPath $staging -Destination $dest
     if ($r -eq 'ios-arm64') {
-        Get-ChildItem $dest -Filter '*.dylib' -File | Remove-Item -Force   # the tar also carries raw dylibs; keep only xcframeworks/
+        Get-ChildItem -LiteralPath $dest -Filter '*.dylib' -File | Remove-Item -Force   # the tar also carries raw dylibs; keep only xcframeworks/
         Write-Host "  -> restored runtimes/$r/xcframeworks"
     }
     else {

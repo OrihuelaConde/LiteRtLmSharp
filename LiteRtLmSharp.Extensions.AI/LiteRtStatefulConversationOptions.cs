@@ -30,9 +30,13 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// created and cannot change on a continuation: the sampler, thinking mode, tools, constrained decoding, the
 /// system message, and any template values are all locked in on the first (no-<see cref="ChatOptions.ConversationId"/>)
 /// call. On a continuation request (with a <see cref="ChatOptions.ConversationId"/>) those per-request knobs
-/// are <b>ignored</b>; only per-send options that the native runtime resolves per send — currently
-/// <see cref="ChatOptions.MaxOutputTokens"/> — still apply. A system message on a continuation throws (the
-/// preface cannot be rewritten). To change any fixed setting, start a new conversation (omit
+/// are <b>ignored</b>; only options that map to native per-send settings still apply —
+/// <see cref="ChatOptions.MaxOutputTokens"/>, <see cref="ChatOptions.FrequencyPenalty"/> /
+/// <see cref="ChatOptions.PresencePenalty"/>, and a JSON-schema <see cref="ChatOptions.ResponseFormat"/>
+/// (which additionally requires the conversation to have carried a schema on its <b>first</b> call, or the
+/// client's options template to set <c>ConstraintProvider</c> — otherwise the continuation is rejected with
+/// <see cref="ArgumentException"/> and the conversation stays resumable). A system message on a continuation
+/// throws (the preface cannot be rewritten). To change any fixed setting, start a new conversation (omit
 /// <see cref="ChatOptions.ConversationId"/>).
 /// </para>
 /// <para>
@@ -75,6 +79,12 @@ public sealed record LiteRtStatefulConversationOptions
     /// carrying that conversation's id throws <see cref="ArgumentException"/>. Must be at least 1. Defaults
     /// to 8.
     /// </summary>
+    /// <remarks>
+    /// <b>Each live conversation holds its own native KV cache</b>, sized against the engine's
+    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> — the cap is a memory ceiling, not just a count. On
+    /// memory-constrained (mobile) devices size it deliberately: 8 conversations on a 4096-token context
+    /// hold up to 8 full KV caches resident. Lower it (e.g. 1-2) where memory is tighter than concurrency.
+    /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">The value is less than 1.</exception>
     public int MaxLiveConversations
     {

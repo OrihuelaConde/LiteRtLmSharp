@@ -29,15 +29,39 @@ public sealed record LiteRtRepetitionPenaltyOptions
         }
     }
 
+    private readonly float _presencePenalty;
+
     /// <summary>Subtractive presence penalty (OpenAI style): subtracted once from a token's logit if
     /// the token appeared anywhere in the window. Positive discourages repetition, negative rewards
     /// it. Default 0 = off.</summary>
-    public float PresencePenalty { get; init; }
+    /// <exception cref="System.ArgumentOutOfRangeException">The value is NaN or infinite.</exception>
+    public float PresencePenalty
+    {
+        get => _presencePenalty;
+        init
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value))
+                throw new ArgumentOutOfRangeException(nameof(value), value, "PresencePenalty must be a finite number.");
+            _presencePenalty = value;
+        }
+    }
+
+    private readonly float _frequencyPenalty;
 
     /// <summary>Subtractive frequency penalty (OpenAI style): subtracted from a token's logit scaled
     /// by how many times the token appeared in the window. Positive discourages repetition, negative
     /// rewards it. Default 0 = off.</summary>
-    public float FrequencyPenalty { get; init; }
+    /// <exception cref="System.ArgumentOutOfRangeException">The value is NaN or infinite.</exception>
+    public float FrequencyPenalty
+    {
+        get => _frequencyPenalty;
+        init
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value))
+                throw new ArgumentOutOfRangeException(nameof(value), value, "FrequencyPenalty must be a finite number.");
+            _frequencyPenalty = value;
+        }
+    }
 
     private readonly int _windowSize;
 
@@ -119,8 +143,24 @@ public enum LiteRtConstraintType
 /// <remarks>Maps to the C API <c>litert_lm_conversation_optional_args_set_constraint</c>.</remarks>
 public sealed record LiteRtConstraint
 {
-    /// <summary>How to interpret <see cref="Pattern"/>.</summary>
-    public required LiteRtConstraintType Type { get; init; }
+    private readonly LiteRtConstraintType _type;
+
+    /// <summary>How to interpret <see cref="Pattern"/>. Must be a defined member — an out-of-range
+    /// value (including the unset <c>default</c>) is rejected here rather than passed to the native
+    /// layer, whose constraint compiler does not police the enum (an undefined value reaches
+    /// undefined behavior in the LlGuidance bridge).</summary>
+    /// <exception cref="System.ArgumentOutOfRangeException">The value is not
+    /// <see cref="LiteRtConstraintType.Regex"/> or <see cref="LiteRtConstraintType.JsonSchema"/>.</exception>
+    public required LiteRtConstraintType Type
+    {
+        get => _type;
+        init
+        {
+            if (value is not (LiteRtConstraintType.Regex or LiteRtConstraintType.JsonSchema))
+                throw new ArgumentOutOfRangeException(nameof(value), value, "Type must be Regex or JsonSchema.");
+            _type = value;
+        }
+    }
 
     private readonly string _pattern = null!;
 

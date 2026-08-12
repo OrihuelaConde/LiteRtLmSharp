@@ -67,8 +67,36 @@ public class ContextOverflowGuardTests
 
     [Fact]
     public void DecodeBudget_OfExactlyOneToken_IsAllowed()
+        // input 128 plans as exactly one full work group; remaining = input + margin + 1 → budget 1.
         => Assert.Equal(1, LiteRtContextGuard.DecodeBudget(
-            tokenCount: 0, maxNumTokens: 100 + LiteRtContextGuard.SafetyMargin + 1, inputTokens: 100));
+            tokenCount: 4096 - (128 + LiteRtContextGuard.SafetyMargin + 1), maxNumTokens: 4096, inputTokens: 128));
+
+    /// <summary>The v0.15.0 executor plans prefill in fixed work groups: a partial chunk still debits a
+    /// whole signature length. An input above one work group with fewer than two work groups remaining
+    /// passes the flat token count but not the plan — the guard must reject it (typed) before the native
+    /// layer rejects it (raw). The exact live repro: 180 input tokens against 200 remaining entries.</summary>
+    [Theory]
+    [InlineData(4096 - 200, 4096, 180)]  // plan = 2×128 = 256 > 200 remaining, flat budget would pass (4 left)
+    [InlineData(4096 - 255, 4096, 130)]  // plan = 256 > 255 remaining
+    public void DecodeBudget_PlanExceedsRemainingWorkGroups_Throws(int used, int limit, int input)
+        => Assert.Throws<LiteRtContextOverflowException>(
+            () => LiteRtContextGuard.DecodeBudget(used, limit, input));
+
+    [Fact]
+    public void DecodeBudget_PlanFitsExactly_IsAllowed()
+        // 130 input plans as 256; 300 remaining holds it, and the flat budget stays positive.
+        => Assert.Equal(300 - 130 - LiteRtContextGuard.SafetyMargin,
+            LiteRtContextGuard.DecodeBudget(tokenCount: 4096 - 300, maxNumTokens: 4096, inputTokens: 130));
+
+    /// <summary>A limit below the minimum prefill work group can never accept any send: the rejection
+    /// must say so instead of the nonsensical "holds 0 tokens against MaxNumTokens = N" phrasing.</summary>
+    [Fact]
+    public void ThrowIfContextFull_LimitBelowMinimumWorkGroup_NamesTheRealProblem()
+    {
+        var ex = Assert.Throws<LiteRtContextOverflowException>(
+            () => LiteRtContextGuard.ThrowIfContextFull(tokenCount: 0, maxNumTokens: 100));
+        Assert.Contains("minimum prefill work group", ex.Message, StringComparison.Ordinal);
+    }
 
     /// <summary>The message fits the cache but leaves no room to decode → reject before native code.
     /// This is the original overflow shape: a fat tool result landing on a nearly-full tool-loop conversation.</summary>
@@ -85,7 +113,7 @@ public class ContextOverflowGuardTests
     [Fact]
     public void DecodeBudget_OfZero_Throws()
         => Assert.Throws<LiteRtContextOverflowException>(() => LiteRtContextGuard.DecodeBudget(
-            tokenCount: 0, maxNumTokens: 100 + LiteRtContextGuard.SafetyMargin, inputTokens: 100));
+            tokenCount: 4096 - (128 + LiteRtContextGuard.SafetyMargin), maxNumTokens: 4096, inputTokens: 128));
 
     [Theory]
     [InlineData(80, 0, 80)]     // no caller cap → the budget becomes the per-send cap

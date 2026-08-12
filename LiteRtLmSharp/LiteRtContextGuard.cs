@@ -52,7 +52,19 @@ internal static class LiteRtContextGuard
     /// <summary>Throws the context-full rejection unconditionally — for callers that already know the
     /// conversation is full (e.g. a latched ceiling detection) regardless of the threshold.</summary>
     internal static void ThrowContextFull(int tokenCount, int maxNumTokens)
-        => throw new LiteRtContextOverflowException(
+    {
+        // Degenerate configuration: a limit below the minimum prefill work group makes EVERY send
+        // impossible — a fresh conversation is "full" at zero tokens. The generic message below
+        // ("its KV cache holds 0 tokens against MaxNumTokens = 100") would read as nonsense; name
+        // the real problem instead.
+        if (maxNumTokens < MinPrefillReserve)
+            throw new LiteRtContextOverflowException(
+                $"MaxNumTokens = {maxNumTokens} is below the native executor's minimum prefill work group " +
+                $"(~{MinPrefillReserve} tokens for the current model conversions): no message can ever be " +
+                "prefilled into a context this small, so every send would be rejected. Reload the engine " +
+                $"with MaxNumTokens >= {MinPrefillReserve} (in practice, comfortably larger).",
+                tokenCount, maxNumTokens);
+        throw new LiteRtContextOverflowException(
             $"The conversation's context is full: its KV cache holds {tokenCount} tokens against " +
             $"MaxNumTokens = {maxNumTokens}, and the native executor plans prefill in fixed work groups " +
             $"(the guard treats the last {MinPrefillReserve} tokens as unusable for a new send — fewer free " +
@@ -63,23 +75,37 @@ internal static class LiteRtContextGuard
             "LiteRtConversationOptions.History if the thread must continue — or reload the engine with a " +
             "larger LiteRtEngineOptions.MaxNumTokens.",
             tokenCount, maxNumTokens);
+    }
 
     /// <summary>
     /// The decode budget (max output tokens) that keeps a send inside the KV cache, after the message's
     /// measured prefill cost and the <see cref="SafetyMargin"/>. Throws when the message itself does not
-    /// fit (no room left to decode even one token).
+    /// fit: either its prefill PLAN does not fit the remaining entries (the v0.15.0+ executor plans
+    /// prefill in fixed work groups from the model's prefill signatures, so a plan consumes the input
+    /// rounded UP to whole signature lengths — an input of 180 tokens against 200 remaining entries is
+    /// rejected natively because it plans as two 128-entry groups; modeled here as
+    /// ceil(input / <see cref="MinPrefillReserve"/>) × <see cref="MinPrefillReserve"/>), or no room is
+    /// left to decode even one token.
     /// </summary>
     internal static int DecodeBudget(int tokenCount, int maxNumTokens, int inputTokens)
     {
+        // Work-group granularity: the native planner debits FULL signature lengths per chunk
+        // (litert_compiled_model_executor_utils.cc GetOptimizedPrefillWorkGroups — a partial chunk
+        // still consumes its whole cur_seq_len, and an uncoverable tail is a hard error). Without
+        // this check a send in the band remaining ∈ (reserve, 2×reserve) with input > reserve
+        // passes the flat budget below but is rejected natively with a raw, untyped error.
+        int remaining = maxNumTokens - tokenCount;
+        long plannedEntries = (long)(inputTokens + MinPrefillReserve - 1) / MinPrefillReserve * MinPrefillReserve;
         int budget = maxNumTokens - tokenCount - inputTokens - SafetyMargin;
-        if (budget < 1)
+        if (plannedEntries > remaining || budget < 1)
             throw new LiteRtContextOverflowException(
                 $"This message does not fit the conversation's remaining context: the KV cache holds " +
                 $"{tokenCount} of MaxNumTokens = {maxNumTokens} tokens and the message's templated prefill " +
-                $"measures {inputTokens} tokens, leaving no room to decode a reply. Sending it would " +
-                "overflow the cache and corrupt the native runtime. Send a shorter message, dispose this " +
-                "conversation and start a fresh one (restore a trimmed LiteRtConversationOptions.History " +
-                "if needed), or reload the engine with a larger LiteRtEngineOptions.MaxNumTokens.",
+                $"measures {inputTokens} tokens (planned as ~{plannedEntries} entries — the native executor " +
+                $"prefills in fixed work groups of the model's signature lengths), leaving no room to " +
+                "decode a reply. Send a shorter message, dispose this conversation and start a fresh one " +
+                "(restore a trimmed LiteRtConversationOptions.History if needed), or reload the engine " +
+                "with a larger LiteRtEngineOptions.MaxNumTokens.",
                 tokenCount, maxNumTokens);
         return budget;
     }

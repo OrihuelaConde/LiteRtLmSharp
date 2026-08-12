@@ -33,6 +33,13 @@ public sealed class LiteRtConversation : IDisposable
     // Whether the conversation was created with a custom constraint provider (LlGuidance): the gate
     // for per-send LiteRtSendOptions.Constraint. Inherited by Clone().
     private readonly bool _hasConstraintProvider;
+    // The conversation-level thinking settings, cached so per-send overrides can COMPOSE with them:
+    // the native per-send thinking config replaces the conversation-level one wholesale
+    // (conversation.cc ResolveThinkingConfig returns the optional_args config with BOTH fields), so
+    // "null = inherit" on LiteRtSendOptions.EnableThinking/ThinkingTokenBudget is implemented here by
+    // filling the unset field from these before building the per-send config. Inherited by Clone().
+    private readonly bool? _thinkingEnable;
+    private readonly int? _thinkingBudget;
     private bool _disposed;
 
     /// <summary>Channel name passed to <c>set_stream_tool_calls</c>. Pinned explicitly (rather than
@@ -43,7 +50,8 @@ public sealed class LiteRtConversation : IDisposable
     private LiteRtConversation(
         ConversationHandle conversation, ConversationConfigHandle? config, SessionConfigHandle? sessionConfig,
         LiteRtEngine engineOwner, int visualTokenBudget = 0, int maxOutputTokens = 0,
-        string? toolCallStreamChannel = null, bool hasConstraintProvider = false)
+        string? toolCallStreamChannel = null, bool hasConstraintProvider = false,
+        bool? thinkingEnable = null, int? thinkingBudget = null)
     {
         _conversation = conversation;
         _config = config;
@@ -53,6 +61,8 @@ public sealed class LiteRtConversation : IDisposable
         _maxOutputTokens = maxOutputTokens;
         _toolCallStreamChannel = toolCallStreamChannel;
         _hasConstraintProvider = hasConstraintProvider;
+        _thinkingEnable = thinkingEnable;
+        _thinkingBudget = thinkingBudget;
     }
 
     internal static LiteRtConversation Create(
@@ -255,7 +265,8 @@ public sealed class LiteRtConversation : IDisposable
                 new ConversationHandle(convPtr), config, sessionConfig, engine,
                 options?.VisualTokenBudget ?? 0, options?.MaxOutputTokens ?? 0,
                 options?.StreamToolCalls == true ? ToolCallStreamChannelName : null,
-                options?.ConstraintProvider is not null);
+                options?.ConstraintProvider is not null,
+                options?.EnableThinking, options?.ThinkingTokenBudget);
         }
         catch
         {
@@ -286,7 +297,10 @@ public sealed class LiteRtConversation : IDisposable
     /// Whether this conversation's context is full: a completed send was detected to have run its reply
     /// into the KV overflow guard's ceiling (exact detection from the guard's own counts), or
     /// <see cref="TokenCount"/> has reached that ceiling (the engine's
-    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> minus a small reserved margin). When <c>true</c>,
+    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> minus a reserve of ~128 tokens — the native
+    /// executor prefills in fixed work groups of the model's prefill-signature lengths and rejects any
+    /// send with fewer free entries than the smallest signature, so those trailing entries are
+    /// unusable for a new send by construction). When <c>true</c>,
     /// the reply that got here was likely truncated by the guard's decode clamp (mid-sentence text, or a
     /// stream that just stopped), and the <b>next</b> send is guaranteed to throw
     /// <see cref="LiteRtContextOverflowException"/> — check this right after a send (or after a stream
@@ -371,11 +385,14 @@ public sealed class LiteRtConversation : IDisposable
         // config handles (those are only read at create time). Each conversation frees its own native
         // object on Dispose, so the clone outlives a disposed parent as long as the engine is alive.
         // It inherits the parent's engine (context limit + tokenizer for the overflow guard), visual
-        // token budget, output cap and tool-call stream channel so attachments, the guard and
-        // streaming behave the same on the branch (the native clone copies the config, channel included).
+        // token budget, output cap, tool-call stream channel, constraint-provider flag and thinking
+        // settings, so attachments, the guard, streaming, per-send constraints and per-send thinking
+        // overrides behave the same on the branch (the native clone copies the whole config —
+        // including the constraint provider, conversation.cc CloneInternal recreates it).
         return new LiteRtConversation(
             new ConversationHandle(clonedPtr), config: null, sessionConfig: null, _engineOwner,
-            _visualTokenBudget, _maxOutputTokens, _toolCallStreamChannel);
+            _visualTokenBudget, _maxOutputTokens, _toolCallStreamChannel, _hasConstraintProvider,
+            _thinkingEnable, _thinkingBudget);
     }
 
     /// <summary>Sends a user message and returns the reply (blocking). The answer text is
@@ -594,6 +611,10 @@ public sealed class LiteRtConversation : IDisposable
     /// when the KV cache grew by at least the measured prefill plus the imposed decode budget (less the
     /// safety margin, absorbing measurement drift) — the reply ran to the ceiling rather than ending on
     /// its own. Never throws (runs on success paths).</summary>
+    // NOTE (v0.15.0 recalibration): with the context-full threshold now at MinPrefillReserve (128),
+    // a clamped send always lands inside the full band, so the threshold predicate alone already
+    // reports IsContextFull — this probe's latch can no longer be the deciding term. It is kept as
+    // belt-and-suspenders (exact detection independent of the constant) at negligible cost.
     private void CompleteCeilingProbe()
     {
         if (_ceilingProbe is not { } probe)
@@ -868,10 +889,15 @@ public sealed class LiteRtConversation : IDisposable
 
             if (options is { EnableThinking: not null } or { ThinkingTokenBudget: not null })
             {
-                // Same enable/budget composition as the conversation level: an explicit per-send
-                // EnableThinking wins; a budget alone implies thinking on.
+                // COMPOSE with the conversation level rather than replace it: the native per-send
+                // thinking config wins wholesale (conversation.cc ResolveThinkingConfig returns it
+                // with BOTH fields, never consulting the conversation config), so "null = inherit"
+                // is implemented here by filling each unset field from the cached conversation-level
+                // value. Only when neither level sets a field do the fallbacks apply (enable: true —
+                // a budget alone implies thinking on; budget: -1 = infinite).
                 ApplyThinkingConfig(
-                    options!.EnableThinking ?? true, options.ThinkingTokenBudget ?? -1,
+                    options!.EnableThinking ?? _thinkingEnable ?? true,
+                    options.ThinkingTokenBudget ?? _thinkingBudget ?? -1,
                     cfg => LiteRtLmNative.litert_lm_conversation_optional_args_set_thinking_config(p, cfg));
             }
 
@@ -1024,29 +1050,46 @@ public sealed class LiteRtConversation : IDisposable
         if (gcHandle.Target is not StreamState state)
             return;
 
-        nint errorMsg = chunk != nint.Zero ? LiteRtLmNative.litert_lm_stream_chunk_get_error(chunk) : nint.Zero;
-        nint text = chunk != nint.Zero ? LiteRtLmNative.litert_lm_stream_chunk_get_text(chunk) : nint.Zero;
-        bool isFinal = chunk == nint.Zero || LiteRtLmNative.litert_lm_stream_chunk_is_final(chunk);
-
-        if (errorMsg != nint.Zero)
+        // The whole body is guarded: an exception escaping an [UnmanagedCallersOnly] frame
+        // rude-terminates the process. Unlike the v0.14.0 callback (whose payload arrived as plain
+        // parameters), this body P/Invokes the chunk getters — against a mismatched older native
+        // that lacks them, that's an EntryPointNotFoundException on the native decode thread, which
+        // must surface as a faulted stream (diagnosable, teardown-safe), not a fail-fast.
+        try
         {
-            string msg = Marshal.PtrToStringUTF8(errorMsg) ?? "unknown error";
-            // The streaming path DOES surface the native string; when it is the unconfigured-multimodal
-            // failure ("Vision/Audio executor should not be null"), append the same setup guidance.
-            if (msg.Contains("executor should not be null", StringComparison.OrdinalIgnoreCase))
-                msg += " " + MultimodalSendHint;
-            state.Channel.Writer.TryComplete(new LiteRtException(msg));
-        }
-        else if (text != nint.Zero)
-        {
-            string? piece = Marshal.PtrToStringUTF8(text);
-            if (!string.IsNullOrEmpty(piece))
-                foreach (LiteRtStreamChunk c in SplitMessageChunk(piece, state.ToolCallChannel))
-                    state.Channel.Writer.TryWrite(c);
-        }
+            nint errorMsg = chunk != nint.Zero ? LiteRtLmNative.litert_lm_stream_chunk_get_error(chunk) : nint.Zero;
+            nint text = chunk != nint.Zero ? LiteRtLmNative.litert_lm_stream_chunk_get_text(chunk) : nint.Zero;
+            bool isFinal = chunk == nint.Zero || LiteRtLmNative.litert_lm_stream_chunk_is_final(chunk);
 
-        if (isFinal)
-            state.Channel.Writer.TryComplete();
+            if (errorMsg != nint.Zero)
+            {
+                string msg = Marshal.PtrToStringUTF8(errorMsg) ?? "unknown error";
+                // The streaming path DOES surface the native string; when it is the unconfigured-multimodal
+                // failure ("Vision/Audio executor should not be null"), append the same setup guidance.
+                if (msg.Contains("executor should not be null", StringComparison.OrdinalIgnoreCase))
+                    msg += " " + MultimodalSendHint;
+                state.Channel.Writer.TryComplete(new LiteRtException(msg));
+            }
+            else if (text != nint.Zero)
+            {
+                string? piece = Marshal.PtrToStringUTF8(text);
+                if (!string.IsNullOrEmpty(piece))
+                    foreach (LiteRtStreamChunk c in SplitMessageChunk(piece, state.ToolCallChannel))
+                        state.Channel.Writer.TryWrite(c);
+            }
+
+            if (isFinal)
+                state.Channel.Writer.TryComplete();
+        }
+        catch (Exception ex)
+        {
+            // Fault the channel so the consumer gets the real exception and the teardown's drain
+            // still terminates. TryComplete is first-wins, so an already-completed channel ignores it.
+            state.Channel.Writer.TryComplete(ex is LiteRtException ? ex : new LiteRtException(
+                $"The streaming callback failed reading the native stream chunk: {ex.Message} " +
+                "(a managed/native version mismatch is the most likely cause — the v0.15.0+ managed " +
+                "binding requires the same-version native library).", ex));
+        }
         // NOTE: do NOT free the GCHandle here — the async iterator's finally owns its lifetime and
         // only frees it once the channel is fully completed, so this callback can never run against
         // a freed handle.

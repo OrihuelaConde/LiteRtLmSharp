@@ -81,6 +81,14 @@ jobs:
           cp /tmp/LiteRT-LM/bazel-bin/c/libLiteRtLm.dylib artifacts/libLiteRtLm.so
           cp /tmp/LiteRT-LM/prebuilt/linux_x86_64/*.so artifacts/ 2>/dev/null || true
           ls -lh artifacts/
+          # Assert the two properties a bad build/collect would silently break (both bitten before):
+          # dynamic link mode (a static embed produces two runtimes in-process and GPU crashes), and
+          # the presence of the prebuilt companions (a collect regression once shipped a bare engine).
+          readelf -d artifacts/libLiteRtLm.so | grep -q 'NEEDED.*libLiteRt\.so' \
+            || { echo "::error::libLiteRtLm.so does not DT_NEED libLiteRt.so — static embed?"; exit 1; }
+          for f in libLiteRt.so libLiteRtTopKWebGpuSampler.so libLiteRtWebGpuAccelerator.so libwebgpu_dawn.so libGemmaModelConstraintProvider.so; do
+            [ -f "artifacts/$f" ] || { echo "::error::prebuilt companion missing from artifacts: $f"; exit 1; }
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -165,6 +173,11 @@ jobs:
             Copy-Item $src.FullName "artifacts\$dxc" -Force
           }
           Get-ChildItem artifacts\ | Select-Object Name, Length
+          # Assert every expected companion is present — the twin-filter cleanup once dropped the
+          # whole prebuilt copy, shipping a package that could not even load on CPU.
+          foreach ($required in 'LiteRtLm.dll','libLiteRt.dll','libLiteRtTopKWebGpuSampler.dll','libLiteRtWebGpuAccelerator.dll','libwebgpu_dawn.dll','libGemmaModelConstraintProvider.dll','dxil.dll','dxcompiler.dll') {
+            if (-not (Test-Path "artifacts\$required")) { throw "expected artifact missing: $required" }
+          }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -308,6 +321,13 @@ jobs:
           cp /tmp/LiteRT-LM/bazel-bin/c/libLiteRtLm.dylib artifacts/libLiteRtLm.dylib
           cp /tmp/LiteRT-LM/prebuilt/macos_arm64/*.dylib artifacts/
           ls -lh artifacts/
+          # Assert dynamic link mode (the Metal sampler loads @rpath/libLiteRt.dylib by install name;
+          # a static embed would give it a second runtime) and the full companion set.
+          otool -L artifacts/libLiteRtLm.dylib | grep -q 'libLiteRt\.dylib' \
+            || { echo "::error::libLiteRtLm.dylib does not link libLiteRt.dylib — static embed?"; exit 1; }
+          for f in libLiteRt.dylib libLiteRtMetalAccelerator.dylib libLiteRtTopKMetalSampler.dylib libLiteRtTopKWebGpuSampler.dylib libLiteRtWebGpuAccelerator.dylib libwebgpu_dawn.dylib libGemmaModelConstraintProvider.dylib; do
+            [ -f "artifacts/$f" ] || { echo "::error::prebuilt companion missing from artifacts: $f"; exit 1; }
+          done
           echo "--- exported litert_lm_* symbols ---"
           nm -gU artifacts/libLiteRtLm.dylib | grep -c litert_lm_ || true
           echo "--- load commands (expect @rpath/libLiteRt.dylib deps) ---"

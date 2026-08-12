@@ -335,9 +335,28 @@ internal static class LiteRtChatMapping
         // per-send constraint (ToSendOptions) has something to enforce it. The template can also
         // pre-arm the provider — useful in stateful mode, where the conversation is created on the
         // first call and a later call cannot add the provider retroactively.
+        bool hasSchemaFormat = ToConstraint(options) is not null;
         LiteRtConstraintProvider? constraintProvider =
-            (ToConstraint(options) is not null ? LiteRtConstraintProvider.LlGuidance : (LiteRtConstraintProvider?)null)
+            (hasSchemaFormat ? LiteRtConstraintProvider.LlGuidance : (LiteRtConstraintProvider?)null)
             ?? template?.ConstraintProvider;
+
+        if (hasSchemaFormat)
+        {
+            // Schema-constrained sampling masks EVERY generated token to schema-conforming
+            // continuations, so the model cannot produce the tool-call format — combining the two
+            // silently breaks tool calling. Reject it in MEAI vocabulary rather than let it
+            // misbehave (unlike OpenAI-style providers, this runtime cannot scope the schema to the
+            // final answer only).
+            if (tools is { Count: > 0 })
+                throw new ArgumentException(
+                    "A JSON-schema ChatOptions.ResponseFormat cannot be combined with ChatOptions.Tools on " +
+                    "this provider: the schema is enforced during sampling for the whole reply, which makes " +
+                    "emitting a tool call impossible. Run the tool phase without the ResponseFormat, then " +
+                    "request the schema-formatted answer in a separate call.", nameof(options));
+            // Tool-calling constrained decoding is meaningless without tools and mutually exclusive
+            // with the LlGuidance provider at the native level — the schema request wins.
+            constrained = false;
+        }
 
         if (history.Count == 0 && sampler is null && enableThinking is null && tools is null && !constrained
             && systemMessage is null && maxOutputTokens == 0 && loraPath is null && audioLoraPath is null

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using LiteRtLmSharp.Extensions.AI;
 using Microsoft.Extensions.AI;
 using Xunit;
@@ -183,6 +184,85 @@ public sealed class ExtensionsAiStatefulModelTests
         var resumeA = new ChatOptions { MaxOutputTokens = 16, ConversationId = a.ConversationId };
         ChatResponse aStillLive = await roomy.GetResponseAsync([new ChatMessage(ChatRole.User, "ok?")], resumeA);
         Assert.Equal(a.ConversationId, aStillLive.ConversationId);
+    }
+
+    /// <summary>A JSON-schema ResponseFormat arriving only on a CONTINUATION of a conversation created
+    /// without one must be rejected in MEAI vocabulary (ArgumentException naming ResponseFormat) and —
+    /// critically — must NOT destroy the live conversation: nothing native ran, so the id stays
+    /// resumable. (The regression this pins: the client's eviction catch-all used to dispose the
+    /// healthy conversation on this purely-managed validation failure.)</summary>
+    [SkippableFact]
+    public async Task Stateful_SchemaOnProviderlessContinuation_ThrowsAndConversationSurvives()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        var options = new ChatOptions { MaxOutputTokens = 16 };
+
+        ChatResponse first = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember that my favorite color is teal. Acknowledge briefly.")], options);
+        string id = first.ConversationId!;
+
+        using JsonDocument schema = JsonDocument.Parse("""{"type":"object","required":["color"]}""");
+        var withSchema = new ChatOptions
+        {
+            MaxOutputTokens = 32,
+            ConversationId = id,
+            ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement),
+        };
+        ArgumentException ex = await Assert.ThrowsAsync<ArgumentException>(
+            () => client.GetResponseAsync([new ChatMessage(ChatRole.User, "What is my color? As JSON.")], withSchema));
+        Assert.Contains("ResponseFormat", ex.Message, StringComparison.Ordinal);
+
+        // The conversation must still be live and hold its state.
+        var resume = new ChatOptions { MaxOutputTokens = 32, ConversationId = id };
+        ChatResponse after = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is my favorite color? Answer with just the color.")], resume);
+        Assert.Contains("teal", after.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>A fork of a schema-armed conversation must keep enforcing schemas on the branch: the
+    /// native clone recreates the constraint provider, and the managed layer must carry the flag
+    /// (both the core Clone() and the store entry the client tracks). Pins the review finding where
+    /// the flag was dropped and every constrained send on a branch threw.</summary>
+    [SkippableFact]
+    public async Task Fork_OfSchemaArmedConversation_EnforcesSchemaOnBranch()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        using JsonDocument schema = JsonDocument.Parse(
+            """{"type":"object","properties":{"color":{"type":"string"}},"required":["color"],"additionalProperties":false}""");
+
+        // First call carries the schema → the provider is armed on the conversation.
+        var schemaOptions = new ChatOptions
+        {
+            MaxOutputTokens = 48,
+            ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement),
+        };
+        ChatResponse seeded = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "My favorite color is teal. Reply as JSON with the color.")], schemaOptions);
+        using (JsonDocument parsed = JsonDocument.Parse(seeded.Text.Trim()))
+            Assert.True(parsed.RootElement.TryGetProperty("color", out _));
+
+        var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
+        string branchId = await branching.ForkAsync(seeded.ConversationId!);
+
+        // The branch must accept and enforce a schema-constrained continuation.
+        var branchOptions = new ChatOptions
+        {
+            MaxOutputTokens = 48,
+            ConversationId = branchId,
+            ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement),
+        };
+        ChatResponse branchReply = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Repeat my color as JSON.")], branchOptions);
+        using JsonDocument branchParsed = JsonDocument.Parse(branchReply.Text.Trim());
+        Assert.True(branchParsed.RootElement.TryGetProperty("color", out _));
     }
 
     // ─────────────────────── Forking + multi-conversation ───────────────────────
