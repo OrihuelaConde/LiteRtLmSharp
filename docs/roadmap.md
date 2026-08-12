@@ -132,8 +132,14 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
 
 ## Actionable next steps (suggested order)
 
--2. **v0.15.0 REPIN CYCLE — staged on branch `repin-v0.15.0` / PR #5, 2026-08-09, pending
-   maintainer review.** Native `native-v0.15.0` release published (defines trimmed to
+-2. ✅ **v0.15.0 REPIN CYCLE — MERGED to master 2026-08-12 (PR #5, 13 commits; closed the
+   upstream-watch issue #4).** Hardened pre-merge by a 6-lens adversarial review (17 findings
+   applied — see the PR) and full real-model coverage of every new feature across core, MEAI and
+   SK (suite 257/0 local CPU+GPU; CI model legs green on all 3 OSes). **Publication decision
+   (maintainer, 2026-08-12): SKIP the NuGet release at v0.15.0** — upstream tagged v0.16.0 on
+   2026-08-11 (one week after v0.15.0, shipping the first official C API prebuilts), so 1.2.0
+   ships with the v0.16.0 cycle instead and this cycle's CHANGELOG section rides along.
+   Original summary: native `native-v0.15.0` release published (defines trimmed to
    `litert_runtime_link_mode=dynamic` + `resolve_symbols_in_exec=false`; win-x64 collect step's
    lost companion copy restored); all 31 new C-API functions bound (115/140); the v0.15.0
    stream-callback ABI change absorbed internally; multi-conversation stateful mode + forking
