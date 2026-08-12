@@ -142,7 +142,8 @@ conversations** (MEAI `ConversationId`) are supported — see the
   engine, then `LiteRtEngine.Load` again — same pattern as Google's Edge Gallery.
 - **`MaxNumTokens`** is the total context window (prompt + response, across turns). Use >= 1024;
   too small can make blocking generation return nothing.
-- **Conversations are not thread-safe** — serialize calls per conversation.
+- **Conversations are not thread-safe** — serialize sends per engine (the Microsoft.Extensions.AI
+  client does this for you).
 - **win-x64** needs the Microsoft Visual C++ Redistributable (the native DLLs import `VCRUNTIME140`).
 - **Android GPU needs manifest declarations.** Android 12+ only grants access to vendor native
   libraries declared via `<uses-native-library>`; without `libOpenCL.so` the engine silently picks a

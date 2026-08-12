@@ -443,7 +443,17 @@ AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AO
   refreshed at the tag (new LFS OIDs, same file set) — a third-era `libGemmaModelConstraintProvider.so`
   for the next #2149 probe (not yet re-run; the docker harness in `.tmp/litert-repro/` applies).
 
-**Previous re-check: 2026-07-17.** Full sweep results:
+**Addendum 2026-08-12:** (a) **upstream tagged v0.16.0 on 2026-08-11** — one week after v0.15.0;
+decision: land the validated v0.15.0 cycle (PR #5) as-is and run v0.16.0 as its own cycle (header
+diff first). (b) New #2807 data (john-rocky, measured on 0.16.0): **CONCURRENT** decoding on
+multiple conversations of one engine is non-deterministic (CPU: divergent replies at greedy;
+GPU: Dawn buffer-validation errors, occasional empty reply) — distinct from the *interleaved
+sequential* case v0.15.0 fixed, and still broken at 0.16.0. Separate processes are clean, so the
+engine sharing is what breaks. Consequence for us: docs tightened from "serialize per
+conversation" to "serialize sends per ENGINE" (README + core XML); the MEAI client already
+serializes through its gate, so connector consumers were never exposed. Our planned #2807 comment
+should distinguish the two cases (interleaved verified fixed by our suite; concurrent not our
+measurement to close).
 
 - **Gemma 4 weight refresh (announced 2026-07-15, official @googlegemma post): NOT yet available for
   us.** Google silently updated the Gemma 4 weights under the same names (tool-calling fixes, agentic

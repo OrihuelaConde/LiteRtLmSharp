@@ -8,7 +8,11 @@ namespace LiteRtLmSharp;
 
 /// <summary>
 /// A stateful conversation over a <see cref="LiteRtEngine"/>. Handles chat templating
-/// internally (mirrors the Gemini Chat APIs). Not thread-safe: serialize calls per instance.
+/// internally (mirrors the Gemini Chat APIs). Not thread-safe: serialize calls per instance — and
+/// serialize <b>sends per engine</b>, not just per conversation: multiple live conversations may be
+/// interleaved freely, but concurrent generation on different conversations of one engine is not
+/// supported by the native runtime (non-deterministic output and GPU-backend errors, upstream
+/// LiteRT-LM#2807; its thread-safety contract is undocumented).
 /// </summary>
 public sealed class LiteRtConversation : IDisposable
 {
