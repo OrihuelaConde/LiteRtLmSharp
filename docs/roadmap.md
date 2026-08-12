@@ -422,7 +422,10 @@ AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AO
   preservation. The activation checklist was executed: `MaxLiveConversations` public again
   (default 8), `LiteRtConversationBranching` public, MULTICONV test gate dropped, sentinel flipped
   into a positive-recall canary (it failing again = upstream regressed → re-park per commit
-  382e369). Consider a closing comment on #2807 with the verification (draft with the maintainer).
+  382e369). ✅ Verification comment posted on #2807 (2026-08-12, issuecomment-5263183045):
+  confirms the interleaved fix with our cross-platform suite evidence and distinguishes it from
+  the still-broken concurrent case (john-rocky's 0.16.0 measurements), asking only for the
+  thread-safety contract to be documented. Close/retitle left to the maintainers.
 - **New at v0.15.0: the executor rejects prefill below the model's smallest prefill-signature
   length** (`FAILED_PRECONDITION: Chosen prefill work group size exceeds available state entries`,
   absent at v0.14.0). Near the context limit this replaces the silent KV corruption with a clean
