@@ -67,6 +67,12 @@ public sealed record LiteRtEngineOptions
     /// <c>SendRaw</c>'s per-send <c>extraContext</c> get only the conversation-full check, so keep extra
     /// headroom under the limit on those paths (an image is roughly 256 tokens). With 0 the effective
     /// limit is internal to the engine (the C API exposes no getter), so the guard stays off.</para>
+    /// <para><b>Keep the value at or below the model's built-in context length.</b> The native loader
+    /// sizes the KV cache from this hint only when it is smaller than the model's own maximum; a value
+    /// at or above it silently falls back to the model's default sizing, leaving the real cache SMALLER
+    /// than this property claims — and the overflow guard, calibrated against this value, would then
+    /// stop policing before the actual edge. Values below the model's minimum prefill work group
+    /// (~128) are unusable outright: every send is rejected.</para>
     /// </remarks>
     public int MaxNumTokens { get; init; }
 
@@ -309,6 +315,46 @@ public sealed record LiteRtEngineOptions
         }
     }
 
+    private readonly int? _gpuDecodeStepsPerSync;
+
+    /// <summary>
+    /// Decode steps the GPU runs between host syncs. <c>null</c> (default) = engine default. Only
+    /// honored by the Artisan GPU backend (the mobile GPU stack); the desktop WebGPU backend ignores
+    /// it. Requires native LiteRT-LM v0.15.0+.
+    /// </summary>
+    /// <remarks>Maps to <c>engine_settings_set_gpu_decode_steps_per_sync</c>. Larger values reduce
+    /// sync overhead but coarsen streaming/cancellation granularity.</remarks>
+    /// <exception cref="ArgumentOutOfRangeException">The value is zero or negative.</exception>
+    public int? GpuDecodeStepsPerSync
+    {
+        get => _gpuDecodeStepsPerSync;
+        init
+        {
+            if (value is { } v)
+                ArgumentOutOfRangeException.ThrowIfNegativeOrZero(v);
+            _gpuDecodeStepsPerSync = value;
+        }
+    }
+
+    /// <summary>
+    /// Whether engine load blocks until GPU weight uploads complete. <c>null</c> (default) = engine
+    /// default. Only honored by the Artisan GPU backend; the desktop WebGPU backend ignores it.
+    /// Requires native LiteRT-LM v0.15.0+.
+    /// </summary>
+    /// <remarks>Maps to <c>engine_settings_set_gpu_wait_for_weight_uploads</c>.</remarks>
+    public bool? GpuWaitForWeightUploads { get; init; }
+
+    /// <summary>
+    /// Store the KV cache of local-attention layers in ringbuffers sized to what those layers
+    /// actually need, instead of allocating the full context length — lower memory for long
+    /// contexts, at the cost of instant rewinding. <c>null</c> (default) = off. Backend-agnostic in
+    /// interface but currently only the Artisan GPU backend implements it; unsupported
+    /// models/backends log a native warning and ignore it. Requires native LiteRT-LM v0.15.0+.
+    /// </summary>
+    /// <remarks>Maps to <c>engine_settings_set_use_ringbuffers_local_attention</c> (the knob the JS
+    /// API exposes as <c>use_autosized_ringbuffers</c>).</remarks>
+    public bool? UseRingbuffersLocalAttention { get; init; }
+
     private static void ValidateRanks(IReadOnlyList<int>? ranks)
     {
         if (ranks is null)
@@ -414,6 +460,61 @@ public sealed record LiteRtConversationOptions
     /// <see cref="ExtraContext"/> set <c>enable_thinking</c>, this flag wins.
     /// </remarks>
     public bool? EnableThinking { get; init; }
+
+    private readonly int? _thinkingTokenBudget;
+
+    /// <summary>
+    /// Caps how many tokens the model may spend on its thinking block per reply: the decode loop
+    /// tracks the model's thinking start/end token ids and cuts the block off at the budget.
+    /// <c>null</c> (default) = no cap; <c>-1</c> = explicitly infinite; <c>0</c> is treated by the
+    /// native layer as "no budget" (NOT "no thinking"). <b>Setting a budget with
+    /// <see cref="EnableThinking"/> unset turns thinking ON</b> (a budget only makes sense with a
+    /// thinking block; the native thinking config defaults to enabled) — set
+    /// <c>EnableThinking = false</c> explicitly if you want a budget configured but thinking off.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="MaxOutputTokens"/> — which caps the whole reply and starves the answer when
+    /// thinking runs long — this bounds only the reasoning share. Maps to the C API thinking config
+    /// (<c>litert_lm_thinking_config_*</c>, native v0.15.0+; older binaries throw
+    /// <see cref="System.EntryPointNotFoundException"/> at conversation creation). The per-send
+    /// <see cref="LiteRtSendOptions.ThinkingTokenBudget"/> overrides this for one send.
+    /// </remarks>
+    /// <exception cref="System.ArgumentOutOfRangeException">The value is negative and not -1.</exception>
+    public int? ThinkingTokenBudget
+    {
+        get => _thinkingTokenBudget;
+        init
+        {
+            if (value is { } v && v < -1)
+                throw new ArgumentOutOfRangeException(nameof(value), v, "ThinkingTokenBudget must be positive, 0, or -1 (infinite).");
+            _thinkingTokenBudget = value;
+        }
+    }
+
+    /// <summary>
+    /// Overrides the chat prompt template for this conversation with a custom Jinja template string.
+    /// <c>null</c> (default) = the template the model file (or engine) provides. For advanced use —
+    /// a template that does not match what the model was trained on degrades output quality.
+    /// </summary>
+    /// <remarks>Maps to the C API <c>conversation_config_set_prompt_template</c> (native v0.15.0+).
+    /// Inspect the result with <see cref="LiteRtConversation.RenderMessage"/> /
+    /// <see cref="LiteRtConversation.RenderPreface"/> before relying on it.</remarks>
+    public string? PromptTemplate { get; init; }
+
+    /// <summary>
+    /// Enables <b>custom</b> constrained decoding for this conversation: with a provider set, each
+    /// send may carry a <see cref="LiteRtSendOptions.Constraint"/> (regex / JSON Schema) that the
+    /// provider enforces during sampling. <c>null</c> (default) = no custom constraints.
+    /// </summary>
+    /// <remarks>
+    /// Mutually exclusive with <see cref="EnableConstrainedDecoding"/> (the tool-calling
+    /// constrained-decoding path) — the native runtime supports one per conversation, and
+    /// <see cref="LiteRtEngine.CreateConversation"/> throws <see cref="ArgumentException"/> when both
+    /// are set. Maps to the C API <c>conversation_config_set_constraint_provider</c> (native
+    /// v0.15.0+). Unlike the tool-calling path, the LlGuidance provider is compiled from source into
+    /// the native library, so it does not inherit the linux-x64 prebuilt-provider crash guard.
+    /// </remarks>
+    public LiteRtConstraintProvider? ConstraintProvider { get; init; }
 
     /// <summary>
     /// Extra context merged into the conversation preface and passed to the prompt-template

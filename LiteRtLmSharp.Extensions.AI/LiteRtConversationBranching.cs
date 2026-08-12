@@ -9,14 +9,9 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Intentionally internal — not public yet.</b> This type is <c>internal</c> and therefore unreachable by
-/// consumers, even though <c>LiteRtChatClient.GetService(typeof(LiteRtConversationBranching))</c> still wires
-/// it (an internal type cannot be named from outside the assembly). Forking is <b>parked</b> because it needs
-/// more than one live conversation alive at once, and upstream LiteRT-LM does not yet preserve a suspended
-/// conversation's state when another advances — the same limitation that pins the stateful mode to a single
-/// live conversation. When upstream preserves suspended-conversation state, this type is made public, the
-/// live-conversation capacity is raised, and the <c>LITERTLM_TEST_MULTICONV</c>-gated tests are flipped. See
-/// <c>docs/roadmap.md</c>.
+/// Requires native LiteRT-LM v0.15.0+: earlier runtimes silently lost a suspended conversation's state
+/// when another advanced, which is why this type stayed internal (and the stateful mode single-conversation)
+/// until that fix shipped.
 /// </para>
 /// <para>
 /// Forking builds on LiteRtLmSharp's native <see cref="LiteRtConversation.Clone"/>: the branch starts from a
@@ -36,9 +31,10 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// <c>ConversationId</c> with exactly the same semantics as any other: set it on
 /// <see cref="ChatOptions.ConversationId"/> to resume the branch, fork it again, or let it be evicted. The
 /// fork is added to the <b>same</b> live-conversation cache as every other live conversation, so it counts
-/// toward the cache's capacity and can evict the least-recently-used conversation — including, at the current
-/// production capacity of 1, the parent it was cloned from (the clone is fully independent native state, so the
-/// branch survives its parent's eviction; only the parent's id becomes unresumable).
+/// toward the cache's capacity (<see cref="LiteRtStatefulConversationOptions.MaxLiveConversations"/>) and can
+/// evict the least-recently-used conversation — potentially the parent it was cloned from (the clone is fully
+/// independent native state, so the branch survives its parent's eviction; only the parent's id becomes
+/// unresumable).
 /// </para>
 /// <para>
 /// <b>Tool continuations keep working on a branch.</b> The parent's accumulated synthesized-call-id → tool-name
@@ -47,7 +43,7 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// sending the tool results on the fork's id works.
 /// </para>
 /// </remarks>
-internal sealed class LiteRtConversationBranching
+public sealed class LiteRtConversationBranching
 {
     private readonly LiteRtChatClient _client;
 
@@ -76,15 +72,15 @@ internal sealed class LiteRtConversationBranching
     /// Runs under the client's call gate, so it cannot race an in-flight send or stream (forking while a
     /// stream is live is impossible by construction — the gate is held for the whole stream). The new branch
     /// is stored in the same live-conversation cache as every other live conversation: it counts toward the
-    /// cache's capacity and adding it may evict the least-recently-used conversation (potentially the parent, at
-    /// the production capacity of 1). Forking a conversation before its first send is not a scenario reachable
+    /// cache's capacity and adding it may evict the least-recently-used conversation (potentially the
+    /// parent). Forking a conversation before its first send is not a scenario reachable
     /// through this client (an id is only handed out after a send completes), but the underlying clone supports
     /// it — a fork of an unsent base simply pays its prefill on the branch's first send.
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="conversationId"/> is <c>null</c>.</exception>
     /// <exception cref="ArgumentException">
     /// No live conversation has that id — it was never issued by this client, or it was evicted from the
-    /// live-conversation cache (a newer conversation replaced it at the production single-conversation capacity).
+    /// live-conversation cache.
     /// </exception>
     /// <exception cref="LiteRtException">The native clone failed (an engine/backend that does not implement
     /// cloning; see <see cref="LiteRtConversation.Clone"/>).</exception>

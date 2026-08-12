@@ -8,7 +8,11 @@ namespace LiteRtLmSharp;
 
 /// <summary>
 /// A stateful conversation over a <see cref="LiteRtEngine"/>. Handles chat templating
-/// internally (mirrors the Gemini Chat APIs). Not thread-safe: serialize calls per instance.
+/// internally (mirrors the Gemini Chat APIs). Not thread-safe: serialize calls per instance — and
+/// serialize <b>sends per engine</b>, not just per conversation: multiple live conversations may be
+/// interleaved freely, but concurrent generation on different conversations of one engine is not
+/// supported by the native runtime (non-deterministic output and GPU-backend errors, upstream
+/// LiteRT-LM#2807; its thread-safety contract is undocumented).
 /// </summary>
 public sealed class LiteRtConversation : IDisposable
 {
@@ -30,6 +34,16 @@ public sealed class LiteRtConversation : IDisposable
     // Channel name the native side streams raw tool-call text on (LiteRtConversationOptions.StreamToolCalls);
     // null = the feature is off and channel content routes to Thinking as before. Inherited by Clone().
     private readonly string? _toolCallStreamChannel;
+    // Whether the conversation was created with a custom constraint provider (LlGuidance): the gate
+    // for per-send LiteRtSendOptions.Constraint. Inherited by Clone().
+    private readonly bool _hasConstraintProvider;
+    // The conversation-level thinking settings, cached so per-send overrides can COMPOSE with them:
+    // the native per-send thinking config replaces the conversation-level one wholesale
+    // (conversation.cc ResolveThinkingConfig returns the optional_args config with BOTH fields), so
+    // "null = inherit" on LiteRtSendOptions.EnableThinking/ThinkingTokenBudget is implemented here by
+    // filling the unset field from these before building the per-send config. Inherited by Clone().
+    private readonly bool? _thinkingEnable;
+    private readonly int? _thinkingBudget;
     private bool _disposed;
 
     /// <summary>Channel name passed to <c>set_stream_tool_calls</c>. Pinned explicitly (rather than
@@ -40,7 +54,8 @@ public sealed class LiteRtConversation : IDisposable
     private LiteRtConversation(
         ConversationHandle conversation, ConversationConfigHandle? config, SessionConfigHandle? sessionConfig,
         LiteRtEngine engineOwner, int visualTokenBudget = 0, int maxOutputTokens = 0,
-        string? toolCallStreamChannel = null)
+        string? toolCallStreamChannel = null, bool hasConstraintProvider = false,
+        bool? thinkingEnable = null, int? thinkingBudget = null)
     {
         _conversation = conversation;
         _config = config;
@@ -49,16 +64,33 @@ public sealed class LiteRtConversation : IDisposable
         _visualTokenBudget = visualTokenBudget;
         _maxOutputTokens = maxOutputTokens;
         _toolCallStreamChannel = toolCallStreamChannel;
+        _hasConstraintProvider = hasConstraintProvider;
+        _thinkingEnable = thinkingEnable;
+        _thinkingBudget = thinkingBudget;
     }
 
     internal static LiteRtConversation Create(
         LiteRtEngine engine, LiteRtConversationOptions? options, bool engineIsMultimodal = false)
     {
+        // The native runtime supports one constrained-decoding mode per conversation: the
+        // tool-calling path (EnableConstrainedDecoding) or a custom provider (ConstraintProvider) —
+        // upstream docs/api/cpp/constrained-decoding.md says choose one. Checked before the platform
+        // guard below so an invalid combination reports the same error on every OS.
+        if (options is { EnableConstrainedDecoding: true, ConstraintProvider: not null })
+        {
+            throw new ArgumentException(
+                "EnableConstrainedDecoding (tool-calling constrained decoding) and ConstraintProvider " +
+                "(custom constraints) are mutually exclusive — the native runtime supports only one " +
+                "per conversation. Set one of the two.", nameof(options));
+        }
+
         // TEMPORARY GUARD — remove when upstream republishes a fixed linux prebuilt.
         // The linux-x64 libGemmaModelConstraintProvider.so shipped with LiteRT-LM v0.13.1
         // returns half-initialized constraints (internal FST is NULL) and the process dies
         // with SIGSEGV on the first decode step — a managed exception beats a dead process.
         // Windows/macOS/Android providers are fine. See google-ai-edge/LiteRT-LM#2149.
+        // Scoped to the TOOL-CALLING provider path only: the ConstraintProvider (LlGuidance) path is
+        // compiled from source and does not touch the broken prebuilt.
         if (options is { EnableConstrainedDecoding: true }
             && OperatingSystem.IsLinux() && !OperatingSystem.IsAndroid())
         {
@@ -101,7 +133,9 @@ public sealed class LiteRtConversation : IDisposable
                 (options is not null &&
                  (options.SystemMessage is not null || hasTools || options.EnableConstrainedDecoding ||
                   extraContext is not null || options.FilterThinkingFromKvCache ||
-                  options.StreamToolCalls || historyJson is not null));
+                  options.StreamToolCalls || historyJson is not null ||
+                  options.PromptTemplate is not null || options.ConstraintProvider is not null ||
+                  options.ThinkingTokenBudget is not null));
 
             if (needsConfig)
             {
@@ -199,6 +233,32 @@ public sealed class LiteRtConversation : IDisposable
 
                 if (historyJson is not null)
                     LiteRtLmNative.litert_lm_conversation_config_set_messages(configPtr, historyJson);
+
+                if (options?.PromptTemplate is { } promptTemplate)
+                    LiteRtLmNative.litert_lm_conversation_config_set_prompt_template(configPtr, promptTemplate);
+
+                if (options?.ConstraintProvider is { } provider)
+                {
+                    unsafe
+                    {
+                        int providerValue = (int)provider;
+                        LiteRtLmNative.litert_lm_conversation_config_set_constraint_provider(configPtr, &providerValue);
+                    }
+                }
+
+                // Conversation-level thinking token budget → typed thinking config. Only built when a
+                // budget is set: the plain EnableThinking flag keeps its established extra_context
+                // route (byte-identical rendering; the native config feeds the same enable_thinking
+                // template variable and explicit extra context wins anyway — conversation.cc).
+                if (options?.ThinkingTokenBudget is { } budget)
+                {
+                    // The budget only bounds the thinking block, so pair it with the enable flag:
+                    // an explicit EnableThinking wins; a budget alone implies thinking on (the native
+                    // ThinkingConfig default is also enabled).
+                    ApplyThinkingConfig(
+                        options.EnableThinking ?? true, budget,
+                        cfg => LiteRtLmNative.litert_lm_conversation_config_set_thinking_config(configPtr, cfg));
+                }
             }
 
             nint convPtr = LiteRtLmNative.litert_lm_conversation_create(engine.Handle.Ptr, configPtr);
@@ -208,7 +268,9 @@ public sealed class LiteRtConversation : IDisposable
             return new LiteRtConversation(
                 new ConversationHandle(convPtr), config, sessionConfig, engine,
                 options?.VisualTokenBudget ?? 0, options?.MaxOutputTokens ?? 0,
-                options?.StreamToolCalls == true ? ToolCallStreamChannelName : null);
+                options?.StreamToolCalls == true ? ToolCallStreamChannelName : null,
+                options?.ConstraintProvider is not null,
+                options?.EnableThinking, options?.ThinkingTokenBudget);
         }
         catch
         {
@@ -239,7 +301,10 @@ public sealed class LiteRtConversation : IDisposable
     /// Whether this conversation's context is full: a completed send was detected to have run its reply
     /// into the KV overflow guard's ceiling (exact detection from the guard's own counts), or
     /// <see cref="TokenCount"/> has reached that ceiling (the engine's
-    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> minus a small reserved margin). When <c>true</c>,
+    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> minus a reserve of ~128 tokens — the native
+    /// executor prefills in fixed work groups of the model's prefill-signature lengths and rejects any
+    /// send with fewer free entries than the smallest signature, so those trailing entries are
+    /// unusable for a new send by construction). When <c>true</c>,
     /// the reply that got here was likely truncated by the guard's decode clamp (mid-sentence text, or a
     /// stream that just stopped), and the <b>next</b> send is guaranteed to throw
     /// <see cref="LiteRtContextOverflowException"/> — check this right after a send (or after a stream
@@ -324,11 +389,14 @@ public sealed class LiteRtConversation : IDisposable
         // config handles (those are only read at create time). Each conversation frees its own native
         // object on Dispose, so the clone outlives a disposed parent as long as the engine is alive.
         // It inherits the parent's engine (context limit + tokenizer for the overflow guard), visual
-        // token budget, output cap and tool-call stream channel so attachments, the guard and
-        // streaming behave the same on the branch (the native clone copies the config, channel included).
+        // token budget, output cap, tool-call stream channel, constraint-provider flag and thinking
+        // settings, so attachments, the guard, streaming, per-send constraints and per-send thinking
+        // overrides behave the same on the branch (the native clone copies the whole config —
+        // including the constraint provider, conversation.cc CloneInternal recreates it).
         return new LiteRtConversation(
             new ConversationHandle(clonedPtr), config: null, sessionConfig: null, _engineOwner,
-            _visualTokenBudget, _maxOutputTokens, _toolCallStreamChannel);
+            _visualTokenBudget, _maxOutputTokens, _toolCallStreamChannel, _hasConstraintProvider,
+            _thinkingEnable, _thinkingBudget);
     }
 
     /// <summary>Sends a user message and returns the reply (blocking). The answer text is
@@ -547,6 +615,10 @@ public sealed class LiteRtConversation : IDisposable
     /// when the KV cache grew by at least the measured prefill plus the imposed decode budget (less the
     /// safety margin, absorbing measurement drift) — the reply ran to the ceiling rather than ending on
     /// its own. Never throws (runs on success paths).</summary>
+    // NOTE (v0.15.0 recalibration): with the context-full threshold now at MinPrefillReserve (128),
+    // a clamped send always lands inside the full band, so the threshold predicate alone already
+    // reports IsContextFull — this probe's latch can no longer be the deciding term. It is kept as
+    // belt-and-suspenders (exact detection independent of the constant) at negligible cost.
     private void CompleteCeilingProbe()
     {
         if (_ceilingProbe is not { } probe)
@@ -733,19 +805,140 @@ public sealed class LiteRtConversation : IDisposable
     {
         int budget = options is { VisualTokenBudget: > 0 } ? options.VisualTokenBudget : _visualTokenBudget;
         int maxOutputTokens = options is { MaxOutputTokens: > 0 } ? options.MaxOutputTokens : 0;
-        if (budget <= 0 && maxOutputTokens <= 0)
+        bool hasDecodingOptions = options is not null &&
+            (options.RepetitionPenalties is not null || options.NoRepeatNgram is not null ||
+             options.SuppressTokens is { Count: > 0 } || options.EnableThinking is not null ||
+             options.ThinkingTokenBudget is not null || options.Constraint is not null);
+        if (budget <= 0 && maxOutputTokens <= 0 && !hasDecodingOptions)
             return null;
+
+        if (options?.Constraint is not null && !_hasConstraintProvider)
+            throw new LiteRtException(
+                "LiteRtSendOptions.Constraint requires the conversation to have been created with " +
+                "LiteRtConversationOptions.ConstraintProvider set (e.g. LiteRtConstraintProvider.LlGuidance) — " +
+                "without a provider the native runtime has nothing to enforce the constraint with.");
 
         nint p = LiteRtLmNative.litert_lm_conversation_optional_args_create();
         if (p == nint.Zero)
             throw new LiteRtException("litert_lm_conversation_optional_args_create returned null.");
 
         var handle = new ConversationOptionalArgsHandle(p);
-        if (budget > 0)
-            LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget(p, budget);
-        if (maxOutputTokens > 0)
-            LiteRtLmNative.litert_lm_conversation_optional_args_set_max_output_tokens(p, maxOutputTokens);
-        return handle;
+        try
+        {
+            if (budget > 0)
+                LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget(p, budget);
+            if (maxOutputTokens > 0)
+                LiteRtLmNative.litert_lm_conversation_optional_args_set_max_output_tokens(p, maxOutputTokens);
+
+            // v0.15.0 per-send decoding configs. Each native config is deep-copied by its setter, so
+            // the build-set-attach-delete lifetime stays inside this method (sampler-params pattern).
+            if (options?.RepetitionPenalties is { } penalties)
+            {
+                nint cfg = LiteRtLmNative.litert_lm_repetition_penalty_config_create();
+                if (cfg == nint.Zero)
+                    throw new LiteRtException("litert_lm_repetition_penalty_config_create returned null.");
+                try
+                {
+                    LiteRtLmNative.litert_lm_repetition_penalty_config_set_repetition_penalty(cfg, penalties.RepetitionPenalty);
+                    LiteRtLmNative.litert_lm_repetition_penalty_config_set_presence_penalty(cfg, penalties.PresencePenalty);
+                    LiteRtLmNative.litert_lm_repetition_penalty_config_set_frequency_penalty(cfg, penalties.FrequencyPenalty);
+                    LiteRtLmNative.litert_lm_repetition_penalty_config_set_window_size(cfg, penalties.WindowSize);
+                    LiteRtLmNative.litert_lm_conversation_optional_args_set_repetition_penalty_config(p, cfg);
+                }
+                finally
+                {
+                    LiteRtLmNative.litert_lm_repetition_penalty_config_delete(cfg);
+                }
+            }
+
+            if (options?.NoRepeatNgram is { } ngram)
+            {
+                nint cfg = LiteRtLmNative.litert_lm_no_repeat_ngram_config_create();
+                if (cfg == nint.Zero)
+                    throw new LiteRtException("litert_lm_no_repeat_ngram_config_create returned null.");
+                try
+                {
+                    LiteRtLmNative.litert_lm_no_repeat_ngram_config_set_no_repeat_ngram_size(cfg, ngram.NgramSize);
+                    LiteRtLmNative.litert_lm_no_repeat_ngram_config_set_window_size(cfg, ngram.WindowSize);
+                    LiteRtLmNative.litert_lm_conversation_optional_args_set_no_repeat_ngram_config(p, cfg);
+                }
+                finally
+                {
+                    LiteRtLmNative.litert_lm_no_repeat_ngram_config_delete(cfg);
+                }
+            }
+
+            if (options?.SuppressTokens is { Count: > 0 } suppress)
+            {
+                nint cfg = LiteRtLmNative.litert_lm_suppress_tokens_config_create();
+                if (cfg == nint.Zero)
+                    throw new LiteRtException("litert_lm_suppress_tokens_config_create returned null.");
+                try
+                {
+                    int[] ids = suppress as int[] ?? [.. suppress];
+                    unsafe
+                    {
+                        fixed (int* idsPtr = ids)
+                        {
+                            LiteRtLmNative.litert_lm_suppress_tokens_config_set_suppress_tokens(cfg, idsPtr, (nuint)ids.Length);
+                        }
+                    }
+                    LiteRtLmNative.litert_lm_conversation_optional_args_set_suppress_tokens_config(p, cfg);
+                }
+                finally
+                {
+                    LiteRtLmNative.litert_lm_suppress_tokens_config_delete(cfg);
+                }
+            }
+
+            if (options is { EnableThinking: not null } or { ThinkingTokenBudget: not null })
+            {
+                // COMPOSE with the conversation level rather than replace it: the native per-send
+                // thinking config wins wholesale (conversation.cc ResolveThinkingConfig returns it
+                // with BOTH fields, never consulting the conversation config), so "null = inherit"
+                // is implemented here by filling each unset field from the cached conversation-level
+                // value. Only when neither level sets a field do the fallbacks apply (enable: true —
+                // a budget alone implies thinking on; budget: -1 = infinite).
+                ApplyThinkingConfig(
+                    options!.EnableThinking ?? _thinkingEnable ?? true,
+                    options.ThinkingTokenBudget ?? _thinkingBudget ?? -1,
+                    cfg => LiteRtLmNative.litert_lm_conversation_optional_args_set_thinking_config(p, cfg));
+            }
+
+            if (options?.Constraint is { } constraint)
+            {
+                LiteRtLmNative.litert_lm_conversation_optional_args_set_constraint(
+                    p, (LiteRtLmConstraintType)constraint.Type, constraint.Pattern);
+            }
+
+            return handle;
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Builds a native thinking config, hands it to <paramref name="attach"/> (whose native
+    /// setter deep-copies it), and deletes it — the shared create-set-attach-delete lifetime for the
+    /// conversation-level and per-send thinking configs.</summary>
+    private static void ApplyThinkingConfig(bool enableThinking, int tokenBudget, Action<nint> attach)
+    {
+        nint cfg = LiteRtLmNative.litert_lm_thinking_config_create();
+        if (cfg == nint.Zero)
+            throw new LiteRtException("litert_lm_thinking_config_create returned null.");
+        try
+        {
+            // Always set BOTH fields: the native default ctor is enabled + infinite, not zeroes.
+            LiteRtLmNative.litert_lm_thinking_config_set_enable_thinking(cfg, enableThinking);
+            LiteRtLmNative.litert_lm_thinking_config_set_thinking_token_budget(cfg, tokenBudget);
+            attach(cfg);
+        }
+        finally
+        {
+            LiteRtLmNative.litert_lm_thinking_config_delete(cfg);
+        }
     }
 
     /// <summary>
@@ -849,33 +1042,58 @@ public sealed class LiteRtConversation : IDisposable
         }
     }
 
-    /// <summary>Unmanaged streaming callback. Recovers state from the GCHandle in <paramref name="callbackData"/>.</summary>
+    /// <summary>Unmanaged streaming callback (v0.15.0 <c>LiteRtLmStreamCallback</c> shape: callback
+    /// data + an opaque chunk read through the <c>litert_lm_stream_chunk_*</c> getters; v0.14.0 passed
+    /// text/is_final/error_msg as direct parameters). Recovers state from the GCHandle in
+    /// <paramref name="callbackData"/>. The chunk and the strings it owns are only valid for the
+    /// duration of this call — everything is copied out before returning.</summary>
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
-    private static unsafe void OnStreamChunk(nint callbackData, nint chunk, byte isFinal, nint errorMsg)
+    private static unsafe void OnStreamChunk(nint callbackData, nint chunk)
     {
         var gcHandle = GCHandle.FromIntPtr(callbackData);
         if (gcHandle.Target is not StreamState state)
             return;
 
-        if (errorMsg != nint.Zero)
+        // The whole body is guarded: an exception escaping an [UnmanagedCallersOnly] frame
+        // rude-terminates the process. Unlike the v0.14.0 callback (whose payload arrived as plain
+        // parameters), this body P/Invokes the chunk getters — against a mismatched older native
+        // that lacks them, that's an EntryPointNotFoundException on the native decode thread, which
+        // must surface as a faulted stream (diagnosable, teardown-safe), not a fail-fast.
+        try
         {
-            string msg = Marshal.PtrToStringUTF8(errorMsg) ?? "unknown error";
-            // The streaming path DOES surface the native string; when it is the unconfigured-multimodal
-            // failure ("Vision/Audio executor should not be null"), append the same setup guidance.
-            if (msg.Contains("executor should not be null", StringComparison.OrdinalIgnoreCase))
-                msg += " " + MultimodalSendHint;
-            state.Channel.Writer.TryComplete(new LiteRtException(msg));
-        }
-        else if (chunk != nint.Zero)
-        {
-            string? piece = Marshal.PtrToStringUTF8(chunk);
-            if (!string.IsNullOrEmpty(piece))
-                foreach (LiteRtStreamChunk c in SplitMessageChunk(piece, state.ToolCallChannel))
-                    state.Channel.Writer.TryWrite(c);
-        }
+            nint errorMsg = chunk != nint.Zero ? LiteRtLmNative.litert_lm_stream_chunk_get_error(chunk) : nint.Zero;
+            nint text = chunk != nint.Zero ? LiteRtLmNative.litert_lm_stream_chunk_get_text(chunk) : nint.Zero;
+            bool isFinal = chunk == nint.Zero || LiteRtLmNative.litert_lm_stream_chunk_is_final(chunk);
 
-        if (isFinal != 0)
-            state.Channel.Writer.TryComplete();
+            if (errorMsg != nint.Zero)
+            {
+                string msg = Marshal.PtrToStringUTF8(errorMsg) ?? "unknown error";
+                // The streaming path DOES surface the native string; when it is the unconfigured-multimodal
+                // failure ("Vision/Audio executor should not be null"), append the same setup guidance.
+                if (msg.Contains("executor should not be null", StringComparison.OrdinalIgnoreCase))
+                    msg += " " + MultimodalSendHint;
+                state.Channel.Writer.TryComplete(new LiteRtException(msg));
+            }
+            else if (text != nint.Zero)
+            {
+                string? piece = Marshal.PtrToStringUTF8(text);
+                if (!string.IsNullOrEmpty(piece))
+                    foreach (LiteRtStreamChunk c in SplitMessageChunk(piece, state.ToolCallChannel))
+                        state.Channel.Writer.TryWrite(c);
+            }
+
+            if (isFinal)
+                state.Channel.Writer.TryComplete();
+        }
+        catch (Exception ex)
+        {
+            // Fault the channel so the consumer gets the real exception and the teardown's drain
+            // still terminates. TryComplete is first-wins, so an already-completed channel ignores it.
+            state.Channel.Writer.TryComplete(ex is LiteRtException ? ex : new LiteRtException(
+                $"The streaming callback failed reading the native stream chunk: {ex.Message} " +
+                "(a managed/native version mismatch is the most likely cause — the v0.15.0+ managed " +
+                "binding requires the same-version native library).", ex));
+        }
         // NOTE: do NOT free the GCHandle here — the async iterator's finally owns its lifetime and
         // only frees it once the channel is fully completed, so this callback can never run against
         // a freed handle.

@@ -1776,33 +1776,27 @@ public sealed class EngineTuningTests
 }
 
 /// <summary>
-/// A SENTINEL for an upstream LiteRT-LM limitation: the runtime does not yet preserve a suspended
-/// conversation's state when another conversation advances (interleaved use silently corrupts the parked
-/// one). Because of it, our Microsoft.Extensions.AI stateful mode is hard-limited to one live conversation
-/// and the forking hatch is kept internal (see <see cref="LiteRtLmSharp.Extensions.AI.LiteRtStatefulConversationOptions"/>
-/// and docs/roadmap.md). This test pins the CURRENT (broken) upstream behavior at the core
-/// <see cref="LiteRtEngine"/> / <see cref="LiteRtConversation"/> level, no MEAI involved. Loads its own engine
-/// (one engine alive at a time; the assembly disables parallelization). Skipped unless LITERTLM_TEST_MODEL is set.
+/// A CANARY for suspended-conversation state preservation at the core <see cref="LiteRtEngine"/> /
+/// <see cref="LiteRtConversation"/> level, no MEAI involved. Upstream LiteRT-LM v0.15.0 fixed the
+/// interleaved-conversation state loss (the resource manager's context save/restore now preserves the
+/// suspended conversation's KV — before that, interleaved use silently corrupted the parked one, which kept
+/// our stateful mode pinned to one live conversation and the forking hatch internal from 2026-07-10 to the
+/// v0.15.0 repin). This test asserts the FIXED behavior; if it ever fails again, upstream regressed and the
+/// multi-conversation surface (<see cref="LiteRtLmSharp.Extensions.AI.LiteRtStatefulConversationOptions.MaxLiveConversations"/>,
+/// <see cref="LiteRtLmSharp.Extensions.AI.LiteRtConversationBranching"/>) must be re-parked — see the
+/// 382e369 parking commit for the shape of that mitigation. Loads its own engine (one engine alive at a
+/// time; the assembly disables parallelization). Skipped unless LITERTLM_TEST_MODEL is set.
 /// </summary>
 public sealed class UpstreamSuspendedStateSentinelTests
 {
     /// <summary>
-    /// Interleave two live conversations from one engine: seed a fact on A, advance B, then ask A for the fact.
-    /// Upstream loses A's suspended state when B advances, so A does NOT recall the number — we assert exactly
-    /// that. This test is EXPECTED TO PASS while the bug exists.
-    ///
-    /// THE DAY THIS TEST FAILS (A suddenly recalls "42"), upstream has fixed suspended-state preservation. When
-    /// that happens, the multi-conversation mitigation can be lifted:
-    ///   1. raise LiteRtConversationStore.LiveConversationCapacity above 1;
-    ///   2. make LiteRtLmSharp.Extensions.AI.LiteRtConversationBranching public again;
-    ///   3. drop the LITERTLM_TEST_MULTICONV gate on the parked fork / multi-conversation tests in
-    ///      ExtensionsAiStatefulModelTests and re-run them as real coverage;
-    ///   4. restore the fork bullet in CHANGELOG.md and the Forking section in docs/extensions-ai.md;
-    ///   5. update this test to assert POSITIVE recall (A returns "42").
-    /// Full steps and the upstream tracking live in docs/roadmap.md.
+    /// Interleave two live conversations from one engine: seed a fact on A, advance B, then ask A for the
+    /// fact. With suspended-state preservation working (native v0.15.0+), A recalls the number even though B
+    /// advanced in between. (Until v0.15.0 this test asserted the OPPOSITE — the loss — as the tripwire that
+    /// told us the day upstream fixed it. It fired on 2026-08-09.)
     /// </summary>
     [SkippableFact]
-    public void Upstream_InterleavedConversations_StillLoseSuspendedState_Sentinel()
+    public void Upstream_InterleavedConversations_PreserveSuspendedState_Canary()
     {
         string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
         Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model),
@@ -1824,12 +1818,10 @@ public sealed class UpstreamSuspendedStateSentinelTests
         convA.Send("Remember this: my lucky number is 42. Acknowledge briefly.");
         convB.Send("Hello — please introduce yourself in one short sentence.");
 
-        // Ask A for the fact. If upstream preserved suspended state, A would answer 42.
+        // Ask A for the fact: with suspended state preserved, A recalls it despite B's interleaved turn.
         var reply = convA.Send("What is my lucky number? Answer with just the number.");
 
-        // CURRENT upstream behavior: A's state was lost, so it does NOT recall 42. See the class/method docs
-        // for what to change the day this assertion starts failing.
-        Assert.DoesNotContain("42", reply.Text, StringComparison.Ordinal);
+        Assert.Contains("42", reply.Text, StringComparison.Ordinal);
     }
 }
 

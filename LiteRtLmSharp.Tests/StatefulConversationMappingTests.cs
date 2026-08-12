@@ -25,16 +25,20 @@ public class StatefulConversationMappingTests
 
     // ─────────────────────── Options ───────────────────────
 
-    // LiteRtStatefulConversationOptions is now purely the opt-in token for the stateful mode: the former
-    // MaxLiveConversations knob was removed because the mode is hard-limited to one live conversation while
-    // upstream LiteRT-LM cannot preserve a suspended conversation's state (see docs/roadmap.md). The internal
-    // single-conversation capacity lives on LiteRtConversationStore.LiveConversationCapacity.
     [Fact]
     public void Options_IsConstructible_AsOptInToken()
     {
         Assert.NotNull(new LiteRtStatefulConversationOptions());
-        // Value semantics of the record are intact even with no members.
         Assert.Equal(new LiteRtStatefulConversationOptions(), new LiteRtStatefulConversationOptions());
+    }
+
+    [Fact]
+    public void Options_MaxLiveConversations_DefaultsTo8_AndRejectsBelowOne()
+    {
+        Assert.Equal(8, new LiteRtStatefulConversationOptions().MaxLiveConversations);
+        Assert.Equal(1, new LiteRtStatefulConversationOptions { MaxLiveConversations = 1 }.MaxLiveConversations);
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtStatefulConversationOptions { MaxLiveConversations = 0 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtStatefulConversationOptions { MaxLiveConversations = -1 });
     }
 
     // ─────────────────────── Continuation mapping: user turn ───────────────────────

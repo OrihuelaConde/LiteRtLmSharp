@@ -15,26 +15,6 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// </remarks>
 internal sealed class LiteRtConversationStore
 {
-    // ─────────────────────── Live-conversation capacity ───────────────────────
-    //
-    // The production capacity the client constructs this store with is ONE. The LRU machinery below is fully
-    // capable of holding many live conversations (and the gated forking / multi-conversation tests exercise it
-    // at larger capacities through the internal ctor seam), but it is deliberately pinned to a single live
-    // conversation for now:
-    //
-    //   Upstream LiteRT-LM does not yet preserve a suspended conversation's state when another conversation
-    //   advances (the copy-on-write / context-switch subsystem exists upstream but is unfinished and
-    //   unreleased). With more than one live conversation, interleaving them silently corrupts the parked
-    //   one's answers. So the client keeps exactly one live conversation: a new conversation replaces the
-    //   previous one, whose id then throws on resume.
-    //
-    // When upstream preserves suspended-conversation state, raise this to a bounded cache, re-expose the
-    // forking hatch, and flip the LITERTLM_TEST_MULTICONV-gated tests. The full re-enable steps and the
-    // upstream tracking live in docs/roadmap.md; the parked capability is covered by the gated
-    // multi-conversation / fork tests in ExtensionsAiStatefulModelTests.
-    internal const int LiveConversationCapacity = 1;
-
-
     /// <summary>A stored live conversation plus the synthesized-call-id → tool-name map the client
     /// accumulates as the conversation emits tool calls. The map lets a later continuation resolve tool
     /// names for <c>FunctionResultContent</c>s whose only link back is a <c>CallId</c> — the assistant
@@ -48,6 +28,13 @@ internal sealed class LiteRtConversationStore
 
         /// <summary>The live native conversation.</summary>
         public LiteRtConversation Conversation { get; }
+
+        /// <summary>Whether the conversation was created with a custom constraint provider (LlGuidance),
+        /// i.e. whether per-send constraints (a JSON-schema <c>ResponseFormat</c>) can be enforced on it.
+        /// Set when the conversation is stored; copied to forks. Lets the client reject a constrained
+        /// continuation on a provider-less conversation BEFORE any native work — in MEAI vocabulary and
+        /// without destroying the (untouched, perfectly resumable) live conversation.</summary>
+        public bool HasConstraintProvider { get; set; }
 
         /// <summary>Records a synthesized call id and the tool name it stands for (idempotent; last write wins).</summary>
         public void RecordToolCall(string callId, string name)

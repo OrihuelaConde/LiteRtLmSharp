@@ -11,18 +11,22 @@ namespace LiteRtLmSharp.Tests;
 /// </summary>
 public class ContextOverflowGuardTests
 {
-    // The full/not-full boundary is maxNumTokens - SafetyMargin, shared by the pre-send hard stop and
+    // The full/not-full boundary: full once fewer than MinPrefillReserve entries remain (the
+    // v0.15.0+ executor rejects any prefill below the model's smallest prefill-signature length).
+    // LastSendable is the highest count that is still not full; shared by the pre-send hard stop and
     // the public IsContextFull signal so the two can never disagree.
-    private const int FullAt = 4096 - LiteRtContextGuard.SafetyMargin;
+    private const int LastSendable = 4096 - LiteRtContextGuard.MinPrefillReserve;
+    private const int FullAt = LastSendable + 1;
 
     [Theory]
-    [InlineData(0, 4096)]           // fresh conversation
-    [InlineData(FullAt - 1, 4096)]  // one below the shared ceiling — the budget stage decides, not the hard stop
+    [InlineData(0, 4096)]            // fresh conversation
+    [InlineData(LastSendable, 4096)] // exactly MinPrefillReserve remaining — the budget stage decides, not the hard stop
     public void ThrowIfContextFull_UnderTheCeiling_DoesNotThrow(int used, int limit)
         => LiteRtContextGuard.ThrowIfContextFull(used, limit);
 
     [Theory]
-    [InlineData(FullAt, 4096)]      // exactly at the ceiling — where a clamped send lands by construction
+    [InlineData(FullAt, 4096)]      // one entry short of the reserve — the executor would reject the prefill
+    [InlineData(4096 - LiteRtContextGuard.SafetyMargin, 4096)] // where a clamped send lands by construction
     [InlineData(4096, 4096)]        // at the hard limit
     [InlineData(4440, 4096)]        // past the limit — the exact field-reported state (crashed 0xC0000005 unguarded)
     public void ThrowIfContextFull_AtOrPastTheCeiling_Throws(int used, int limit)
@@ -43,7 +47,7 @@ public class ContextOverflowGuardTests
     /// <summary>The signal and the hard stop share one predicate: IsContextFull true ⇔ the next send throws.</summary>
     [Theory]
     [InlineData(0, 4096, false)]
-    [InlineData(FullAt - 1, 4096, false)]
+    [InlineData(LastSendable, 4096, false)]
     [InlineData(FullAt, 4096, true)]
     [InlineData(4096, 4096, true)]
     [InlineData(4440, 4096, true)]
@@ -63,8 +67,36 @@ public class ContextOverflowGuardTests
 
     [Fact]
     public void DecodeBudget_OfExactlyOneToken_IsAllowed()
+        // input 128 plans as exactly one full work group; remaining = input + margin + 1 → budget 1.
         => Assert.Equal(1, LiteRtContextGuard.DecodeBudget(
-            tokenCount: 0, maxNumTokens: 100 + LiteRtContextGuard.SafetyMargin + 1, inputTokens: 100));
+            tokenCount: 4096 - (128 + LiteRtContextGuard.SafetyMargin + 1), maxNumTokens: 4096, inputTokens: 128));
+
+    /// <summary>The v0.15.0 executor plans prefill in fixed work groups: a partial chunk still debits a
+    /// whole signature length. An input above one work group with fewer than two work groups remaining
+    /// passes the flat token count but not the plan — the guard must reject it (typed) before the native
+    /// layer rejects it (raw). The exact live repro: 180 input tokens against 200 remaining entries.</summary>
+    [Theory]
+    [InlineData(4096 - 200, 4096, 180)]  // plan = 2×128 = 256 > 200 remaining, flat budget would pass (4 left)
+    [InlineData(4096 - 255, 4096, 130)]  // plan = 256 > 255 remaining
+    public void DecodeBudget_PlanExceedsRemainingWorkGroups_Throws(int used, int limit, int input)
+        => Assert.Throws<LiteRtContextOverflowException>(
+            () => LiteRtContextGuard.DecodeBudget(used, limit, input));
+
+    [Fact]
+    public void DecodeBudget_PlanFitsExactly_IsAllowed()
+        // 130 input plans as 256; 300 remaining holds it, and the flat budget stays positive.
+        => Assert.Equal(300 - 130 - LiteRtContextGuard.SafetyMargin,
+            LiteRtContextGuard.DecodeBudget(tokenCount: 4096 - 300, maxNumTokens: 4096, inputTokens: 130));
+
+    /// <summary>A limit below the minimum prefill work group can never accept any send: the rejection
+    /// must say so instead of the nonsensical "holds 0 tokens against MaxNumTokens = N" phrasing.</summary>
+    [Fact]
+    public void ThrowIfContextFull_LimitBelowMinimumWorkGroup_NamesTheRealProblem()
+    {
+        var ex = Assert.Throws<LiteRtContextOverflowException>(
+            () => LiteRtContextGuard.ThrowIfContextFull(tokenCount: 0, maxNumTokens: 100));
+        Assert.Contains("minimum prefill work group", ex.Message, StringComparison.Ordinal);
+    }
 
     /// <summary>The message fits the cache but leaves no room to decode → reject before native code.
     /// This is the original overflow shape: a fat tool result landing on a nearly-full tool-loop conversation.</summary>
@@ -81,7 +113,7 @@ public class ContextOverflowGuardTests
     [Fact]
     public void DecodeBudget_OfZero_Throws()
         => Assert.Throws<LiteRtContextOverflowException>(() => LiteRtContextGuard.DecodeBudget(
-            tokenCount: 0, maxNumTokens: 100 + LiteRtContextGuard.SafetyMargin, inputTokens: 100));
+            tokenCount: 4096 - (128 + LiteRtContextGuard.SafetyMargin), maxNumTokens: 4096, inputTokens: 128));
 
     [Theory]
     [InlineData(80, 0, 80)]     // no caller cap → the budget becomes the per-send cap
@@ -187,7 +219,7 @@ public sealed class ContextOverflowModelTests
         // reached by a previous send), IsContextFull must have said so right after that send — the caller
         // never needs the next-turn exception to learn the conversation is over. (A throw below the
         // ceiling is the "message doesn't fit" path, which is same-call by nature.)
-        if (overflow.TokenCount >= SmallContext - LiteRtContextGuard.SafetyMargin)
+        if (overflow.TokenCount > SmallContext - LiteRtContextGuard.MinPrefillReserve)
             Assert.True(fullSignaled, "The context filled up without IsContextFull signaling it in the same turn.");
 
         // The whole point of the guard: the engine (and the process) survive the full conversation.

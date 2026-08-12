@@ -6,6 +6,81 @@ LiteRT-LM native version it wraps (see the compatibility table in the [README](R
 managed `LiteRtLmSharp` package and every `LiteRtLmSharp.runtime.<rid>` package share one version and
 are published together.
 
+## [Unreleased]
+
+### Changed
+
+- **Native binaries repinned to LiteRT-LM v0.15.0** (from v0.14.0). The C API grew 109 → 140
+  functions with no removals; the only signature changes formalize two `int` parameters into enums
+  with identical values (`set_activation_data_type`, `set_min_log_level`), so every previously bound
+  function keeps its ABI. The **streaming callback ABI did change** — v0.15.0 passes an opaque
+  stream-chunk object read through getters instead of `(text, is_final, error_msg)` parameters — and
+  the binding's internal callback was rewritten to match; the managed streaming API and chunk
+  semantics (including the max-tokens and cancellation error strings) are unchanged. Because of the
+  callback change, this release's managed assembly requires the v0.15.0 natives (the
+  `LiteRtLmSharp.runtime.*` packages of the same version) and is not compatible with v0.14.0-native
+  runtime packages.
+- Native build: dropped the `litert_link_capi_so` define (removed upstream at v0.15.0);
+  `litert_runtime_link_mode=dynamic` + `resolve_symbols_in_exec=false` remain and mirror upstream's
+  own dynamic-linking CI configuration.
+- **KV overflow guard recalibrated to v0.15.0's prefill planning.** The native executor now plans
+  prefill in fixed work groups taken from the model's prefill signatures and rejects any send with
+  fewer free KV entries than the smallest signature (~128 in the current gemma conversions) — a
+  clean native failure where pre-v0.15.0 runtimes corrupted memory. The guard's context-full
+  threshold reserves that minimum (so `IsContextFull` / `ChatFinishReason.Length` signal up to 112
+  tokens earlier than before and a conversation's usable context shrinks accordingly), the
+  message-fit check accounts for the work-group rounding (an input's plan consumes whole signature
+  lengths), and a `MaxNumTokens` below the minimum work group is rejected with a message naming the
+  real problem. The typed `LiteRtContextOverflowException` and same-turn `IsContextFull` contract
+  are unchanged. Note the reserve constant matches the current gemma `.litertlm` conversions; a
+  model with a larger smallest signature can still fail a send natively (with a plain
+  `LiteRtException`) slightly before the typed rejection.
+
+### Added
+
+- **Per-send decoding controls** on `LiteRtSendOptions` (all require native v0.15.0+, and apply to
+  one send's generated output):
+  - `RepetitionPenalties` — multiplicative (HuggingFace-style) repetition penalty plus subtractive
+    (OpenAI-style) presence/frequency penalties, with a configurable recent-tokens window.
+  - `NoRepeatNgram` — bans repeating n-grams of a configured size during decode.
+  - `SuppressTokens` — token ids whose logits are forced to `-inf` on every decode step.
+  - `EnableThinking` / `ThinkingTokenBudget` — per-send reasoning-mode override and budget.
+  - `Constraint` — a regex or JSON-Schema output constraint (see the constraint provider below).
+- `LiteRtConversationOptions.ThinkingTokenBudget` — caps how many tokens the model spends on its
+  thinking block (enforced token-by-token natively), independent of `MaxOutputTokens`.
+- `LiteRtConversationOptions.PromptTemplate` — overrides the model's chat template with a custom
+  Jinja template string.
+- **Custom constrained decoding (LlGuidance)**: `LiteRtConversationOptions.ConstraintProvider` +
+  `LiteRtConstraint.FromRegex(...)` / `FromJsonSchema(...)` per send force the output to match a
+  regular expression or conform to a JSON Schema. Mutually exclusive with the tool-calling
+  `EnableConstrainedDecoding` path. The LlGuidance engine is compiled into the native library from
+  source, so it does not depend on the platform prebuilt that keeps tool-calling constrained
+  decoding blocked on linux-x64.
+- Engine options: `GpuDecodeStepsPerSync` and `GpuWaitForWeightUploads` (Artisan GPU backend), and
+  `UseRingbuffersLocalAttention` (ringbuffer KV cache for local-attention layers — lower memory on
+  long contexts).
+- `Microsoft.Extensions.AI` connector: `ChatOptions.FrequencyPenalty` / `PresencePenalty` now map to
+  the native penalties, and a JSON-schema `ChatOptions.ResponseFormat` is now **enforced during
+  sampling** via LlGuidance — the reply is guaranteed to be a conforming JSON document (previously
+  the schema only influenced the prompt). Constraints and tools are mutually exclusive (the schema
+  masks the tool-call format), so a request carrying both throws `ArgumentException`; in stateful
+  mode the schema format must be present on the conversation's first call (or the
+  conversation-options template must set `ConstraintProvider`) — a schema-only continuation on a
+  provider-less conversation is rejected in MEAI vocabulary and leaves the conversation resumable.
+- Semantic Kernel connector: `LiteRtPromptExecutionSettings.PresencePenalty` / `FrequencyPenalty`
+  (the standard `presence_penalty` / `frequency_penalty` keys, read by SK's adapter).
+- **Multiple live stateful conversations** (`Microsoft.Extensions.AI` connector): the stateful mode's
+  live-conversation cache is no longer hard-limited to one —
+  `LiteRtStatefulConversationOptions.MaxLiveConversations` (LRU cap, default 8) is public again.
+  LiteRT-LM v0.15.0 fixed the upstream state loss that forced the limit: a suspended conversation now
+  keeps its own turns when another conversation advances (verified by an interleaved-recall canary test
+  and the full multi-conversation suite; the limitation shipped guarded since 1.1.0).
+- **Conversation forking** (`Microsoft.Extensions.AI` connector): `LiteRtConversationBranching` —
+  obtained via `GetService(typeof(LiteRtConversationBranching))` on a stateful client — forks a live
+  conversation into an independent branch that shares the parent's prefilled context (native KV-cache
+  clone, no re-prefill) and diverges from there. Implemented and validated since 2026-07-10, held
+  internal until the native runtime could preserve suspended-conversation state (v0.15.0+).
+
 ## [1.1.1] — 2026-07-18
 
 Managed-only fix. The `LiteRtLmSharp.runtime.<rid>` packages bump to 1.1.1 per the shared-version

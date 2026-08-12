@@ -1,3 +1,4 @@
+using System.Text.Json;
 using LiteRtLmSharp.Extensions.AI;
 using Microsoft.Extensions.AI;
 using Xunit;
@@ -146,19 +147,19 @@ public sealed class ExtensionsAiStatefulModelTests
             () => client.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")], options));
     }
 
-    /// <summary>The stateful mode keeps a <b>single</b> live conversation: starting a second conversation (a
-    /// call without a <c>ConversationId</c>) implicitly replaces the first, so resuming the first id then throws
-    /// while the second remains resumable. No public knob is involved — this is the deliberate
-    /// single-conversation contract (upstream LiteRT-LM cannot yet preserve a suspended conversation's state; a
-    /// bounded multi-conversation cache is parked behind that limitation — see docs/roadmap.md).</summary>
+    /// <summary>LRU eviction at the cap: with <c>MaxLiveConversations = 1</c>, starting a second conversation
+    /// (a call without a <c>ConversationId</c>) evicts and disposes the first, so resuming the first id throws
+    /// while the second remains resumable. (Also the former hard-wired contract of the parked single-conversation
+    /// era, now reachable only by choosing capacity 1.)</summary>
     [SkippableFact]
-    public async Task Stateful_StartingSecondConversation_ReplacesFirst_OldIdThrows()
+    public async Task Stateful_SecondConversationBeyondCap_EvictsFirst_OldIdThrows()
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
         using var engine = LiteRtEngine.Load(Options());
-        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        using var client = new LiteRtChatClient(engine,
+            statefulConversations: new LiteRtStatefulConversationOptions { MaxLiveConversations = 1 });
         var options = new ChatOptions { MaxOutputTokens = 16 };
 
         ChatResponse first = await client.GetResponseAsync([new ChatMessage(ChatRole.User, "Remember A.")], options);
@@ -166,7 +167,7 @@ public sealed class ExtensionsAiStatefulModelTests
         Assert.False(string.IsNullOrEmpty(first.ConversationId));
         Assert.NotEqual(first.ConversationId, second.ConversationId);
 
-        // Only one live conversation is kept, so starting the second replaced the first — resuming it now throws.
+        // Capacity 1: starting the second conversation evicted the first — resuming it now throws.
         var resumeFirst = new ChatOptions { MaxOutputTokens = 16, ConversationId = first.ConversationId };
         await Assert.ThrowsAsync<ArgumentException>(
             () => client.GetResponseAsync([new ChatMessage(ChatRole.User, "what did I say?")], resumeFirst));
@@ -175,40 +176,166 @@ public sealed class ExtensionsAiStatefulModelTests
         var resumeSecond = new ChatOptions { MaxOutputTokens = 16, ConversationId = second.ConversationId };
         ChatResponse ok = await client.GetResponseAsync([new ChatMessage(ChatRole.User, "ok?")], resumeSecond);
         Assert.Equal(second.ConversationId, ok.ConversationId);
+
+        // And at the DEFAULT capacity (8), a second conversation does NOT evict the first — both stay live.
+        using var roomy = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        ChatResponse a = await roomy.GetResponseAsync([new ChatMessage(ChatRole.User, "Remember A.")], options);
+        ChatResponse b = await roomy.GetResponseAsync([new ChatMessage(ChatRole.User, "Remember B.")], options);
+        var resumeA = new ChatOptions { MaxOutputTokens = 16, ConversationId = a.ConversationId };
+        ChatResponse aStillLive = await roomy.GetResponseAsync([new ChatMessage(ChatRole.User, "ok?")], resumeA);
+        Assert.Equal(a.ConversationId, aStillLive.ConversationId);
     }
 
-    // ─────────────────────── Forking + multi-conversation (PARKED capability) ───────────────────────
+    /// <summary>A JSON-schema ResponseFormat arriving only on a CONTINUATION of a conversation created
+    /// without one must be rejected in MEAI vocabulary (ArgumentException naming ResponseFormat) and —
+    /// critically — must NOT destroy the live conversation: nothing native ran, so the id stays
+    /// resumable. (The regression this pins: the client's eviction catch-all used to dispose the
+    /// healthy conversation on this purely-managed validation failure.)</summary>
+    [SkippableFact]
+    public async Task Stateful_SchemaOnProviderlessContinuation_ThrowsAndConversationSurvives()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        var options = new ChatOptions { MaxOutputTokens = 16 };
+
+        ChatResponse first = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember that my favorite color is teal. Acknowledge briefly.")], options);
+        string id = first.ConversationId!;
+
+        using JsonDocument schema = JsonDocument.Parse("""{"type":"object","required":["color"]}""");
+        var withSchema = new ChatOptions
+        {
+            MaxOutputTokens = 32,
+            ConversationId = id,
+            ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement),
+        };
+        ArgumentException ex = await Assert.ThrowsAsync<ArgumentException>(
+            () => client.GetResponseAsync([new ChatMessage(ChatRole.User, "What is my color? As JSON.")], withSchema));
+        Assert.Contains("ResponseFormat", ex.Message, StringComparison.Ordinal);
+
+        // The conversation must still be live and hold its state.
+        var resume = new ChatOptions { MaxOutputTokens = 32, ConversationId = id };
+        ChatResponse after = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is my favorite color? Answer with just the color.")], resume);
+        Assert.Contains("teal", after.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The documented two-phase pattern for tools + structured output actually works: a
+    /// tools+schema request throws (pinned elsewhere), and the RECOMMENDED alternative — run the tool
+    /// phase without the ResponseFormat, then ask for the schema-formatted answer — succeeds. In
+    /// stateful mode the schema continuation needs the provider armed from creation, which is what
+    /// the client's options template is for: with ConstraintProvider on the template, the tools
+    /// conversation is schema-capable, the tool loop runs unconstrained, and the follow-up
+    /// schema-constrained continuation returns conforming JSON informed by the tool result.</summary>
+    [SkippableFact]
+    public async Task Stateful_ToolPhaseThenSchemaContinuation_TwoPhasePatternWorks()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        Skip.If(OperatingSystem.IsLinux(),
+            "EnableConstrainedDecoding (recommended with tools) is blocked on linux-x64 — see docs.");
+        Skip.If(Environment.GetEnvironmentVariable("LITERTLM_TEST_TOOLS") != "1",
+            "Set LITERTLM_TEST_TOOLS=1 (with a version-matched native binary) to run tool tests.");
+
+        using var engine = LiteRtEngine.Load(Options());
+
+        int invocations = 0;
+        AIFunction weather = AIFunctionFactory.Create(
+            (string city) => { invocations++; return $"22 degrees and sunny in {city}"; },
+            name: "get_weather", description: "Gets the current weather for a given city.");
+
+        // The template arms the provider on every conversation, so the schema continuation below can
+        // be enforced. NOTE: no EnableConstrainedDecoding here — provider and the tool-calling
+        // constrained mode are mutually exclusive; tools still work without it.
+        using IChatClient client = new LiteRtChatClient(engine,
+                optionsTemplate: new LiteRtConversationOptions { ConstraintProvider = LiteRtConstraintProvider.LlGuidance },
+                statefulConversations: new LiteRtStatefulConversationOptions())
+            .AsBuilder().UseFunctionInvocation().Build();
+
+        // Phase 1: the tool loop, unconstrained.
+        ChatResponse toolPhase = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is the weather in Paris? Use the get_weather tool.")],
+            new ChatOptions { Tools = [weather], MaxOutputTokens = 256 });
+        Assert.True(invocations >= 1, "Expected the model to call the get_weather tool.");
+        Assert.False(string.IsNullOrEmpty(toolPhase.ConversationId));
+
+        // Phase 2: schema-formatted answer on the SAME conversation (no tools on this request).
+        using JsonDocument schema = JsonDocument.Parse(
+            """{"type":"object","properties":{"city":{"type":"string"},"conditions":{"type":"string"}},"required":["city","conditions"],"additionalProperties":false}""");
+        ChatResponse formatted = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Summarize that weather report as JSON.")],
+            new ChatOptions
+            {
+                MaxOutputTokens = 64,
+                ConversationId = toolPhase.ConversationId,
+                ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement),
+            });
+
+        using JsonDocument parsed = JsonDocument.Parse(formatted.Text.Trim());
+        Assert.Equal(JsonValueKind.String, parsed.RootElement.GetProperty("city").ValueKind);
+        Assert.Equal(JsonValueKind.String, parsed.RootElement.GetProperty("conditions").ValueKind);
+    }
+
+    /// <summary>A fork of a schema-armed conversation must keep enforcing schemas on the branch: the
+    /// native clone recreates the constraint provider, and the managed layer must carry the flag
+    /// (both the core Clone() and the store entry the client tracks). Pins the review finding where
+    /// the flag was dropped and every constrained send on a branch threw.</summary>
+    [SkippableFact]
+    public async Task Fork_OfSchemaArmedConversation_EnforcesSchemaOnBranch()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        using JsonDocument schema = JsonDocument.Parse(
+            """{"type":"object","properties":{"color":{"type":"string"}},"required":["color"],"additionalProperties":false}""");
+
+        // First call carries the schema → the provider is armed on the conversation.
+        var schemaOptions = new ChatOptions
+        {
+            MaxOutputTokens = 48,
+            ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement),
+        };
+        ChatResponse seeded = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "My favorite color is teal. Reply as JSON with the color.")], schemaOptions);
+        using (JsonDocument parsed = JsonDocument.Parse(seeded.Text.Trim()))
+            Assert.True(parsed.RootElement.TryGetProperty("color", out _));
+
+        var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
+        string branchId = await branching.ForkAsync(seeded.ConversationId!);
+
+        // The branch must accept and enforce a schema-constrained continuation.
+        var branchOptions = new ChatOptions
+        {
+            MaxOutputTokens = 48,
+            ConversationId = branchId,
+            ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement),
+        };
+        ChatResponse branchReply = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Repeat my color as JSON.")], branchOptions);
+        using JsonDocument branchParsed = JsonDocument.Parse(branchReply.Text.Trim());
+        Assert.True(branchParsed.RootElement.TryGetProperty("color", out _));
+    }
+
+    // ─────────────────────── Forking + multi-conversation ───────────────────────
     //
-    // The tests below exercise the PARKED multi-live-conversation / forking machinery, which is intentionally
-    // NOT reachable by consumers today: LiteRtConversationBranching is internal, and the client pins its live-
-    // conversation cache to a single entry (LiteRtConversationStore.LiveConversationCapacity == 1). Both are
-    // held back by the same upstream limitation — LiteRT-LM does not yet preserve a suspended conversation's
-    // state when another advances (see the Upstream_..._Sentinel test and docs/roadmap.md).
-    //
-    // So they carry an ADDITIONAL gate, LITERTLM_TEST_MULTICONV=1 (on top of the model gate), and are expected
-    // to pass only once upstream preserves suspended state. They reach the internal branching type and the
-    // larger-capacity client seam via InternalsVisibleTo (LiteRtLmSharp.Extensions.AI grants it to
-    // LiteRtLmSharp.Tests): the internal LiteRtChatClient(engine, liveConversationCapacity, …) ctor builds a
-    // client whose cache holds more than one live conversation, above the production cap of one.
-    //
-    // WHEN UPSTREAM FIXES SUSPENDED-STATE PRESERVATION: raise LiteRtConversationStore.LiveConversationCapacity,
-    // make LiteRtConversationBranching public, drop this LITERTLM_TEST_MULTICONV gate, and re-expose the fork
-    // docs/CHANGELOG. Full steps: docs/roadmap.md.
-    private static bool MultiConvEnabled => Environment.GetEnvironmentVariable("LITERTLM_TEST_MULTICONV") == "1";
-    private const string MultiConvSkip =
-        "Set LITERTLM_TEST_MULTICONV=1 to run the parked multi-conversation / forking tests (they exercise the " +
-        "future-ready machinery and pass only when upstream LiteRT-LM preserves suspended-conversation state).";
+    // These tests exercise the multi-live-conversation / forking surface, unlocked with the v0.15.0
+    // repin: the native runtime now preserves a suspended conversation's state when another advances
+    // (verified by the Upstream_..._Sentinel canary below and the interleave recall tests here). They
+    // were parked behind LITERTLM_TEST_MULTICONV=1 from 2026-07-10 until that fix shipped.
 
     /// <summary><c>GetService(typeof(LiteRtConversationBranching))</c> returns a branching instance in the
     /// stateful mode and <c>null</c> in the stateless mode; the standard <see cref="ChatClientMetadata"/> and
-    /// self lookups are unchanged in both. (LiteRtConversationBranching is internal — reachable here only via
-    /// InternalsVisibleTo.)</summary>
+    /// self lookups are unchanged in both.</summary>
     [SkippableFact]
     public async Task Fork_GetService_ReturnsBranchingOnlyInStatefulMode()
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
-        Skip.If(!MultiConvEnabled, MultiConvSkip);
         await Task.CompletedTask;
 
         using var engine = LiteRtEngine.Load(Options());
@@ -241,7 +368,6 @@ public sealed class ExtensionsAiStatefulModelTests
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
-        Skip.If(!MultiConvEnabled, MultiConvSkip);
 
         using var engine = LiteRtEngine.Load(Options());
         using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
@@ -263,12 +389,11 @@ public sealed class ExtensionsAiStatefulModelTests
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
-        Skip.If(!MultiConvEnabled, MultiConvSkip);
 
         using var engine = LiteRtEngine.Load(Options());
-        // Base + branch must be live at once, above the production single-conversation cap — use the internal
-        // capacity seam (parked capability, gated on LITERTLM_TEST_MULTICONV).
-        using var client = new LiteRtChatClient(engine, liveConversationCapacity: 4);
+        // Base + branch must be live at once, above the production single-conversation cap — raise the
+        // live-conversation cap via the public knob.
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions { MaxLiveConversations = 4 });
         var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
 
         // Seed the shared context on the base conversation.
@@ -318,12 +443,11 @@ public sealed class ExtensionsAiStatefulModelTests
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
-        Skip.If(!MultiConvEnabled, MultiConvSkip);
 
         using var engine = LiteRtEngine.Load(Options());
         // Capacity exactly 2 (via the internal seam) so the third live conversation evicts the LRU — the
         // parked multi-conversation machinery under test.
-        using var client = new LiteRtChatClient(engine, liveConversationCapacity: 2);
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions { MaxLiveConversations = 2 });
         var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
 
         // Base conversation (1 live).
@@ -367,11 +491,10 @@ public sealed class ExtensionsAiStatefulModelTests
             "EnableConstrainedDecoding (recommended with tools) is blocked on linux-x64 — see docs.");
         Skip.If(Environment.GetEnvironmentVariable("LITERTLM_TEST_TOOLS") != "1",
             "Set LITERTLM_TEST_TOOLS=1 (with a version-matched native binary) to run tool tests.");
-        Skip.If(!MultiConvEnabled, MultiConvSkip);
 
         using var engine = LiteRtEngine.Load(Options());
         // Base + fork live at once, above the production single-conversation cap — internal capacity seam.
-        using var client = new LiteRtChatClient(engine, liveConversationCapacity: 4);
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions { MaxLiveConversations = 4 });
         var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
 
         AIFunction weather = AIFunctionFactory.Create(

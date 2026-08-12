@@ -148,6 +148,41 @@ it, but may ignore the instruction for a clearly-unrelated prompt. (Semantic Ker
 > The native [LiteRtLmSharp tools API](chat.md#function-calling) is still available for full control
 > (constrained decoding, custom tool-call parsing); the chat client is the MEAI-idiomatic path on top of it.
 
+## Structured output (`ResponseFormat`)
+
+A JSON-schema `ChatOptions.ResponseFormat` is **enforced during sampling** (native LiteRT-LM v0.15.0+):
+the client arms the LlGuidance constraint provider on the conversation and attaches the schema as a
+per-send constraint, so every token the model emits is masked to schema-conforming continuations — the
+reply is *guaranteed* to be a JSON document matching the schema, not just nudged toward it.
+
+```csharp
+ChatResponse r = await client.GetResponseAsync(messages, new ChatOptions
+{
+    ResponseFormat = ChatResponseFormat.ForJsonSchema(mySchemaJsonElement),
+});
+// r.Text parses as JSON conforming to mySchemaJsonElement — enforced, not prompted.
+```
+
+Rules and caveats:
+
+- **Schema-less `ChatResponseFormat.Json` ("JSON mode") is not enforced** — without a schema there is
+  nothing precise to constrain, so it keeps the previous prompt-driven behavior.
+- **Not combinable with `Tools` on one request.** The schema masks every generated token, which
+  makes emitting a tool call impossible, so a request carrying both throws `ArgumentException`. Run
+  the tool phase first, then request the schema-formatted answer in a separate call. In stateful
+  mode both phases can share one conversation: set `ConstraintProvider` on the client's
+  conversation-options template, run the tool request without a `ResponseFormat`, then send the
+  schema-formatted request as a continuation of the same `ConversationId` — the reply is
+  schema-enforced and informed by the tool results (covered by a model test).
+- **Stateful mode: the schema must be present on the conversation's first call** (the constraint
+  provider is fixed at creation). A schema arriving only on a continuation throws `ArgumentException`
+  and leaves the conversation resumable; to make every conversation schema-capable, set
+  `LiteRtConversationOptions.ConstraintProvider = LiteRtConstraintProvider.LlGuidance` on the
+  client's conversation-options template.
+- When a schema request is active, the tool-calling `enable_constrained_decoding` knob is dropped for
+  that conversation (the two constrained-decoding modes are mutually exclusive natively, and the
+  tool path is meaningless without tools).
+
 ## Reasoning ("thinking")
 
 Enable the model's reasoning mode with **`LiteRtChatOptions`** — a `ChatOptions` subtype that adds the one knob
@@ -271,23 +306,48 @@ What is fixed once a conversation is created (and therefore **ignored** on a con
 carries a `ConversationId`):
 
 - the sampler, thinking mode, tools, constrained decoding, the system message, and any template values;
-- only the per-send `ChatOptions.MaxOutputTokens` still applies on a continuation (it is resolved per send);
+- options that map to native **per-send** settings still apply on a continuation: `MaxOutputTokens`,
+  `FrequencyPenalty`/`PresencePenalty`, and a JSON-schema `ResponseFormat` (see the structured-output note
+  below — the conversation must have carried a schema on its **first** call, or the client's options template
+  must set `ConstraintProvider`; otherwise the continuation throws `ArgumentException` and the conversation
+  stays resumable);
 - a **system message on a continuation throws** `InvalidOperationException` (the preface cannot be rewritten).
   To change any fixed setting, start a new conversation by omitting `ConversationId`.
 
-One live conversation at a time:
+Lifetime and eviction:
 
-- this mode keeps a **single** live conversation. Starting a new conversation (a call **without** a
-  `ConversationId`) replaces the previous one: the replaced conversation is disposed, and a later request that
-  carries its id throws `ArgumentException` (as does an id this client never issued);
-- disposing the client disposes the live conversation. There is no time-based expiry in this mode.
+- live conversations are held in an LRU cache bounded by `MaxLiveConversations` (default 8);
+- creating a new conversation beyond the cap evicts and disposes the least-recently-used one;
+- a request whose `ConversationId` was evicted, or was never issued by this client, throws
+  `ArgumentException`;
+- disposing the client disposes every live conversation. There is no time-based expiry in this mode, so size
+  the cap for your concurrency.
 
-**Why only one?** Upstream LiteRT-LM does not yet preserve a suspended conversation's state when another
-conversation advances, so keeping two live conversations and interleaving them would silently corrupt the
-parked one's answers. The single-conversation limit is deliberate; a bounded multi-conversation cache (and a
-conversation-forking hatch) already exists internally and will be enabled once upstream preserves
-suspended-conversation state. There is no public knob to raise the limit. See
-[`docs/roadmap.md`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md).
+> Multiple live conversations require **native LiteRT-LM v0.15.0+**. Earlier runtimes silently lost a
+> suspended conversation's state whenever another conversation advanced, so this mode was hard-limited to a
+> single live conversation (and forking was unavailable) until that fix shipped.
+
+### Forking a conversation
+
+In the stateful mode the client also offers a provider-specific **forking** hatch: branch a live conversation
+into an independent copy that shares the parent's prefilled context (a cheap native KV-cache clone — no
+re-prefill of the shared prefix) and diverges from there. Useful for exploring several continuations of one
+prompt (best-of-N, A/B prompting, tree search) without re-establishing the common prefix each time.
+
+```csharp
+var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
+
+ChatResponse seeded = await client.GetResponseAsync(seedMessages, options);
+string branchId = await branching.ForkAsync(seeded.ConversationId!);
+
+// The branch id behaves like any other ConversationId: resume it, re-fork it, or let it be evicted.
+options.ConversationId = branchId;
+```
+
+`GetService(typeof(LiteRtConversationBranching))` returns the hatch only in the stateful mode (`null`
+otherwise — there are no live conversations to fork). The fork counts toward `MaxLiveConversations` like any
+other live conversation, and it inherits the parent's synthesized-call-id map, so function-calling
+continuations keep resolving on the branch.
 
 `ChatResponse.Usage.TotalTokenCount` in this mode is the conversation's **cumulative** KV-cache size, so it
 grows across the thread (rather than resetting per call as in the stateless mode).

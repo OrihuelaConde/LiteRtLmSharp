@@ -14,10 +14,11 @@
 # the shared-lib target and generates the Windows .def from c/engine.h so the
 # export list stays in sync with whatever ref we pin.
 #
-# Build with: --define=litert_link_capi_so=true   (keeps libLiteRt a SEPARATE
-# shared lib so the prebuilt WebGPU accelerator can resolve LiteRt* at runtime
-# instead of statically linking a second copy of TFLite into libLiteRtLm).
-# Windows additionally needs: --define=resolve_symbols_in_exec=false
+# Build with: --define=litert_runtime_link_mode=dynamic   (keeps libLiteRt a
+# SEPARATE shared lib so the prebuilt WebGPU accelerator can resolve LiteRt* at
+# runtime instead of statically linking a second copy of TFLite into libLiteRtLm;
+# the old litert_link_capi_so knob was removed upstream at v0.15.0).
+# Windows/macOS additionally need: --define=resolve_symbols_in_exec=false
 #
 # Usage: patch_c_api.sh <litert_lm_dir>
 set -euo pipefail

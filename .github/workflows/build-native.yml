@@ -21,7 +21,7 @@ on:
         # Release tag: version-synced with Google, includes get_token_count, and is the
         # target for streaming-fix validation. Proven fallback commit if a tag regresses:
         # 032334d81ff96431492be272e536fbafe094b1e9
-        default: 'v0.14.0'
+        default: 'v0.15.0'
       platforms:
         description: 'Platforms to build (comma-separated: linux-x64,win-x64,android-arm64,macos-arm64,ios-arm64) or "all". Build only NEW platforms to save Actions minutes; the release keeps existing assets.'
         required: true
@@ -61,16 +61,16 @@ jobs:
         run: bash native/patch_c_api.sh /tmp/LiteRT-LM
 
       - name: Build libLiteRtLm.so
-        # litert_runtime_link_mode=dynamic is REQUIRED alongside litert_link_capi_so since the
-        # v0.14.0 @litert pin: without it the LiteRT runtime silently static-links INTO
-        # libLiteRtLm even with litert_link_capi_so=true, producing TWO runtimes in-process
-        # (the embedded one + the shipped libLiteRt the samplers import) — mixed GPU state and
-        # an access violation in the WebGPU delegate on Windows. The define trio mirrors
-        # upstream's own dynamic-linking CI jobs (ci-build*.yml at v0.14.0).
+        # litert_runtime_link_mode=dynamic is REQUIRED since the v0.14.0 @litert pin: without
+        # it the LiteRT runtime silently static-links INTO libLiteRtLm, producing TWO runtimes
+        # in-process (the embedded one + the shipped libLiteRt the samplers import) — mixed GPU
+        # state and an access violation in the WebGPU delegate on Windows. The define pair
+        # mirrors upstream's own dynamic-linking CI leg (ml-ci-build.yml at v0.15.0).
+        # litert_link_capi_so was dropped for v0.15.0: upstream deprecated it (daa8ea819) and
+        # the define is gone from the v0.15.0 tree — link_mode=dynamic is the surviving knob.
         run: |
           cd /tmp/LiteRT-LM
           bazelisk build -c opt --strip=always \
-            --define=litert_link_capi_so=true \
             --define=litert_runtime_link_mode=dynamic \
             --define=resolve_symbols_in_exec=false \
             //c:libLiteRtLm.dylib
@@ -81,6 +81,14 @@ jobs:
           cp /tmp/LiteRT-LM/bazel-bin/c/libLiteRtLm.dylib artifacts/libLiteRtLm.so
           cp /tmp/LiteRT-LM/prebuilt/linux_x86_64/*.so artifacts/ 2>/dev/null || true
           ls -lh artifacts/
+          # Assert the two properties a bad build/collect would silently break (both bitten before):
+          # dynamic link mode (a static embed produces two runtimes in-process and GPU crashes), and
+          # the presence of the prebuilt companions (a collect regression once shipped a bare engine).
+          readelf -d artifacts/libLiteRtLm.so | grep -q 'NEEDED.*libLiteRt\.so' \
+            || { echo "::error::libLiteRtLm.so does not DT_NEED libLiteRt.so — static embed?"; exit 1; }
+          for f in libLiteRt.so libLiteRtTopKWebGpuSampler.so libLiteRtWebGpuAccelerator.so libwebgpu_dawn.so libGemmaModelConstraintProvider.so; do
+            [ -f "artifacts/$f" ] || { echo "::error::prebuilt companion missing from artifacts: $f"; exit 1; }
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -134,7 +142,6 @@ jobs:
             --features=compiler_param_file `
             --features=archive_param_file `
             --spawn_strategy=local `
-            --define=litert_link_capi_so=true `
             --define=litert_runtime_link_mode=dynamic `
             --define=resolve_symbols_in_exec=false `
             //c:libLiteRtLm.dylib
@@ -151,12 +158,13 @@ jobs:
           Copy-Item C:\LiteRT-LM\bazel-bin\c\libLiteRtLm.dylib artifacts\LiteRtLm.dll
 
           $prebuilt = 'C:\LiteRT-LM\prebuilt\windows_x86_64'
-          # Copy every prebuilt DLL as-is (satisfies LiteRtLm.dll's PE imports,
+          # Copy the prebuilt companion DLLs as-is (satisfies LiteRtLm.dll's PE imports,
           # which reference the original lib*-prefixed names). Only the lib*-prefixed
           # names are shipped: PE import-table + strings analysis (2026-07-18) shows both
           # the static imports and every runtime LoadLibrary in the binaries reference the
           # lib* names exclusively, and the managed resolver only probes LiteRtLm.dll —
           # the prefixless copies this step used to add were ~26 MB of dead weight.
+          Get-ChildItem "$prebuilt\lib*.dll" | Copy-Item -Destination artifacts\ -Force
           # DXC runtime (x64).
           foreach ($dxc in 'dxil.dll','dxcompiler.dll') {
             $src = Get-ChildItem -Recurse -Filter $dxc -Path dxc | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
@@ -165,6 +173,11 @@ jobs:
             Copy-Item $src.FullName "artifacts\$dxc" -Force
           }
           Get-ChildItem artifacts\ | Select-Object Name, Length
+          # Assert every expected companion is present — the twin-filter cleanup once dropped the
+          # whole prebuilt copy, shipping a package that could not even load on CPU.
+          foreach ($required in 'LiteRtLm.dll','libLiteRt.dll','libLiteRtTopKWebGpuSampler.dll','libLiteRtWebGpuAccelerator.dll','libwebgpu_dawn.dll','libGemmaModelConstraintProvider.dll','dxil.dll','dxcompiler.dll') {
+            if (-not (Test-Path "artifacts\$required")) { throw "expected artifact missing: $required" }
+          }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -262,17 +275,18 @@ jobs:
         run: bash native/patch_c_api.sh /tmp/LiteRT-LM
 
       - name: Build libLiteRtLm.dylib (macos-arm64)
-        # Like linux-x64: LiteRt stays a SEPARATE shared lib (litert_link_capi_so) so the
-        # prebuilt Metal sampler — which carries LC_LOAD_DYLIB @rpath/libLiteRt.dylib — can
-        # load it at runtime (static linking made its dlopen fail and sampling fall back to
+        # Like linux-x64: LiteRt stays a SEPARATE shared lib (litert_runtime_link_mode=dynamic)
+        # so the prebuilt Metal sampler — which carries LC_LOAD_DYLIB @rpath/libLiteRt.dylib —
+        # can load it at runtime (static linking made its dlopen fail and sampling fall back to
         # CPU). resolve_symbols_in_exec=false is REQUIRED with it on macOS: the repo
         # .bazelrc defaults that define to true, and with both set the upstream
         # @litert//litert/c:litert_runtime_c_api_shared_lib srcs select() has two matching
         # conditions (:resolve_symbols_in_exec and :macos) -> "illegal ambiguous match".
-        # Google's own CI-Mac dylib pass uses this exact define pair. The patch adds
-        # -rpath @loader_path so companion dylibs resolve from the same directory.
-        # litert_runtime_link_mode=dynamic added for the v0.14.0 @litert pin (see the linux/
-        # windows build steps). On macOS the static-embed failure mode was MASKED in CI: the
+        # The patch adds -rpath @loader_path so companion dylibs resolve from the same
+        # directory. (litert_link_capi_so, formerly also passed here, was dropped for v0.15.0 —
+        # deprecated upstream in daa8ea819 and gone from the v0.15.0 tree.)
+        # litert_runtime_link_mode=dynamic is REQUIRED since the v0.14.0 @litert pin (see the
+        # linux/windows build steps). On macOS the static-embed failure mode was MASKED in CI: the
         # WebGPU accelerator resolves LiteRt* via dlsym against our exported wildcard symbols,
         # so it happened to bind the embedded copy — but the Metal sampler loads
         # @rpath/libLiteRt.dylib by install name and would hit the two-runtime mismatch on
@@ -280,7 +294,6 @@ jobs:
         run: |
           cd /tmp/LiteRT-LM
           bazelisk build -c opt --strip=always \
-            --define=litert_link_capi_so=true \
             --define=litert_runtime_link_mode=dynamic \
             --define=resolve_symbols_in_exec=false \
             //c:libLiteRtLm.dylib
@@ -298,7 +311,7 @@ jobs:
         # default (LiteRT-LM PR #2302). Since v0.14.0 Dawn ships as a SEPARATE
         # libwebgpu_dawn.dylib in the prebuilt (statically embedded in the accelerator before
         # that) — the *.dylib glob below picks it up. libLiteRt.dylib stays a separate shared
-        # lib (litert_link_capi_so + litert_runtime_link_mode=dynamic) so every
+        # lib (litert_runtime_link_mode=dynamic) so every
         # companion resolves it via @rpath/@loader_path; NativeLibraryResolver additionally
         # RTLD_GLOBAL-preloads the whole directory. (Reverts the WebGPU exclusion from a461607,
         # which was inherited from flutter_gemma's macOS bundle — but flutter_gemma runs on real
@@ -308,6 +321,13 @@ jobs:
           cp /tmp/LiteRT-LM/bazel-bin/c/libLiteRtLm.dylib artifacts/libLiteRtLm.dylib
           cp /tmp/LiteRT-LM/prebuilt/macos_arm64/*.dylib artifacts/
           ls -lh artifacts/
+          # Assert dynamic link mode (the Metal sampler loads @rpath/libLiteRt.dylib by install name;
+          # a static embed would give it a second runtime) and the full companion set.
+          otool -L artifacts/libLiteRtLm.dylib | grep -q 'libLiteRt\.dylib' \
+            || { echo "::error::libLiteRtLm.dylib does not link libLiteRt.dylib — static embed?"; exit 1; }
+          for f in libLiteRt.dylib libLiteRtMetalAccelerator.dylib libLiteRtTopKMetalSampler.dylib libLiteRtTopKWebGpuSampler.dylib libLiteRtWebGpuAccelerator.dylib libwebgpu_dawn.dylib libGemmaModelConstraintProvider.dylib; do
+            [ -f "artifacts/$f" ] || { echo "::error::prebuilt companion missing from artifacts: $f"; exit 1; }
+          done
           echo "--- exported litert_lm_* symbols ---"
           nm -gU artifacts/libLiteRtLm.dylib | grep -c litert_lm_ || true
           echo "--- load commands (expect @rpath/libLiteRt.dylib deps) ---"
@@ -348,7 +368,8 @@ jobs:
         #    all 166 of its LiteRt* imports use DYNAMIC_LOOKUP (ordinal 254, flat
         #    namespace), and the static libLiteRtLm.dylib exports every one of them
         #    (166/166 coverage), so the sampler resolves against us at dlopen.
-        # 2. It doesn't build: with litert_link_capi_so=true the pinned @litert routes
+        # 2. It doesn't build: with litert_link_capi_so=true (the pre-v0.15.0 dynamic-link
+        #    knob, removed upstream at v0.15.0) the pinned @litert routes
         #    iOS through a macos_dylib copy_file; that rule's macOS transition pulls
         #    XNNPACK SSE microkernels into the ios config, where -mstackrealign clashes
         #    with build:ios --copt=-fembed-bitcode (run 27436848074).

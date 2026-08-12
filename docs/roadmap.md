@@ -1,6 +1,6 @@
 # Project status and roadmap
 
-Last updated: 2026-08-09. Source of truth for "what's done and what's pending".
+Last updated: 2026-08-09 (v0.15.0 repin cycle). Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -17,7 +17,7 @@ Last updated: 2026-08-09. Source of truth for "what's done and what's pending".
 decoding; real-hardware results are from dev machines/devices. macOS GPU
 specifics and dates are in [§macOS validation](#actionable-next-steps-suggested-order) below.</sub>
 
-Native binaries are pinned to **LiteRT-LM v0.14.0** (repinned from v0.13.1 on 2026-07-10).
+Native binaries are pinned to **LiteRT-LM v0.15.0** (repinned from v0.14.0 on 2026-08-09).
 
 ## Versioning policy
 
@@ -51,13 +51,43 @@ switching model/backend without restarting); conversations are not thread-safe; 
 is the total context window; VC++ Redistributable required on win-x64; Android GPU requires
 `<uses-native-library>` in the app manifest.
 
-## C API coverage (audit 2026-07-10, header v0.14.0)
+## C API coverage (audit 2026-08-09, header v0.15.0)
 
-**84 of 109 `litert_lm_*` functions bound** (everything we bind exists in the header, no
-drift). v0.14.0 grew the surface 89 → 109; the 17 newly bound functions are the ✅ rows added
-below (LoRA, tool-call streaming, CPU thread counts, per-send output cap, preface rendering, and
-the internal sampler-builder migration). The remaining 25 group into the areas below, in suggested
-priority order:
+**115 of 140 `litert_lm_*` functions bound** (everything we bind exists in the header, no drift).
+v0.15.0 grew the surface 109 → 140 with zero removals; the only signature changes formalize two
+`int` parameters into enums with identical values (`set_activation_data_type`,
+`set_min_log_level`), so no existing binding changed shape — but the **stream-callback typedef DID
+change** (opaque `LiteRtLmStreamChunk*` + getters instead of `(text, is_final, error_msg)`
+parameters), which is why the managed assembly requires same-version natives from this era on. All
+31 new functions are bound (audit trail in CHANGELOG `[Unreleased]`):
+
+- **Per-send decoding configs** (18): repetition-penalty builder (multiplicative HF-style +
+  subtractive OpenAI-style + window), no-repeat-ngram builder, suppress-tokens builder, thinking
+  config builder (enable + token budget, settable at conversation AND per-send level), and their
+  optional-args setters → `LiteRtSendOptions.RepetitionPenalties/NoRepeatNgram/SuppressTokens/`
+  `EnableThinking/ThinkingTokenBudget` + `LiteRtConversationOptions.ThinkingTokenBudget`.
+- **Custom constrained decoding** (2): `conversation_config_set_constraint_provider` (LlGuidance,
+  compiled from the llguidance Rust crate — in the tree since v0.13.1, only now exposed) +
+  per-send `optional_args_set_constraint` (regex / JSON Schema) →
+  `LiteRtConversationOptions.ConstraintProvider` + `LiteRtSendOptions.Constraint`. Note the C-level
+  interplay verified in source: the per-send constraint needs only the provider
+  (conversation.cc:398 — `enable_constrained_decoding` is the TOOL-calling path's switch), and the
+  linux-x64 guard stays scoped to the tool path (the broken prebuilt is not involved here).
+- **Prompt template** (1): `conversation_config_set_prompt_template` →
+  `LiteRtConversationOptions.PromptTemplate` (Jinja override).
+- **Engine knobs** (3): `gpu_decode_steps_per_sync`, `gpu_wait_for_weight_uploads` (both
+  Artisan-GPU-only), `use_ringbuffers_local_attention` → the matching `LiteRtEngineOptions`.
+- **Stream chunk** (3): `stream_chunk_get_text/is_final/get_error` — required, not optional: they
+  are the only access to the v0.15.0 callback's payload.
+- Readiness per the protocol below: real-engine upstream e2e tests exist for the new surface
+  (engine_test.cc incl. an LlGuidance send), it is documented in upstream's docs tree
+  (docs/api/cpp/constrained-decoding.md), and our own model scenarios assert content
+  (DecodingOptionsTests). Text-LoRA remains STUBBED at v0.15.0 (resource_manager.cc:584, TODO
+  b/462499294) — surface unchanged, stub-pin test still passing.
+
+The v0.14.0 audit below is kept for history (denominators are the 109-function header). The
+remaining 25 unbound functions are unchanged: the raw Session API (13), responses introspection
+(10), the raw-FD engine load, and the NPU dispatch dir.
 
 ### High value (user-facing features)
 
@@ -101,6 +131,20 @@ priority order:
 > scope until upstream exposes them.
 
 ## Actionable next steps (suggested order)
+
+-2. **v0.15.0 REPIN CYCLE — staged on branch `repin-v0.15.0` / PR #5, 2026-08-09, pending
+   maintainer review.** Native `native-v0.15.0` release published (defines trimmed to
+   `litert_runtime_link_mode=dynamic` + `resolve_symbols_in_exec=false`; win-x64 collect step's
+   lost companion copy restored); all 31 new C-API functions bound (115/140); the v0.15.0
+   stream-callback ABI change absorbed internally; multi-conversation stateful mode + forking
+   unlocked (see watchlist); KV-overflow guard recalibrated to the new native prefill-reserve
+   behavior. Full model suite 239/0 on win-x64 CPU; GPU clean run + documented intermittent
+   pre-existing churn crash. **Next after merge:** release prep runbook (bump to 1.2.0 per the
+   versioning policy — native bump = minor —, CHANGELOG section cut, README compat row
+   `1.2.0 | v0.15.0`, version sweep in guides/snippets, pack dry-run + ConsumerSmoke, publish only
+   with the explicit GO), then the docs/memory consolidation pass. Follow-up candidates from the
+   cycle: #2807 closing comment, CPU-sampler-factory upstream report, GPU churn-crash
+   investigation, #2149 third-era blob probe (docker harness).
 
 -1. ✅ **1.1.1 RELEASED — 2026-07-18** (GPU native-layout fix). Published to nuget.org (all 7
    packages, shared-version policy; runtimes carry the same v0.14.0 natives), tag `v1.1.1` +
@@ -363,7 +407,53 @@ AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AO
 
 ## Watchlist (re-check periodically)
 
-**Last re-checked: 2026-07-17.** Full sweep results:
+**Last re-checked: 2026-08-09 (v0.15.0 repin cycle).** Headline findings of the cycle:
+
+- **#2807 (multi-conversation state loss, ours): FIXED by v0.15.0.** The sentinel that pinned the
+  loss fired on the first v0.15.0 suite run (the suspended conversation now recalls its own facts
+  after interleaving) and the full parked suite passes — the resource-management rework in the tag
+  (~800 changed lines across the serial/threaded execution managers) delivered suspended-state
+  preservation. The activation checklist was executed: `MaxLiveConversations` public again
+  (default 8), `LiteRtConversationBranching` public, MULTICONV test gate dropped, sentinel flipped
+  into a positive-recall canary (it failing again = upstream regressed → re-park per commit
+  382e369). Consider a closing comment on #2807 with the verification (draft with the maintainer).
+- **New at v0.15.0: the executor rejects prefill below the model's smallest prefill-signature
+  length** (`FAILED_PRECONDITION: Chosen prefill work group size exceeds available state entries`,
+  absent at v0.14.0). Near the context limit this replaces the silent KV corruption with a clean
+  native failure; the binding's overflow guard now reserves that minimum (128 for the gemma
+  conversions) so the typed exception + same-turn `IsContextFull` signal keep firing first.
+- **CPU sampler factory only implements TopP — both eras.** An explicit Greedy or TopK sampler
+  fails a send with `UNIMPLEMENTED: Sampler type: N not implemented yet` whenever a fresh CPU
+  sampler must be created, and the failure is order-dependent (an earlier TopP/default conversation
+  leaves a sampler behind that later conversations silently reuse). Verified against v0.14.0 AND
+  v0.15.0 natives on win-x64 (sampler_factory.cc `CreateCpuSampler`: TOP_P + unspecified only).
+  Never seen before because everything of ours defaults to TopP/none. Candidate upstream report +
+  possible managed guard/doc on `LiteRtSamplerParams` (decide with the maintainer).
+- **Intermittent native crash on the GPU backend under rapid engine churn** (testhost dies mid-run
+  with no managed failure; ~2 of 4 full-suite GPU runs locally, different tests each time, clean
+  runs in between). Same failure class as the intermittent CI win-x64 crash first seen 2026-07-17
+  (which the model-tests forensics telemetry was added for) — pre-existing, NOT a v0.15.0
+  regression gate. Needs a dedicated investigation session.
+- **LlGuidance constrained decoding works end-to-end** (regex + JSON Schema verified on win-x64
+  CPU/GPU with real-model assertions) and is compiled from source — the linux-x64 model-tests leg
+  now exercises it on every push, giving Linux its first working constrained-decoding path while
+  the tool-calling provider prebuilt stays broken (#2149 guard unchanged).
+- Export lists at the v0.15.0 tag: **still 3/7** (PR #2801 not taken) — the desktop-GPU
+  CPU-sampling fallback persists. Text-LoRA still stubbed. The prebuilt companions were all
+  refreshed at the tag (new LFS OIDs, same file set) — a third-era `libGemmaModelConstraintProvider.so`
+  for the next #2149 probe (not yet re-run; the docker harness in `.tmp/litert-repro/` applies).
+
+**Addendum 2026-08-12:** (a) **upstream tagged v0.16.0 on 2026-08-11** — one week after v0.15.0;
+decision: land the validated v0.15.0 cycle (PR #5) as-is and run v0.16.0 as its own cycle (header
+diff first). (b) New #2807 data (john-rocky, measured on 0.16.0): **CONCURRENT** decoding on
+multiple conversations of one engine is non-deterministic (CPU: divergent replies at greedy;
+GPU: Dawn buffer-validation errors, occasional empty reply) — distinct from the *interleaved
+sequential* case v0.15.0 fixed, and still broken at 0.16.0. Separate processes are clean, so the
+engine sharing is what breaks. Consequence for us: docs tightened from "serialize per
+conversation" to "serialize sends per ENGINE" (README + core XML); the MEAI client already
+serializes through its gate, so connector consumers were never exposed. Our planned #2807 comment
+should distinguish the two cases (interleaved verified fixed by our suite; concurrent not our
+measurement to close).
 
 - **Gemma 4 weight refresh (announced 2026-07-15, official @googlegemma post): NOT yet available for
   us.** Google silently updated the Gemma 4 weights under the same names (tool-calling fixes, agentic
@@ -440,7 +530,11 @@ shipping NEW native surface, check ALL of:
    two native eras). The Kotlin surface is a useful secondary signal (the most production-hardened
    binding: it exposes neither clone nor LoRA today).
 
-- **Multi-conversation / clone interleaving loses the suspended conversation's state (upstream,
+- **✅ RESOLVED at v0.15.0 (2026-08-09): multi-conversation / clone interleaving preserved.** The
+  activation checklist below was executed during the repin (sentinel fired → multi-conv suite
+  verified → capacity/forking/docs restored; details in the 2026-08-09 watchlist block above).
+  Historical record of the limitation follows.
+  **Multi-conversation / clone interleaving loses the suspended conversation's state (upstream,
   UNRELEASED capability)** — found 2026-07-10 while building conversation forking. Minimal repro
   (two independent conversations, interleaved sends, re-ask content): the suspended conversation
   answers as if its own turns never happened, with NO error. Reproduced identically on our v0.13.1

@@ -46,6 +46,18 @@ public sealed class LiteRtPromptExecutionSettings : PromptExecutionSettings
     [JsonIgnore]
     public bool? EnableConstrainedDecoding { get => GetBoolean("enable_constrained_decoding"); set => Set("enable_constrained_decoding", value); }
 
+    /// <summary>OpenAI-style presence penalty (<c>"presence_penalty"</c>): subtracted once from a token's
+    /// logit if the token already appeared in the generated output. Positive discourages repetition.
+    /// Requires native LiteRT-LM v0.15.0+.</summary>
+    [JsonIgnore]
+    public float? PresencePenalty { get => GetSingle("presence_penalty"); set => Set("presence_penalty", value); }
+
+    /// <summary>OpenAI-style frequency penalty (<c>"frequency_penalty"</c>): subtracted from a token's
+    /// logit scaled by its occurrence count in the generated output. Positive discourages repetition.
+    /// Requires native LiteRT-LM v0.15.0+.</summary>
+    [JsonIgnore]
+    public float? FrequencyPenalty { get => GetSingle("frequency_penalty"); set => Set("frequency_penalty", value); }
+
     // ── ExtensionData backing ─────────────────────────────────────────────────────────────────────────
     // The knobs live in ExtensionData (the typed properties are [JsonIgnore] so only the lower-case keys
     // serialize). Semantic Kernel's IChatClient adapter reads these keys to build the MEAI ChatOptions, and

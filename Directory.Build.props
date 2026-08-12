@@ -10,7 +10,7 @@
   <PropertyGroup>
     <Version>1.1.1</Version>
     <!-- LiteRT-LM release tag the native binaries are built from (build-native.yml input). -->
-    <LiteRtLmVersion>v0.14.0</LiteRtLmVersion>
+    <LiteRtLmVersion>v0.15.0</LiteRtLmVersion>
     <!-- Shown on the nuget.org version page; update each release. Full history in CHANGELOG.md. -->
     <PackageReleaseNotes>1.1.1: fixes GPU engine creation for NuGet consumers on Windows (framework-dependent apps got "litert_lm_engine_create returned null" with Backend=Gpu: the engine's runtime LoadLibrary of the GPU accelerators never searches NuGet's runtimes/win-x64/native folder; the resolver now pre-loads the companion DLLs there, as it already did on Linux/macOS). Managed-only fix — the native binaries are unchanged (LiteRT-LM $(LiteRtLmVersion)). Full notes: https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/CHANGELOG.md</PackageReleaseNotes>
 

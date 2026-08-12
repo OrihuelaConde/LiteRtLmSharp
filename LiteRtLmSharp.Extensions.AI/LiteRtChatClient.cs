@@ -63,8 +63,10 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// history re-prefill. This is the canonical MEAI stateful contract, and it makes
 /// <c>FunctionInvokingChatClient</c> tool loops incremental automatically. The conversation's session
 /// settings (sampler, thinking, tools, constrained decoding, system message, template values) are fixed when
-/// it is created; per-request knobs are <b>ignored</b> on a continuation (only per-send
-/// <see cref="ChatOptions.MaxOutputTokens"/> still applies), and a system message on a continuation throws.
+/// it is created; per-request knobs are <b>ignored</b> on a continuation except those that map to native
+/// per-send settings (<see cref="ChatOptions.MaxOutputTokens"/>, the penalties, a JSON-schema
+/// <see cref="ChatOptions.ResponseFormat"/> — the last only on a conversation whose first call carried one),
+/// and a system message on a continuation throws.
 /// See <see cref="LiteRtStatefulConversationOptions"/> for the full contract.
 /// </para>
 /// </remarks>
@@ -110,15 +112,9 @@ public sealed class LiteRtChatClient : IChatClient
     /// <b>After enabling, propagate the id</b>: copy <c>response.ConversationId</c> into
     /// <c>options.ConversationId</c> and send <b>only the new messages</b> each turn — that is what makes
     /// turns incremental. If the id is never propagated (or the full history keeps being resent) the answers
-    /// stay correct, but every call pays the full stateless re-prefill. Higher-level consumers
-    /// (<c>FunctionInvokingChatClient</c>, agent-framework threads) propagate the id automatically.
-    /// </para>
-    /// <para>
-    /// <b>One live conversation.</b> The stateful mode keeps a single live conversation: a call without a
-    /// <see cref="ChatOptions.ConversationId"/> starts a new one that <b>replaces</b> the previous, whose id
-    /// then throws on resume. This limit is deliberate — upstream LiteRT-LM does not yet preserve a suspended
-    /// conversation's state when another advances (see <see cref="LiteRtStatefulConversationOptions"/> and
-    /// <c>docs/roadmap.md</c>).
+    /// stay correct, but every call pays the full stateless re-prefill <i>plus</i> live conversations pile up
+    /// in the LRU with no benefit. Higher-level consumers (<c>FunctionInvokingChatClient</c>, agent-framework
+    /// threads) propagate the id automatically.
     /// </para>
     /// <example>
     /// <code>
@@ -139,36 +135,11 @@ public sealed class LiteRtChatClient : IChatClient
         _engine = engine;
         _metadata = new ChatClientMetadata("litert-lm", null, modelId);
         _optionsTemplate = optionsTemplate;
-        // The stateful mode keeps exactly one live conversation: upstream LiteRT-LM cannot yet preserve a
-        // suspended conversation's state when another advances, so a second live conversation would be silently
-        // corrupted. The LRU store is future-ready machinery pinned to a single entry — see
-        // LiteRtConversationStore.LiveConversationCapacity and docs/roadmap.md.
         _store = statefulConversations is null
             ? null
-            : new LiteRtConversationStore(LiteRtConversationStore.LiveConversationCapacity);
-        // The forking service exists only when there are live conversations to fork (stateful mode). The type is
-        // internal — unreachable by consumers — but still wired through GetService for the parked capability.
+            : new LiteRtConversationStore(statefulConversations.MaxLiveConversations);
+        // The forking service exists only when there are live conversations to fork (stateful mode).
         _branching = _store is null ? null : new LiteRtConversationBranching(this);
-    }
-
-    /// <summary>
-    /// Test-only seam (internal; <c>InternalsVisibleTo</c> LiteRtLmSharp.Tests): a stateful client whose live-
-    /// conversation cache holds up to <paramref name="liveConversationCapacity"/> conversations, above the
-    /// production cap of one (<see cref="LiteRtConversationStore.LiveConversationCapacity"/>). It exists solely
-    /// so the parked multi-conversation and forking tests (gated on <c>LITERTLM_TEST_MULTICONV</c>) can exercise
-    /// the future-ready machinery. Consumers cannot reach it and always get the single-live-conversation
-    /// contract. See <c>docs/roadmap.md</c>.
-    /// </summary>
-    internal LiteRtChatClient(
-        LiteRtEngine engine, int liveConversationCapacity, LiteRtConversationOptions? optionsTemplate = null)
-    {
-        ArgumentNullException.ThrowIfNull(engine);
-        LiteRtChatMapping.ValidateTemplate(optionsTemplate);
-        _engine = engine;
-        _metadata = new ChatClientMetadata("litert-lm", null, null);
-        _optionsTemplate = optionsTemplate;
-        _store = new LiteRtConversationStore(liveConversationCapacity);
-        _branching = new LiteRtConversationBranching(this);
     }
 
     private string? ModelId => _metadata.DefaultModelId;
@@ -230,6 +201,10 @@ public sealed class LiteRtChatClient : IChatClient
                 AcquireConversation(messages, options, conversationId);
 
             LiteRtSendOptions? sendOptions = LiteRtChatMapping.ToSendOptions(options);
+            // Pre-native argument check, OUTSIDE the eviction try: the conversation is untouched and
+            // stays resumable (the core would reject this too, but with a lower-level message — and
+            // via the catch below, which would wrongly destroy a healthy conversation).
+            ThrowIfConstraintWithoutProvider(sendOptions, entry);
             LiteRtResponse response;
             try
             {
@@ -277,6 +252,7 @@ public sealed class LiteRtChatClient : IChatClient
             LiteRtConversation conv = _engine.CreateConversation(convOptions);
             string id = NewConversationId();
             LiteRtConversationStore.Entry entry = _store!.Add(id, conv);   // may evict + dispose the LRU conversation
+            entry.HasConstraintProvider = convOptions?.ConstraintProvider is not null;
             return (conv, entry, trigger, id);
         }
 
@@ -310,14 +286,13 @@ public sealed class LiteRtChatClient : IChatClient
 
             string forkId = NewConversationId();
             // The fork counts toward the store's capacity and may evict the LRU. After the Get above the parent
-            // is at the front, so at a capacity ≥ 2 it is never the immediate victim; at the production capacity
-            // of 1, adding the clone evicts (and disposes) the parent's conversation — the clone is independent
+            // is at the front, so at a capacity ≥ 2 it is never the immediate victim; at MaxLiveConversations = 1,
+            // adding the clone evicts (and disposes) the parent's conversation — the clone is independent
             // native state, so the branch is unaffected, and the parent's *Entry* object (below) survives
             // eviction (only its Conversation is disposed), so copying its name map afterward stays valid.
-            // (Forking is not reachable by consumers today — LiteRtConversationBranching is internal — so this
-            // runs only in the LITERTLM_TEST_MULTICONV-gated tests; see docs/roadmap.md.)
             LiteRtConversationStore.Entry forkEntry = _store.Add(forkId, clone);
             forkEntry.CopyToolCallsFrom(parent);
+            forkEntry.HasConstraintProvider = parent.HasConstraintProvider;   // the native clone keeps the provider
             return forkId;
         }
         finally
@@ -451,6 +426,13 @@ public sealed class LiteRtChatClient : IChatClient
             storedId = id;
 
             LiteRtSendOptions? sendOptions = LiteRtChatMapping.ToSendOptions(options);
+            // Pre-native argument check: nothing was sent, so the conversation must stay resumable —
+            // mark the stream completed before throwing so the finally below does not evict it.
+            if (ConstraintWithoutProvider(sendOptions, entry))
+            {
+                completed = true;
+                ThrowIfConstraintWithoutProvider(sendOptions, entry);
+            }
             // Enumerated by hand (not await-foreach) because C# forbids `yield return` inside a try that
             // has a catch, and the MoveNext needs one: the overflow guard's pre-native "message doesn't
             // fit" rejection must NOT evict the untouched, still-resumable conversation.
@@ -699,10 +681,10 @@ public sealed class LiteRtChatClient : IChatClient
     /// itself. Keyed lookups (non-null <paramref name="serviceKey"/>) always return <c>null</c>.
     /// </summary>
     /// <remarks>
-    /// The forking hatch (<c>LiteRtConversationBranching</c>) is also wired here for the stateful mode, but that
-    /// type is <b>internal</b> — a consumer cannot name it, so the branch is unreachable from outside the
-    /// assembly. It stays wired (and verified to compile) so the parked capability can be flipped public once
-    /// upstream preserves suspended-conversation state; see <c>docs/roadmap.md</c>.
+    /// In the stateful mode this also resolves the conversation-forking hatch: request
+    /// <see cref="LiteRtConversationBranching"/> to branch a live conversation into an independent copy of its
+    /// prefilled state (see that type's docs). In the stateless mode the lookup returns <c>null</c> — there are
+    /// no live conversations to fork.
     /// </remarks>
     public object? GetService(Type serviceType, object? serviceKey = null)
     {
@@ -710,8 +692,7 @@ public sealed class LiteRtChatClient : IChatClient
         return
             serviceKey is not null ? null :
             serviceType == typeof(ChatClientMetadata) ? _metadata :
-            // _branching is non-null only in the stateful mode (null when stateless). The type is internal, so
-            // this branch is reachable only from within the assembly (the gated multi-conversation tests).
+            // _branching is non-null only in the stateful mode (null when stateless).
             serviceType == typeof(LiteRtConversationBranching) ? _branching :
             serviceType.IsInstanceOfType(this) ? this :
             null;
@@ -740,14 +721,38 @@ public sealed class LiteRtChatClient : IChatClient
     private static string NewConversationId() => Guid.NewGuid().ToString("N");
 
     /// <summary>The exception thrown when a request names a <c>ConversationId</c> the store does not hold —
-    /// it was never issued by this client, or it was replaced when a newer conversation was started (the
-    /// stateful mode keeps a single live conversation; see <see cref="LiteRtStatefulConversationOptions"/>).</summary>
+    /// it was never issued by this client, or its conversation is gone: evicted by the LRU cap
+    /// (<see cref="LiteRtStatefulConversationOptions.MaxLiveConversations"/>), or evicted after a
+    /// cancelled/failed/context-full send left it unusable.</summary>
     private static ArgumentException UnknownConversation(string conversationId)
         => new(
-            $"No live conversation with id '{conversationId}'. Either it was never started by this client, or it " +
-            "was replaced when a newer conversation was started — the stateful mode keeps a single live " +
-            "conversation, so starting a new one (a call without ChatOptions.ConversationId) replaces the " +
-            "previous, whose id then stops resuming. Start a new conversation by omitting " +
-            "ChatOptions.ConversationId; the response's ConversationId is the id to reuse for the next turn.",
+            $"No live conversation with id '{conversationId}'. Either it was never started by this client, or " +
+            "its conversation is no longer live: it was evicted by the LRU cap " +
+            "(LiteRtStatefulConversationOptions.MaxLiveConversations, default 8) when newer conversations or " +
+            "forks were started, or it was evicted after a cancelled, failed or context-full send left it " +
+            "unusable. Start a new conversation by omitting ChatOptions.ConversationId; the response's " +
+            "ConversationId is the id to reuse for the next turn.",
             nameof(conversationId));
+
+    /// <summary>Whether <paramref name="sendOptions"/> carries a per-send constraint (a JSON-schema
+    /// <c>ResponseFormat</c>) that the stored conversation cannot enforce (created without the LlGuidance
+    /// provider).</summary>
+    private static bool ConstraintWithoutProvider(LiteRtSendOptions? sendOptions, LiteRtConversationStore.Entry entry)
+        => sendOptions?.Constraint is not null && !entry.HasConstraintProvider;
+
+    /// <summary>Rejects a schema-constrained request on a conversation created without the constraint
+    /// provider — in MEAI vocabulary, BEFORE any native work, so the live conversation stays resumable
+    /// (the caller can retry the id without the ResponseFormat, or start a new conversation with it).</summary>
+    private static void ThrowIfConstraintWithoutProvider(LiteRtSendOptions? sendOptions, LiteRtConversationStore.Entry entry)
+    {
+        if (ConstraintWithoutProvider(sendOptions, entry))
+            throw new ArgumentException(
+                "This request's JSON-schema ChatOptions.ResponseFormat cannot be enforced on this conversation: " +
+                "the conversation was created without a schema on its FIRST call, and the constraint provider " +
+                "is fixed at creation. Retry this ConversationId without the ResponseFormat, start a new " +
+                "conversation (omit ConversationId) with the ResponseFormat on its first call, or set " +
+                "LiteRtConversationOptions.ConstraintProvider on the client's options template so every " +
+                "conversation supports it. The live conversation was not modified and remains resumable.",
+                "options");
+    }
 }
