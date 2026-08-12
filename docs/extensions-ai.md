@@ -167,9 +167,13 @@ Rules and caveats:
 
 - **Schema-less `ChatResponseFormat.Json` ("JSON mode") is not enforced** — without a schema there is
   nothing precise to constrain, so it keeps the previous prompt-driven behavior.
-- **Not combinable with `Tools`.** The schema masks every generated token, which makes emitting a
-  tool call impossible, so a request carrying both throws `ArgumentException`. Run the tool phase
-  first, then request the schema-formatted answer in a separate call.
+- **Not combinable with `Tools` on one request.** The schema masks every generated token, which
+  makes emitting a tool call impossible, so a request carrying both throws `ArgumentException`. Run
+  the tool phase first, then request the schema-formatted answer in a separate call. In stateful
+  mode both phases can share one conversation: set `ConstraintProvider` on the client's
+  conversation-options template, run the tool request without a `ResponseFormat`, then send the
+  schema-formatted request as a continuation of the same `ConversationId` — the reply is
+  schema-enforced and informed by the tool results (covered by a model test).
 - **Stateful mode: the schema must be present on the conversation's first call** (the constraint
   provider is fixed at creation). A schema arriving only on a continuation throws `ArgumentException`
   and leaves the conversation resumable; to make every conversation schema-capable, set

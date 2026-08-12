@@ -223,6 +223,62 @@ public sealed class ExtensionsAiStatefulModelTests
         Assert.Contains("teal", after.Text, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>The documented two-phase pattern for tools + structured output actually works: a
+    /// tools+schema request throws (pinned elsewhere), and the RECOMMENDED alternative — run the tool
+    /// phase without the ResponseFormat, then ask for the schema-formatted answer — succeeds. In
+    /// stateful mode the schema continuation needs the provider armed from creation, which is what
+    /// the client's options template is for: with ConstraintProvider on the template, the tools
+    /// conversation is schema-capable, the tool loop runs unconstrained, and the follow-up
+    /// schema-constrained continuation returns conforming JSON informed by the tool result.</summary>
+    [SkippableFact]
+    public async Task Stateful_ToolPhaseThenSchemaContinuation_TwoPhasePatternWorks()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        Skip.If(OperatingSystem.IsLinux(),
+            "EnableConstrainedDecoding (recommended with tools) is blocked on linux-x64 — see docs.");
+        Skip.If(Environment.GetEnvironmentVariable("LITERTLM_TEST_TOOLS") != "1",
+            "Set LITERTLM_TEST_TOOLS=1 (with a version-matched native binary) to run tool tests.");
+
+        using var engine = LiteRtEngine.Load(Options());
+
+        int invocations = 0;
+        AIFunction weather = AIFunctionFactory.Create(
+            (string city) => { invocations++; return $"22 degrees and sunny in {city}"; },
+            name: "get_weather", description: "Gets the current weather for a given city.");
+
+        // The template arms the provider on every conversation, so the schema continuation below can
+        // be enforced. NOTE: no EnableConstrainedDecoding here — provider and the tool-calling
+        // constrained mode are mutually exclusive; tools still work without it.
+        using IChatClient client = new LiteRtChatClient(engine,
+                optionsTemplate: new LiteRtConversationOptions { ConstraintProvider = LiteRtConstraintProvider.LlGuidance },
+                statefulConversations: new LiteRtStatefulConversationOptions())
+            .AsBuilder().UseFunctionInvocation().Build();
+
+        // Phase 1: the tool loop, unconstrained.
+        ChatResponse toolPhase = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is the weather in Paris? Use the get_weather tool.")],
+            new ChatOptions { Tools = [weather], MaxOutputTokens = 256 });
+        Assert.True(invocations >= 1, "Expected the model to call the get_weather tool.");
+        Assert.False(string.IsNullOrEmpty(toolPhase.ConversationId));
+
+        // Phase 2: schema-formatted answer on the SAME conversation (no tools on this request).
+        using JsonDocument schema = JsonDocument.Parse(
+            """{"type":"object","properties":{"city":{"type":"string"},"conditions":{"type":"string"}},"required":["city","conditions"],"additionalProperties":false}""");
+        ChatResponse formatted = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Summarize that weather report as JSON.")],
+            new ChatOptions
+            {
+                MaxOutputTokens = 64,
+                ConversationId = toolPhase.ConversationId,
+                ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement),
+            });
+
+        using JsonDocument parsed = JsonDocument.Parse(formatted.Text.Trim());
+        Assert.Equal(JsonValueKind.String, parsed.RootElement.GetProperty("city").ValueKind);
+        Assert.Equal(JsonValueKind.String, parsed.RootElement.GetProperty("conditions").ValueKind);
+    }
+
     /// <summary>A fork of a schema-armed conversation must keep enforcing schemas on the branch: the
     /// native clone recreates the constraint provider, and the managed layer must carry the flag
     /// (both the core Clone() and the store entry the client tracks). Pins the review finding where
