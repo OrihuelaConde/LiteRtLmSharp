@@ -1,6 +1,6 @@
 # Project status and roadmap
 
-Last updated: 2026-08-09 (v0.15.0 repin cycle). Source of truth for "what's done and what's pending".
+Last updated: 2026-09-02 (v0.16.0 evaluation of the official C API prebuilts). Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -131,6 +131,65 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
 > scope until upstream exposes them.
 
 ## Actionable next steps (suggested order)
+
+-3. **v0.16.0 CYCLE — evaluation of Google's official C API prebuilts DONE (2026-08-12 →
+   2026-09-02, branch `capi-prebuilts-probe`); the repin itself is PENDING the maintainer's go.**
+   Upstream v0.16.0 (2026-08-11; v0.16.1 is the same commit with a Kotlin/Windows build-flag fix
+   and no new artifacts) ships the first versioned C API prebuilts: `litert_lm_c_api-0.1.0.zip`, one
+   monolithic shared library per platform (win/linux/mac/android, plus linux-arm64 and
+   android-x86_64) with the constraint provider, the GPU accelerators and LlGuidance embedded and a
+   static CRT, and `CLiteRTLM.xcframework` for iOS (device + simulator slices). C API 140 → 144
+   functions, no removals and no signature changes (the v0.15.0 stream-callback ABI is unchanged);
+   new: `engine_settings_set_enable_ynnpack` and three session checkpoint/rewind functions (raw
+   Session API, out of scope). The zip lacks the three capabilities functions the xcframework
+   exports (147 vs 144; fixed upstream after the release, PR #3273).
+   **Measured, not assumed** (full 258-test suite with the CI flags, probe workflows
+   `capi-prebuilt-probe.yml` run 31618878076 and `capi-xcframework-probe.yml` run 33669809621):
+   | RID | Official prebuilt | Notes |
+   |---|---|---|
+   | linux-x64 | suite green (Docker + CI) and **tools + constrained decoding PASS** — the
+     LiteRT-LM#2149 segfault is gone (embedded provider, the same build as the Python wheel) |
+     hard `DT_NEEDED libvulkan.so.1` (the library does not load without the Vulkan loader);
+     130 MB raw / 47 MB compressed vs ~83 / 35 self-built; 211k dynamic symbols |
+   | win-x64 | CPU 257/258, GPU 254/258 on an RTX 3080 (the one failure is the LoRA stub-pin
+     sentinel, see below) | GPU only with our `dxcompiler.dll` + `dxil.dll` next to it: the
+     official Dawn requires DXC (`dxil.dll Error 87`) and the zip ships neither; no VC++
+     Redistributable needed (static CRT); 48 MB vs ~95 MB self-built |
+   | osx-arm64 | CI CPU + GPU (WebGPU) green | 68 MB |
+   | ios-arm64 | official xcframework inspected + a `net10.0-ios` consumer linked against it alone |
+     147 exports, install name `@rpath/CLiteRTLM.framework/CLiteRTLM`, min iOS 15.0; the
+     provider is embedded but the Metal accelerator and sampler are still dlopen'd by dylib name |
+   | android-arm64 | **not probed** (no device at hand) | the samplers stay external dlopen and the
+     monolith no longer carries `libLiteRt.so` for their `DT_NEEDED` — real regression risk for
+     the validated GPU sampling; keep self-built until validated on a device |
+   Era findings, each verified with the correct binary: text LoRA is implemented (the runtime
+   test bundle + rank-32 adapter changes the output; an invalid file fails fast) — published gemma-4
+   bundles likely carry no LoRA slots (LiteRT-LM#3173, our data posted); the new statically linked
+   sampler makes an explicit TopK work on desktop GPU (LiteRT-LM#2073 / PR #2801 moot, and upstream
+   exported the samplers on its own in PR #3244); LiteRT-LM#2080 (sampler params ignored after the
+   first generation) does not reproduce through the C API; the `filter_channel_content_from_kv_cache`
+   default flip is neutral for gemma-4 (the next turn re-prefills without the thinking either way,
+   on v0.15.0 too); the KV guard calibration holds unchanged (a raw C API ladder near the limit is
+   identical on both versions, every case fails cleanly), while a `MaxNumTokens` below the model's
+   largest prefill signature (1024 for gemma) breaks prefill outright — worth a managed validation.
+   Item 8 below (clone state) turned out to be a contract violation on our side, resolved in
+   `master`. Community context: flutter_gemma moved to v0.16.0 but still self-builds.
+   **Repin checklist (in this order, after the go):** (1) `LiteRtLmVersion` → v0.16.0 (the zip
+   lives on that tag). (2) Natives: a CI job that fetches the official zip and repackages it into
+   our `runtimes/<rid>/native` layout under our library names (no SONAME / install-name stands in
+   the way) for win/linux/mac; win adds the DXC pair as companions; linux documents `libvulkan1`
+   and the size; Android stays self-built until a device run; iOS switches to the official
+   xcframework with a resolver name mapping (`CLiteRTLM`) and optional Metal companions.
+   (3) Drop the linux-x64 tools+constrained guard and flip its CI test. (4) LoRA: retire the
+   stub-pin test, document text LoRA (LoRA-enabled bundles only), keep the fail-fast messages.
+   (5) Bind `set_enable_ynnpack` (116/144; note the session checkpoint/rewind trio as out of
+   scope). (6) Document the thinking-filter default and the `MaxNumTokens` floor. (7) Item 7 (MEAI
+   surface for `NoRepeatNgram` / `SuppressTokens`). (8) Re-check the consumer-smoke "Dawn init
+   lines" signature (upstream downgraded most INFO logs to VLOG). (9) The 1.2.0 release runbook:
+   CHANGELOG sections for both cycles, README compat row `1.2.0 | v0.16.0`, version sweep, pack
+   dry-run, ConsumerSmoke, publish only with the explicit go. (10) Upstream housekeeping: close
+   PR #2801 as superseded, comment on #2149 once the official build ships. (11) Retire or fold the
+   probe workflows.
 
 -2. ✅ **v0.15.0 REPIN CYCLE — MERGED to master 2026-08-12 (PR #5, 13 commits; closed the
    upstream-watch issue #4).** Hardened pre-merge by a 6-lens adversarial review (17 findings
@@ -575,6 +634,16 @@ conversation" to "serialize sends per ENGINE" (README + core XML); the MEAI clie
 serializes through its gate, so connector consumers were never exposed. Our planned #2807 comment
 should distinguish the two cases (interleaved verified fixed by our suite; concurrent not our
 measurement to close).
+
+**Addendum 2026-09-02 (issue-tracker sweep during the v0.16.0 evaluation):** #2529 and #2154 were
+closed by upstream announcing the C API prebuilts and asking for adoption feedback. New and
+relevant: #3139 (`engine_settings_create_from_raw_file_descriptor` kills the process on Windows
+when the caller does not share the DLL's CRT — one more reason to keep the FD-based load unbound),
+#3444 (bundles whose smallest prefill signature exceeds our 128-token reserve fail natively near
+the limit — the guard's constant is gemma-specific, as documented), #3446 (~1 MB retained per
+conversation create/destroy on macOS/Metal, 0.16.0), #2957 (the `litert_link_capi_so` define is
+gone upstream — already dropped from our build). Our own threads (#2807, #2801, #2073, #2149) saw
+no maintainer activity in August; PR #2801 is superseded by upstream's PR #3244.
 
 - **Gemma 4 weight refresh (announced 2026-07-15, official @googlegemma post): NOT yet available for
   us.** Google silently updated the Gemma 4 weights under the same names (tool-calling fixes, agentic
