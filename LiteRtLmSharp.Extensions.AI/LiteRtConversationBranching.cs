@@ -73,9 +73,9 @@ public sealed class LiteRtConversationBranching
     /// stream is live is impossible by construction — the gate is held for the whole stream). The new branch
     /// is stored in the same live-conversation cache as every other live conversation: it counts toward the
     /// cache's capacity and adding it may evict the least-recently-used conversation (potentially the
-    /// parent). Forking a conversation before its first send is not a scenario reachable
-    /// through this client (an id is only handed out after a send completes), but the underlying clone supports
-    /// it — a fork of an unsent base simply pays its prefill on the branch's first send.
+    /// parent). A parent reachable through this client has always advanced at least once (an id is only
+    /// handed out after a send completes), which is exactly what <see cref="LiteRtConversation.Clone"/>
+    /// requires: a conversation that has not advanced has no prefilled state to duplicate and cannot be cloned.
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="conversationId"/> is <c>null</c>.</exception>
     /// <exception cref="ArgumentException">

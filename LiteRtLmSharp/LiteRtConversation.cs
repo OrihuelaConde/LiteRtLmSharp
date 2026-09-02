@@ -367,7 +367,22 @@ public sealed class LiteRtConversation : IDisposable
     /// conversations are not thread-safe. Dispose the clone like any conversation, before the engine.
     /// Cloning duplicates state in memory; to persist a conversation across process restarts use
     /// <see cref="LiteRtConversationOptions.History"/> instead.
+    /// <para>
+    /// <b>The conversation must have advanced at least once</b> (<see cref="TokenCount"/> &gt; 0): the
+    /// native clone duplicates the <i>prefilled</i> state, and creating a conversation prefills nothing —
+    /// the system message, tools and <see cref="LiteRtConversationOptions.History"/> are only pushed
+    /// into the KV cache by the first send. Cloning a never-sent conversation is not rejected natively but
+    /// the result is unreliable: the first clone happens to work (it pays the parent's prefill itself),
+    /// and after any other conversation runs on the engine the parent and its later clones continue that
+    /// other conversation's context instead of their own (observed on LiteRT-LM v0.15.0 and v0.16.0, CPU
+    /// and GPU). To keep a reusable "base" (system prompt + tools) to branch from, send one real turn on
+    /// it first, then clone.
+    /// </para>
     /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// The conversation has not advanced yet (<see cref="TokenCount"/> is 0), so there is no prefilled
+    /// state to duplicate. Send a message on it first.
+    /// </exception>
     /// <exception cref="LiteRtException">
     /// The native clone failed. The usual cause is an engine/backend whose executor does not implement
     /// cloning (the native layer returns <c>Unimplemented</c>). The standard executors do — cloning is
@@ -376,6 +391,15 @@ public sealed class LiteRtConversation : IDisposable
     public LiteRtConversation Clone()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        // Nothing prefilled yet: the native clone would copy an empty state and the branch silently drifts
+        // onto whatever conversation ran last on the engine (see the doc above). Fail loudly instead.
+        if (TokenCount <= 0)
+            throw new InvalidOperationException(
+                "Cannot clone a conversation that has not advanced yet: Clone() duplicates the prefilled " +
+                "KV-cache state, and a newly created conversation has none (its system message, tools and " +
+                "History are prefilled by the first send). Cloning it anyway produces a branch that continues " +
+                "another conversation's context once any other conversation runs on the engine. Send one " +
+                "message on this conversation first, then clone it.");
 
         nint clonedPtr = LiteRtLmNative.litert_lm_conversation_clone(_conversation.Ptr);
         if (clonedPtr == nint.Zero)

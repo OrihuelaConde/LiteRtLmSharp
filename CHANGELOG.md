@@ -35,6 +35,16 @@ are published together.
   are unchanged. Note the reserve constant matches the current gemma `.litertlm` conversions; a
   model with a larger smallest signature can still fail a send natively (with a plain
   `LiteRtException`) slightly before the typed rejection.
+- **`LiteRtConversation.Clone()` now requires a conversation that has advanced at least once** and
+  throws `InvalidOperationException` (naming the fix) when `TokenCount` is 0. The native clone
+  duplicates the *prefilled* state and creating a conversation prefills nothing, so cloning a
+  never-sent conversation produced a branch that silently continued whatever conversation ran last
+  on the engine (found by a downstream consumer as "a conversation gets invalidated when another
+  runs on the engine"; narrowed with a binding-only repro on LiteRT-LM v0.15.0 and v0.16.0, CPU
+  and GPU). The first clone of an unsent base happened to work, which is why the pattern looked
+  valid. Send one real turn on the base, then clone: that sequence is stable across any
+  interleaving. The MEAI fork (`LiteRtConversationBranching.ForkAsync`) is unaffected: a forkable
+  id only exists after a send.
 
 ### Added
 

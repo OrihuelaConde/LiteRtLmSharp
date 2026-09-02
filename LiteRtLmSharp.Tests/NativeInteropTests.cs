@@ -1016,6 +1016,34 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     }
 
     /// <summary>
+    /// Clone of a conversation that has not advanced yet is rejected up front: a freshly created
+    /// conversation (system message only, no send) has no prefilled state, and cloning it produced a
+    /// branch that silently continued whatever conversation ran last on the engine (LiteRT-LM v0.15.0
+    /// and v0.16.0, CPU and GPU). The guard turns that into an InvalidOperationException naming the fix.
+    /// Skipped unless LITERTLM_TEST_MODEL is set.
+    /// </summary>
+    [SkippableFact]
+    public void Clone_OfNeverAdvancedConversation_ThrowsInvalidOperation()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var fresh = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions
+        {
+            History = [LiteRtMessage.System("Reply with exactly one word.")],
+        });
+        Assert.Equal(0, fresh.TokenCount); // creation prefills nothing
+
+        var ex = Assert.Throws<InvalidOperationException>(() => fresh.Clone());
+        Assert.Contains("has not advanced", ex.Message);
+
+        // After one real turn the same conversation clones normally.
+        fresh.Send("Say hi.");
+        Assert.True(fresh.TokenCount > 0);
+        using var clone = fresh.Clone();
+        Assert.Equal(fresh.TokenCount, clone.TokenCount);
+    }
+
+    /// <summary>
     /// Tokenizer round-trip: the engine's tokenizer turns text into ids and back. Asserts a non-empty
     /// id set for real text and that detokenizing those ids recovers the words — the tokenizer may add
     /// or normalize whitespace/special markers, so we check containment, not byte-equality. Proves the

@@ -163,6 +163,14 @@ A/B two sampler settings or two phrasings from the same context.
 
 ### Caveats
 
+- **Send first, then clone.** `Clone()` duplicates the *prefilled* state, and creating a conversation
+  prefills nothing: the system message, tools and `History` only enter the KV cache with the first
+  send. A conversation that has not advanced (`TokenCount == 0`) therefore has nothing to duplicate,
+  and cloning it anyway is unreliable: the first clone happens to work, but once any other
+  conversation runs on the engine, the parent and its later clones continue that other conversation's
+  context instead of their own (observed on LiteRT-LM v0.15.0 and v0.16.0, CPU and GPU). `Clone()`
+  rejects this up front with `InvalidOperationException`. To keep a reusable base to branch from
+  (a system prompt plus tools, say), send one real turn on it first, as the example above does.
 - **Idle only.** Conversations are not thread-safe. Clone when the source is idle, with no in-flight
   `SendStreamingAsync`.
 - **May be unsupported on some backends.** Cloning is implemented by the standard executors and is
