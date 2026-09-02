@@ -375,11 +375,24 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
    reachable from `IChatClient`), which is worth a line in the docs.
 
 
-8. **BUG — a conversation whose clone has been used loses its own state once another conversation
-   runs on the same engine: its next send (directly or through a new clone) continues the OTHER
-   conversation's context** (found by a downstream consumer app, 2026-08-19, native v0.15.0,
-   win-x64 GPU + Float32, gemma-4 E4B; narrowed 2026-09-02 with a binding-only probe — it
-   reproduces identically on the v0.16.0 OFFICIAL prebuilts, on CPU and GPU, E2B and E4B).
+8. ✅ **RESOLVED 2026-09-02 (commit 18250e5) — cloning a conversation that has never advanced is
+   unsupported by construction; `Clone()` now rejects it.** Originally reported as "a conversation
+   whose clone has been used loses its own state once another conversation runs on the same
+   engine: its next send (directly or through a new clone) continues the OTHER conversation's
+   context" (found by a downstream consumer app, 2026-08-19, native v0.15.0, win-x64 GPU +
+   Float32, gemma-4 E4B; reproduced identically on the v0.16.0 official prebuilts, CPU and GPU,
+   E2B and E4B). **Root cause (maintainer's hypothesis, confirmed by probe):** the native clone
+   "duplicates its prefilled state" (C API doc) and creating a conversation prefills nothing, so a
+   parent created with only a system message has no state to duplicate; its first clone pays the
+   prefill itself and looks fine, but after any other conversation runs on the engine the parent
+   and its later clones inherit the resident context. A parent that has sent one real turn
+   (`TokenCount > 0`) is stable across every interleaving tried (clone before, clone after, direct
+   send after another conversation). Not an upstream bug: the documented contract was not met.
+   **Binding:** `Clone()` throws `InvalidOperationException` when `TokenCount == 0`, docs + guide +
+   CHANGELOG updated, model test added; the MEAI fork was never exposed (ids exist only after a
+   send). **Consumer advice:** warm a reusable base with a direct send, not with a throwaway
+   clone (that was the workaround tried, and it cannot work). The original narrative follows for
+   the record.
 
    Repro with the binding alone, no consumer code:
 
@@ -434,13 +447,10 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
    The consumer worked around it by dropping all its cached conversations before any call that
    goes through another path.
 
-   Relation to LiteRT-LM#2807: the v0.15.0 fix (verified by our interleaved-recall canary) covers
-   conversations that have advanced on their own; this is the never-advanced-parent-with-a-used-clone
-   case, which it does not cover, and it is distinct from the concurrent case reported by others on
-   0.16.0. Not fixed by the v0.16.0 repin (official prebuilts included). Next: upstream report with
-   the binding-only repro (draft together, per convention), and a binding-side mitigation to decide:
-   either document "a parent whose clone has been used must not be reused after another conversation
-   runs", or have `Clone()` prefill the parent first / re-create the parent internally.
+   Relation to LiteRT-LM#2807: unrelated in the end. #2807's v0.15.0 fix covers conversations that
+   have advanced on their own (our interleaved-recall canary), and this case only ever involved a
+   parent with no prefilled state. No upstream report filed (decision 2026-09-02): the behavior
+   matches the documented clone contract.
 
 
 ## Ecosystem integrations (.NET AI: MEAI / Semantic Kernel / Agent Framework)
