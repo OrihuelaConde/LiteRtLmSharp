@@ -341,6 +341,108 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
    packages from nuget.org; PR upstream to be listed among the language bindings (planned right
    after the nuget.org release).
 
+7. **PENDING — MEAI surface for `NoRepeatNgram` and `SuppressTokens`** (raised by a downstream
+   consumer app, 2026-08-18). Both live on `LiteRtSendOptions` and are reachable only through the
+   native API: `LiteRtChatMapping.ToSendOptions(ChatOptions)` reads just `MaxOutputTokens`,
+   `FrequencyPenalty`, `PresencePenalty` and the schema constraint, so a consumer that talks only
+   `IChatClient` cannot get to them.
+
+   Suggested shape — `LiteRtChatOptions` is already the established extension point for knobs MEAI
+   does not cover (it stores them in `AdditionalProperties`, so they survive middleware that clones
+   the options), and today exposes `EnableThinking` and `EnableConstrainedDecoding`:
+
+   ```csharp
+   // LiteRtChatOptions
+   public int? NoRepeatNgramSize { get; set; }               // key "no_repeat_ngram_size"
+   public IReadOnlyList<int>? SuppressTokens { get; set; }   // key "suppress_tokens"
+   ```
+
+   Consumer use case, so the design has something concrete to serve: on the small model (gemma-4
+   E2B) the consumer sees the model echo-copy prompt templates verbatim — it emits an option template
+   (`CHOICE: OTHER — the user gives...`) as if it were a verdict, and once "resolved" a pending
+   question with that garbage. Today the consumer masks it with a deterministic sanity guard on the
+   output. `SuppressTokens` over the sentinel's ids, or `NoRepeatNgram` over the template, would
+   attack it during sampling instead.
+
+   Why the existing penalties do not substitute: they discount ANY repeated token, and the
+   consumer's extraction phase must repeat literals from the user's message (a name or a date
+   appears two or three times). Measured on E4B, `FrequencyPenalty`/`PresencePenalty` at 0.3 were
+   inert (43/44, identical to baseline) — the wrong instrument for this failure.
+
+   Note for whoever designs it: `SuppressTokens` needs token ids from `LiteRtEngine.Tokenize`, and
+   most words tokenize differently with and without a leading space, so a consumer will want to
+   seed both variants. That pushes id computation into the composition root (the engine is not
+   reachable from `IChatClient`), which is worth a line in the docs.
+
+
+8. **BUG — a conversation whose clone has been used loses its own state once another conversation
+   runs on the same engine: its next send (directly or through a new clone) continues the OTHER
+   conversation's context** (found by a downstream consumer app, 2026-08-19, native v0.15.0,
+   win-x64 GPU + Float32, gemma-4 E4B; narrowed 2026-09-02 with a binding-only probe — it
+   reproduces identically on the v0.16.0 OFFICIAL prebuilts, on CPU and GPU, E2B and E4B).
+
+   Repro with the binding alone, no consumer code:
+
+   ```csharp
+   using var engine = LiteRtEngine.Load(opts);              // GPU, MaxNumTokens 4096, F32
+   var routerOpts = new LiteRtConversationOptions {
+       History = [LiteRtMessage.System(routerPrompt)],       // "Reply with exactly one word."
+       EnableThinking = false,
+   };
+   using var base_ = engine.CreateConversation(routerOpts);
+
+   using (var c = base_.Clone())                             // -> "SAVE"     correct
+       await c.SendAsync(msg, null, new LiteRtSendOptions { MaxOutputTokens = 16 });
+
+   using (var other = engine.CreateConversation(new LiteRtConversationOptions {
+       History = [LiteRtMessage.System("You are a memory assistant. Query the graph with tools.")],
+       Tools = tools, EnableConstrainedDecoding = true, EnableThinking = false }))
+       await other.SendAsync("¿Y mis primos?", null, new LiteRtSendOptions { MaxOutputTokens = 256 });
+
+   using (var c = base_.Clone())                             // -> "qué primos estás hablando…"  WRONG
+       await c.SendAsync(msg, null, new LiteRtSendOptions { MaxOutputTokens = 16 });
+   ```
+
+   The second clone returns a literal continuation of what was asked of the *other* conversation,
+   and in other runs emits that conversation's tool-call format
+   (`<|tool_call>call:describe_entity{...}<tool_call|>`) even though the router prompt has no tools.
+   `base_` is never advanced, so its prefilled state should be intact — the clone is picking up the
+   most recently active conversation instead of its parent.
+
+   Isolation matrix (2026-09-02, probe in `.tmp/capi-gpu-probe`, same sequence with one factor
+   changed at a time; "leak" = the reply is a continuation of the other conversation's text):
+   - the other conversation with Tools but no constrained decoding → leak; with NO tools at all,
+     plain chat → **leak** (so tool/constrained grammar state is NOT what leaks — the consumer's
+     original "interleaved conversation without tools is fine" does not hold in this sequence);
+   - step 2 sending on `base_` itself instead of a new clone → leak (`Clone()` at step 2 is
+     irrelevant);
+   - the step-1 clone kept alive instead of disposed → leak (disposal is irrelevant);
+   - CPU + E2B → leak; GPU F32 + E4B → leak (backend- and model-independent);
+   - v0.15.0 self-built natives and v0.16.0 official prebuilts → identical.
+   - **Minimal sequence WITHOUT step 1** (create `base_`, create+run the other conversation, then
+     the first-ever send on `base_`) → **no leak**, on CPU and GPU. So the trigger is specifically:
+     a conversation that has never advanced itself but has had a clone advance, followed by any
+     other conversation running on the engine. This also explains the consumer's two observations:
+     "warming" the base with a throwaway clone+send is exactly the step that arms the bug, and
+     re-creating the base (a parent with no used clones) is the case that works.
+
+   Previously ruled out by the consumer: a null `Sampler`, `EnableThinking`, the History-with-
+   system-turn shape, and the number of live bases (2 through 6 all fine).
+
+   Consumer impact: it silently breaks a phase rather than failing loudly. In the consumer app the
+   router degraded every message to "retrieve", which in the real app means nothing would ever be saved.
+   The consumer worked around it by dropping all its cached conversations before any call that
+   goes through another path.
+
+   Relation to LiteRT-LM#2807: the v0.15.0 fix (verified by our interleaved-recall canary) covers
+   conversations that have advanced on their own; this is the never-advanced-parent-with-a-used-clone
+   case, which it does not cover, and it is distinct from the concurrent case reported by others on
+   0.16.0. Not fixed by the v0.16.0 repin (official prebuilts included). Next: upstream report with
+   the binding-only repro (draft together, per convention), and a binding-side mitigation to decide:
+   either document "a parent whose clone has been used must not be reused after another conversation
+   runs", or have `Clone()` prefill the parent first / re-create the parent internally.
+
+
 ## Ecosystem integrations (.NET AI: MEAI / Semantic Kernel / Agent Framework)
 
 ✅ **Merged to `master` on 2026-06-24** (PR #2, commits `4bef780`→`083675b`); first published in
