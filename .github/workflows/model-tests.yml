@@ -43,7 +43,7 @@ on:
 
 env:
   # Keep in sync with Directory.Build.props <LiteRtLmVersion>.
-  NATIVE_REF: v0.15.0
+  NATIVE_REF: v0.16.0
   MODEL_FILE: gemma-4-E2B-it.litertlm
   MODEL_URL: https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm
   # LFS oid of the file on Hugging Face; also guards against a cached/partial download.
@@ -134,6 +134,12 @@ jobs:
           Set-ItemProperty $key DumpFolder $dir
           Set-ItemProperty $key DumpType 1
           Set-ItemProperty $key DumpCount 3
+
+      # The official linux-x64 library hard-depends on the Vulkan loader (DT_NEEDED libvulkan.so.1);
+      # without it the library does not load at all. Consumers need the same package (docs/README).
+      - name: Install Vulkan loader (linux)
+        if: matrix.rid == 'linux-x64'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libvulkan1
 
       - name: Restore native binaries (${{ matrix.rid }})
         shell: bash

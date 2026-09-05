@@ -3,7 +3,8 @@
   <!--
     Native-only NuGet package: LiteRT-LM android-arm64 (.so) under runtimes/android-arm64/native/.
     .NET Android (net8+) bundles runtimes/<rid>/native/*.so from packages into the APK.
-    On Android the LiteRt C API is static-linked into libLiteRtLm.so (no separate libLiteRt.so).
+    One file: Google's official monolithic library (accelerators, GPU samplers and constraint
+    provider embedded), renamed libLiteRtLm.so by native-release.yml.
   -->
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>

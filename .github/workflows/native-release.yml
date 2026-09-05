@@ -1,0 +1,335 @@
+name: Native release (official LiteRT-LM prebuilts)
+
+# Repackages Google's OFFICIAL LiteRT-LM C API prebuilts into this repo's native layout and
+# publishes them as the `native-<tag>` GitHub Release that ci.yml, model-tests.yml,
+# pack-nuget.yml, ios-package-check.yml and scripts/restore-natives.ps1 consume.
+#
+# Since LiteRT-LM v0.16.0 every upstream release ships `litert_lm_c_api-<capi_version>.zip`: ONE
+# monolithic shared library per platform (constraint provider, GPU accelerators, GPU samplers and
+# LlGuidance embedded; static CRT on Windows) plus `CLiteRTLM.xcframework.zip` for iOS. This
+# workflow replaced the Bazel self-build (git history: build-native.yml + native/patch_c_api.sh)
+# after the v0.16.0 evaluation recorded in docs/roadmap.md: the same model-backed suite is green
+# on every platform, the linux-x64 tools + constrained-decoding crash is gone (the provider is
+# embedded), and the self-built v0.15.0 Android set turned out to be broken on GPU (upstream's
+# prebuilt sampler lagged behind its own factory, LiteRT-LM#3135) while the official monolith
+# runs GPU, CPU and tools on a real device.
+#
+# What each release asset contains (our library names; the P/Invoke name stays `LiteRtLm`):
+#   litertlm-linux_x86_64.tar.gz    libLiteRtLm.so                    needs the Vulkan loader (libvulkan1)
+#   litertlm-windows_x86_64.tar.gz  LiteRtLm.dll + dxcompiler.dll + dxil.dll   Dawn/D3D12 requires DXC; the zip ships none
+#   litertlm-android_arm64.tar.gz   libLiteRtLm.so
+#   litertlm-macos_arm64.tar.gz     libLiteRtLm.dylib
+#   litertlm-ios_arm64.tar.gz       xcframeworks/CLiteRTLM.xcframework   official name kept (device + simulator slices)
+#
+# Every upstream download is verified against the sha256 digest GitHub records for that release
+# asset, and every library is inspected (export surface, dependencies, embedded samplers) before it
+# is packaged, so a regressed upstream zip fails here instead of in a consumer.
+#
+# Run manually from the Actions tab (workflow_dispatch).
+
+on:
+  workflow_dispatch:
+    inputs:
+      litertlm_version:
+        description: 'LiteRT-LM release tag carrying the official prebuilts (release tag here = native-<tag>).'
+        required: true
+        default: 'v0.16.0'
+      capi_version:
+        description: 'C API prebuilt version (the zip name suffix: litert_lm_c_api-<capi_version>.zip).'
+        required: true
+        default: '0.1.0'
+      platforms:
+        description: 'Platforms to package (comma-separated: linux-x64,win-x64,android-arm64,macos-arm64,ios-arm64) or "all". The release keeps existing assets across partial runs.'
+        required: true
+        default: 'all'
+      publish_release:
+        description: 'Publish the assets to the native-<tag> GitHub Release on this repo'
+        type: boolean
+        default: false
+
+env:
+  UPSTREAM_REPO: google-ai-edge/LiteRT-LM
+  UPSTREAM_TAG: ${{ inputs.litertlm_version }}
+  CAPI_ZIP: litert_lm_c_api-${{ inputs.capi_version }}.zip
+  # Minimum litert_lm_* export count we accept (v0.16.0 ships 144; the check catches a truncated or
+  # wrong-architecture binary, not a specific version).
+  MIN_EXPORTS: '140'
+  # DirectX Shader Compiler runtime for win-x64 (the official DLL's Dawn requires DXC on D3D12 and
+  # has no FXC fallback: without dxil.dll the GPU engine fails to create, "DynamicLib.Open: dxil.dll
+  # Windows Error: 87"). Pinned by hash; this exact pair was validated on an RTX 3080 (2026-09).
+  DXC_URL: https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/dxc_2026_02_20.zip
+  DXC_SHA256: a1e89031421cf3c1fca6627766ab3020ca4f962ac7e2caa7fab2b33a8436151e
+
+jobs:
+  # linux-x64 and android-arm64 come out of the same zip and are both ELF, so one Linux runner
+  # inspects them with binutils.
+  elf:
+    name: linux-x64 + android-arm64
+    if: inputs.platforms == 'all' || contains(inputs.platforms, 'linux-x64') || contains(inputs.platforms, 'android-arm64')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download and verify the official C API zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/fetch-upstream-asset.sh "$CAPI_ZIP" upstream
+
+      - name: Extract the ELF libraries
+        run: |
+          set -euo pipefail
+          unzip -q "upstream/$CAPI_ZIP" 'lib/linux_x86_64/liblitert-lm.so' 'lib/android_arm64/liblitert-lm.so' 'LICENSE' -d capi
+          ls -la capi/lib/*/
+
+      - name: Package linux-x64
+        if: inputs.platforms == 'all' || contains(inputs.platforms, 'linux-x64')
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/linux
+          cp capi/lib/linux_x86_64/liblitert-lm.so artifacts/linux/libLiteRtLm.so
+          lib=artifacts/linux/libLiteRtLm.so
+          echo "--- dependencies (expect libvulkan.so.1 among the system libs, no libLiteRt*) ---"
+          readelf -d "$lib" | grep NEEDED
+          readelf -d "$lib" | grep -q 'NEEDED.*libvulkan\.so\.1' \
+            || echo "::warning::linux-x64 library no longer DT_NEEDs libvulkan.so.1 — update the libvulkan1 prerequisite in ci.yml/model-tests.yml and the docs"
+          readelf -d "$lib" | grep -q 'NEEDED.*libLiteRt' \
+            && { echo "::error::linux-x64 library expects a separate libLiteRt companion — not the monolithic layout this workflow packages"; exit 1; }
+          bash .github/scripts/assert-elf-exports.sh "$lib" "$MIN_EXPORTS"
+          ls -la artifacts/linux
+
+      - name: Package android-arm64
+        if: inputs.platforms == 'all' || contains(inputs.platforms, 'android-arm64')
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/android
+          cp capi/lib/android_arm64/liblitert-lm.so artifacts/android/libLiteRtLm.so
+          lib=artifacts/android/libLiteRtLm.so
+          echo "--- dependencies (bionic system libs only) ---"
+          readelf -d "$lib" | grep NEEDED
+          readelf -d "$lib" | grep -q 'NEEDED.*libLiteRt' \
+            && { echo "::error::android-arm64 library expects a separate libLiteRt companion — not the monolithic layout this workflow packages"; exit 1; }
+          bash .github/scripts/assert-elf-exports.sh "$lib" "$MIN_EXPORTS"
+          # The OpenCL TopK sampler must be EMBEDDED: the factory dlopens libLiteRtTopKOpenClSampler.so
+          # first and falls back to the statically linked copy, and we ship no companion. Without the
+          # embedded copy GPU sampling would silently fall back to CPU (or fail, as the self-built
+          # v0.15.0 set did — LiteRT-LM#3135).
+          for sym in LiteRtTopKOpenClSampler_Create LiteRtTopKOpenClSampler_CanHandleInput LiteRtTopKOpenClSampler_SetInferenceFuncAndInputTensors; do
+            readelf --dyn-syms -W "$lib" | awk '$7 != "UND" {print $8}' | grep -qx "$sym" \
+              || { echo "::error::android-arm64 library does not embed the OpenCL TopK sampler ($sym missing)"; exit 1; }
+          done
+          echo "OK: OpenCL TopK sampler embedded."
+          # Google Play's 16 KB page-size requirement: every PT_LOAD segment aligned to 0x4000.
+          bad=$(readelf -lW "$lib" | awk '$1 == "LOAD" && $NF != "0x4000" && $NF != "0x10000"' || true)
+          if [ -n "$bad" ]; then echo "::error::android-arm64 library has PT_LOAD segments not aligned to 16 KB:"; echo "$bad"; exit 1; fi
+          echo "OK: 16 KB page alignment."
+          ls -la artifacts/android
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.platforms == 'all' || contains(inputs.platforms, 'linux-x64')
+        with:
+          name: litertlm-linux_x86_64
+          path: artifacts/linux/
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.platforms == 'all' || contains(inputs.platforms, 'android-arm64')
+        with:
+          name: litertlm-android_arm64
+          path: artifacts/android/
+
+  win-x64:
+    name: win-x64
+    if: inputs.platforms == 'all' || contains(inputs.platforms, 'win-x64')
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download and verify the official C API zip
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/fetch-upstream-asset.sh "$CAPI_ZIP" upstream
+
+      - name: Download and verify the DXC runtime
+        run: |
+          Invoke-WebRequest -Uri $env:DXC_URL -OutFile dxc.zip
+          $actual = (Get-FileHash -Algorithm SHA256 dxc.zip).Hash.ToLower()
+          if ($actual -ne $env:DXC_SHA256) { throw "DXC zip hash mismatch: expected $env:DXC_SHA256, got $actual" }
+          Expand-Archive -Path dxc.zip -DestinationPath dxc -Force
+
+      - name: Package win-x64
+        run: |
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          Expand-Archive -Path "upstream/$env:CAPI_ZIP" -DestinationPath capi -Force
+          Copy-Item capi/lib/windows_x86_64/bin/litert-lm.dll artifacts/LiteRtLm.dll
+          foreach ($dxc in 'dxil.dll', 'dxcompiler.dll') {
+            $src = Join-Path dxc "bin/x64/$dxc"
+            if (-not (Test-Path $src)) { throw "DXC runtime missing from the zip: bin/x64/$dxc" }
+            Copy-Item $src "artifacts/$dxc" -Force
+          }
+          Get-ChildItem artifacts | Select-Object Name, Length
+
+      - name: Inspect LiteRtLm.dll (exports, imports, CRT)
+        run: |
+          python -m pip install --quiet pefile
+          python .github/scripts/inspect-pe.py artifacts/LiteRtLm.dll $env:MIN_EXPORTS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: litertlm-windows_x86_64
+          path: artifacts/
+
+  apple:
+    name: macos-arm64 + ios-arm64
+    if: inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64') || contains(inputs.platforms, 'ios-arm64')
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download and verify the official C API zip
+        if: inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/fetch-upstream-asset.sh "$CAPI_ZIP" upstream
+
+      - name: Package macos-arm64
+        if: inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64')
+        run: |
+          set -euo pipefail
+          unzip -q "upstream/$CAPI_ZIP" 'lib/macos_arm64/liblitert-lm.dylib' -d capi
+          mkdir -p artifacts/macos
+          cp capi/lib/macos_arm64/liblitert-lm.dylib artifacts/macos/libLiteRtLm.dylib
+          lib=artifacts/macos/libLiteRtLm.dylib
+          echo "--- architecture ---"
+          lipo -info "$lib"
+          lipo -info "$lib" | grep -q arm64 || { echo "::error::macos library is not arm64"; exit 1; }
+          echo "--- load commands (system frameworks only; no @rpath/libLiteRt*) ---"
+          otool -L "$lib"
+          otool -L "$lib" | grep -q 'libLiteRt' \
+            && { echo "::error::macos library expects a separate libLiteRt companion — not the monolithic layout this workflow packages"; exit 1; }
+          cnt=$(nm -gU "$lib" | grep -c ' _litert_lm_' || true)
+          echo "exported litert_lm_* symbols: $cnt"
+          [ "$cnt" -ge "$MIN_EXPORTS" ] || { echo "::error::expected >= $MIN_EXPORTS litert_lm_* exports, got $cnt"; exit 1; }
+          echo "--- minimum macOS version ---"
+          vtool -show-build "$lib" | grep -E 'platform|minos|sdk' || true
+          ls -la artifacts/macos
+
+      - name: Download and verify the official iOS xcframework
+        if: inputs.platforms == 'all' || contains(inputs.platforms, 'ios-arm64')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/fetch-upstream-asset.sh CLiteRTLM.xcframework.zip upstream
+
+      - name: Package ios-arm64
+        if: inputs.platforms == 'all' || contains(inputs.platforms, 'ios-arm64')
+        # The official xcframework is shipped AS IS under its own name (CLiteRTLM): the managed
+        # resolver loads Frameworks/CLiteRTLM.framework/CLiteRTLM on iOS and the runtime package's
+        # buildTransitive .targets references CLiteRTLM.xcframework. Re-wrapping it under our name
+        # would mean re-signing and rewriting install names for no functional gain.
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/ios/xcframeworks
+          unzip -q upstream/CLiteRTLM.xcframework.zip -d artifacts/ios/xcframeworks
+          find artifacts/ios/xcframeworks -name '._*' -delete
+          find artifacts/ios/xcframeworks -name '__MACOSX' -type d -prune -exec rm -rf {} +
+          xcf=artifacts/ios/xcframeworks/CLiteRTLM.xcframework
+          [ -f "$xcf/Info.plist" ] || { echo "::error::CLiteRTLM.xcframework/Info.plist not found after extraction:"; find artifacts/ios -maxdepth 3; exit 1; }
+          echo "--- slices ---"
+          plutil -p "$xcf/Info.plist" | grep -E 'LibraryIdentifier|SupportedPlatform' || true
+          plutil -p "$xcf/Info.plist" | grep -q '"ios-arm64"' || { echo "::error::no ios-arm64 device slice in the xcframework"; exit 1; }
+          device=$(find "$xcf/ios-arm64" -type f -path '*CLiteRTLM.framework/CLiteRTLM' | head -1)
+          [ -n "$device" ] || { echo "::error::device framework binary not found"; exit 1; }
+          echo "--- device binary: $device ---"
+          lipo -info "$device"
+          otool -L "$device"
+          vtool -show-build "$device" | grep -E 'platform|minos|sdk' || true
+          cnt=$(nm -gU "$device" | grep -c ' _litert_lm_' || true)
+          echo "exported litert_lm_* symbols: $cnt"
+          [ "$cnt" -ge "$MIN_EXPORTS" ] || { echo "::error::expected >= $MIN_EXPORTS litert_lm_* exports, got $cnt"; exit 1; }
+          echo "--- GPU companions referenced by name (documented: CPU-only with the xcframework alone) ---"
+          strings "$device" | grep -E 'libLiteRt(MetalAccelerator|TopKMetalSampler)\.dylib' | sort -u || true
+          ls -R artifacts/ios | head -40
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64')
+        with:
+          name: litertlm-macos_arm64
+          path: artifacts/macos/
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.platforms == 'all' || contains(inputs.platforms, 'ios-arm64')
+        with:
+          name: litertlm-ios_arm64
+          path: artifacts/ios/
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [elf, win-x64, apple]
+    # Run as long as nothing failed (skipped platform jobs are fine) and publishing was requested.
+    if: ${{ !cancelled() && inputs.publish_release && !contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Fetch upstream license notices
+        # Shipped as release assets next to the tarballs; pack-nuget.yml places them in the packages.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/fetch-upstream-asset.sh THIRD_PARTY_NOTICES.txt upstream
+          mkdir -p release
+          cp upstream/THIRD_PARTY_NOTICES.txt release/THIRD_PARTY_NOTICES.litert-lm.txt
+
+      - name: Package archives + checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for rid in linux_x86_64 windows_x86_64 android_arm64 macos_arm64 ios_arm64; do
+            dir="artifacts/litertlm-${rid}"
+            if [ -d "$dir" ]; then
+              tar -czf "release/litertlm-${rid}.tar.gz" -C "$dir" .
+            else
+              echo "skip ${rid} (not packaged this run)"
+            fi
+          done
+          cd release
+          # Merge with the existing release's checksums so a partial (platform-filtered) run
+          # doesn't clobber checksums of assets that weren't repackaged.
+          gh release download "native-${UPSTREAM_TAG}" --repo "${{ github.repository }}" \
+            --pattern 'checksums.txt' --output existing.txt 2>/dev/null || touch existing.txt
+          sha256sum *.tar.gz *.txt > new.txt 2>/dev/null || touch new.txt
+          awk '{print $2, $0}' new.txt existing.txt | sort -u -k1,1 | cut -d' ' -f2- > checksums.txt
+          rm -f existing.txt new.txt
+          cat checksums.txt
+
+      - name: Create/update Release native-${{ env.UPSTREAM_TAG }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: native-${{ env.UPSTREAM_TAG }}
+          name: Native binaries — LiteRT-LM ${{ env.UPSTREAM_TAG }} (official prebuilts)
+          body: |
+            Google's official LiteRT-LM C API prebuilts from the upstream release `${{ env.UPSTREAM_TAG }}`
+            (`${{ env.CAPI_ZIP }}` and `CLiteRTLM.xcframework.zip`, verified against GitHub's per-asset
+            sha256 digests), repackaged into this repo's `runtimes/<rid>/native` layout under the
+            library names the binding loads. win-x64 adds the DirectX Shader Compiler runtime
+            (`dxcompiler.dll`, `dxil.dll`, DXC v1.9.2602) that the official library's Dawn backend
+            requires on Direct3D 12. linux-x64 needs the system Vulkan loader (`libvulkan1`).
+            `THIRD_PARTY_NOTICES.litert-lm.txt` is upstream's notice file for these binaries.
+            Assets accumulate across platform-filtered runs.
+
+            Consume with `scripts/restore-natives.ps1` (its default version tracks `LiteRtLmVersion`).
+          files: release/*
+          fail_on_unmatched_files: false

@@ -1,7 +1,8 @@
 #!/usr/bin/env pwsh
 <#
 Restores the native LiteRT-LM binaries into runtimes/<rid>/native/ from this repo's
-`native-<version>` GitHub Release (built by .github/workflows/build-native.yml).
+`native-<version>` GitHub Release (published by .github/workflows/native-release.yml from Google's
+official LiteRT-LM C API prebuilts).
 
 Run once after cloning, before building the samples/tests. Downloads over plain HTTPS —
 no GitHub CLI or authentication needed.
@@ -12,7 +13,7 @@ Usage:
   pwsh scripts/restore-natives.ps1 -All
 #>
 param(
-    [string]$Version = 'v0.15.0',
+    [string]$Version = 'v0.16.0',
     [ValidateSet('win-x64', 'linux-x64', 'android-arm64', 'osx-arm64', 'ios-arm64')]
     [string[]]$Rid,
     [switch]$All

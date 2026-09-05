@@ -188,7 +188,7 @@ public class NativeResolverMessageTests
         string msg = NativeLibraryResolver.BuildFoundButFailedMessage("C:\\app\\LiteRtLm.dll");
 
         Assert.Contains("C:\\app\\LiteRtLm.dll", msg);
-        Assert.Contains("Visual C++ Redistributable", msg);
+        Assert.Contains("libvulkan1", msg);   // the official linux library needs the system Vulkan loader
         // Must NOT steer the user to the runtime package — it is already installed in this scenario.
         Assert.DoesNotContain("LiteRtLmSharp.runtime.", msg);
     }
@@ -196,55 +196,36 @@ public class NativeResolverMessageTests
 
 /// <summary>
 /// The Windows companion-preload selection behind the NuGet-layout GPU fix (engine creation failed for
-/// NuGet consumers because the engine's runtime LoadLibrary of the accelerators never searches
-/// the <c>runtimes/&lt;rid&gt;/native</c> folder). Pure selection logic — the actual preload runs
+/// NuGet consumers because Dawn's runtime LoadLibrary of the DXC pair never searches the
+/// <c>runtimes/&lt;rid&gt;/native</c> folder). Pure selection logic — the actual preload runs
 /// in every native-path test on this box via <see cref="NativeLibraryResolver.Initialize"/>.
 /// </summary>
 public class WindowsCompanionSelectionTests
 {
-    // The exact win-x64 runtime-package inventory as of 1.1.0.
-    private static readonly string[] Win64Natives =
-    [
-        "dxcompiler.dll", "dxil.dll",
-        "GemmaModelConstraintProvider.dll", "libGemmaModelConstraintProvider.dll",
-        "libLiteRt.dll", "LiteRt.dll",
-        "libLiteRtTopKWebGpuSampler.dll", "LiteRtTopKWebGpuSampler.dll",
-        "libLiteRtWebGpuAccelerator.dll", "LiteRtWebGpuAccelerator.dll",
-        "libwebgpu_dawn.dll", "webgpu_dawn.dll",
-        "LiteRtLm.dll",
-    ];
+    // The exact win-x64 runtime-package inventory since the official-prebuilt repin (LiteRT-LM v0.16.0):
+    // the monolithic engine plus the DirectX Shader Compiler runtime it needs on Direct3D 12.
+    private static readonly string[] Win64Natives = ["dxcompiler.dll", "dxil.dll", "LiteRtLm.dll"];
 
     [Fact]
-    public void SelectsLibPrefixedAndUnpairedOnly_ExcludingMain()
+    public void SelectsEveryCompanion_ExcludingMain()
     {
-        var dir = "C:\\app\\runtimes\\win-x64\\native";
+        // Path.Combine (not literal "C:\..." strings) so the paths parse on every OS — the suite
+        // runs the selection logic on linux/macOS CI legs too, where '\' is not a separator.
         var selected = NativeLibraryResolver
-            .SelectWindowsCompanions(Win64Natives.Select(n => Path.Combine(dir, n)), "LiteRtLm.dll")
+            .SelectWindowsCompanions(Win64Natives.Select(n => Path.Combine("runtimes", "win-x64", "native", n)), "LiteRtLm.dll")
             .Select(p => Path.GetFileName(p))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .ToArray();
 
-        // Everything the native code references at runtime by name must be preloaded — including
-        // dxcompiler/dxil, which Dawn loads lazily at first shader compile (no lib-twin, no PE import).
-        Assert.Equal(
-        [
-            "dxcompiler.dll", "dxil.dll",
-            "libGemmaModelConstraintProvider.dll", "libLiteRt.dll",
-            "libLiteRtTopKWebGpuSampler.dll", "libLiteRtWebGpuAccelerator.dll",
-            "libwebgpu_dawn.dll",
-        ], selected.Order(StringComparer.OrdinalIgnoreCase).ToArray());
-
-        // The unreferenced non-prefixed twins must NOT be loaded — a second Dawn instance means a
-        // second copy of its process-global GPU state.
-        Assert.DoesNotContain("webgpu_dawn.dll", selected);
+        // Dawn loads dxcompiler/dxil lazily at the first shader compile, by base name: both must be
+        // preloaded. The main library is loaded right after by absolute path as the P/Invoke target.
+        Assert.Equal(["dxcompiler.dll", "dxil.dll"], selected.Order(StringComparer.OrdinalIgnoreCase).ToArray());
         Assert.DoesNotContain("LiteRtLm.dll", selected);
     }
 
     [Fact]
-    public void KeepsNonPrefixedDllWhenNoTwinExists()
+    public void MainLibraryMatchIsCaseInsensitive()
     {
-        // Path.Combine (not literal "C:\..." strings) so the paths parse on every OS — the suite
-        // runs the selection logic on linux/macOS CI legs too, where '\' is not a separator.
-        string[] files = [Path.Combine("d", "LiteRtLm.dll"), Path.Combine("d", "somelib.dll")];
+        string[] files = [Path.Combine("d", "literTLM.DLL"), Path.Combine("d", "somelib.dll")];
         var selected = NativeLibraryResolver.SelectWindowsCompanions(files, "LiteRtLm.dll").ToArray();
         Assert.Equal([Path.Combine("d", "somelib.dll")], selected);
     }

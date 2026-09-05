@@ -4,14 +4,14 @@ name: iOS package check
 # account: a GitHub-hosted macOS runner is a cloud Mac, and an unsigned device build reaches the
 # native-link stage with no certificate/profile. Two checks:
 #   1. Pack LiteRtLmSharp.runtime.ios-arm64 and assert the .nupkg carries the buildTransitive
-#      .targets + the xcframeworks at the expected paths (package layout is correct).
+#      .targets + the official CLiteRTLM.xcframework at the expected paths (package layout is correct).
 #   2. Build the MAUI sample for net10.0-ios with EnableCodeSigning=false — exercises the
 #      NativeReference Kind=Framework embedding and the native link of a real consumer.
 # It does NOT execute on hardware (that needs a paid Apple Developer account + TestFlight — see
-# docs/roadmap.md). The exported C-API symbol surface is asserted in build-native.yml.
+# docs/roadmap.md). The exported C-API symbol surface is asserted in native-release.yml.
 #
-# Prerequisite: the native release native-<ref> must already contain the ios-arm64 asset WITH the
-# xcframeworks (re-run build-native.yml for ios-arm64 first if it predates that step).
+# Prerequisite: the native release native-<ref> must already contain the ios-arm64 asset
+# (run native-release.yml for ios-arm64 first).
 
 on:
   workflow_dispatch:
@@ -82,15 +82,16 @@ jobs:
           unzip -l "$nupkg"
           for must in \
             "buildTransitive/LiteRtLmSharp.runtime.ios-arm64.targets" \
-            "buildTransitive/xcframeworks/LiteRtLm.xcframework/" \
-            "buildTransitive/xcframeworks/GemmaModelConstraintProvider.xcframework/" \
-            "buildTransitive/xcframeworks/LiteRtMetalAccelerator.xcframework/" \
-            "buildTransitive/xcframeworks/LiteRtTopKMetalSampler.xcframework/"; do
+            "buildTransitive/xcframeworks/CLiteRTLM.xcframework/Info.plist" \
+            "buildTransitive/xcframeworks/CLiteRTLM.xcframework/ios-arm64/CLiteRTLM.framework/CLiteRTLM"; do
             if ! unzip -l "$nupkg" | grep -q "$must"; then
               echo "ERROR: package is missing $must"; exit 1
             fi
           done
-          echo "OK: package carries the .targets + all 4 xcframeworks."
+          if unzip -l "$nupkg" | grep -qE 'xcframeworks/(LiteRtLm|GemmaModelConstraintProvider|LiteRtMetalAccelerator|LiteRtTopKMetalSampler)\.xcframework'; then
+            echo "ERROR: package still carries the retired self-built xcframeworks"; exit 1
+          fi
+          echo "OK: package carries the .targets + the official CLiteRTLM.xcframework."
 
       - name: Build + link the MAUI sample for net10.0-ios (no signing)
         run: |
