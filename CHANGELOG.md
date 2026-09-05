@@ -6,7 +6,7 @@ LiteRT-LM native version it wraps (see the compatibility table in the [README](R
 managed `LiteRtLmSharp` package and every `LiteRtLmSharp.runtime.<rid>` package share one version and
 are published together.
 
-## [Unreleased]
+## [1.2.0] — 2026-09-05
 
 ### Changed
 
