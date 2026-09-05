@@ -84,12 +84,23 @@ foreach ($r in $Rid) {
     New-Item -ItemType Directory -Force (Split-Path -Parent $dest) | Out-Null
     Move-Item -LiteralPath $staging -Destination $dest
     if ($r -eq 'ios-arm64') {
-        Get-ChildItem -LiteralPath $dest -Filter '*.dylib' -File | Remove-Item -Force   # the tar also carries raw dylibs; keep only xcframeworks/
         Write-Host "  -> restored runtimes/$r/xcframeworks"
     }
     else {
         Write-Host "  -> $((Get-ChildItem $dest -File).Count) files in runtimes/$r/native"
     }
+}
+
+# Upstream's notice file for the official binaries: packed into every runtime package by the
+# packaging projects when present (pack-nuget.yml does the same from the release).
+$notice = 'THIRD_PARTY_NOTICES.litert-lm.txt'
+try {
+    New-Item -ItemType Directory -Force (Join-Path $repoRoot 'runtimes') | Out-Null
+    Invoke-WebRequest "$base/$notice" -OutFile (Join-Path $repoRoot "runtimes/$notice")
+    Write-Host "  -> restored runtimes/$notice"
+}
+catch {
+    Write-Warning "Could not download $notice from the release ($($_.Exception.Message)); the runtime packages pack it only when present."
 }
 
 Write-Host 'Done.'
