@@ -84,6 +84,8 @@ prompt template's YAML) works equally well.
 | `Seed` | `seed` | sampler seed |
 | `EnableThinking` | `enable_thinking` | reasoning mode (see below) |
 | `EnableConstrainedDecoding` | `enable_constrained_decoding` | force schema-constrained tool-call arguments ([Function calling](#function-calling)) |
+| `NoRepeatNgramSize` | `no_repeat_ngram_size` | ban repeating any n-gram of that size within the reply (native v0.15.0+) |
+| `SuppressTokens` | `suppress_tokens` | token ids that can never be sampled — an `int[]` (a JSON array works from prompt templates); find ids with `LiteRtEngine.Tokenize` (native v0.15.0+) |
 
 ### Conversation-options template (per-service)
 

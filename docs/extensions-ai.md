@@ -183,10 +183,36 @@ Rules and caveats:
   that conversation (the two constrained-decoding modes are mutually exclusive natively, and the
   tool path is meaningless without tools).
 
+## Banning repeats and tokens: `NoRepeatNgramSize` / `SuppressTokens`
+
+`ChatOptions.FrequencyPenalty` / `PresencePenalty` already map to the native repetition penalties. Two more
+logit processors have no MEAI property, so `LiteRtChatOptions` exposes them, backed by the
+`no_repeat_ngram_size` and `suppress_tokens` keys in `AdditionalProperties` (a plain `ChatOptions` with those
+keys works too, including options deserialized from JSON/YAML):
+
+```csharp
+int[] banned = [.. engine.Tokenize(" Paris"), .. engine.Tokenize("Paris")];   // both surface forms
+var options = new LiteRtChatOptions
+{
+    MaxOutputTokens = 128,
+    NoRepeatNgramSize = 3,      // never repeat a 3-gram already produced in this reply
+    SuppressTokens = banned,    // these ids can never be sampled
+};
+```
+
+- `NoRepeatNgramSize` bans any n-gram of that many tokens the reply already produced (whole-reply window).
+  Useful when a small model echoes a prompt template verbatim. Zero or negative is rejected.
+- `SuppressTokens` forces the listed ids' logits to `-inf` on every step. Find ids with `LiteRtEngine.Tokenize`;
+  most words tokenize differently with and without a leading space, so ban both. Negative ids are rejected;
+  ids outside the vocabulary are ignored natively.
+- Both apply per request and require native LiteRT-LM v0.15.0+. The Semantic Kernel connector exposes the
+  same two knobs on `LiteRtPromptExecutionSettings`.
+
 ## Reasoning ("thinking")
 
-Enable the model's reasoning mode with **`LiteRtChatOptions`** — a `ChatOptions` subtype that adds the one knob
-MEAI has no typed property for (it backs the `enable_thinking` key). This mirrors the Semantic Kernel
+Enable the model's reasoning mode with **`LiteRtChatOptions`** — a `ChatOptions` subtype that adds the knobs
+MEAI has no typed property for (`EnableThinking`, `EnableConstrainedDecoding`, `NoRepeatNgramSize`,
+`SuppressTokens`, each backed by a key in `AdditionalProperties`). This mirrors the Semantic Kernel
 connector's `LiteRtPromptExecutionSettings`:
 
 ```csharp

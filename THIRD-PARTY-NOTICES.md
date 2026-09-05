@@ -4,19 +4,19 @@ LiteRtLmSharp redistributes, or is derived from, the following third-party compo
 
 ---
 
-## LiteRT-LM (and LiteRT prebuilt accelerator libraries)
+## LiteRT-LM (Google's official C API prebuilts)
 
 - Source: https://github.com/google-ai-edge/LiteRT-LM
 - Copyright: The ODML Authors / Google LLC
 - License: Apache License 2.0 (same text as this repository's `LICENSE.txt`)
 
-The native libraries shipped in the `LiteRtLmSharp.runtime.*` packages (`LiteRtLm` /
-`libLiteRtLm` and companion accelerator libraries such as `LiteRt`,
-`LiteRtWebGpuAccelerator`, `LiteRtTopKWebGpuSampler`, `LiteRtMetalAccelerator`,
-`LiteRtTopKMetalSampler`, `LiteRtGpuAccelerator`, `LiteRtOpenClAccelerator`,
-`GemmaModelConstraintProvider`) are built from LiteRT-LM source at a pinned release
-tag, plus the prebuilt accelerator binaries that Google distributes in the same
-repository under `prebuilt/<platform>/`.
+The native libraries shipped in the `LiteRtLmSharp.runtime.*` packages are Google's official
+LiteRT-LM C API prebuilts (`litert_lm_c_api-<version>.zip` and `CLiteRTLM.xcframework.zip`
+from the pinned upstream release), redistributed unmodified apart from the file name
+(`LiteRtLm.dll`, `libLiteRtLm.so`, `libLiteRtLm.dylib`). Each library embeds the LiteRT
+runtime, the GPU accelerators and samplers, the constraint provider and LlGuidance, among
+other components; upstream's notice file covering those binaries ships in every runtime
+package as `THIRD_PARTY_NOTICES.litert-lm.txt`.
 
 LiteRT, LiteRT-LM and Gemma are trademarks of Google LLC. This project is not
 affiliated with, sponsored, or endorsed by Google.
@@ -76,14 +76,16 @@ https://github.com/microsoft/DirectXShaderCompiler/blob/main/LICENSE.TXT
 
 ---
 
-## flutter_gemma (build recipe attribution)
+## flutter_gemma (attribution)
 
 - Source: https://github.com/DenisovAV/flutter_gemma
 - License: MIT
 
-`native/patch_c_api.sh` (the downstream patch that adds a shared-library Bazel target
-for the LiteRT-LM C API) is derived from the approach pioneered by flutter_gemma's
-`patch_c_api.sh`, along with several build/runtime insights documented in that project.
+Several build and runtime insights documented in this repository (the Android
+`<uses-native-library>` requirement, the DirectX Shader Compiler runtime on Windows, the
+GPU sampler issues) were first worked out in flutter_gemma. Until LiteRT-LM v0.15.0 the
+natives were built with a downstream Bazel patch derived from its `patch_c_api.sh` (see git
+history); since v0.16.0 no code from it remains.
 
 ---
 

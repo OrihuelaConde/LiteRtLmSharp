@@ -116,7 +116,7 @@ native benchmark API's `decode_tokens_per_sec` for the turn.
 - **A real accelerator (Adreno 650) also shows no win here.** Validated on a Moto G100 (Android 12,
   Adreno 650, OpenCL): MTP runs **correctly** — logcat confirms `enable_speculative_decoding: true`,
   the drafter compiles on the **OpenCL delegate** (its `mtp_drafter` subgraph initializes on GPU
-  alongside decode/prefill/verify), and the **GPU sampler loads** (the Android `patchelf` works, so
+  alongside decode/prefill/verify), and the **GPU sampler loads** (measured with the self-built set and its Android `patchelf`; the official v0.16.0 library embeds the sampler, so
   there's no CPU-sampling fallback here, unlike desktop WebGPU). Yet throughput is flat: 14.1 (on)
   vs 13.9 (off) tok/s, ~1.01×. The drafter's **acceptance rate is ~32%** (399 drafted, 126 verified)
   — essentially identical to desktop (~0.317), so acceptance is **model/prompt-bound, not

@@ -10,15 +10,12 @@ P/Invoke) works on .NET Android (CoreCLR).
 
 ## Pieces (status)
 
-- **Native build** (`build-native.yml`, `build-android-arm64` job): ✅
-  - `bazelisk build -c opt --strip=always --config=android_arm64 --linkopt=-Wl,-z,max-page-size=16384 //c:libLiteRtLm.dylib`
-  - **No `litert_link_capi_so`**: on Android there is no separate `libLiteRt.so` in
-    `prebuilt/` → LiteRt's C API is **linked statically** into `libLiteRtLm.so` (and exported
-    via the dynamic-list, which covers `@platforms//os:android` after the patch fix).
-  - **16 KB page size**: Google Play requirement.
-  - Companions from `prebuilt/android_arm64/`: `libLiteRtGpuAccelerator.so`,
-    `libLiteRtOpenClAccelerator.so`, `libLiteRtTopKOpenClSampler.so`,
-    `libGemmaModelConstraintProvider.so` (+WebGPU). NO `libLiteRt.so`.
+- **Native binary** (`native-release.yml`): ✅ Google's official `liblitert-lm.so` for
+  `android_arm64`, shipped as a single `libLiteRtLm.so` with the OpenCL/WebGPU accelerators, the
+  GPU samplers and the constraint provider embedded (16 KB page alignment — the Google Play
+  requirement — is asserted by the workflow). Until v0.15.0 it was built here with Bazel and shipped
+  next to upstream's companion `.so` files; the sections below that mention companions or the
+  sampler patch describe that era and are kept as the diagnostic record.
 - **Runtime package** `LiteRtLmSharp.runtime.android-arm64`: ✅. .NET Android packs
   `runtimes/android-arm64/native/*.so` into the APK (under `lib/arm64-v8a/`).
 - **pack-nuget.yml**: ✅ includes android.
@@ -27,16 +24,17 @@ P/Invoke) works on .NET Android (CoreCLR).
 ## Native loading on Android
 P/Invoke `"LiteRtLm"` → the runtime loads `libLiteRtLm.so` from the app's native-libs dir. The
 `NativeLibraryResolver` finds no `runtimes/.../native` on disk (on Android they live inside the
-APK) and falls back to the default `NativeLibrary.TryLoad("LiteRtLm")` → resolves. Companions
-resolve through Android's linker namespace (same app dir) and the accelerators via
-`RTLD_DEFAULT` (`LiteRt*` symbols exported by the dynamic-list). The resolver's RTLD_GLOBAL
-preload does not apply (no candidate dir) and is not needed: `libLiteRtLm.so` has no
-`NEEDED libLiteRt.so` (static).
+APK) and falls back to the default `NativeLibrary.TryLoad("LiteRtLm")` → resolves. There are no
+companion libraries any more: accelerators, samplers and the constraint provider are inside the
+one file. The vendor `libOpenCL.so` is still `dlopen`'d at runtime and needs the manifest
+declaration described below; the sampler factory tries `libLiteRtTopKOpenClSampler.so` first and
+then uses its embedded copy, so the logcat line `OpenCL sampler not available, falling back to
+statically linked C API` is expected on every GPU run (sampling stays on the GPU).
 
 ## Consumption (MAUI / .NET Android)
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="1.1.1" />
-<PackageReference Include="LiteRtLmSharp.runtime.android-arm64" Version="1.1.1" />
+<PackageReference Include="LiteRtLmSharp" Version="1.2.0" />
+<PackageReference Include="LiteRtLmSharp.runtime.android-arm64" Version="1.2.0" />
 ```
 The `.litertlm` model (~2.5 GB for E2B) is **not packed** into the APK: download it to app
 storage on first run and pass its path to `LiteRtEngine.Load`.
@@ -59,11 +57,21 @@ storage on first run and pass its path to `LiteRtEngine.Load`.
    acceptance is only ~32% — too low to beat the drafter overhead on this older GPU. Same story on
    desktop (CPU regresses; WebGPU needs the cache off and still doesn't speed up). A newer flagship
    GPU is the remaining thing to try. See [speculative-decoding.md](speculative-decoding.md).
+6. ✅ **Official v0.16.0 prebuilt validated on the same device (2026-09-05)**: the MAUI sample with
+   the single official `libLiteRtLm.so` loads gemma-4 E2B on GPU (OpenCL picked; 15.7 tok/s decode
+   warm, TTFT 0.7 s), on CPU (12.2 tok/s), and the Tools tab answers both demo tools with
+   constrained decoding; APK 60 MB vs 78 MB with the self-built set. The embedded OpenCL sampler
+   keeps sampling on the GPU (the factory falls back to its statically linked copy, never to CPU).
+   **The self-built `native-v0.15.0` set failed on GPU on this very device**: upstream's v0.15.0
+   prebuilt `libLiteRtTopKOpenClSampler.so` exported 4 of the 7 functions the v0.15.0 engine
+   requires (`CanHandleInput` missing), the WebGPU sampler then failed with `NOT_FOUND` and
+   generation aborted — [LiteRT-LM#3135](https://github.com/google-ai-edge/LiteRT-LM/issues/3135),
+   reported by the Unity binding. v0.14.0 was fine (4 exports sufficed) and the v0.16.0 prebuilt
+   exports all 7; nothing self-built at v0.15.0 was ever published.
 
 ## Risks
-- Runner NDK version vs r28b+.
-- Accelerator resolution without a separate `libLiteRt.so` (GPU needed validation; CPU was
-  expected to work) — both verified on device.
+- Vendor GPU drivers (see the diagnosis below): older Adreno Vulkan drivers break Dawn's shaders,
+  and OpenCL must be reachable through the manifest declaration.
 - Model size/memory on low-RAM devices.
 
 ## Android GPU — full diagnosis (validated on device, 2026-06-10)
@@ -90,11 +98,15 @@ Declare in `AndroidManifest.xml` (same set as Google's official Gallery app):
 <uses-native-library android:name="libedgetpu_litert.so" android:required="false" />
 ```
 With this, logcat shows `tflite: Loaded OpenCL library with dlopen` and **the registry prefers
-OpenCL over Dawn on its own** (with the full 7-`.so` set present) → correct text on GPU.
+OpenCL over Dawn on its own** (measured with the self-built 7-`.so` set; the official monolith
+behaves the same) → correct text on GPU.
 Expected profile: slower GPU init (weight upload + CL kernel compilation, ~17 s on the test
 device), faster decode than CPU.
 
-### Additional finding: TopK samplers fail to load → patchelf applied in CI
+### Historical: TopK samplers failed to load → patchelf (self-built era, v0.13.1 → v0.15.0)
+> Resolved by the official v0.16.0 prebuilt, which embeds the samplers; there is no patchelf and no
+> companion sampler any more. Kept for the record.
+
 `dlopen failed: cannot locate symbol "LiteRtCreateEnvironment"` — Google's prebuilt samplers
 lack `DT_NEEDED libLiteRtLm.so` (upstream **LiteRT-LM#2211**; flutter_gemma fixed it the same
 way in their #270). The fallback is graceful: CPU sampling, GPU matmuls. Per #2211 the

@@ -7,22 +7,24 @@ LLamaSharp-style model: **one pure managed package + per-RID native runtime pack
 | `LiteRtLmSharp` | Managed assembly only (`lib/net10.0/LiteRtLmSharp.dll`). No natives. | net10.0 |
 | `LiteRtLmSharp.Extensions.AI` | `IChatClient` connector (Microsoft.Extensions.AI). Depends on `LiteRtLmSharp` (same version). | net10.0 |
 | `LiteRtLmSharp.SemanticKernel` | `IChatCompletionService` connector, built on `LiteRtLmSharp.Extensions.AI` (same version). | net10.0 |
-| `LiteRtLmSharp.runtime.win-x64` | `runtimes/win-x64/native/*.dll` (LiteRtLm + companions + DXC). No lib. | (native-only) |
-| `LiteRtLmSharp.runtime.linux-x64` | `runtimes/linux-x64/native/*.so`. No lib. | (native-only) |
-| `LiteRtLmSharp.runtime.android-arm64` | `runtimes/android-arm64/native/*.so` (packed into the APK as `lib/arm64-v8a/`). | (native-only) |
-| `LiteRtLmSharp.runtime.osx-arm64` | `runtimes/osx-arm64/native/*.dylib` (Apple Silicon). | (native-only) |
-| `LiteRtLmSharp.runtime.ios-arm64` | Dynamic `.framework` xcframeworks injected via `NativeReference` (buildTransitive `.targets`); device-arm64. No lib. | (native-only) |
+| `LiteRtLmSharp.runtime.win-x64` | `runtimes/win-x64/native/`: the official `LiteRtLm.dll` (static CRT) + the DirectX Shader Compiler runtime (`dxcompiler.dll`, `dxil.dll`) the GPU backend needs. No lib. | (native-only) |
+| `LiteRtLmSharp.runtime.linux-x64` | `runtimes/linux-x64/native/libLiteRtLm.so` (one official library; needs the system Vulkan loader, `libvulkan1`). No lib. | (native-only) |
+| `LiteRtLmSharp.runtime.android-arm64` | `runtimes/android-arm64/native/libLiteRtLm.so` (one official library, accelerators and samplers embedded; packed into the APK as `lib/arm64-v8a/`). | (native-only) |
+| `LiteRtLmSharp.runtime.osx-arm64` | `runtimes/osx-arm64/native/libLiteRtLm.dylib` (one official library, Apple Silicon). | (native-only) |
+| `LiteRtLmSharp.runtime.ios-arm64` | Google's official `CLiteRTLM.xcframework` (device + simulator slices) injected via `NativeReference` (buildTransitive `.targets`); CPU backend. No lib. | (native-only) |
 
-> **iOS (`ios-arm64`).** Unlike desktop, a nupkg
-> `runtimes/` folder is not auto-embedded on iOS; the natives ship as an **xcframework consumed
-> via `NativeReference Kind=Framework`** from a `buildTransitive` `.targets` conditioned on the
-> `net10.0-ios` TFM — `libLiteRtLm.dylib` + the prebuilt companions wrapped as dynamic
-> `.framework`s, embedded and code-signed into the app bundle and resolved at runtime by
-> `NativeLibraryResolver` (see the iOS linking decision in `docs/roadmap.md`). Device-arm64 only
-> (the companions have no simulator slice). Build/link is validated in CI
-> (`ios-package-check.yml`); on-device runtime is pending hardware validation (see
-> `docs/roadmap.md`). Every package ships `README.md`, `LICENSE.txt`, `NOTICE` and
-> `THIRD-PARTY-NOTICES.md` at its root.
+> **iOS (`ios-arm64`).** Unlike desktop, a nupkg `runtimes/` folder is not auto-embedded on iOS;
+> the native library ships as Google's official **`CLiteRTLM.xcframework`, consumed via
+> `NativeReference Kind=Framework`** from a `buildTransitive` `.targets` conditioned on the
+> `net10.0-ios` TFM — embedded and code-signed into the app bundle and loaded at runtime by
+> `NativeLibraryResolver` as `Frameworks/CLiteRTLM.framework/CLiteRTLM` (see the iOS linking
+> decision in `docs/roadmap.md`). The xcframework carries device and simulator slices. GPU (Metal)
+> needs companion libraries the xcframework only references by name and the package does not
+> ship, so the CPU backend is the supported path. Build/link is validated in CI
+> (`ios-package-check.yml`, which also asserts the package layout); on-device runtime is pending
+> hardware validation (see `docs/roadmap.md`). Every package ships `README.md`, `LICENSE.txt`,
+> `NOTICE` and `THIRD-PARTY-NOTICES.md` at its root; the runtime packages add upstream's
+> `THIRD_PARTY_NOTICES.litert-lm.txt` for the binaries they carry.
 
 **All packages share one version per release** (enforced by the single `Version` in
 `Directory.Build.props`) and that version is **independent of the LiteRT-LM native version**,
@@ -32,8 +34,8 @@ compatibility table. Install the managed and runtime packages with the same vers
 ## Consumption (including MAUI)
 
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="1.1.1" />
-<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.1.1" />
+<PackageReference Include="LiteRtLmSharp" Version="1.2.0" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.2.0" />
 <!-- and/or linux-x64 / android-arm64 / osx-arm64, per target -->
 ```
 
@@ -46,8 +48,10 @@ picks its RID, like LLamaSharp).
 
 ## Producing the packages
 
-1. **Native build** (`build-native.yml`) pinned to a tag (`v0.14.0`, the current pin) with
-   `publish_release` → creates the `native-v0.14.0` release with the `litertlm-*.tar.gz` assets.
+1. **Native release** (`native-release.yml`) pinned to the upstream tag (`v0.16.0`, the current pin)
+   with `publish_release` → downloads Google's official prebuilts, verifies them against the upstream
+   release digests, inspects each library and publishes the `native-v0.16.0` release with the
+   `litertlm-*.tar.gz` assets (plus upstream's `THIRD_PARTY_NOTICES.litert-lm.txt`).
 2. **Pack** (`pack-nuget.yml`): downloads those assets, lays them into
    `runtimes/<rid>/native/`, runs `dotnet pack` with the given `package_version`, uploads the
    `.nupkg`s as an artifact, and (optionally, `push=true`) publishes to nuget.org via
@@ -60,9 +64,9 @@ the projects under `packaging/` (these need the natives already present in
 
 ## Notes / pending
 
-- **MSVC runtime**: `LiteRtLm.dll` (win-x64) imports `MSVCP140/VCRUNTIME140*`; it relies on the
-  VC++ Redistributable being installed on the user's machine. Documented as a prerequisite in
-  the README; shipping it is a future packaging decision.
+- **Vulkan loader on Linux**: the official `libLiteRtLm.so` hard-depends on `libvulkan.so.1`; consumers
+  install `libvulkan1` (documented in the README; the resolver's load-failure message names it).
+- **No VC++ Redistributable on Windows** since 1.2.0: the official `LiteRtLm.dll` links the CRT statically.
 - Possible future RIDs: `linux-arm64`, `android-x64` (emulators).
 - Optional future: a `LiteRtLmSharp.Backend.Desktop` meta-package depending on the win/linux
   runtime packages.
