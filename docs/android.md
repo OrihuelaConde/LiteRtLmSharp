@@ -62,7 +62,7 @@ storage on first run and pass its path to `LiteRtEngine.Load`.
    warm, TTFT 0.7 s), on CPU (12.2 tok/s), and the Tools tab answers both demo tools with
    constrained decoding; APK 60 MB vs 78 MB with the self-built set. The embedded OpenCL sampler
    keeps sampling on the GPU (the factory falls back to its statically linked copy, never to CPU).
-   **The self-built `native-v0.15.0` set failed on GPU on this very device**: upstream's v0.15.0
+   For the record, the self-built v0.15.0 candidate (never published) failed on GPU on this very device: upstream's v0.15.0
    prebuilt `libLiteRtTopKOpenClSampler.so` exported 4 of the 7 functions the v0.15.0 engine
    requires (`CanHandleInput` missing), the WebGPU sampler then failed with `NOT_FOUND` and
    generation aborted — [LiteRT-LM#3135](https://github.com/google-ai-edge/LiteRT-LM/issues/3135),

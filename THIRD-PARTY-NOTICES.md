@@ -83,9 +83,9 @@ https://github.com/microsoft/DirectXShaderCompiler/blob/main/LICENSE.TXT
 
 Several build and runtime insights documented in this repository (the Android
 `<uses-native-library>` requirement, the DirectX Shader Compiler runtime on Windows, the
-GPU sampler issues) were first worked out in flutter_gemma. Until LiteRT-LM v0.15.0 the
-natives were built with a downstream Bazel patch derived from its `patch_c_api.sh` (see git
-history); since v0.16.0 no code from it remains.
+GPU sampler issues) were first worked out in flutter_gemma. Up to 1.1.1 the natives were built
+with a downstream Bazel patch derived from its `patch_c_api.sh` (see git history); since 1.2.0
+no code from it remains.
 
 ---
 
