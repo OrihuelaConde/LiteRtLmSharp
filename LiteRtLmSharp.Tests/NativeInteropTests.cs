@@ -229,6 +229,28 @@ public class WindowsCompanionSelectionTests
         var selected = NativeLibraryResolver.SelectWindowsCompanions(files, "LiteRtLm.dll").ToArray();
         Assert.Equal([Path.Combine("d", "somelib.dll")], selected);
     }
+
+    /// <summary>A 1.1.x companion set left behind in an output folder (a publish over an older publish)
+    /// must not be pre-loaded: the official engine would bind those older libraries instead of its
+    /// embedded copies. The same rule filters the Linux/macOS sweep.</summary>
+    [Fact]
+    public void RetiredSelfBuiltCompanions_AreNeverPreloaded()
+    {
+        string[] stale =
+        [
+            "libLiteRt.dll", "LiteRt.dll", "libLiteRtWebGpuAccelerator.dll", "libLiteRtTopKWebGpuSampler.dll",
+            "libwebgpu_dawn.dll", "webgpu_dawn.dll", "libGemmaModelConstraintProvider.dll", "GemmaModelConstraintProvider.dll",
+        ];
+        var selected = NativeLibraryResolver
+            .SelectWindowsCompanions([.. stale.Concat(Win64Natives).Select(n => Path.Combine("out", n))], "LiteRtLm.dll")
+            .Select(p => Path.GetFileName(p))
+            .ToArray();
+        Assert.Equal(["dxcompiler.dll", "dxil.dll"], selected.Order(StringComparer.OrdinalIgnoreCase).ToArray());
+
+        Assert.False(NativeLibraryResolver.IsPreloadCandidate("libLiteRtTopKOpenClSampler.so", "libLiteRtLm.so"));
+        Assert.False(NativeLibraryResolver.IsPreloadCandidate("libLiteRtLm.so", "libLiteRtLm.so"));
+        Assert.True(NativeLibraryResolver.IsPreloadCandidate("libsomething.so", "libLiteRtLm.so"));
+    }
 }
 
 public class MultimodalMessageJsonTests

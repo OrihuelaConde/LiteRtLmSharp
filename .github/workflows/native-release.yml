@@ -321,7 +321,7 @@ jobs:
           # doesn't clobber checksums of assets that weren't repackaged.
           gh release download "native-${UPSTREAM_TAG}" --repo "${{ github.repository }}" \
             --pattern 'checksums.txt' --output existing.txt 2>/dev/null || touch existing.txt
-          sha256sum *.tar.gz *.txt > new.txt 2>/dev/null || touch new.txt
+          sha256sum *.tar.gz THIRD_PARTY_NOTICES.litert-lm.txt > new.txt 2>/dev/null || touch new.txt
           awk '{print $2, $0}' new.txt existing.txt | sort -u -k1,1 | cut -d' ' -f2- > checksums.txt
           rm -f existing.txt new.txt
           cat checksums.txt

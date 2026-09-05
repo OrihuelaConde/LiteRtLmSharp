@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using LiteRtLmSharp.Extensions.AI;
 using Microsoft.SemanticKernel;
 
 namespace LiteRtLmSharp.SemanticKernel;
@@ -99,7 +100,10 @@ public sealed class LiteRtPromptExecutionSettings : PromptExecutionSettings
     private float? GetSingle(string key) => TryGet(key, out object? v) ? ToSingle(v) : null;
     private int? GetInt32(string key) => TryGet(key, out object? v) ? ToInt32(v) : null;
     private bool? GetBoolean(string key) => TryGet(key, out object? v) ? ToBoolean(v) : null;
-    private IReadOnlyList<int>? GetInt32List(string key) => TryGet(key, out object? v) ? ToInt32List(v) : null;
+    // The list coercion is shared with the MEAI connector (LiteRtChatMapping.AsInt32List) so both read the
+    // same shapes: int[], any IEnumerable<int>, a JsonElement array, a comma-separated string, and the
+    // List<object> of boxed doubles that Semantic Kernel's own settings converter produces.
+    private IReadOnlyList<int>? GetInt32List(string key) => TryGet(key, out object? v) ? LiteRtChatMapping.TryAsInt32List(v) : null;
 
     private static float? ToSingle(object? v) => v switch
     {
@@ -124,32 +128,6 @@ public sealed class LiteRtPromptExecutionSettings : PromptExecutionSettings
         JsonElement { ValueKind: JsonValueKind.String } e when int.TryParse(e.GetString(), System.Globalization.CultureInfo.InvariantCulture, out int r) => r,
         _ => null,
     };
-
-    private static IReadOnlyList<int>? ToInt32List(object? v)
-    {
-        switch (v)
-        {
-            case null:
-                return null;
-            case int[] arr:
-                return arr;
-            case IReadOnlyList<int> list:
-                return list;
-            case IEnumerable<int> seq:
-                return seq.ToArray();
-            case JsonElement { ValueKind: JsonValueKind.Array } e:
-                var ids = new List<int>();
-                foreach (JsonElement item in e.EnumerateArray())
-                {
-                    if (ToInt32(item) is not { } id)
-                        return null;
-                    ids.Add(id);
-                }
-                return ids;
-            default:
-                return null;
-        }
-    }
 
     private static bool? ToBoolean(object? v) => v switch
     {

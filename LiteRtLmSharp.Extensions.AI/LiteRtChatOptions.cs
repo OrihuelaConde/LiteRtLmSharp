@@ -77,12 +77,13 @@ public sealed class LiteRtChatOptions : ChatOptions
     /// Backed by the <c>suppress_tokens</c> key in <see cref="ChatOptions.AdditionalProperties"/> (stored as an
     /// <c>int[]</c>; a JSON array of numbers or a comma-separated string is accepted when the options come from
     /// JSON/YAML); maps to <see cref="LiteRtSendOptions.SuppressTokens"/>. Setting <c>null</c> removes the key.
-    /// Negative ids are rejected when the send options are built.
+    /// A malformed value reads as <c>null</c> here; negative ids and non-integer entries are rejected when
+    /// the send options are built.
     /// </remarks>
     [JsonIgnore]
     public IReadOnlyList<int>? SuppressTokens
     {
-        get => LiteRtChatMapping.GetInt32ListProperty(this, "suppress_tokens");
+        get => LiteRtChatMapping.TryGetInt32ListProperty(this, "suppress_tokens");
         set => SetOrRemove("suppress_tokens", value is null ? null : value.ToArray());
     }
 

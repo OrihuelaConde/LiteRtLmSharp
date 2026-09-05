@@ -144,7 +144,7 @@ internal static partial class NativeLibraryResolver
 
         string pattern = RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "*.dylib" : "*.so";
         var pending = Directory.EnumerateFiles(dir, pattern)
-            .Where(f => !Path.GetFileName(f).Equals(mainFileName, StringComparison.OrdinalIgnoreCase))
+            .Where(f => IsPreloadCandidate(Path.GetFileName(f), mainFileName))
             .ToList();
 
         for (int pass = 0; pass < 3 && pending.Count > 0; pass++)
@@ -164,17 +164,42 @@ internal static partial class NativeLibraryResolver
 
     /// <summary>
     /// The companion DLLs to pre-load on Windows: every <c>.dll</c> in the folder except the main
-    /// library. With the official monolithic build that is the DXC pair (<c>dxcompiler.dll</c>,
-    /// <c>dxil.dll</c>), which Dawn loads dynamically at the first shader compile; the main library
-    /// is excluded because it is loaded right after, by absolute path, as the P/Invoke target.
+    /// library and the retired self-built companions. With the official monolithic build the only
+    /// companions are the DXC pair (<c>dxcompiler.dll</c>, <c>dxil.dll</c>), which Dawn loads dynamically
+    /// at the first shader compile; the main library is excluded because it is loaded right after, by
+    /// absolute path, as the P/Invoke target.
     /// </summary>
     internal static IEnumerable<string> SelectWindowsCompanions(IEnumerable<string> dllPaths, string mainFileName)
     {
         foreach (string path in dllPaths)
         {
-            if (!Path.GetFileName(path).Equals(mainFileName, StringComparison.OrdinalIgnoreCase))
+            if (IsPreloadCandidate(Path.GetFileName(path), mainFileName))
                 yield return path;
         }
+    }
+
+    /// <summary>
+    /// File-name prefixes of the companion libraries the pre-1.2.0 self-built packages shipped next to the
+    /// engine (the LiteRT runtime, the GPU accelerators and samplers, Dawn, the constraint provider). The
+    /// official monolithic library embeds all of them but still tries to load them by name first, so a
+    /// stale copy left in an output folder (a <c>dotnet publish -o</c> over a 1.1.x publish) must never be
+    /// pre-loaded: it would bind an older runtime to the current engine.
+    /// </summary>
+    private static readonly string[] RetiredCompanionPrefixes =
+        ["libLiteRt", "LiteRt", "libwebgpu_dawn", "webgpu_dawn", "libGemmaModelConstraintProvider", "GemmaModelConstraintProvider"];
+
+    /// <summary>Whether a library in the natives folder should be pre-loaded: not the main library, and not
+    /// one of the retired self-built companions (see <see cref="RetiredCompanionPrefixes"/>).</summary>
+    internal static bool IsPreloadCandidate(string fileName, string mainFileName)
+    {
+        if (fileName.Equals(mainFileName, StringComparison.OrdinalIgnoreCase))
+            return false;
+        foreach (string prefix in RetiredCompanionPrefixes)
+        {
+            if (fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+        return true;
     }
 
     // RTLD_LAZY (defer symbol resolution) | RTLD_GLOBAL (export symbols to later-loaded libs).

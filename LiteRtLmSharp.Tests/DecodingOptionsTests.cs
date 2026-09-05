@@ -284,6 +284,26 @@ public class DecodingOptionsMappingTests
             ExtensionData = new Dictionary<string, object> { ["suppress_tokens"] = doc.RootElement.GetProperty("suppress_tokens") },
         };
         Assert.Equal([1, 2], fromJson.SuppressTokens!);
+
+        // The same coercer as the MEAI side: SK's converter shape (boxed doubles) and a comma string read
+        // back exactly as they are sent, and garbage reads as null from the getter instead of throwing.
+        var fromSk = new LiteRtPromptExecutionSettings
+        {
+            ExtensionData = new Dictionary<string, object> { ["suppress_tokens"] = new List<object> { 9079.0, 42.0 } },
+        };
+        Assert.Equal([9079, 42], fromSk.SuppressTokens!);
+        Assert.Equal([1, 2, 3], new LiteRtPromptExecutionSettings { ExtensionData = new Dictionary<string, object> { ["suppress_tokens"] = "1, 2,3" } }.SuppressTokens!);
+        Assert.Null(new LiteRtPromptExecutionSettings { ExtensionData = new Dictionary<string, object> { ["suppress_tokens"] = true } }.SuppressTokens);
+    }
+
+    [Fact]
+    public void LiteRtChatOptions_SuppressTokensGetter_ReadsMalformedAsNull_ButSendRejectsIt()
+    {
+        var options = new ChatOptions { AdditionalProperties = new() { ["suppress_tokens"] = true } };
+        // Reading through the typed subtype must not throw from a property getter...
+        Assert.Null(new LiteRtChatOptions { AdditionalProperties = options.AdditionalProperties }.SuppressTokens);
+        // ...while building the send options still names the bad key.
+        Assert.Throws<ArgumentException>(() => LiteRtChatMapping.ToSendOptions(options));
     }
 
     [Fact]

@@ -107,6 +107,14 @@ jobs:
             fi
           done
 
+          # win-x64 must carry the DirectX Shader Compiler pair: the official Dawn backend has no FXC
+          # fallback, and the consumer smoke's GPU leg cannot prove their presence on a GPU-less runner.
+          if [ -d runtimes/win-x64/native ] && [ -n "$(ls runtimes/win-x64/native 2>/dev/null)" ]; then
+            for dxc in dxcompiler.dll dxil.dll; do
+              [ -f "runtimes/win-x64/native/$dxc" ] || { echo "::error::win-x64 natives lack $dxc (Dawn on D3D12 requires it)"; exit 1; }
+            done
+          fi
+
           # iOS is special twice over: it ships .xcframeworks (not a runtimes/<rid>/native dlopen
           # layout), so extract at the rid ROOT — and it is gated behind include_ios because the
           # package is not device-validated yet (packing it with push=true would publish it).
@@ -224,6 +232,15 @@ jobs:
           Get-Content gpu-stderr.txt
           $dawn = (Select-String -Path gpu-stderr.txt -Pattern 'dawn|WebGPU' -AllMatches | Measure-Object).Count
           Write-Host "gpu exit=$code, WebGPU/Dawn stderr lines=$dawn"
+          # Signatures that mean the package is broken regardless of the runner having a GPU: the DXC
+          # pair was not found or not preloaded (Dawn: "DynamicLib.Open: dxil.dll Windows Error: 87"),
+          # or the embedded GPU sampler is gone (the runtime warns and samples on CPU). The official
+          # monolith prints WebGPU lines at load even in those states, so a line count alone is blind to them.
+          $broken = Select-String -Path gpu-stderr.txt -Pattern 'dxil\.dll|dxcompiler\.dll|Falling back to CPU sampling'
+          if ($broken) {
+            $broken | ForEach-Object { Write-Host "  !! $($_.Line)" }
+            throw 'GPU leg FAILED: the DirectX Shader Compiler pair did not load from the NuGet layout, or GPU sampling fell back to CPU.'
+          }
           if ($code -eq 0) {
             Write-Host 'GPU leg: FULL pass — a usable adapter exists on this runner (WARP or hardware) and generation succeeded.'
           } elseif ($dawn -gt 0) {

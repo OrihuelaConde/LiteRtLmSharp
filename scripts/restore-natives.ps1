@@ -94,13 +94,22 @@ foreach ($r in $Rid) {
 # Upstream's notice file for the official binaries: packed into every runtime package by the
 # packaging projects when present (pack-nuget.yml does the same from the release).
 $notice = 'THIRD_PARTY_NOTICES.litert-lm.txt'
+$noticeDest = Join-Path $repoRoot "runtimes/$notice"
+# Never leave a previous release's notice behind: the packaging projects pack whatever file exists.
+if (Test-Path -LiteralPath $noticeDest) { Remove-Item -LiteralPath $noticeDest -Force }
 try {
     New-Item -ItemType Directory -Force (Join-Path $repoRoot 'runtimes') | Out-Null
-    Invoke-WebRequest "$base/$notice" -OutFile (Join-Path $repoRoot "runtimes/$notice")
+    $noticeTmp = Join-Path $tmp $notice
+    Invoke-WebRequest "$base/$notice" -OutFile $noticeTmp
+    $noticeHash = (Get-FileHash -Algorithm SHA256 $noticeTmp).Hash.ToLower()
+    if ($checksums.ContainsKey($notice) -and $checksums[$notice] -ne $noticeHash) {
+        throw "Checksum mismatch for ${notice}: expected $($checksums[$notice]), got $noticeHash"
+    }
+    Move-Item -LiteralPath $noticeTmp -Destination $noticeDest
     Write-Host "  -> restored runtimes/$notice"
 }
 catch {
-    Write-Warning "Could not download $notice from the release ($($_.Exception.Message)); the runtime packages pack it only when present."
+    Write-Warning "Could not restore $notice from the release ($($_.Exception.Message)); local runtime packages will be packed WITHOUT it until it is restored."
 }
 
 Write-Host 'Done.'

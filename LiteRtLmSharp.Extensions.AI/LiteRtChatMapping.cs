@@ -652,9 +652,26 @@ internal static class LiteRtChatMapping
         => o?.AdditionalProperties is { } props && props.TryGetValue(key, out object? v) ? AsInt32(v) : null;
 
     /// <summary>Reads a token-id list knob from <see cref="ChatOptions.AdditionalProperties"/> (<c>null</c> when
-    /// absent). See <see cref="AsInt32List"/> for the accepted shapes.</summary>
+    /// absent). See <see cref="AsInt32List"/> for the accepted shapes; a malformed value throws here, on the
+    /// send path, so the caller learns which key is wrong.</summary>
     internal static IReadOnlyList<int>? GetInt32ListProperty(ChatOptions? o, string key)
         => o?.AdditionalProperties is { } props && props.TryGetValue(key, out object? v) ? AsInt32List(v, key) : null;
+
+    /// <summary>The getter-safe variant of <see cref="GetInt32ListProperty"/>: a malformed value reads as
+    /// <c>null</c> (like every other typed getter over the bag) instead of throwing from a property.</summary>
+    internal static IReadOnlyList<int>? TryGetInt32ListProperty(ChatOptions? o, string key)
+    {
+        try { return GetInt32ListProperty(o, key); }
+        catch (ArgumentException) { return null; }
+    }
+
+    /// <summary>Getter-safe list coercion for a raw bag value (Semantic Kernel's typed settings read their
+    /// <c>ExtensionData</c> through this): malformed input reads as <c>null</c>.</summary>
+    internal static IReadOnlyList<int>? TryAsInt32List(object? v)
+    {
+        try { return AsInt32List(v); }
+        catch (ArgumentException) { return null; }
+    }
 
     /// <summary>Coerces an integer stored in a property bag: boxed integers, an integral floating-point
     /// number (Semantic Kernel's settings converter round-trips ExtensionData through JSON, so an
