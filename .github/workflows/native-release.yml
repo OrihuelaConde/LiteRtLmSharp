@@ -97,12 +97,16 @@ jobs:
           mkdir -p artifacts/linux
           cp capi/lib/linux_x86_64/liblitert-lm.so artifacts/linux/libLiteRtLm.so
           lib=artifacts/linux/libLiteRtLm.so
+          # Capture once, then test the text: under pipefail a `grep -q` that exits early turns the
+          # producing pipeline into a failure even when it matched.
+          deps=$(readelf -d "$lib" | grep NEEDED || true)
           echo "--- dependencies (expect libvulkan.so.1 among the system libs, no libLiteRt*) ---"
-          readelf -d "$lib" | grep NEEDED
-          readelf -d "$lib" | grep -q 'NEEDED.*libvulkan\.so\.1' \
+          echo "$deps"
+          grep -q 'libvulkan\.so\.1' <<< "$deps" \
             || echo "::warning::linux-x64 library no longer DT_NEEDs libvulkan.so.1 — update the libvulkan1 prerequisite in ci.yml/model-tests.yml and the docs"
-          readelf -d "$lib" | grep -q 'NEEDED.*libLiteRt' \
-            && { echo "::error::linux-x64 library expects a separate libLiteRt companion — not the monolithic layout this workflow packages"; exit 1; }
+          if grep -q 'libLiteRt' <<< "$deps"; then
+            echo "::error::linux-x64 library expects a separate libLiteRt companion — not the monolithic layout this workflow packages"; exit 1
+          fi
           bash .github/scripts/assert-elf-exports.sh "$lib" "$MIN_EXPORTS"
           ls -la artifacts/linux
 
@@ -113,17 +117,20 @@ jobs:
           mkdir -p artifacts/android
           cp capi/lib/android_arm64/liblitert-lm.so artifacts/android/libLiteRtLm.so
           lib=artifacts/android/libLiteRtLm.so
+          deps=$(readelf -d "$lib" | grep NEEDED || true)
           echo "--- dependencies (bionic system libs only) ---"
-          readelf -d "$lib" | grep NEEDED
-          readelf -d "$lib" | grep -q 'NEEDED.*libLiteRt' \
-            && { echo "::error::android-arm64 library expects a separate libLiteRt companion — not the monolithic layout this workflow packages"; exit 1; }
+          echo "$deps"
+          if grep -q 'libLiteRt' <<< "$deps"; then
+            echo "::error::android-arm64 library expects a separate libLiteRt companion — not the monolithic layout this workflow packages"; exit 1
+          fi
           bash .github/scripts/assert-elf-exports.sh "$lib" "$MIN_EXPORTS"
           # The OpenCL TopK sampler must be EMBEDDED: the factory dlopens libLiteRtTopKOpenClSampler.so
           # first and falls back to the statically linked copy, and we ship no companion. Without the
           # embedded copy GPU sampling would silently fall back to CPU (or fail, as the self-built
           # v0.15.0 set did — LiteRT-LM#3135).
+          defined=$(readelf --dyn-syms -W "$lib" | awk '$7 != "UND" {print $8}')
           for sym in LiteRtTopKOpenClSampler_Create LiteRtTopKOpenClSampler_CanHandleInput LiteRtTopKOpenClSampler_SetInferenceFuncAndInputTensors; do
-            readelf --dyn-syms -W "$lib" | awk '$7 != "UND" {print $8}' | grep -qx "$sym" \
+            grep -qx "$sym" <<< "$defined" \
               || { echo "::error::android-arm64 library does not embed the OpenCL TopK sampler ($sym missing)"; exit 1; }
           done
           echo "OK: OpenCL TopK sampler embedded."
@@ -216,10 +223,13 @@ jobs:
           echo "--- architecture ---"
           lipo -info "$lib"
           lipo -info "$lib" | grep -q arm64 || { echo "::error::macos library is not arm64"; exit 1; }
+          # tail -n +2 skips otool's header line (the file path, which contains our own library name).
+          deps=$(otool -L "$lib" | tail -n +2)
           echo "--- load commands (system frameworks only; no @rpath/libLiteRt*) ---"
-          otool -L "$lib"
-          otool -L "$lib" | grep -q 'libLiteRt' \
-            && { echo "::error::macos library expects a separate libLiteRt companion — not the monolithic layout this workflow packages"; exit 1; }
+          echo "$deps"
+          if grep -q 'libLiteRt' <<< "$deps"; then
+            echo "::error::macos library expects a separate libLiteRt companion — not the monolithic layout this workflow packages"; exit 1
+          fi
           cnt=$(nm -gU "$lib" | grep -c ' _litert_lm_' || true)
           echo "exported litert_lm_* symbols: $cnt"
           [ "$cnt" -ge "$MIN_EXPORTS" ] || { echo "::error::expected >= $MIN_EXPORTS litert_lm_* exports, got $cnt"; exit 1; }
