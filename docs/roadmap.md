@@ -1,6 +1,6 @@
 # Project status and roadmap
 
-Last updated: 2026-09-02 (v0.16.0 evaluation of the official C API prebuilts). Source of truth for "what's done and what's pending".
+Last updated: 2026-09-05 (v0.16.0 evaluation of the official C API prebuilts). Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -159,9 +159,19 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
    | ios-arm64 | official xcframework inspected + a `net10.0-ios` consumer linked against it alone |
      147 exports, install name `@rpath/CLiteRTLM.framework/CLiteRTLM`, min iOS 15.0; the
      provider is embedded but the Metal accelerator and sampler are still dlopen'd by dylib name |
-   | android-arm64 | **not probed** (no device at hand) | the samplers stay external dlopen and the
-     monolith no longer carries `libLiteRt.so` for their `DT_NEEDED` — real regression risk for
-     the validated GPU sampling; keep self-built until validated on a device |
+   | android-arm64 | **real device (Moto G100 / Adreno 650 / Android 12, 2026-09-05):** the sample
+     app with the single official `.so` loads gemma-4 E2B on GPU (OpenCL picked, 15.7 tok/s decode
+     warm, TTFT 0.7 s) and on CPU (12.2 tok/s), and the tools tab (constrained decoding, embedded
+     provider) answers both demo tools; APK 60 MB vs 78 MB with the self-built set | the OpenCL
+     sampler is **embedded** (`LiteRtTopKOpenClSampler_*` plus the `_Static` pointers): the runtime
+     logs "falling back to statically linked C API" and never falls back to CPU sampling, so
+     LiteRT-LM#2211 (missing `DT_NEEDED`) and the patchelf become moot. **Same-device A/B: our
+     self-built `native-v0.15.0` set FAILS on GPU** — upstream's v0.15.0 prebuilt sampler exports
+     only 4 of the 7 functions the v0.15.0 factory requires (`CanHandleInput` missing), the
+     WebGPU sampler then fails with `NOT_FOUND` and generation errors out (LiteRT-LM#3135, open
+     since 2026-08-05, reported by the Unity binding); v0.14.0 was fine and the v0.16.0 prebuilt
+     exports all 7. The self-built Android GPU path was broken from the v0.15.0 repin onward
+     (never published: 1.1.1 ships v0.14.0) |
    Era findings, each verified with the correct binary: text LoRA is implemented (the runtime
    test bundle + rank-32 adapter changes the output; an invalid file fails fast) — published gemma-4
    bundles likely carry no LoRA slots (LiteRT-LM#3173, our data posted); the new statically linked
@@ -173,12 +183,14 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
    identical on both versions, every case fails cleanly), while a `MaxNumTokens` below the model's
    largest prefill signature (1024 for gemma) breaks prefill outright — worth a managed validation.
    Item 8 below (clone state) turned out to be a contract violation on our side, resolved in
-   `master`. Community context: flutter_gemma moved to v0.16.0 but still self-builds.
+   `master`. Community context: flutter_gemma moved to v0.16.0 but still self-builds. **Verdict
+   after the device run: every platform we can test is green on the official prebuilts, and the
+   Android result turns the repin from a preference into a fix** (see the android-arm64 row).
    **Repin checklist (in this order, after the go):** (1) `LiteRtLmVersion` → v0.16.0 (the zip
    lives on that tag). (2) Natives: a CI job that fetches the official zip and repackages it into
    our `runtimes/<rid>/native` layout under our library names (no SONAME / install-name stands in
    the way) for win/linux/mac; win adds the DXC pair as companions; linux documents `libvulkan1`
-   and the size; Android stays self-built until a device run; iOS switches to the official
+   and the size; Android also switches to the official monolith (validated on device); iOS switches to the official
    xcframework with a resolver name mapping (`CLiteRTLM`) and optional Metal companions.
    (3) Drop the linux-x64 tools+constrained guard and flip its CI test. (4) LoRA: retire the
    stub-pin test, document text LoRA (LoRA-enabled bundles only), keep the fail-fast messages.
