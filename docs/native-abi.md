@@ -299,7 +299,7 @@ It was not managed code (worked on `0.12.0-a`), not the WebGPU sampler (#2073), 
 (which used to segfault) passes. Test suite 4/4 on v0.13.1.
 
 > Lesson: pin to a **release tag**, never an arbitrary commit (more stable, and it is the sync
-> target with Google). `build-native.yml` uses `v0.14.0` by default.
+> target with Google). `native-release.yml` defaults to the current pin (`v0.16.0`).
 
 ## Tokenizer (tokenize / detokenize / start-stop tokens) — verified
 

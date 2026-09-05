@@ -218,7 +218,7 @@ jobs:
       # GPU pass on the macos-15 runner. Its GPU is Apple's paravirtual Metal device
       # (Virtualization.framework), on which the NATIVE Metal delegate garbles output — but the
       # WebGPU delegate (Dawn->Metal) is correct, and upstream gpu_registry prefers WebGpu over
-      # Metal on macOS desktop, so with both shipped (build-native.yml) the engine runs WebGPU
+      # Metal on macOS desktop, so with both embedded in the official library the engine runs WebGPU
       # here. Root-caused with Google's own CLI on the runner (see docs/roadmap.md) and confirmed 6/6 below,
       # so this is a REQUIRED check now, not experimental. Real Apple Silicon (where the native
       # Metal delegate also works, per flutter_gemma) is still unvalidated by us — see roadmap.

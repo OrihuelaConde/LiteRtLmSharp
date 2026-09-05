@@ -40,8 +40,8 @@ The `.litertlm` model (~2.5 GB for E2B) is **not packed** into the APK: download
 storage on first run and pass its path to `LiteRtEngine.Load`.
 
 ## Validation status
-1. ✅ `build-native.yml` android green (the runner's NDK sufficed; dynamic-list applies;
-   symbols OK).
+1. ✅ (self-built era) `build-native.yml` android green (the runner's NDK sufficed; dynamic-list
+   applies; symbols OK). Since v0.16.0: `native-release.yml` repackages the official library.
 2. ✅ `pack-nuget.yml` produces `LiteRtLmSharp.runtime.android-arm64`.
 3. ✅ **Validated on a physical device** (Moto G100, Android 12): model load, chat, streaming —
    **CPU and GPU** (see the GPU diagnosis below). Sample app in `samples/Maui`.
