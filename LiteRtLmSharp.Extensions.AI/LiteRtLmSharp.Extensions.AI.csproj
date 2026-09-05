@@ -38,6 +38,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="LiteRtLmSharp.Tests" />
+    <!-- The Semantic Kernel connector reuses the option-bag coercion helpers (one contract for both connectors). -->
+    <InternalsVisibleTo Include="LiteRtLmSharp.SemanticKernel" />
   </ItemGroup>
 
 </Project>

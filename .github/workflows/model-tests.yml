@@ -2,15 +2,14 @@ name: Model tests
 
 # Runs the model-backed interop tests with a real .litertlm model — the path the regular CI job
 # skips (no LITERTLM_TEST_MODEL). Matrix over linux-x64 / win-x64 / osx-arm64 (choose via the
-# platforms input, like build-native.yml; ci.yml calls it with all platforms, a manual run can pick
+# platforms input, like native-release.yml; ci.yml calls it with all platforms, a manual run can pick
 # a single OS). Scenarios per OS:
 # blocking chat, streaming, tool calling without constrained decoding, tool calling WITH
 # constrained decoding, a speculative-decoding A/B benchmark (decode tok/s, drafter off vs on), and
 # multimodal image/audio attachments (gemma-4-E2B-it is text+vision+audio; the gated tests assert the
-# attachment adds encoder tokens) — the constrained-decoding one on linux-x64 currently asserts the temporary guard throws (the
-# upstream prebuilt constraint provider returns broken constraints, LiteRT-LM#2149 root-caused
-# 2026-06-12; when Google ships a fixed prebuilt and the guard is removed, that test flips to
-# the real end-to-end loop) and on win-x64/osx-arm64 runs the real constrained loop.
+# attachment adds encoder tokens). The constrained-decoding loop runs for real on every OS since the
+# official LiteRT-LM v0.16.0 prebuilts (embedded constraint provider) replaced the self-build whose
+# linux-x64 provider crashed (LiteRT-LM#2149) and forced a temporary guard.
 # osx-arm64 (macos-15 = Apple Silicon) validates the macOS natives on CPU and GPU; the GPU pass
 # runs WebGPU (Dawn->Metal), not the native Metal delegate — see that step's comment for why.
 # Reusable (called by ci.yml on each push/PR for all platforms) + on demand for a single OS; the
@@ -43,7 +42,7 @@ on:
 
 env:
   # Keep in sync with Directory.Build.props <LiteRtLmVersion>.
-  NATIVE_REF: v0.15.0
+  NATIVE_REF: v0.16.0
   MODEL_FILE: gemma-4-E2B-it.litertlm
   MODEL_URL: https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm
   # LFS oid of the file on Hugging Face; also guards against a cached/partial download.
@@ -135,6 +134,12 @@ jobs:
           Set-ItemProperty $key DumpType 1
           Set-ItemProperty $key DumpCount 3
 
+      # The official linux-x64 library hard-depends on the Vulkan loader (DT_NEEDED libvulkan.so.1);
+      # without it the library does not load at all. Consumers need the same package (docs/README).
+      - name: Install Vulkan loader (linux)
+        if: matrix.rid == 'linux-x64'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libvulkan1
+
       - name: Restore native binaries (${{ matrix.rid }})
         shell: bash
         env:
@@ -213,7 +218,7 @@ jobs:
       # GPU pass on the macos-15 runner. Its GPU is Apple's paravirtual Metal device
       # (Virtualization.framework), on which the NATIVE Metal delegate garbles output — but the
       # WebGPU delegate (Dawn->Metal) is correct, and upstream gpu_registry prefers WebGpu over
-      # Metal on macOS desktop, so with both shipped (build-native.yml) the engine runs WebGPU
+      # Metal on macOS desktop, so with both embedded in the official library the engine runs WebGPU
       # here. Root-caused with Google's own CLI on the runner (see docs/roadmap.md) and confirmed 6/6 below,
       # so this is a REQUIRED check now, not experimental. Real Apple Silicon (where the native
       # Metal delegate also works, per flutter_gemma) is still unvalidated by us — see roadmap.

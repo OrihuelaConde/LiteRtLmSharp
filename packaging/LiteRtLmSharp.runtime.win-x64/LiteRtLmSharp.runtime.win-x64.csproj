@@ -3,7 +3,9 @@
   <!--
     Native-only NuGet package: LiteRT-LM win-x64 binaries under runtimes/win-x64/native/.
     No managed assembly. Pair with the managed LiteRtLmSharp package (same version).
-    Binaries are produced by build-native.yml; pack-nuget.yml lays them into
+    Contents: Google's official monolithic LiteRtLm.dll (static CRT, no VC++ Redistributable
+    needed) plus the DirectX Shader Compiler runtime (dxcompiler.dll, dxil.dll) its Dawn/D3D12
+    backend requires. Published by native-release.yml; pack-nuget.yml lays them into
     ../../runtimes/win-x64/native/ before packing.
   -->
   <PropertyGroup>
@@ -23,6 +25,15 @@
     <None Include="..\..\runtimes\win-x64\native\*"
           Pack="true"
           PackagePath="runtimes\win-x64\native\" />
+  </ItemGroup>
+
+  <!-- Upstream's third-party notices for the official binaries (a native-release.yml asset, laid into
+       runtimes/ by pack-nuget.yml and scripts/restore-natives.ps1). Packed at the package root. -->
+  <ItemGroup>
+    <None Include="..\..\runtimes\THIRD_PARTY_NOTICES.litert-lm.txt"
+          Pack="true"
+          PackagePath=""
+          Condition="Exists('..\..\runtimes\THIRD_PARTY_NOTICES.litert-lm.txt')" />
   </ItemGroup>
 
 </Project>

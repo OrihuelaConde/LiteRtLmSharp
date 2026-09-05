@@ -3,34 +3,23 @@
   <!--
     Auto-imported into net10.0-ios consumers of LiteRtLmSharp.runtime.ios-arm64.
 
-    The LiteRT-LM natives ship as dynamic .framework xcframeworks (LiteRt is static inside
-    libLiteRtLm; the 3 Google prebuilt companions stay dynamic — they have no static archives).
-    Referencing them as NativeReference Kind=Framework makes the .NET-for-iOS build EMBED and
-    code-sign each framework into the app bundle. We resolve them at runtime via dlopen
-    (NativeLibraryResolver in the managed package), so SmartLink=False keeps the frameworks whole
-    instead of dead-stripping symbols that are only referenced dynamically.
+    The native library is Google's official CLiteRTLM.xcframework (LiteRT-LM C API, shipped with
+    every upstream release since v0.16.0), packed here unchanged under its upstream name. Referencing
+    it as NativeReference Kind=Framework makes the .NET-for-iOS build EMBED and code-sign the
+    framework into the app bundle; NativeLibraryResolver (managed package) loads
+    Frameworks/CLiteRTLM.framework/CLiteRTLM at runtime, so SmartLink=False keeps the framework
+    whole instead of dead-stripping symbols that are only referenced dynamically.
 
-    Device-arm64 only: the companions have no iOS Simulator slice, so a simulator build cannot
-    link this set. See docs/roadmap.md ("Architecture decisions") and docs/packaging.md.
+    The xcframework carries device (ios-arm64) and simulator slices. GPU (Metal) needs companion
+    libraries the xcframework only references by name and this package does not ship - the CPU
+    backend is the supported path on iOS. See docs/packaging.md and docs/roadmap.md.
   -->
   <PropertyGroup>
     <_LiteRtLmXcfDir>$(MSBuildThisFileDirectory)xcframeworks\</_LiteRtLmXcfDir>
   </PropertyGroup>
 
   <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">
-    <NativeReference Include="$(_LiteRtLmXcfDir)LiteRtLm.xcframework">
-      <Kind>Framework</Kind>
-      <SmartLink>False</SmartLink>
-    </NativeReference>
-    <NativeReference Include="$(_LiteRtLmXcfDir)GemmaModelConstraintProvider.xcframework">
-      <Kind>Framework</Kind>
-      <SmartLink>False</SmartLink>
-    </NativeReference>
-    <NativeReference Include="$(_LiteRtLmXcfDir)LiteRtMetalAccelerator.xcframework">
-      <Kind>Framework</Kind>
-      <SmartLink>False</SmartLink>
-    </NativeReference>
-    <NativeReference Include="$(_LiteRtLmXcfDir)LiteRtTopKMetalSampler.xcframework">
+    <NativeReference Include="$(_LiteRtLmXcfDir)CLiteRTLM.xcframework">
       <Kind>Framework</Kind>
       <SmartLink>False</SmartLink>
     </NativeReference>

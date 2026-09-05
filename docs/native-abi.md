@@ -3,11 +3,12 @@
 > Source of truth: [`c/engine.h`](https://github.com/google-ai-edge/LiteRT-LM/blob/main/c/engine.h)
 > in the official repo. This document summarizes the ABI as **verified** against the real binary.
 
-> **Current state (v0.14.0, self-built binaries):** the findings about the community binary
+> **Current state (v0.16.0, Google's official C API prebuilts — see [native-build.md](native-build.md)):** the findings about the community binary
 > `0.12.0-a` and the interim commit `032334d8` (`conversation_config_create` crash, missing
 > `get_token_count`, blocking `send_message` returning null, streaming segfault) are
-> **HISTORICAL** — all resolved by compiling our own binaries from the `v0.13.1` tag with the
-> matching header. Today config/system-prompt/sampler, tools, streaming and token count work on
+> **HISTORICAL** — first resolved by compiling our own binaries from the `v0.13.1` tag with the
+> matching header (the self-built era, v0.13.1 → v0.15.0), and since v0.16.0 by shipping upstream's
+> official prebuilts (144 `litert_lm_*` exports, 117 bound). Today config/system-prompt/sampler, tools, streaming and token count work on
 > all 5 platforms. Speculative decoding, the benchmark API, and the engine cache-dir setting were
 > bound on 2026-06-15; multimodal image/audio messages on 2026-06-17; the tokenizer surface
 > (tokenize/detokenize + start/stop tokens) on 2026-06-19; and the v0.14.0 surface (LoRA, CPU thread
@@ -298,7 +299,7 @@ It was not managed code (worked on `0.12.0-a`), not the WebGPU sampler (#2073), 
 (which used to segfault) passes. Test suite 4/4 on v0.13.1.
 
 > Lesson: pin to a **release tag**, never an arbitrary commit (more stable, and it is the sync
-> target with Google). `build-native.yml` uses `v0.14.0` by default.
+> target with Google). `native-release.yml` defaults to the current pin (`v0.16.0`).
 
 ## Tokenizer (tokenize / detokenize / start-stop tokens) — verified
 
@@ -351,6 +352,9 @@ litert_lm_detokenize_result_delete(d);
   slower than CPU (~1.6 s vs ~0.2 s) due to weight upload and kernel compilation.
 
 ### GPU sampler falls back to CPU on Windows/macOS — upstream bug (#2073), NOT the binding
+
+> Historical (self-built era, v0.13.1 → v0.15.0). The official v0.16.0 monolith embeds the TopK
+> samplers, so this fallback no longer occurs; an explicit TopK sampler works on desktop GPU.
 - Symptom: `Could not load symbol LiteRtTopKWebGpuSampler_UpdateConfig` →
   `Falling back to CPU sampling`.
 - Cause (verified with `dumpbin /exports`): the Windows `LiteRtTopKWebGpuSampler.dll` exports
@@ -369,12 +373,11 @@ litert_lm_detokenize_result_delete(d);
 > `absl::InitializeLog()` (straight to STDERR); our log level cannot silence them.
 
 ## Official shared-library status
-- **As of v0.14.0 upstream ships its own shared-lib target**: `cc_binary litert-lm` in `c/BUILD`, the
-  Python-wheel build. Earlier tags shipped only the Bazel `cc_library` (`:engine`, `:engine_cpu`) and
-  `add_litertlm_library(... STATIC)` in CMake, with no shared-lib target (tracked as issue #2154 / PR
-  #2155). We still build our **own** target via `native/patch_c_api.sh`, because the wheel target does not
-  carry the Windows `.def`, the `LiteRt*` wildcard exports or the companion rpath our per-RID packages
-  need; the patch's idempotence guard now greps for **our** target name (not the absence of any shared-lib
-  target).
-- PoC mitigation was consuming flutter_gemma's `LiteRtLm.dll`/`.so` (verified). Production:
-  our own build (docs/native-build.md).
+- **Since v0.16.0 upstream publishes official C API prebuilts on every release**
+  (`litert_lm_c_api-<version>.zip` for linux/windows/macos/android, `CLiteRTLM.xcframework.zip`
+  for iOS), and 1.2.0 ships those — see [native-build.md](native-build.md). The self-built target
+  (`native/patch_c_api.sh`, v0.13.1 → v0.15.0) is retired.
+- Before that: as of v0.14.0 upstream had its own `cc_binary litert-lm` in `c/BUILD` (the
+  Python-wheel build); earlier tags shipped only the Bazel `cc_library` (`:engine`, `:engine_cpu`)
+  and `add_litertlm_library(... STATIC)` in CMake, with no shared-lib target (issue #2154 / PR #2155).
+  The PoC consumed flutter_gemma's `LiteRtLm.dll`/`.so`.

@@ -84,6 +84,8 @@ prompt template's YAML) works equally well.
 | `Seed` | `seed` | sampler seed |
 | `EnableThinking` | `enable_thinking` | reasoning mode (see below) |
 | `EnableConstrainedDecoding` | `enable_constrained_decoding` | force schema-constrained tool-call arguments ([Function calling](#function-calling)) |
+| `NoRepeatNgramSize` | `no_repeat_ngram_size` | ban repeating any n-gram of that size within the reply (native v0.15.0+) |
+| `SuppressTokens` | `suppress_tokens` | token ids that can never be sampled — an `int[]` (a JSON array works from prompt templates); find ids with `LiteRtEngine.Tokenize` (native v0.15.0+) |
 
 ### Conversation-options template (per-service)
 
@@ -180,10 +182,10 @@ no functions. Under the hood this is the same bridge the [Microsoft.Extensions.A
 exposes (the model's tool calls become `FunctionCallContent`).
 
 **Constrained decoding.** `LiteRtPromptExecutionSettings.EnableConstrainedDecoding = true` makes the model emit
-valid, schema-shaped tool-call arguments — recommended for small on-device models. It is **off by default**
-because it throws `PlatformNotSupportedException` on **linux-x64** (a temporary upstream constraint-provider
-bug, [google-ai-edge/LiteRT-LM#2149](https://github.com/google-ai-edge/LiteRT-LM/issues/2149)); leave it off
-there — tools still work, arguments are just not grammar-constrained.
+valid, schema-shaped tool-call arguments — recommended for small on-device models. It is off by default and
+works on every platform (the linux-x64 restriction of earlier releases is gone with the official LiteRT-LM
+v0.16.0 prebuilts, which embed the constraint provider). Tools still work without it; arguments are just not
+grammar-constrained.
 
 **Function choice (`FunctionChoiceBehavior`).** `Auto()` (the model decides), `None()` (no functions offered)
 and `Required()` (the model must call one) flow through to the chat client's `ChatOptions.ToolMode`. `Required`

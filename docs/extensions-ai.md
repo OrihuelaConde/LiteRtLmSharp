@@ -123,11 +123,11 @@ Console.WriteLine(response.Text);       // "The weather in Paris is 22°C and su
 ```
 
 **Constrained decoding.** Set `LiteRtChatOptions.EnableConstrainedDecoding = true` so the model emits valid,
-schema-shaped tool-call arguments — strongly recommended for small on-device models. It is **off by default**
-because the core throws `PlatformNotSupportedException` for it on **linux-x64** (a temporary upstream
-constraint-provider bug, [google-ai-edge/LiteRT-LM#2149](https://github.com/google-ai-edge/LiteRT-LM/issues/2149));
-leave it off there — tools still work, arguments are just not grammar-constrained. On a plain `ChatOptions`,
-set the `enable_constrained_decoding` key in `AdditionalProperties` instead.
+schema-shaped tool-call arguments — strongly recommended for small on-device models. It is off by default and
+works on every platform (the linux-x64 restriction of earlier releases is gone: the official LiteRT-LM v0.16.0
+prebuilts embed the constraint provider). Tools still work without it; arguments are just not
+grammar-constrained. On a plain `ChatOptions`, set the `enable_constrained_decoding` key in
+`AdditionalProperties` instead.
 
 **Tool choice (`ChatOptions.ToolMode`).** The native API has no `tool_choice` parameter (the model always
 decides), so the connector emulates the MEAI modes as best it can:
@@ -183,10 +183,36 @@ Rules and caveats:
   that conversation (the two constrained-decoding modes are mutually exclusive natively, and the
   tool path is meaningless without tools).
 
+## Banning repeats and tokens: `NoRepeatNgramSize` / `SuppressTokens`
+
+`ChatOptions.FrequencyPenalty` / `PresencePenalty` already map to the native repetition penalties. Two more
+logit processors have no MEAI property, so `LiteRtChatOptions` exposes them, backed by the
+`no_repeat_ngram_size` and `suppress_tokens` keys in `AdditionalProperties` (a plain `ChatOptions` with those
+keys works too, including options deserialized from JSON/YAML):
+
+```csharp
+int[] banned = [.. engine.Tokenize(" Paris"), .. engine.Tokenize("Paris")];   // both surface forms
+var options = new LiteRtChatOptions
+{
+    MaxOutputTokens = 128,
+    NoRepeatNgramSize = 3,      // never repeat a 3-gram already produced in this reply
+    SuppressTokens = banned,    // these ids can never be sampled
+};
+```
+
+- `NoRepeatNgramSize` bans any n-gram of that many tokens the reply already produced (whole-reply window).
+  Useful when a small model echoes a prompt template verbatim. Zero or negative is rejected.
+- `SuppressTokens` forces the listed ids' logits to `-inf` on every step. Find ids with `LiteRtEngine.Tokenize`;
+  most words tokenize differently with and without a leading space, so ban both. Negative ids are rejected;
+  ids outside the vocabulary are ignored natively.
+- Both apply per request and require native LiteRT-LM v0.15.0+. The Semantic Kernel connector exposes the
+  same two knobs on `LiteRtPromptExecutionSettings`.
+
 ## Reasoning ("thinking")
 
-Enable the model's reasoning mode with **`LiteRtChatOptions`** — a `ChatOptions` subtype that adds the one knob
-MEAI has no typed property for (it backs the `enable_thinking` key). This mirrors the Semantic Kernel
+Enable the model's reasoning mode with **`LiteRtChatOptions`** — a `ChatOptions` subtype that adds the knobs
+MEAI has no typed property for (`EnableThinking`, `EnableConstrainedDecoding`, `NoRepeatNgramSize`,
+`SuppressTokens`, each backed by a key in `AdditionalProperties`). This mirrors the Semantic Kernel
 connector's `LiteRtPromptExecutionSettings`:
 
 ```csharp

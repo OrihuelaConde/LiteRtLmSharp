@@ -1,7 +1,8 @@
 #!/usr/bin/env pwsh
 <#
 Restores the native LiteRT-LM binaries into runtimes/<rid>/native/ from this repo's
-`native-<version>` GitHub Release (built by .github/workflows/build-native.yml).
+`native-<version>` GitHub Release (published by .github/workflows/native-release.yml from Google's
+official LiteRT-LM C API prebuilts).
 
 Run once after cloning, before building the samples/tests. Downloads over plain HTTPS —
 no GitHub CLI or authentication needed.
@@ -12,7 +13,7 @@ Usage:
   pwsh scripts/restore-natives.ps1 -All
 #>
 param(
-    [string]$Version = 'v0.15.0',
+    [string]$Version = 'v0.16.0',
     [ValidateSet('win-x64', 'linux-x64', 'android-arm64', 'osx-arm64', 'ios-arm64')]
     [string[]]$Rid,
     [switch]$All
@@ -83,12 +84,32 @@ foreach ($r in $Rid) {
     New-Item -ItemType Directory -Force (Split-Path -Parent $dest) | Out-Null
     Move-Item -LiteralPath $staging -Destination $dest
     if ($r -eq 'ios-arm64') {
-        Get-ChildItem -LiteralPath $dest -Filter '*.dylib' -File | Remove-Item -Force   # the tar also carries raw dylibs; keep only xcframeworks/
         Write-Host "  -> restored runtimes/$r/xcframeworks"
     }
     else {
         Write-Host "  -> $((Get-ChildItem $dest -File).Count) files in runtimes/$r/native"
     }
+}
+
+# Upstream's notice file for the official binaries: packed into every runtime package by the
+# packaging projects when present (pack-nuget.yml does the same from the release).
+$notice = 'THIRD_PARTY_NOTICES.litert-lm.txt'
+$noticeDest = Join-Path $repoRoot "runtimes/$notice"
+# Never leave a previous release's notice behind: the packaging projects pack whatever file exists.
+if (Test-Path -LiteralPath $noticeDest) { Remove-Item -LiteralPath $noticeDest -Force }
+try {
+    New-Item -ItemType Directory -Force (Join-Path $repoRoot 'runtimes') | Out-Null
+    $noticeTmp = Join-Path $tmp $notice
+    Invoke-WebRequest "$base/$notice" -OutFile $noticeTmp
+    $noticeHash = (Get-FileHash -Algorithm SHA256 $noticeTmp).Hash.ToLower()
+    if ($checksums.ContainsKey($notice) -and $checksums[$notice] -ne $noticeHash) {
+        throw "Checksum mismatch for ${notice}: expected $($checksums[$notice]), got $noticeHash"
+    }
+    Move-Item -LiteralPath $noticeTmp -Destination $noticeDest
+    Write-Host "  -> restored runtimes/$notice"
+}
+catch {
+    Write-Warning "Could not restore $notice from the release ($($_.Exception.Message)); local runtime packages will be packed WITHOUT it until it is restored."
 }
 
 Write-Host 'Done.'

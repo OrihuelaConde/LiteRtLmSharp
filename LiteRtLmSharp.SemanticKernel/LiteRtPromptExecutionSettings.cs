@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using LiteRtLmSharp.Extensions.AI;
 using Microsoft.SemanticKernel;
 
 namespace LiteRtLmSharp.SemanticKernel;
@@ -58,6 +59,23 @@ public sealed class LiteRtPromptExecutionSettings : PromptExecutionSettings
     [JsonIgnore]
     public float? FrequencyPenalty { get => GetSingle("frequency_penalty"); set => Set("frequency_penalty", value); }
 
+    /// <summary>Bans the reply from repeating any n-gram of this many tokens it already produced
+    /// (<c>"no_repeat_ngram_size"</c>). <c>null</c> = off. Useful against a small model echoing a prompt template
+    /// verbatim. Requires native LiteRT-LM v0.15.0+.</summary>
+    [JsonIgnore]
+    public int? NoRepeatNgramSize { get => GetInt32("no_repeat_ngram_size"); set => Set("no_repeat_ngram_size", value); }
+
+    /// <summary>Token ids the reply may never emit (<c>"suppress_tokens"</c>): each id's logit is forced to
+    /// <c>-inf</c> on every decode step. Find ids with <c>LiteRtEngine.Tokenize</c> (ban the forms with and
+    /// without a leading space). Stored as an <c>int[]</c>; a JSON array of numbers is accepted when the
+    /// settings come from a prompt template. Requires native LiteRT-LM v0.15.0+.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<int>? SuppressTokens
+    {
+        get => GetInt32List("suppress_tokens");
+        set => Set("suppress_tokens", value is null ? null : value.ToArray());
+    }
+
     // ── ExtensionData backing ─────────────────────────────────────────────────────────────────────────
     // The knobs live in ExtensionData (the typed properties are [JsonIgnore] so only the lower-case keys
     // serialize). Semantic Kernel's IChatClient adapter reads these keys to build the MEAI ChatOptions, and
@@ -82,6 +100,10 @@ public sealed class LiteRtPromptExecutionSettings : PromptExecutionSettings
     private float? GetSingle(string key) => TryGet(key, out object? v) ? ToSingle(v) : null;
     private int? GetInt32(string key) => TryGet(key, out object? v) ? ToInt32(v) : null;
     private bool? GetBoolean(string key) => TryGet(key, out object? v) ? ToBoolean(v) : null;
+    // The list coercion is shared with the MEAI connector (LiteRtChatMapping.AsInt32List) so both read the
+    // same shapes: int[], any IEnumerable<int>, a JsonElement array, a comma-separated string, and the
+    // List<object> of boxed doubles that Semantic Kernel's own settings converter produces.
+    private IReadOnlyList<int>? GetInt32List(string key) => TryGet(key, out object? v) ? LiteRtChatMapping.TryAsInt32List(v) : null;
 
     private static float? ToSingle(object? v) => v switch
     {

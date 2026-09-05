@@ -99,6 +99,21 @@ ParallelFileSectionLoading = false,   // serial, single-threaded load
 - **When to set `false`:** single-threaded environments (e.g. WASM without pthreads), or to avoid the
   brief concurrent IO/thread peak during init, accepting a slower start.
 
+## Experimental YNNPACK delegate — `EnableYnnpack`
+
+Lets the experimental [YNNPACK](https://github.com/google/XNNPACK/tree/master/ynnpack) delegate take the
+CPU operations it supports before XNNPACK. `null` (default) leaves the engine default (off). Requires native
+LiteRT-LM v0.16.0+.
+
+```csharp
+EnableYnnpack = true,   // CPU backend only
+```
+
+- **CPU backend only**; the GPU backends ignore it.
+- Upstream ships the YNNPACK kernels in its linux-arm64 builds (the Raspberry Pi target). The other official
+  prebuilts accept the flag and run unchanged — the model-backed smoke test loads and generates with it on
+  win-x64 — so measure on the target device before assuming a speed-up.
+
 ## CPU thread counts: `NumThreads` / `AudioNumThreads`
 
 How many CPU threads the text and audio executors use. `null` (default) lets the engine pick its own
@@ -128,8 +143,11 @@ Loading a low-rank adaptation on top of a LoRA-enabled base model has two layers
   which is opened when the conversation is created, so a bad path **fails fast** with `LiteRtException`
   at `CreateConversation`, not mid-generation.
 
-Requires a LoRA-enabled model. This path is **not yet validated end-to-end** against a real adapter (no
-adapter artifact on hand), but the plumbing is in place and the failure modes surface coherently.
+Requires a LoRA-enabled model. **Validated end-to-end on LiteRT-LM v0.16.0** with upstream's LoRA test
+bundle and its rank-32 adapter: the adapter is accepted at `CreateConversation` and changes generation (the
+v0.14.0 and v0.15.0 runtimes rejected every text adapter at the first generation with "Lora is not
+supported"). The published gemma-4 `.litertlm` bundles carry no LoRA slots
+([LiteRT-LM#3173](https://github.com/google-ai-edge/LiteRT-LM/issues/3173)), so an adapter fails fast on them.
 
 ## Benchmarking
 

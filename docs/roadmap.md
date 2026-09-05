@@ -1,6 +1,6 @@
 # Project status and roadmap
 
-Last updated: 2026-09-05 (v0.16.0 evaluation of the official C API prebuilts). Source of truth for "what's done and what's pending".
+Last updated: 2026-09-05 (v0.16.0 repin on the official C API prebuilts in progress — PR #8). Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -51,9 +51,14 @@ switching model/backend without restarting); conversations are not thread-safe; 
 is the total context window; VC++ Redistributable required on win-x64; Android GPU requires
 `<uses-native-library>` in the app manifest.
 
-## C API coverage (audit 2026-08-09, header v0.15.0)
+## C API coverage (audit 2026-09-05, header v0.16.0)
 
-**115 of 140 `litert_lm_*` functions bound** (everything we bind exists in the header, no drift).
+**117 of 144 `litert_lm_*` functions bound** against the v0.16.0 official prebuilt (everything we bind
+exists in the header, no drift). v0.16.0 added 4 functions with no removals or signature changes:
+`set_enable_ynnpack` (bound in the repin) and the session checkpoint/rewind trio (out of scope for
+now). The 3 `capabilities` functions declared in the v0.16.0 header are absent from the shipped zip
+(upstream PR #3273, post-release) and are not bound. Previous audit (2026-08-09, header v0.15.0):
+**115 of 140** —
 v0.15.0 grew the surface 109 → 140 with zero removals; the only signature changes formalize two
 `int` parameters into enums with identical values (`set_activation_data_type`,
 `set_min_log_level`), so no existing binding changed shape — but the **stream-callback typedef DID
@@ -186,7 +191,7 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
    `master`. Community context: flutter_gemma moved to v0.16.0 but still self-builds. **Verdict
    after the device run: every platform we can test is green on the official prebuilts, and the
    Android result turns the repin from a preference into a fix** (see the android-arm64 row).
-   **Repin checklist (in this order, after the go):** (1) `LiteRtLmVersion` → v0.16.0 (the zip
+   **Repin checklist (go given 2026-09-05; branch `repin-v0.16.0`, PR #8 — steps 1–8 landed there, 9–11 are the joint release phase):** (1) `LiteRtLmVersion` → v0.16.0 (the zip
    lives on that tag). (2) Natives: a CI job that fetches the official zip and repackages it into
    our `runtimes/<rid>/native` layout under our library names (no SONAME / install-name stands in
    the way) for win/linux/mac; win adds the DXC pair as companions; linux documents `libvulkan1`
@@ -412,7 +417,13 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
    packages from nuget.org; PR upstream to be listed among the language bindings (planned right
    after the nuget.org release).
 
-7. **PENDING — MEAI surface for `NoRepeatNgram` and `SuppressTokens`** (raised by a downstream
+7. ✅ **RESOLVED 2026-09-05 (repin branch, PR #8) — MEAI surface for `NoRepeatNgram` and `SuppressTokens`.**
+   Shipped exactly in the suggested shape: `LiteRtChatOptions.NoRepeatNgramSize` / `.SuppressTokens`
+   backed by the `no_repeat_ngram_size` / `suppress_tokens` keys (a plain `ChatOptions` works too),
+   the same pair on `LiteRtPromptExecutionSettings`, mapped by `ToSendOptions`; covered by unit tests
+   and by model-backed tests through `IChatClient` and through SK's adapter (whose JSON round trip
+   turns the `int[]` into boxed doubles — the coercion accepts integral floats for that reason).
+   Original request (raised by a downstream
    consumer app, 2026-08-18). Both live on `LiteRtSendOptions` and are reachable only through the
    native API: `LiteRtChatMapping.ToSendOptions(ChatOptions)` reads just `MaxOutputTokens`,
    `FrequencyPenalty`, `PresencePenalty` and the schema constraint, so a consumer that talks only
@@ -759,7 +770,10 @@ shipping NEW native surface, check ALL of:
   (2026-07-10): status question + the pure-Python wheel repro + the ask to fail loudly instead of
   answering incorrectly while unfinished. Watch for a maintainer response.
 
-- **[LiteRT-LM#2211](https://github.com/google-ai-edge/LiteRT-LM/issues/2211)**: **unchanged at
+- **[LiteRT-LM#2211](https://github.com/google-ai-edge/LiteRT-LM/issues/2211)**: **moot since the
+  v0.16.0 repin** — the official monolith embeds the OpenCL sampler (verified on the Moto G100: no
+  CPU-sampling fallback), so there is no companion to patch and no patchelf in the pipeline. Earlier
+  status: **unchanged at
   v0.14.0.** GPU samplers still ship missing `DT_NEEDED` (our patchelf is the workaround). If Google
   ships fixed prebuilts or a fix, **drop the patchelf** from the android job. Also watch the related
   #2241, #1860 and the OpenCL bug #1850 (`Invalid command queue`, which did not reproduce on our Adreno
@@ -773,7 +787,9 @@ shipping NEW native surface, check ALL of:
   Gemma4-capable one) returns half-initialized constraints (internal FST = NULL) →
   SIGSEGV in `fst_constraints::Constraint::start()` on the first decode step. Google's
   wheel works (embeds the provider from internal source); same-rev Windows DLL works.
-  **Our binding ships a TEMPORARY GUARD**: `EnableConstrainedDecoding = true` on linux-x64
+  **Guard REMOVED in the v0.16.0 repin (PR #8)**: the official prebuilt embeds the provider and the
+  constrained tool-calling loop runs for real on linux-x64 in CI. Earlier status —
+  **our binding shipped a TEMPORARY GUARD**: `EnableConstrainedDecoding = true` on linux-x64
   throws `PlatformNotSupportedException` instead of dying (LiteRtConversation.Create).
   **Re-tested 2026-07-10 at v0.14.0: STILL BROKEN, guard stays.** The Docker repro run with our
   v0.14.0 engine **and** the v0.14.0 provider blob (rev `075e6021`) exited 139 with the identical

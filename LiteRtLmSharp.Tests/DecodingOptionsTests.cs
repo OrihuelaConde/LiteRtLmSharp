@@ -182,6 +182,138 @@ public class DecodingOptionsMappingTests
         Assert.Equal(0.4f, s.PresencePenalty!.Value, 3);
         Assert.Equal(0.9f, s.FrequencyPenalty!.Value, 3);
     }
+
+    [Fact]
+    public void ToSendOptions_MapsNoRepeatNgramAndSuppressTokens_FromTypedOptions()
+    {
+        var options = new LiteRtChatOptions { NoRepeatNgramSize = 3, SuppressTokens = [10, 20] };
+
+        LiteRtSendOptions? send = LiteRtChatMapping.ToSendOptions(options);
+
+        Assert.NotNull(send);
+        Assert.Equal(3, send!.NoRepeatNgram!.NgramSize);
+        Assert.Equal(0, send.NoRepeatNgram.WindowSize);   // default window: the whole reply
+        Assert.Equal([10, 20], send.SuppressTokens!);
+        // The typed getters read the bag keys back, and the keys are the documented ones.
+        Assert.Equal(3, options.NoRepeatNgramSize);
+        Assert.Equal([10, 20], options.SuppressTokens!);
+        Assert.Equal(3, Assert.IsType<int>(options.AdditionalProperties!["no_repeat_ngram_size"]));
+        Assert.Equal([10, 20], Assert.IsType<int[]>(options.AdditionalProperties["suppress_tokens"]));
+    }
+
+    [Fact]
+    public void ToSendOptions_ReadsBagValues_FromJsonAndStrings()
+    {
+        // Options deserialized from JSON/YAML carry JsonElement values; a comma-separated string is the
+        // hand-written form. Both must map like the typed setters.
+        using var doc = JsonDocument.Parse("""{ "no_repeat_ngram_size": 2, "suppress_tokens": [5, 6, 7] }""");
+        var fromJson = new ChatOptions
+        {
+            AdditionalProperties = new()
+            {
+                ["no_repeat_ngram_size"] = doc.RootElement.GetProperty("no_repeat_ngram_size"),
+                ["suppress_tokens"] = doc.RootElement.GetProperty("suppress_tokens"),
+            },
+        };
+        LiteRtSendOptions? send = LiteRtChatMapping.ToSendOptions(fromJson);
+        Assert.Equal(2, send!.NoRepeatNgram!.NgramSize);
+        Assert.Equal([5, 6, 7], send.SuppressTokens!);
+
+        var fromStrings = new ChatOptions { AdditionalProperties = new() { ["suppress_tokens"] = "1, 2,3" } };
+        Assert.Equal([1, 2, 3], LiteRtChatMapping.ToSendOptions(fromStrings)!.SuppressTokens!);
+
+        // Semantic Kernel's PromptExecutionSettings → ChatOptions converter round-trips ExtensionData
+        // through JSON: an int[] comes out as a list of boxed doubles, and an int as a double.
+        var fromSk = new ChatOptions
+        {
+            AdditionalProperties = new()
+            {
+                ["no_repeat_ngram_size"] = 3.0,
+                ["suppress_tokens"] = new List<object> { 9079.0, 42.0 },
+            },
+        };
+        LiteRtSendOptions? skSend = LiteRtChatMapping.ToSendOptions(fromSk);
+        Assert.Equal(3, skSend!.NoRepeatNgram!.NgramSize);
+        Assert.Equal([9079, 42], skSend.SuppressTokens!);
+        // A fractional value is not a token id.
+        Assert.Throws<ArgumentException>(() => LiteRtChatMapping.ToSendOptions(
+            new ChatOptions { AdditionalProperties = new() { ["suppress_tokens"] = new List<object> { 1.5 } } }));
+
+        // An empty list is "nothing to set".
+        Assert.Null(LiteRtChatMapping.ToSendOptions(
+            new ChatOptions { AdditionalProperties = new() { ["suppress_tokens"] = Array.Empty<int>() } }));
+    }
+
+    [Fact]
+    public void ToSendOptions_RejectsInvalidNgramAndTokenValues()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            LiteRtChatMapping.ToSendOptions(new LiteRtChatOptions { NoRepeatNgramSize = 0 }));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            LiteRtChatMapping.ToSendOptions(new LiteRtChatOptions { SuppressTokens = [1, -1] }));
+        Assert.Throws<ArgumentException>(() =>
+            LiteRtChatMapping.ToSendOptions(new ChatOptions { AdditionalProperties = new() { ["suppress_tokens"] = "1,x" } }));
+    }
+
+    [Fact]
+    public void LiteRtChatOptions_NullSetters_RemoveTheKeys()
+    {
+        var options = new LiteRtChatOptions { NoRepeatNgramSize = 4, SuppressTokens = [1] };
+        options.NoRepeatNgramSize = null;
+        options.SuppressTokens = null;
+
+        Assert.False(options.AdditionalProperties!.ContainsKey("no_repeat_ngram_size"));
+        Assert.False(options.AdditionalProperties.ContainsKey("suppress_tokens"));
+        Assert.Null(LiteRtChatMapping.ToSendOptions(options));
+    }
+
+    [Fact]
+    public void SkSettings_NgramAndSuppressTokens_WriteWellKnownKeysAndRoundTrip()
+    {
+        var s = new LiteRtPromptExecutionSettings { NoRepeatNgramSize = 3, SuppressTokens = [8, 9] };
+
+        Assert.Equal(3, Assert.IsType<int>(s.ExtensionData!["no_repeat_ngram_size"]));
+        Assert.Equal([8, 9], Assert.IsType<int[]>(s.ExtensionData["suppress_tokens"]));
+        Assert.Equal(3, s.NoRepeatNgramSize);
+        Assert.Equal([8, 9], s.SuppressTokens!);
+
+        // From a prompt template (JsonElement array).
+        using var doc = JsonDocument.Parse("""{ "suppress_tokens": [1, 2] }""");
+        var fromJson = new LiteRtPromptExecutionSettings
+        {
+            ExtensionData = new Dictionary<string, object> { ["suppress_tokens"] = doc.RootElement.GetProperty("suppress_tokens") },
+        };
+        Assert.Equal([1, 2], fromJson.SuppressTokens!);
+
+        // The same coercer as the MEAI side: SK's converter shape (boxed doubles) and a comma string read
+        // back exactly as they are sent, and garbage reads as null from the getter instead of throwing.
+        var fromSk = new LiteRtPromptExecutionSettings
+        {
+            ExtensionData = new Dictionary<string, object> { ["suppress_tokens"] = new List<object> { 9079.0, 42.0 } },
+        };
+        Assert.Equal([9079, 42], fromSk.SuppressTokens!);
+        Assert.Equal([1, 2, 3], new LiteRtPromptExecutionSettings { ExtensionData = new Dictionary<string, object> { ["suppress_tokens"] = "1, 2,3" } }.SuppressTokens!);
+        Assert.Null(new LiteRtPromptExecutionSettings { ExtensionData = new Dictionary<string, object> { ["suppress_tokens"] = true } }.SuppressTokens);
+    }
+
+    [Fact]
+    public void LiteRtChatOptions_SuppressTokensGetter_ReadsMalformedAsNull_ButSendRejectsIt()
+    {
+        var options = new ChatOptions { AdditionalProperties = new() { ["suppress_tokens"] = true } };
+        // Reading through the typed subtype must not throw from a property getter...
+        Assert.Null(new LiteRtChatOptions { AdditionalProperties = options.AdditionalProperties }.SuppressTokens);
+        // ...while building the send options still names the bad key.
+        Assert.Throws<ArgumentException>(() => LiteRtChatMapping.ToSendOptions(options));
+    }
+
+    [Fact]
+    public void ContextGuard_FlagsMaxNumTokensBelowTheLargestKnownPrefillSignature()
+    {
+        Assert.False(LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(0));      // unknown limit: no claim
+        Assert.True(LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(512));
+        Assert.False(LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(1024));
+        Assert.Contains("MaxNumTokens >= 1024", LiteRtConversation.SmallContextSendHint);
+    }
 }
 
 /// <summary>
@@ -248,6 +380,80 @@ public sealed class DecodingConnectorModelTests
 
         using JsonDocument parsed = JsonDocument.Parse(response.Text.Trim());
         Assert.Equal(JsonValueKind.String, parsed.RootElement.GetProperty("city").ValueKind);
+    }
+
+    /// <summary>The MEAI-typed <see cref="LiteRtChatOptions.SuppressTokens"/> reaches the native decode:
+    /// banning every id of the expected answer word keeps it out of the reply (the core-level suppress-tokens
+    /// observable, through <see cref="IChatClient"/>).</summary>
+    [SkippableFact]
+    public async Task Meai_SuppressTokensOnChatOptions_KeepBannedWordOut()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine);
+        ChatMessage[] messages = [new(ChatRole.User, "What is the capital of France? Reply with just the city name.")];
+
+        ChatResponse baseline = await client.GetResponseAsync(messages, new ChatOptions { MaxOutputTokens = 32 });
+        Skip.If(!baseline.Text.Contains("Paris", StringComparison.OrdinalIgnoreCase),
+            $"Baseline did not answer Paris (got: '{baseline.Text}') — cannot exercise the suppression meaningfully.");
+
+        // Ban every id of the surface forms the answer could start with (with and without the leading-space marker).
+        int[] banned = [.. engine.Tokenize(" Paris"), .. engine.Tokenize("Paris")];
+        ChatResponse suppressed = await client.GetResponseAsync(messages,
+            new LiteRtChatOptions { MaxOutputTokens = 32, SuppressTokens = banned });
+
+        Assert.DoesNotContain("Paris", suppressed.Text, StringComparison.Ordinal);
+    }
+
+    /// <summary>Semantic Kernel end to end: <see cref="LiteRtPromptExecutionSettings.SuppressTokens"/> (an
+    /// <c>int[]</c> in ExtensionData) survives SK's settings → ChatOptions converter and reaches the native
+    /// decode with the same observable.</summary>
+    [SkippableFact]
+    public async Task Sk_SuppressTokens_FlowThroughAdapter_AndKeepBannedWordOut()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, modelId: "litert-test");
+        IChatCompletionService chat = client.AsChatCompletionService();
+        var history = new ChatHistory();
+        history.AddUserMessage("What is the capital of France? Reply with just the city name.");
+
+        IReadOnlyList<ChatMessageContent> baseline = await chat.GetChatMessageContentsAsync(
+            history, new LiteRtPromptExecutionSettings { MaxTokens = 32 });
+        string baselineText = baseline[0].Content ?? "";
+        Skip.If(!baselineText.Contains("Paris", StringComparison.OrdinalIgnoreCase),
+            $"Baseline did not answer Paris (got: '{baselineText}') — cannot exercise the suppression meaningfully.");
+
+        int[] banned = [.. engine.Tokenize(" Paris"), .. engine.Tokenize("Paris")];
+        IReadOnlyList<ChatMessageContent> suppressed = await chat.GetChatMessageContentsAsync(
+            history, new LiteRtPromptExecutionSettings { MaxTokens = 32, SuppressTokens = banned });
+
+        Assert.DoesNotContain("Paris", suppressed[0].Content ?? "", StringComparison.Ordinal);
+    }
+
+    /// <summary>The experimental YNNPACK toggle (native v0.16.0+) reaches the engine settings: an engine
+    /// loaded with it on the CPU backend still creates and generates. Upstream ships the YNNPACK kernels in
+    /// its linux-arm64 builds; the other official prebuilts accept the flag without a visible effect, which
+    /// is what this smoke pins (no crash, no rejected settings).</summary>
+    [SkippableFact]
+    public void EngineLoad_WithYnnpack_LoadsAndGenerates()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = Model!,
+            Backend = LiteRtBackend.Cpu,
+            MaxNumTokens = 1024,
+            EnableYnnpack = true,
+        });
+        using var conv = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
+        Assert.False(string.IsNullOrWhiteSpace(conv.Send("Say hello.").Text));
     }
 
     /// <summary>MEAI penalties reach the native decode: under deterministic default sampling, the

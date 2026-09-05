@@ -3,7 +3,8 @@
   <!--
     Native-only NuGet package: LiteRT-LM android-arm64 (.so) under runtimes/android-arm64/native/.
     .NET Android (net8+) bundles runtimes/<rid>/native/*.so from packages into the APK.
-    On Android the LiteRt C API is static-linked into libLiteRtLm.so (no separate libLiteRt.so).
+    One file: Google's official monolithic library (accelerators, GPU samplers and constraint
+    provider embedded), renamed libLiteRtLm.so by native-release.yml.
   -->
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
@@ -22,6 +23,15 @@
     <None Include="..\..\runtimes\android-arm64\native\*"
           Pack="true"
           PackagePath="runtimes\android-arm64\native\" />
+  </ItemGroup>
+
+  <!-- Upstream's third-party notices for the official binaries (a native-release.yml asset, laid into
+       runtimes/ by pack-nuget.yml and scripts/restore-natives.ps1). Packed at the package root. -->
+  <ItemGroup>
+    <None Include="..\..\runtimes\THIRD_PARTY_NOTICES.litert-lm.txt"
+          Pack="true"
+          PackagePath=""
+          Condition="Exists('..\..\runtimes\THIRD_PARTY_NOTICES.litert-lm.txt')" />
   </ItemGroup>
 
 </Project>

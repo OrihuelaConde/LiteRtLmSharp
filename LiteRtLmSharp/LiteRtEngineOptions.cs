@@ -73,6 +73,12 @@ public sealed record LiteRtEngineOptions
     /// than this property claims — and the overflow guard, calibrated against this value, would then
     /// stop policing before the actual edge. Values below the model's minimum prefill work group
     /// (~128) are unusable outright: every send is rejected.</para>
+    /// <para><b>Keep the value at or above the model's largest prefill signature</b> (1024 for the
+    /// published gemma conversions). The native loader accepts a smaller limit, but a send whose prefill
+    /// spans more than the smallest work group then fails inside the native graph (an internal
+    /// <c>DYNAMIC_UPDATE_SLICE</c> error) instead of cleanly. The C API exposes no way to query the
+    /// signatures, so the binding cannot validate this up front; when a send fails on an engine loaded
+    /// with a limit below 1024, the exception names this as the likely cause.</para>
     /// </remarks>
     public int MaxNumTokens { get; init; }
 
@@ -345,6 +351,17 @@ public sealed record LiteRtEngineOptions
     public bool? GpuWaitForWeightUploads { get; init; }
 
     /// <summary>
+    /// Lets the experimental YNNPACK delegate take the CPU operations it supports before XNNPACK.
+    /// <c>null</c> (default) = engine default (off). CPU backend only. Requires native LiteRT-LM v0.16.0+.
+    /// </summary>
+    /// <remarks>
+    /// Maps to <c>engine_settings_set_enable_ynnpack</c>. Upstream ships the YNNPACK kernels in its
+    /// linux-arm64 builds; the other official prebuilts accept the flag and run unchanged, so treat any
+    /// speed-up as something to measure on the target device, not assume.
+    /// </remarks>
+    public bool? EnableYnnpack { get; init; }
+
+    /// <summary>
     /// Store the KV cache of local-attention layers in ringbuffers sized to what those layers
     /// actually need, instead of allocating the full context length — lower memory for long
     /// contexts, at the cost of instant rewinding. <c>null</c> (default) = off. Backend-agnostic in
@@ -440,10 +457,11 @@ public sealed record LiteRtConversationOptions
     /// <see cref="Tools"/> are set so tool-call arguments parse reliably.
     /// </summary>
     /// <remarks>
-    /// Temporarily throws <see cref="PlatformNotSupportedException"/> on linux-x64: the
-    /// upstream prebuilt constraint provider shipped with LiteRT-LM v0.13.1 returns broken
-    /// constraints and crashes the native process (google-ai-edge/LiteRT-LM#2149). Tools work
-    /// with this set to <c>false</c>. The guard is removed once upstream ships a fixed binary.
+    /// Supported on every platform with the official LiteRT-LM v0.16.0 prebuilts, whose constraint
+    /// provider is embedded in the native library. Releases before 1.2.0 threw
+    /// <see cref="PlatformNotSupportedException"/> on linux-x64, where the separately shipped
+    /// provider crashed the process (google-ai-edge/LiteRT-LM#2149); that guard is gone. Tools also
+    /// work with this left <c>false</c>; arguments are then not grammar-constrained.
     /// </remarks>
     public bool EnableConstrainedDecoding { get; init; }
 
@@ -511,8 +529,7 @@ public sealed record LiteRtConversationOptions
     /// constrained-decoding path) — the native runtime supports one per conversation, and
     /// <see cref="LiteRtEngine.CreateConversation"/> throws <see cref="ArgumentException"/> when both
     /// are set. Maps to the C API <c>conversation_config_set_constraint_provider</c> (native
-    /// v0.15.0+). Unlike the tool-calling path, the LlGuidance provider is compiled from source into
-    /// the native library, so it does not inherit the linux-x64 prebuilt-provider crash guard.
+    /// v0.15.0+). The LlGuidance provider, like the tool-calling one, is embedded in the native library.
     /// </remarks>
     public LiteRtConstraintProvider? ConstraintProvider { get; init; }
 

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 
@@ -409,8 +410,13 @@ internal static class LiteRtChatMapping
     /// Builds the per-send <see cref="LiteRtSendOptions"/> for a request from the MEAI per-request options, or
     /// <c>null</c> when there is nothing to set. Maps <see cref="ChatOptions.MaxOutputTokens"/> to the native
     /// per-send output cap (<see cref="LiteRtSendOptions.MaxOutputTokens"/>) — see <see cref="ToConversationOptions"/>
-    /// for why the per-send scope is used.
+    /// for why the per-send scope is used — the OpenAI-style penalties, a JSON-schema response format, and the
+    /// <c>no_repeat_ngram_size</c> / <c>suppress_tokens</c> bag keys (<see cref="LiteRtChatOptions.NoRepeatNgramSize"/>
+    /// / <see cref="LiteRtChatOptions.SuppressTokens"/>) onto the native logit processors.
     /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><c>no_repeat_ngram_size</c> is zero or negative, or a
+    /// suppressed token id is negative.</exception>
+    /// <exception cref="ArgumentException"><c>suppress_tokens</c> holds a value that is not a token id.</exception>
     public static LiteRtSendOptions? ToSendOptions(ChatOptions? options)
     {
         int maxOutput = options?.MaxOutputTokens ?? 0;
@@ -428,13 +434,23 @@ internal static class LiteRtChatMapping
 
         LiteRtConstraint? constraint = ToConstraint(options);
 
-        if (maxOutput <= 0 && penalties is null && constraint is null)
+        // The two logit processors MEAI has no typed option for; LiteRtChatOptions writes these keys.
+        LiteRtNoRepeatNgramOptions? noRepeat = GetInt32Property(options, "no_repeat_ngram_size") is { } ngram
+            ? new LiteRtNoRepeatNgramOptions { NgramSize = ngram }
+            : null;
+        IReadOnlyList<int>? suppress = GetInt32ListProperty(options, "suppress_tokens");
+        if (suppress is { Count: 0 })
+            suppress = null;
+
+        if (maxOutput <= 0 && penalties is null && constraint is null && noRepeat is null && suppress is null)
             return null;
         return new LiteRtSendOptions
         {
             MaxOutputTokens = maxOutput > 0 ? maxOutput : 0,
             RepetitionPenalties = penalties,
             Constraint = constraint,
+            NoRepeatNgram = noRepeat,
+            SuppressTokens = suppress,
         };
     }
 
@@ -629,4 +645,93 @@ internal static class LiteRtChatMapping
         JsonElement { ValueKind: JsonValueKind.String } e when bool.TryParse(e.GetString(), out bool r) => r,
         _ => null,
     };
+
+    /// <summary>Reads an integer knob from <see cref="ChatOptions.AdditionalProperties"/> (<c>null</c> when absent
+    /// or not an integer). Shared by <see cref="ToSendOptions"/> and the <see cref="LiteRtChatOptions"/> getters.</summary>
+    internal static int? GetInt32Property(ChatOptions? o, string key)
+        => o?.AdditionalProperties is { } props && props.TryGetValue(key, out object? v) ? AsInt32(v) : null;
+
+    /// <summary>Reads a token-id list knob from <see cref="ChatOptions.AdditionalProperties"/> (<c>null</c> when
+    /// absent). See <see cref="AsInt32List"/> for the accepted shapes; a malformed value throws here, on the
+    /// send path, so the caller learns which key is wrong.</summary>
+    internal static IReadOnlyList<int>? GetInt32ListProperty(ChatOptions? o, string key)
+        => o?.AdditionalProperties is { } props && props.TryGetValue(key, out object? v) ? AsInt32List(v, key) : null;
+
+    /// <summary>The getter-safe variant of <see cref="GetInt32ListProperty"/>: a malformed value reads as
+    /// <c>null</c> (like every other typed getter over the bag) instead of throwing from a property.</summary>
+    internal static IReadOnlyList<int>? TryGetInt32ListProperty(ChatOptions? o, string key)
+    {
+        try { return GetInt32ListProperty(o, key); }
+        catch (ArgumentException) { return null; }
+    }
+
+    /// <summary>Getter-safe list coercion for a raw bag value (Semantic Kernel's typed settings read their
+    /// <c>ExtensionData</c> through this): malformed input reads as <c>null</c>.</summary>
+    internal static IReadOnlyList<int>? TryAsInt32List(object? v)
+    {
+        try { return AsInt32List(v); }
+        catch (ArgumentException) { return null; }
+    }
+
+    /// <summary>Coerces an integer stored in a property bag: boxed integers, an integral floating-point
+    /// number (Semantic Kernel's settings converter round-trips ExtensionData through JSON, so an
+    /// <c>int[]</c> arrives as boxed <see cref="double"/>s), a numeric string, or a <see cref="JsonElement"/>
+    /// number/string (options deserialized from JSON/YAML). Anything else is <c>null</c>.</summary>
+    internal static int? AsInt32(object? v) => v switch
+    {
+        int i => i,
+        long l when l is >= int.MinValue and <= int.MaxValue => (int)l,
+        short sh => sh,
+        byte b => b,
+        double d when double.IsInteger(d) && d is >= int.MinValue and <= int.MaxValue => (int)d,
+        float f when float.IsInteger(f) && f is >= int.MinValue and <= int.MaxValue => (int)f,
+        decimal m when decimal.Truncate(m) == m && m is >= int.MinValue and <= int.MaxValue => (int)m,
+        string s when int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out int r) => r,
+        JsonElement { ValueKind: JsonValueKind.Number } e when e.TryGetInt32(out int r) => r,
+        JsonElement { ValueKind: JsonValueKind.String } e when int.TryParse(e.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int r) => r,
+        _ => null,
+    };
+
+    /// <summary>
+    /// Coerces a token-id list stored in a property bag: the <c>int[]</c> the typed setters write, any
+    /// <see cref="IEnumerable{T}"/> of <see cref="int"/>, a <see cref="JsonElement"/> array of numbers, a
+    /// comma-separated string, or a sequence of objects each coercible by <see cref="AsInt32"/>. Absent
+    /// (<c>null</c>) stays <c>null</c>; a present value whose elements are not all integers is a caller error.
+    /// </summary>
+    /// <exception cref="ArgumentException">The value is present but is not a list of integers.</exception>
+    internal static IReadOnlyList<int>? AsInt32List(object? v, string key = "suppress_tokens")
+    {
+        switch (v)
+        {
+            case null:
+                return null;
+            case int[] arr:
+                return arr;
+            case IReadOnlyList<int> list:
+                return list;
+            case IEnumerable<int> seq:
+                return seq.ToArray();
+            case JsonElement { ValueKind: JsonValueKind.String } e:
+                return AsInt32List(e.GetString(), key);
+            case string s:
+                return Coerce(s.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+            case JsonElement { ValueKind: JsonValueKind.Array } e:
+                return Coerce(e.EnumerateArray().Cast<object>());
+            case System.Collections.IEnumerable objs when v is not string:
+                return Coerce(objs.Cast<object?>());
+            default:
+                throw Invalid(v);
+        }
+
+        IReadOnlyList<int> Coerce(IEnumerable<object?> items)
+        {
+            var ids = new List<int>();
+            foreach (object? item in items)
+                ids.Add(AsInt32(item) ?? throw Invalid(item));
+            return ids;
+        }
+
+        ArgumentException Invalid(object? item) => new(
+            $"'{key}' must be a list of token ids (integers); got {item?.GetType().Name ?? "null"} '{item}'.");
+    }
 }

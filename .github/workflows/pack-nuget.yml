@@ -1,8 +1,8 @@
 name: Pack NuGet packages
 
 # Builds the NuGet packages: the managed LiteRtLmSharp (pure) + per-RID native runtime packages
-# (LiteRtLmSharp.runtime.win-x64 / .linux-x64). Native binaries are pulled from the GitHub Release
-# produced by build-native.yml (tag native-<native_ref>), so run that first.
+# (LiteRtLmSharp.runtime.win-x64 / .linux-x64 / ...). Native binaries are pulled from the GitHub Release
+# published by native-release.yml (tag native-<native_ref>, Google's official prebuilts), so run that first.
 #
 # Structure: pack -> consumer-smoke -> publish. The smoke consumes the just-packed nupkgs from a
 # local feed on windows-latest like a real framework-dependent app (real generation on CPU through
@@ -76,8 +76,14 @@ jobs:
           gh release download "native-${NATIVE_REF}" \
             --repo "${{ github.repository }}" \
             --pattern 'litertlm-*.tar.gz' \
+            --pattern 'THIRD_PARTY_NOTICES.litert-lm.txt' \
             --dir natives
           ls -lh natives/
+          # Upstream's notice file for the official binaries ships inside every runtime package; a
+          # release without it is not something we publish from.
+          [ -f natives/THIRD_PARTY_NOTICES.litert-lm.txt ] \
+            || { echo "::error::native-${NATIVE_REF} has no THIRD_PARTY_NOTICES.litert-lm.txt asset (re-run native-release.yml with publish_release)"; exit 1; }
+          mkdir -p runtimes && cp natives/THIRD_PARTY_NOTICES.litert-lm.txt runtimes/
 
       - name: Lay out runtimes/<rid>/native
         run: |
@@ -101,6 +107,14 @@ jobs:
             fi
           done
 
+          # win-x64 must carry the DirectX Shader Compiler pair: the official Dawn backend has no FXC
+          # fallback, and the consumer smoke's GPU leg cannot prove their presence on a GPU-less runner.
+          if [ -d runtimes/win-x64/native ] && [ -n "$(ls runtimes/win-x64/native 2>/dev/null)" ]; then
+            for dxc in dxcompiler.dll dxil.dll; do
+              [ -f "runtimes/win-x64/native/$dxc" ] || { echo "::error::win-x64 natives lack $dxc (Dawn on D3D12 requires it)"; exit 1; }
+            done
+          fi
+
           # iOS is special twice over: it ships .xcframeworks (not a runtimes/<rid>/native dlopen
           # layout), so extract at the rid ROOT — and it is gated behind include_ios because the
           # package is not device-validated yet (packing it with push=true would publish it).
@@ -108,7 +122,6 @@ jobs:
             mkdir -p "runtimes/ios-arm64"
             tar -xzf "natives/litertlm-ios_arm64.tar.gz" -C "runtimes/ios-arm64"
             find "runtimes/ios-arm64" -name '._*' -delete
-            rm -f "runtimes/ios-arm64"/*.dylib   # the tar also carries the raw dylibs; the package only ships the xcframeworks
             echo "ios-arm64:"; ls -R "runtimes/ios-arm64/xcframeworks" 2>/dev/null || echo "  (no xcframeworks/)"
           else
             echo "ios-arm64: skipped (include_ios=${{ inputs.include_ios }}; not packed until device-validated)"
@@ -219,6 +232,15 @@ jobs:
           Get-Content gpu-stderr.txt
           $dawn = (Select-String -Path gpu-stderr.txt -Pattern 'dawn|WebGPU' -AllMatches | Measure-Object).Count
           Write-Host "gpu exit=$code, WebGPU/Dawn stderr lines=$dawn"
+          # Signatures that mean the package is broken regardless of the runner having a GPU: the DXC
+          # pair was not found or not preloaded (Dawn: "DynamicLib.Open: dxil.dll Windows Error: 87"),
+          # or the embedded GPU sampler is gone (the runtime warns and samples on CPU). The official
+          # monolith prints WebGPU lines at load even in those states, so a line count alone is blind to them.
+          $broken = Select-String -Path gpu-stderr.txt -Pattern 'dxil\.dll|dxcompiler\.dll|Falling back to CPU sampling'
+          if ($broken) {
+            $broken | ForEach-Object { Write-Host "  !! $($_.Line)" }
+            throw 'GPU leg FAILED: the DirectX Shader Compiler pair did not load from the NuGet layout, or GPU sampling fell back to CPU.'
+          }
           if ($code -eq 0) {
             Write-Host 'GPU leg: FULL pass — a usable adapter exists on this runner (WARP or hardware) and generation succeeded.'
           } elseif ($dawn -gt 0) {

@@ -3,7 +3,7 @@
   <!--
     Native-only NuGet package: LiteRT-LM macos-arm64 (.dylib) under runtimes/osx-arm64/native/.
     No managed assembly. Pair with the managed LiteRtLmSharp package (same version).
-    libLiteRtLm.dylib links companions via -rpath @loader_path (same directory).
+    One file: Google's official monolithic library, renamed libLiteRtLm.dylib by native-release.yml.
   -->
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
@@ -22,6 +22,15 @@
     <None Include="..\..\runtimes\osx-arm64\native\*"
           Pack="true"
           PackagePath="runtimes\osx-arm64\native\" />
+  </ItemGroup>
+
+  <!-- Upstream's third-party notices for the official binaries (a native-release.yml asset, laid into
+       runtimes/ by pack-nuget.yml and scripts/restore-natives.ps1). Packed at the package root. -->
+  <ItemGroup>
+    <None Include="..\..\runtimes\THIRD_PARTY_NOTICES.litert-lm.txt"
+          Pack="true"
+          PackagePath=""
+          Condition="Exists('..\..\runtimes\THIRD_PARTY_NOTICES.litert-lm.txt')" />
   </ItemGroup>
 
 </Project>

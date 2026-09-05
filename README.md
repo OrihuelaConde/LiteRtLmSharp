@@ -42,8 +42,8 @@ runtime package ships once on-device validation lands.</sub>
 ## Quick start
 
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="1.1.1" />
-<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.1.1" />
+<PackageReference Include="LiteRtLmSharp" Version="1.2.0" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.2.0" />
 <!-- or LiteRtLmSharp.runtime.linux-x64 / android-arm64 / osx-arm64, per target -->
 ```
 
@@ -52,6 +52,7 @@ version number**. Which LiteRT-LM native build each release wraps:
 
 | LiteRtLmSharp | LiteRT-LM native |
 |---|---|
+| 1.2.0 | v0.16.0 (Google's official C API prebuilts) |
 | 1.1.1 | v0.14.0 |
 | 1.1.0 | v0.14.0 |
 | 1.0.0 | v0.13.1 |
@@ -144,7 +145,11 @@ conversations** (MEAI `ConversationId`) are supported — see the
   too small can make blocking generation return nothing.
 - **Conversations are not thread-safe** — serialize sends per engine (the Microsoft.Extensions.AI
   client does this for you).
-- **win-x64** needs the Microsoft Visual C++ Redistributable (the native DLLs import `VCRUNTIME140`).
+- **linux-x64 needs the system Vulkan loader.** The official native library depends on `libvulkan.so.1`
+  and does not load without it: `sudo apt install libvulkan1` (Debian/Ubuntu) or your distribution's
+  equivalent. No GPU is required for the CPU backend; the loader alone is enough.
+- **win-x64 needs no Visual C++ Redistributable** since 1.2.0 (the official library links the CRT
+  statically). The GPU backend's shader compiler (`dxcompiler.dll`, `dxil.dll`) ships in the runtime package.
 - **Android GPU needs manifest declarations.** Android 12+ only grants access to vendor native
   libraries declared via `<uses-native-library>`; without `libOpenCL.so` the engine silently picks a
   Vulkan path that produces garbage on older Adreno drivers. Copy the `<uses-native-library>` block
@@ -171,9 +176,9 @@ dotnet build LiteRtLmSharp.slnx && dotnet test
 
 The samples have their own solution (`samples/LiteRtLmSharp.Samples.slnx`; the MAUI sample needs
 `dotnet workload install maui`). To run the model-backed tests, point `LITERTLM_TEST_MODEL` at a
-`.litertlm` file. CI: [`build-native.yml`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/.github/workflows/build-native.yml)
-builds the natives from a pinned LiteRT-LM tag (via
-[`native/patch_c_api.sh`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/native/patch_c_api.sh)),
+`.litertlm` file. CI: [`native-release.yml`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/.github/workflows/native-release.yml)
+repackages Google's official LiteRT-LM C API prebuilts for a pinned release (verified against the
+upstream release digests, each library inspected) into the `native-v*` release,
 [`pack-nuget.yml`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/.github/workflows/pack-nuget.yml)
 packs and publishes. Internals docs:
 [native ABI](https://orihuelaconde.github.io/LiteRtLmSharp/native-abi.html),
