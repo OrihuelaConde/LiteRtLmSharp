@@ -1,6 +1,6 @@
 # Project status and roadmap
 
-Last updated: 2026-09-05 (v0.16.0 repin on the official C API prebuilts in progress — PR #8). Source of truth for "what's done and what's pending".
+Last updated: 2026-09-05 (1.2.0 published on nuget.org: LiteRT-LM v0.16.0 on Google's official C API prebuilts). Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -191,7 +191,7 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
    `master`. Community context: flutter_gemma moved to v0.16.0 but still self-builds. **Verdict
    after the device run: every platform we can test is green on the official prebuilts, and the
    Android result turns the repin from a preference into a fix** (see the android-arm64 row).
-   **Repin checklist (go given 2026-09-05; branch `repin-v0.16.0`, PR #8 — steps 1–8 landed there, 9–11 are the joint release phase):** (1) `LiteRtLmVersion` → v0.16.0 (the zip
+   **Repin checklist — ALL DONE: PR #8 merged 2026-09-05 (887422f) after a pre-merge review, 1.2.0 published to nuget.org the same day (pack-nuget run 33954872856, GitHub release v1.2.0), post-publish smoke from nuget.org on win-x64, upstream housekeeping posted (PR #2801 closed, #2149 and #3135 commented), probe branch and workflows retired:** (1) `LiteRtLmVersion` → v0.16.0 (the zip
    lives on that tag). (2) Natives: a CI job that fetches the official zip and repackages it into
    our `runtimes/<rid>/native` layout under our library names (no SONAME / install-name stands in
    the way) for win/linux/mac; win adds the DXC pair as companions; linux documents `libvulkan1`
