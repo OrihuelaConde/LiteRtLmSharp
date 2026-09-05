@@ -32,9 +32,12 @@
 
     <!-- The xcframework, packed next to the .targets (which references it via $(MSBuildThisFileDirectory)).
          Laid into runtimes/ios-arm64/xcframeworks/ by native-release.yml (gitignored, restored before pack). -->
+    <!-- PackagePath is the directory only: for a recursive glob NuGet appends %(RecursiveDir)%(Filename)%(Extension)
+         itself, and adding %(RecursiveDir) here as well doubled every path inside the package
+         (xcframeworks/X.xcframework/X.xcframework/...), which the layout assertion in ios-package-check.yml now catches. -->
     <None Include="..\..\runtimes\ios-arm64\xcframeworks\**\*"
           Pack="true"
-          PackagePath="buildTransitive\xcframeworks\%(RecursiveDir)" />
+          PackagePath="buildTransitive\xcframeworks\" />
   </ItemGroup>
 
 </Project>
