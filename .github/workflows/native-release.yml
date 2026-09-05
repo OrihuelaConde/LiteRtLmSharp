@@ -28,6 +28,13 @@ name: Native release (official LiteRT-LM prebuilts)
 # Run manually from the Actions tab (workflow_dispatch).
 
 on:
+  # Registration trigger for the repin branch: GitHub only indexes a new workflow once it has run,
+  # and workflow_dispatch needs it indexed. A push run packages and inspects every platform without
+  # publishing (publish_release is false when there are no inputs). Retire this trigger once the
+  # workflow lives on master.
+  push:
+    branches: [repin-v0.16.0]
+    paths: ['.github/workflows/native-release.yml', '.github/scripts/**']
   workflow_dispatch:
     inputs:
       litertlm_version:
@@ -49,8 +56,9 @@ on:
 
 env:
   UPSTREAM_REPO: google-ai-edge/LiteRT-LM
-  UPSTREAM_TAG: ${{ inputs.litertlm_version }}
-  CAPI_ZIP: litert_lm_c_api-${{ inputs.capi_version }}.zip
+  # Inputs are empty on push events: default to the pinned release.
+  UPSTREAM_TAG: ${{ inputs.litertlm_version || 'v0.16.0' }}
+  CAPI_ZIP: litert_lm_c_api-${{ inputs.capi_version || '0.1.0' }}.zip
   # Minimum litert_lm_* export count we accept (v0.16.0 ships 144; the check catches a truncated or
   # wrong-architecture binary, not a specific version).
   MIN_EXPORTS: '140'
@@ -65,7 +73,7 @@ jobs:
   # inspects them with binutils.
   elf:
     name: linux-x64 + android-arm64
-    if: inputs.platforms == 'all' || contains(inputs.platforms, 'linux-x64') || contains(inputs.platforms, 'android-arm64')
+    if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'linux-x64') || contains(inputs.platforms, 'android-arm64')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -83,7 +91,7 @@ jobs:
           ls -la capi/lib/*/
 
       - name: Package linux-x64
-        if: inputs.platforms == 'all' || contains(inputs.platforms, 'linux-x64')
+        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'linux-x64')
         run: |
           set -euo pipefail
           mkdir -p artifacts/linux
@@ -99,7 +107,7 @@ jobs:
           ls -la artifacts/linux
 
       - name: Package android-arm64
-        if: inputs.platforms == 'all' || contains(inputs.platforms, 'android-arm64')
+        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'android-arm64')
         run: |
           set -euo pipefail
           mkdir -p artifacts/android
@@ -126,20 +134,20 @@ jobs:
           ls -la artifacts/android
 
       - uses: actions/upload-artifact@v4
-        if: inputs.platforms == 'all' || contains(inputs.platforms, 'linux-x64')
+        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'linux-x64')
         with:
           name: litertlm-linux_x86_64
           path: artifacts/linux/
 
       - uses: actions/upload-artifact@v4
-        if: inputs.platforms == 'all' || contains(inputs.platforms, 'android-arm64')
+        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'android-arm64')
         with:
           name: litertlm-android_arm64
           path: artifacts/android/
 
   win-x64:
     name: win-x64
-    if: inputs.platforms == 'all' || contains(inputs.platforms, 'win-x64')
+    if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'win-x64')
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -185,20 +193,20 @@ jobs:
 
   apple:
     name: macos-arm64 + ios-arm64
-    if: inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64') || contains(inputs.platforms, 'ios-arm64')
+    if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64') || contains(inputs.platforms, 'ios-arm64')
     runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - name: Download and verify the official C API zip
-        if: inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64')
+        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64')
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/fetch-upstream-asset.sh "$CAPI_ZIP" upstream
 
       - name: Package macos-arm64
-        if: inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64')
+        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64')
         run: |
           set -euo pipefail
           unzip -q "upstream/$CAPI_ZIP" 'lib/macos_arm64/liblitert-lm.dylib' -d capi
@@ -220,13 +228,13 @@ jobs:
           ls -la artifacts/macos
 
       - name: Download and verify the official iOS xcframework
-        if: inputs.platforms == 'all' || contains(inputs.platforms, 'ios-arm64')
+        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'ios-arm64')
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/fetch-upstream-asset.sh CLiteRTLM.xcframework.zip upstream
 
       - name: Package ios-arm64
-        if: inputs.platforms == 'all' || contains(inputs.platforms, 'ios-arm64')
+        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'ios-arm64')
         # The official xcframework is shipped AS IS under its own name (CLiteRTLM): the managed
         # resolver loads Frameworks/CLiteRTLM.framework/CLiteRTLM on iOS and the runtime package's
         # buildTransitive .targets references CLiteRTLM.xcframework. Re-wrapping it under our name
@@ -256,13 +264,13 @@ jobs:
           ls -R artifacts/ios | head -40
 
       - uses: actions/upload-artifact@v4
-        if: inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64')
+        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64')
         with:
           name: litertlm-macos_arm64
           path: artifacts/macos/
 
       - uses: actions/upload-artifact@v4
-        if: inputs.platforms == 'all' || contains(inputs.platforms, 'ios-arm64')
+        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'ios-arm64')
         with:
           name: litertlm-ios_arm64
           path: artifacts/ios/
