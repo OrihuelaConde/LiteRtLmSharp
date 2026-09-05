@@ -180,10 +180,10 @@ no functions. Under the hood this is the same bridge the [Microsoft.Extensions.A
 exposes (the model's tool calls become `FunctionCallContent`).
 
 **Constrained decoding.** `LiteRtPromptExecutionSettings.EnableConstrainedDecoding = true` makes the model emit
-valid, schema-shaped tool-call arguments — recommended for small on-device models. It is **off by default**
-because it throws `PlatformNotSupportedException` on **linux-x64** (a temporary upstream constraint-provider
-bug, [google-ai-edge/LiteRT-LM#2149](https://github.com/google-ai-edge/LiteRT-LM/issues/2149)); leave it off
-there — tools still work, arguments are just not grammar-constrained.
+valid, schema-shaped tool-call arguments — recommended for small on-device models. It is off by default and
+works on every platform (the linux-x64 restriction of earlier releases is gone with the official LiteRT-LM
+v0.16.0 prebuilts, which embed the constraint provider). Tools still work without it; arguments are just not
+grammar-constrained.
 
 **Function choice (`FunctionChoiceBehavior`).** `Auto()` (the model decides), `None()` (no functions offered)
 and `Required()` (the model must call one) flow through to the chat client's `ChatOptions.ToolMode`. `Required`

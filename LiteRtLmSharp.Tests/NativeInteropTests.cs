@@ -1230,8 +1230,8 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     }
 
     /// <summary>
-    /// Function-calling loop WITHOUT constrained decoding — works on every platform (this is
-    /// the documented workaround while the linux-x64 constrained-decoding guard is in place).
+    /// Function-calling loop WITHOUT constrained decoding: the model's free-form tool call is parsed
+    /// and executed (arguments are not grammar-constrained on this path).
     /// </summary>
     [SkippableFact]
     public void ToolCalling_Unconstrained_Loop_ExecutesTool()
@@ -1241,24 +1241,15 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     }
 
     /// <summary>
-    /// Function-calling loop WITH constrained decoding. On linux-x64 this currently asserts the
-    /// temporary guard fires (upstream prebuilt constraint provider is broken — LiteRT-LM#2149,
-    /// see the roadmap watchlist); everywhere else it runs the real end-to-end loop.
+    /// Function-calling loop WITH constrained decoding, end to end on every OS. Until the official
+    /// v0.16.0 prebuilts this asserted a <c>PlatformNotSupportedException</c> on linux-x64 (the
+    /// separately shipped constraint provider crashed there, LiteRT-LM#2149); the official build
+    /// embeds the provider and the guard is gone.
     /// </summary>
     [SkippableFact]
     public void ToolCalling_Constrained_Loop_ExecutesTool()
     {
         SkipUnlessToolTestsEnabled();
-
-        if (OperatingSystem.IsLinux() && !OperatingSystem.IsAndroid())
-        {
-            // TEMPORARY branch: validates the guard in LiteRtConversation.Create. When Google
-            // republishes a fixed linux prebuilt and the guard is removed, DELETE this branch so
-            // the constrained loop runs for real on Linux too (removal steps: docs/roadmap.md).
-            Assert.Throws<PlatformNotSupportedException>(() => RunToolCallingLoop(constrainedDecoding: true));
-            return;
-        }
-
         RunToolCallingLoop(constrainedDecoding: true);
     }
 
@@ -1835,35 +1826,29 @@ public sealed class UpstreamSuspendedStateSentinelTests
 }
 
 /// <summary>
-/// Pins the upstream LiteRT-LM v0.14.0 TEXT-LoRA stub (b/462499294): loading a valid text-LoRA adapter
-/// succeeds at conversation creation, but the FIRST generation fails with "Lora is not supported". This
-/// complements <c>Lora_NonexistentAdapterPath_ThrowsCoherentException</c> (which pins the bad-path failure)
-/// by pinning the valid-adapter-but-stubbed-runtime failure — proving our surface is ready and fails
-/// coherently. Requires the LoRA stub artifacts <c>test_lm_lora.litertlm</c> and
-/// <c>test_lora_rank32_f16_all_ones.tflite</c> sitting NEXT TO the LITERTLM_TEST_MODEL file (they are
-/// gitignored); skipped unless both exist. Loads its own engine. Skipped unless LITERTLM_TEST_MODEL is set.
+/// Text LoRA end to end on the upstream LoRA test bundle: with a LoRA-enabled model and a valid adapter,
+/// <see cref="LiteRtConversationOptions.LoraPath"/> is accepted at conversation creation and changes what the
+/// model generates. Until LiteRT-LM v0.15.0 the runtime rejected every text adapter at the first generation
+/// ("Lora is not supported", b/462499294) and this class pinned that stub; v0.16.0 implements it, so the test
+/// now asserts the positive path. Complements <c>Lora_NonexistentAdapterPath_ThrowsCoherentException</c>
+/// (the bad-path failure). Requires the upstream artifacts <c>test_lm_lora.litertlm</c> and
+/// <c>test_lora_rank32_f16_all_ones.tflite</c> NEXT TO the LITERTLM_TEST_MODEL file (gitignored); skipped
+/// unless both exist. Loads its own engine.
 /// </summary>
-public sealed class LoraStubPinTests
+public sealed class LoraTextAdapterTests
 {
-    /// <summary>
-    /// Pins the upstream text-LoRA stub (b/462499294): with a VALID adapter and a LoRA-enabled model,
-    /// the adapter file opens fine but <see cref="LiteRtEngine.CreateConversation"/> fails — the native
-    /// conversation create builds the session context, where the v0.14.0 runtime rejects text LoRA
-    /// unconditionally (native stderr: "INVALID_ARGUMENT: Lora is not supported.", verified 2026-07-10;
-    /// the C API surfaces it only as a null conversation). The failure is distinguishable from a BAD
-    /// adapter path, which throws from <c>set_lora_path</c> with a message naming the path. WHEN THIS
-    /// TEST STARTS FAILING (creation succeeds), upstream has implemented text LoRA: re-test positively
-    /// (assert the adapter actually changes generation) and update the LoRA note in CHANGELOG.md / docs.
-    /// See docs/roadmap.md.
-    /// </summary>
+    /// <summary>The all-ones rank-32 adapter must change the deterministic (seed-0 default sampling)
+    /// continuation of the same prompt on the same engine, and creation must succeed (no stub rejection).
+    /// No explicit sampler: the CPU sampler factory implements only TopP and the default sampling is
+    /// deterministic (see <c>DecodingModelTests</c>).</summary>
     [SkippableFact]
-    public void Lora_ValidTextAdapter_ConversationCreateHitsUpstreamStub()
+    public void Lora_ValidTextAdapter_IsAppliedAndChangesGeneration()
     {
         string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
         Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
-        // The stub artifacts sit next to the configured test model (gitignored). Gate on their existence.
+        // The upstream artifacts sit next to the configured test model (gitignored). Gate on their existence.
         string dir = Path.GetDirectoryName(Path.GetFullPath(model!))!;
         string loraModel = Path.Combine(dir, "test_lm_lora.litertlm");
         string loraAdapter = Path.Combine(dir, "test_lora_rank32_f16_all_ones.tflite");
@@ -1879,11 +1864,18 @@ public sealed class LoraStubPinTests
             LoraRank = 32,
         });
 
-        var ex = Assert.Throws<LiteRtException>(
-            () => engine.CreateConversation(new LiteRtConversationOptions { LoraPath = loraAdapter }));
-        // The generic create-failure message — NOT the set_lora_path failure (that one names the path),
-        // proving the adapter file itself was accepted and the rejection came from the runtime stub.
-        Assert.Contains("litert_lm_conversation_create returned null", ex.Message);
-        Assert.DoesNotContain("set_lora_path", ex.Message);
+        const string prompt = "Say hello in four words.";
+        string baseline;
+        using (var plain = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 }))
+            baseline = plain.Send(prompt).Text ?? "";
+
+        using var adapted = engine.CreateConversation(new LiteRtConversationOptions
+        {
+            LoraPath = loraAdapter,
+            MaxOutputTokens = 16,
+        });
+        string withLora = adapted.Send(prompt).Text ?? "";
+
+        Assert.NotEqual(baseline, withLora);
     }
 }

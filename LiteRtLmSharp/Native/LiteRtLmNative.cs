@@ -96,6 +96,12 @@ internal static unsafe partial class LiteRtLmNative
     internal static partial void litert_lm_engine_settings_set_parallel_file_section_loading(
         nint settings, [MarshalAs(UnmanagedType.U1)] bool parallel_file_section_loading);
 
+    /// <summary>Whether YNNPACK delegates supported CPU operations before XNNPACK (experimental). Native v0.16.0+.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_enable_ynnpack(
+        nint settings, [MarshalAs(UnmanagedType.U1)] bool enable_ynnpack);
+
     /// <summary>Activation tensor precision (0=F32, 1=F16, 2=I16, 3=I8 per <c>ActivationDataType</c>).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]

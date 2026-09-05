@@ -115,6 +115,8 @@ public sealed class LiteRtEngine : IDisposable
                 LiteRtLmNative.litert_lm_engine_settings_set_gpu_decode_steps_per_sync(settings.Ptr, gpuSteps);
             if (options.GpuWaitForWeightUploads is { } gpuWait)
                 LiteRtLmNative.litert_lm_engine_settings_set_gpu_wait_for_weight_uploads(settings.Ptr, gpuWait);
+            if (options.EnableYnnpack is { } ynnpack)
+                LiteRtLmNative.litert_lm_engine_settings_set_enable_ynnpack(settings.Ptr, ynnpack);
             if (options.UseRingbuffersLocalAttention is { } ringbuffers)
                 LiteRtLmNative.litert_lm_engine_settings_set_use_ringbuffers_local_attention(settings.Ptr, ringbuffers);
             if (options.LoraRank is { } loraRank)

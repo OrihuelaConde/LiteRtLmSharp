@@ -123,11 +123,11 @@ Console.WriteLine(response.Text);       // "The weather in Paris is 22°C and su
 ```
 
 **Constrained decoding.** Set `LiteRtChatOptions.EnableConstrainedDecoding = true` so the model emits valid,
-schema-shaped tool-call arguments — strongly recommended for small on-device models. It is **off by default**
-because the core throws `PlatformNotSupportedException` for it on **linux-x64** (a temporary upstream
-constraint-provider bug, [google-ai-edge/LiteRT-LM#2149](https://github.com/google-ai-edge/LiteRT-LM/issues/2149));
-leave it off there — tools still work, arguments are just not grammar-constrained. On a plain `ChatOptions`,
-set the `enable_constrained_decoding` key in `AdditionalProperties` instead.
+schema-shaped tool-call arguments — strongly recommended for small on-device models. It is off by default and
+works on every platform (the linux-x64 restriction of earlier releases is gone: the official LiteRT-LM v0.16.0
+prebuilts embed the constraint provider). Tools still work without it; arguments are just not
+grammar-constrained. On a plain `ChatOptions`, set the `enable_constrained_decoding` key in
+`AdditionalProperties` instead.
 
 **Tool choice (`ChatOptions.ToolMode`).** The native API has no `tool_choice` parameter (the model always
 decides), so the connector emulates the MEAI modes as best it can:

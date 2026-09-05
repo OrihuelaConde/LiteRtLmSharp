@@ -30,6 +30,20 @@ internal static class LiteRtContextGuard
     internal const int MinPrefillReserve = 128;
 
     /// <summary>
+    /// The largest prefill signature of the published gemma <c>.litertlm</c> conversions. A
+    /// <c>MaxNumTokens</c> below it is accepted by the native loader but breaks prefill for inputs longer
+    /// than the smallest work group (verified on v0.15.0 and v0.16.0 with a raw C API ladder). The C API
+    /// exposes no signature query, so the binding cannot validate this up front — it names the cause when
+    /// a send fails on such an engine (<see cref="IsBelowLargestKnownPrefillSignature"/>).
+    /// </summary>
+    internal const int LargestKnownPrefillSignature = 1024;
+
+    /// <summary>Whether an explicit <paramref name="maxNumTokens"/> (0 = unknown) sits below
+    /// <see cref="LargestKnownPrefillSignature"/>.</summary>
+    internal static bool IsBelowLargestKnownPrefillSignature(int maxNumTokens)
+        => maxNumTokens > 0 && maxNumTokens < LargestKnownPrefillSignature;
+
+    /// <summary>
     /// Whether a conversation's context is effectively full: fewer than <see cref="MinPrefillReserve"/>
     /// entries remain, so the v0.15.0+ executor would reject any next send's prefill (and a clamped
     /// send lands here by construction — its decode budget stops at the <see cref="SafetyMargin"/>,

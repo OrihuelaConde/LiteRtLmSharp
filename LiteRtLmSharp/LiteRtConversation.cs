@@ -84,24 +84,6 @@ public sealed class LiteRtConversation : IDisposable
                 "per conversation. Set one of the two.", nameof(options));
         }
 
-        // TEMPORARY GUARD — remove when upstream republishes a fixed linux prebuilt.
-        // The linux-x64 libGemmaModelConstraintProvider.so shipped with LiteRT-LM v0.13.1
-        // returns half-initialized constraints (internal FST is NULL) and the process dies
-        // with SIGSEGV on the first decode step — a managed exception beats a dead process.
-        // Windows/macOS/Android providers are fine. See google-ai-edge/LiteRT-LM#2149.
-        // Scoped to the TOOL-CALLING provider path only: the ConstraintProvider (LlGuidance) path is
-        // compiled from source and does not touch the broken prebuilt.
-        if (options is { EnableConstrainedDecoding: true }
-            && OperatingSystem.IsLinux() && !OperatingSystem.IsAndroid())
-        {
-            throw new PlatformNotSupportedException(
-                "EnableConstrainedDecoding is temporarily blocked on linux-x64: the upstream " +
-                "prebuilt constraint provider (LiteRT-LM v0.13.1) returns broken constraints and " +
-                "the native process crashes on the first decode step (google-ai-edge/LiteRT-LM#2149). " +
-                "Set EnableConstrainedDecoding = false — tools still work; arguments are just not " +
-                "grammar-constrained. This guard will be removed once upstream ships a fixed binary.");
-        }
-
         ConversationConfigHandle? config = null;
         SessionConfigHandle? sessionConfig = null;
 
@@ -701,6 +683,8 @@ public sealed class LiteRtConversation : IDisposable
             string msg = "litert_lm_conversation_send_message returned null.";
             if (MessageHasMedia(messageJson))
                 msg += " " + MultimodalSendHint;
+            if (LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(_engineOwner.MaxNumTokens))
+                msg += " " + SmallContextSendHint;
             throw new LiteRtException(msg);
         }
 
@@ -785,6 +769,19 @@ public sealed class LiteRtConversation : IDisposable
         "(null leaves that modality off), and " +
         "(3) LiteRtEngineOptions.MaxNumTokens leaves room for the media's tokens " +
         "(an image is roughly 256 tokens).";
+
+    /// <summary>
+    /// Appended to a failed send when the engine was loaded with a <c>MaxNumTokens</c> below the largest
+    /// prefill signature of the published gemma conversions (1024): the native loader accepts the smaller
+    /// limit, but prefill breaks inside the native graph once an input spans more than the smallest work
+    /// group (an internal <c>DYNAMIC_UPDATE_SLICE</c> error). The C API cannot report the signatures, so
+    /// this is guidance on failure rather than up-front validation.
+    /// </summary>
+    internal const string SmallContextSendHint =
+        "The engine was loaded with LiteRtEngineOptions.MaxNumTokens below 1024. The native executor " +
+        "accepts that, but a send whose prefill spans more than its smallest work group then fails inside " +
+        "the native graph (the published gemma conversions' largest prefill signature is 1024). If this " +
+        "message was longer than a short sentence, reload the engine with MaxNumTokens >= 1024.";
 
     /// <summary>
     /// Whether a user-message JSON carries an image/audio content part. Probed by the public
@@ -1004,7 +1001,7 @@ public sealed class LiteRtConversation : IDisposable
 
         var channel = Channel.CreateUnbounded<LiteRtStreamChunk>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
-        var state = new StreamState(channel, _toolCallStreamChannel);
+        var state = new StreamState(channel, _toolCallStreamChannel, _engineOwner.MaxNumTokens);
         // The optional args (visual token budget) must stay alive for the whole stream: the native
         // decode thread reads them during prefill. Freed in the finally, after the channel completes.
         // Built before the GCHandle so that if native allocation fails we don't leak a pinned handle.
@@ -1096,6 +1093,8 @@ public sealed class LiteRtConversation : IDisposable
                 // failure ("Vision/Audio executor should not be null"), append the same setup guidance.
                 if (msg.Contains("executor should not be null", StringComparison.OrdinalIgnoreCase))
                     msg += " " + MultimodalSendHint;
+                if (LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(state.MaxNumTokens))
+                    msg += " " + SmallContextSendHint;
                 state.Channel.Writer.TryComplete(new LiteRtException(msg));
             }
             else if (text != nint.Zero)
@@ -1167,10 +1166,12 @@ public sealed class LiteRtConversation : IDisposable
         return chunks;
     }
 
-    private sealed class StreamState(Channel<LiteRtStreamChunk> channel, string? toolCallChannel)
+    private sealed class StreamState(Channel<LiteRtStreamChunk> channel, string? toolCallChannel, int maxNumTokens)
     {
         public readonly Channel<LiteRtStreamChunk> Channel = channel;
         public readonly string? ToolCallChannel = toolCallChannel;
+        /// <summary>The engine's <c>MaxNumTokens</c> (0 = unknown), for the small-context hint on a failed stream.</summary>
+        public readonly int MaxNumTokens = maxNumTokens;
     }
 
     /// <summary>Disposes the conversation, freeing its native resources (and its config handles). Dispose

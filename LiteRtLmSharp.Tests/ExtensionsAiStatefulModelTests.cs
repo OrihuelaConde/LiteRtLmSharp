@@ -97,8 +97,6 @@ public sealed class ExtensionsAiStatefulModelTests
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
-        Skip.If(OperatingSystem.IsLinux(),
-            "EnableConstrainedDecoding (recommended with tools) is blocked on linux-x64 — see docs.");
         Skip.If(Environment.GetEnvironmentVariable("LITERTLM_TEST_TOOLS") != "1",
             "Set LITERTLM_TEST_TOOLS=1 (with a version-matched native binary) to run tool tests.");
 
@@ -235,8 +233,6 @@ public sealed class ExtensionsAiStatefulModelTests
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
-        Skip.If(OperatingSystem.IsLinux(),
-            "EnableConstrainedDecoding (recommended with tools) is blocked on linux-x64 — see docs.");
         Skip.If(Environment.GetEnvironmentVariable("LITERTLM_TEST_TOOLS") != "1",
             "Set LITERTLM_TEST_TOOLS=1 (with a version-matched native binary) to run tool tests.");
 
@@ -487,8 +483,6 @@ public sealed class ExtensionsAiStatefulModelTests
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
-        Skip.If(OperatingSystem.IsLinux(),
-            "EnableConstrainedDecoding (recommended with tools) is blocked on linux-x64 — see docs.");
         Skip.If(Environment.GetEnvironmentVariable("LITERTLM_TEST_TOOLS") != "1",
             "Set LITERTLM_TEST_TOOLS=1 (with a version-matched native binary) to run tool tests.");
 
