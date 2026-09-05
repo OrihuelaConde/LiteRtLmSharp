@@ -10,6 +10,34 @@ are published together.
 
 ### Changed
 
+- **Native binaries are now Google's official LiteRT-LM v0.16.0 C API prebuilts** (the pin moves from
+  the self-built v0.15.0 set to upstream's `litert_lm_c_api-0.1.0.zip` and `CLiteRTLM.xcframework.zip`,
+  repackaged by `native-release.yml`, which verifies every upstream asset against GitHub's sha256
+  digests and inspects each library before publishing). Each runtime package now ships one
+  monolithic library with the constraint provider, the GPU accelerators and the GPU samplers
+  embedded. What changes for consumers: **linux-x64 needs the system Vulkan loader** (`libvulkan1`
+  or your distribution's equivalent — the library does not load without it, and the resolver's
+  load-failure message says so); **win-x64 no longer needs the VC++ Redistributable** (static CRT)
+  and keeps the DirectX Shader Compiler pair (`dxcompiler.dll`, `dxil.dll`) that the GPU backend
+  requires; the **Android package is a single `libLiteRtLm.so`** whose embedded OpenCL sampler keeps
+  sampling on the GPU (the self-built v0.15.0 set, never published, failed on GPU on a real device
+  because upstream's separately shipped sampler lagged behind its own engine, LiteRT-LM#3135); the
+  **iOS package carries the official `CLiteRTLM.xcframework`** unchanged (device + simulator slices,
+  CPU backend) and the resolver loads `Frameworks/CLiteRTLM.framework/CLiteRTLM`. The C API grew
+  140 → 144 functions with no removals or signature changes, so every bound function keeps its ABI.
+- **`EnableConstrainedDecoding` works on linux-x64.** The temporary `PlatformNotSupportedException`
+  guard is gone: the official build embeds the constraint provider, and tool calling with constrained
+  decoding passes the same end-to-end test on every OS (LiteRT-LM#2149 no longer applies).
+- **Text LoRA is applied.** With a LoRA-enabled bundle and a matching adapter,
+  `LiteRtConversationOptions.LoraPath` changes generation (the v0.14.0 and v0.15.0 runtimes rejected
+  every text adapter with "Lora is not supported"); the test that pinned that stub now asserts the
+  adapter takes effect. The published gemma-4 bundles carry no LoRA slots (LiteRT-LM#3173), so an
+  adapter still fails fast on them.
+- A send that fails on an engine loaded with `MaxNumTokens` below 1024 now names the likely cause:
+  the native executor accepts a smaller limit, but prefill breaks once an input spans more than the
+  smallest work group (1024 is the largest prefill signature of the published gemma conversions).
+  The limit is not queryable through the C API, so this is guidance on failure rather than up-front
+  validation; the `MaxNumTokens` documentation carries the same floor.
 - **Native binaries repinned to LiteRT-LM v0.15.0** (from v0.14.0). The C API grew 109 → 140
   functions with no removals; the only signature changes formalize two `int` parameters into enums
   with identical values (`set_activation_data_type`, `set_min_log_level`), so every previously bound
@@ -20,9 +48,6 @@ are published together.
   callback change, this release's managed assembly requires the v0.15.0 natives (the
   `LiteRtLmSharp.runtime.*` packages of the same version) and is not compatible with v0.14.0-native
   runtime packages.
-- Native build: dropped the `litert_link_capi_so` define (removed upstream at v0.15.0);
-  `litert_runtime_link_mode=dynamic` + `resolve_symbols_in_exec=false` remain and mirror upstream's
-  own dynamic-linking CI configuration.
 - **KV overflow guard recalibrated to v0.15.0's prefill planning.** The native executor now plans
   prefill in fixed work groups taken from the model's prefill signatures and rejects any send with
   fewer free KV entries than the smallest signature (~128 in the current gemma conversions) — a
@@ -48,6 +73,13 @@ are published together.
 
 ### Added
 
+- `LiteRtEngineOptions.EnableYnnpack` — opts the CPU backend into the experimental YNNPACK delegate
+  (native v0.16.0+). Upstream ships its kernels in the linux-arm64 builds; the other official
+  prebuilts accept the flag and run unchanged.
+- MEAI and Semantic Kernel surface for the two v0.15.0 logit processors that had no typed option:
+  `LiteRtChatOptions.NoRepeatNgramSize` / `.SuppressTokens` (bag keys `no_repeat_ngram_size` /
+  `suppress_tokens`, so a plain `ChatOptions` works too) and `LiteRtPromptExecutionSettings.NoRepeatNgramSize`
+  / `.SuppressTokens`, mapped onto `LiteRtSendOptions.NoRepeatNgram` / `.SuppressTokens` on every send.
 - **Per-send decoding controls** on `LiteRtSendOptions` (all require native v0.15.0+, and apply to
   one send's generated output):
   - `RepetitionPenalties` — multiplicative (HuggingFace-style) repetition penalty plus subtractive
