@@ -52,8 +52,9 @@ public sealed class LiteRtEngine : IDisposable
 
     /// <summary>
     /// Loads a model and creates the engine. Only ONE engine may be alive at a time
-    /// (a second concurrent engine hangs in the native layer). To switch model or backend,
-    /// dispose every conversation and the engine first, then call <see cref="Load"/> again.
+    /// (a second concurrent engine hangs in the native layer); a <see cref="LiteRtEmbeddingEngine"/>
+    /// does not count. To switch model or backend, dispose every conversation and the engine first,
+    /// then call <see cref="Load"/> again.
     /// </summary>
     /// <exception cref="ArgumentException">The model file does not exist.</exception>
     /// <exception cref="InvalidOperationException">Another engine is still alive in this process.</exception>
