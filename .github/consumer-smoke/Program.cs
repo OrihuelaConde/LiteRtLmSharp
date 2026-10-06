@@ -1,5 +1,5 @@
 // External consumer smoke (see the csproj header for how this is wired into pack-nuget.yml).
-// Usage: ConsumerSmoke <model-path> [cpu|gpu] [raw|meai|sk]
+// Usage: ConsumerSmoke <model-path> [cpu|gpu] [raw|meai|sk|embed]   (embed takes an embedding model)
 // Native logging is left at its default so the GPU load-path signal is visible on stderr: a
 // healthy GPU engine prints the WebGPU/Dawn init lines; a package whose accelerator DLLs cannot
 // be found prints none and dies in engine_create. Generation (not just engine creation) is the
@@ -12,6 +12,29 @@ using Microsoft.SemanticKernel;
 
 string backend = args.Length > 1 ? args[1] : "cpu";
 string mode = args.Length > 2 ? args[2] : "raw";
+
+if (mode == "embed")
+{
+    // The embedding engine and the IEmbeddingGenerator from the packed feed: the embedding entry points
+    // resolve in the packaged native library, and a query lands close to the document it asks about.
+    using var embedder = LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions
+    {
+        ModelPath = args[0],
+        Backend = LiteRtBackend.Parse(backend),
+    });
+    using IEmbeddingGenerator<string, Embedding<float>> generator = new LiteRtEmbeddingGenerator(embedder);
+    var vectors = await generator.GenerateAsync(
+        ["title: none | text: The bakery opens at 7 a.m. on weekdays.", "task: search result | query: When does the bakery open?"]);
+    ReadOnlySpan<float> doc = vectors[0].Vector.Span, query = vectors[1].Vector.Span;
+    float cosine = 0;
+    for (int i = 0; i < doc.Length; i++)
+        cosine += doc[i] * query[i];
+    Console.WriteLine($"ConsumerSmoke[{backend}/embed] {vectors.Count} vectors of {doc.Length}, cosine {cosine:F3}");
+    if (doc.Length == 0 || doc.Length != query.Length || cosine < 0.5f)
+        throw new InvalidOperationException("The embeddings are empty or unrelated.");
+    return;
+}
+
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 {
     ModelPath = args[0],

@@ -47,6 +47,11 @@ env:
   MODEL_URL: https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm
   # LFS oid of the file on Hugging Face; also guards against a cached/partial download.
   MODEL_SHA256: 181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c
+  # EmbeddingGemma 2 Text 270M (litert-community, Apache 2.0, ungated, 165 MB) for the embedding engine,
+  # model-info and IEmbeddingGenerator tests (LITERTLM_TEST_EMBEDDING_MODEL).
+  EMBEDDING_MODEL_FILE: embeddinggemma-2-text-270m.litertlm
+  EMBEDDING_MODEL_URL: https://huggingface.co/litert-community/embeddinggemma-2-text-270m-litert-lm/resolve/main/embeddinggemma-2-text-270m.litertlm
+  EMBEDDING_MODEL_SHA256: 2d079ee2f6f066b1f368e8d7c819f55214eaef1d0513b312321901f30ab286fb
 
 jobs:
   prepare:
@@ -185,6 +190,25 @@ jobs:
         shell: bash
         run: echo "$MODEL_SHA256  models/$MODEL_FILE" | sha256sum -c -
 
+      - name: Cache embedding model
+        id: embedding-model-cache
+        uses: actions/cache@v4
+        with:
+          path: models/${{ env.EMBEDDING_MODEL_FILE }}
+          key: litertlm-embedding-model-${{ env.EMBEDDING_MODEL_SHA256 }}
+          enableCrossOsArchive: true
+
+      - name: Download embedding model
+        if: steps.embedding-model-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p models
+          curl -fL --retry 3 --retry-delay 15 -o "models/$EMBEDDING_MODEL_FILE" "$EMBEDDING_MODEL_URL"
+
+      - name: Verify embedding model checksum
+        shell: bash
+        run: echo "$EMBEDDING_MODEL_SHA256  models/$EMBEDDING_MODEL_FILE" | sha256sum -c -
+
       - name: Build
         run: dotnet build LiteRtLmSharp.slnx -c Release
 
@@ -200,6 +224,7 @@ jobs:
         shell: bash
         env:
           LITERTLM_TEST_MODEL: ${{ github.workspace }}/models/${{ env.MODEL_FILE }}
+          LITERTLM_TEST_EMBEDDING_MODEL: ${{ github.workspace }}/models/${{ env.EMBEDDING_MODEL_FILE }}
           LITERTLM_TEST_TOOLS: '1'
           LITERTLM_TEST_BENCH: '1'
           # gemma-4-E2B-it is text+vision+audio: run the gated multimodal model tests. They load their
@@ -233,6 +258,7 @@ jobs:
         shell: bash
         env:
           LITERTLM_TEST_MODEL: ${{ github.workspace }}/models/${{ env.MODEL_FILE }}
+          LITERTLM_TEST_EMBEDDING_MODEL: ${{ github.workspace }}/models/${{ env.EMBEDDING_MODEL_FILE }}
           LITERTLM_TEST_TOOLS: '1'
           LITERTLM_TEST_BACKEND: gpu
           # Run the multimodal tests on GPU too. Vision runs on GPU; the audio test probes audio on the

@@ -37,6 +37,10 @@ env:
   # LFS oid of the file on Hugging Face; also guards against a cached/partial download. Same
   # values as model-tests.yml so both workflows share one model cache entry.
   MODEL_SHA256: 181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c
+  # The embedding model for the embeddings smoke leg; same values and cache key as model-tests.yml.
+  EMBEDDING_MODEL_FILE: embeddinggemma-2-text-270m.litertlm
+  EMBEDDING_MODEL_URL: https://huggingface.co/litert-community/embeddinggemma-2-text-270m-litert-lm/resolve/main/embeddinggemma-2-text-270m.litertlm
+  EMBEDDING_MODEL_SHA256: 2d079ee2f6f066b1f368e8d7c819f55214eaef1d0513b312321901f30ab286fb
 
 jobs:
   pack:
@@ -211,6 +215,25 @@ jobs:
         shell: bash
         run: echo "$MODEL_SHA256  models/$MODEL_FILE" | sha256sum -c -
 
+      - name: Cache embedding model
+        id: embedding-model-cache
+        uses: actions/cache@v4
+        with:
+          path: models/${{ env.EMBEDDING_MODEL_FILE }}
+          key: litertlm-embedding-model-${{ env.EMBEDDING_MODEL_SHA256 }}
+          enableCrossOsArchive: true
+
+      - name: Download embedding model
+        if: steps.embedding-model-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p models
+          curl -fL --retry 3 --retry-delay 15 -o "models/$EMBEDDING_MODEL_FILE" "$EMBEDDING_MODEL_URL"
+
+      - name: Verify embedding model checksum
+        shell: bash
+        run: echo "$EMBEDDING_MODEL_SHA256  models/$EMBEDDING_MODEL_FILE" | sha256sum -c -
+
       - name: Build smoke app against the packed feed
         run: dotnet build .github/consumer-smoke -c Release -p:LiteRtLmSharpVersion=${{ env.PKG_VERSION }}
 
@@ -223,6 +246,12 @@ jobs:
             & $exe $model cpu $mode
             if ($LASTEXITCODE -ne 0) { throw "CPU/$mode leg failed (exit $LASTEXITCODE)" }
           }
+
+      - name: 'CPU leg: embeddings (engine + IEmbeddingGenerator)'
+        shell: pwsh
+        run: |
+          & '.github/consumer-smoke/bin/Release/net10.0/ConsumerSmoke.exe' "models/$env:EMBEDDING_MODEL_FILE" cpu embed
+          if ($LASTEXITCODE -ne 0) { throw "CPU/embed leg failed (exit $LASTEXITCODE)" }
 
       - name: 'GPU leg: accelerator load path'
         shell: pwsh
