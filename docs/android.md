@@ -1,6 +1,7 @@
 # Android
 
-Goal: run LiteRtLmSharp on `net10.0-android` / MAUI (RID `android-arm64`).
+Goal: run LiteRtLmSharp on `net10.0-android` / MAUI (RID `android-arm64` for devices, `android-x64`
+for the x86_64 emulator).
 
 ## Key finding that simplifies everything
 A **`net10.0` library is consumable from `net10.0-android` apps** → **the managed package does
@@ -11,13 +12,15 @@ P/Invoke) works on .NET Android (CoreCLR).
 ## Pieces (status)
 
 - **Native binary** (`native-release.yml`): ✅ Google's official `liblitert-lm.so` for
-  `android_arm64`, shipped as a single `libLiteRtLm.so` with the OpenCL/WebGPU accelerators, the
-  GPU samplers and the constraint provider embedded (16 KB page alignment — the Google Play
-  requirement — is asserted by the workflow). Until v0.15.0 it was built here with Bazel and shipped
+  `android_arm64` and `android_x86_64`, each shipped as a single `libLiteRtLm.so` with the
+  OpenCL/WebGPU accelerators, the GPU samplers and the constraint provider embedded (16 KB page
+  alignment, the Google Play requirement, is asserted by the workflow). The v0.18.0 libraries require
+  Android 7.0 (API 24) or later. Until v0.15.0 it was built here with Bazel and shipped
   next to upstream's companion `.so` files; the sections below that mention companions or the
   sampler patch describe that era and are kept as the diagnostic record.
-- **Runtime package** `LiteRtLmSharp.runtime.android-arm64`: ✅. .NET Android packs
-  `runtimes/android-arm64/native/*.so` into the APK (under `lib/arm64-v8a/`).
+- **Runtime packages** `LiteRtLmSharp.runtime.android-arm64` and `LiteRtLmSharp.runtime.android-x64`:
+  ✅. .NET Android packs `runtimes/<rid>/native/*.so` into the APK (under `lib/arm64-v8a/` and
+  `lib/x86_64/`).
 - **pack-nuget.yml**: ✅ includes android.
 - **Managed**: no changes (net10.0).
 
@@ -45,8 +48,9 @@ storage on first run and pass its path to `LiteRtEngine.Load`.
 2. ✅ `pack-nuget.yml` produces `LiteRtLmSharp.runtime.android-arm64`.
 3. ✅ **Validated on a physical device** (Moto G100, Android 12): model load, chat, streaming —
    **CPU and GPU** (see the GPU diagnosis below). Sample app in `samples/Maui`.
-4. `android-x64` (emulators) deferred — testing happens on physical devices (the upstream
-   `android_x86_64` prebuilt exists if ever needed).
+4. `android-x64` (x86_64 emulator): the official library ships as `LiteRtLmSharp.runtime.android-x64`,
+   and the MAUI sample's Release APK carries both ABIs (`lib/arm64-v8a/` and `lib/x86_64/`, 58.5 MB in
+   total). Emulators expose no OpenCL GPU, so the emulator runs the CPU backend.
 5. ✅ Re-tested on device with the patched samplers: **the patchelf works** (device==local
    checksums; zero `sampler_factory` warnings → GPU sampling active; correct output). No
    perceptible speed gain yet: the big jump (~3×, #2211) additionally requires speculative

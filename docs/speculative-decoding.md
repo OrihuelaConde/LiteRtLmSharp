@@ -5,14 +5,17 @@ drafter** — shipped *inside* the `.litertlm` file — propose several tokens a
 model then verifies in a single forward pass. When the drafter is accurate, many tokens are accepted
 per main-model step, so decode throughput goes up without changing the output distribution.
 
-LiteRtLmSharp exposes it as a single engine-level flag, plus the native **benchmark API** to measure
-the effect.
+LiteRtLmSharp exposes it as an engine-level flag with a per-conversation override, plus the native
+**benchmark API** to measure the effect.
 
 ## Requirements
 
 - A model that ships an MTP drafter. The **Gemma 4** builds (`gemma-4-E2B-it`, `E4B`, `12B`) do;
   models without a drafter make the flag a no-op (no speedup, no error).
-- It is fixed at engine creation — choose it in `LiteRtEngineOptions`, not per conversation.
+- The engine flag is fixed at engine creation. Since native v0.18.0 a conversation can override it:
+  `LiteRtConversationOptions.EnableSpeculativeDecoding = true` on an engine loaded without it makes the
+  runtime load the drafter lazily on that conversation's first send, and `false` turns it off for one
+  conversation of a speculative engine.
 - ~~On the WebGPU GPU backend (desktop), disable the disk cache~~ — **fixed in LiteRT-LM v0.14.0**.
   On v0.13.1 the drafter's shared weight-cache file failed to open ("Access denied") on Windows and
   engine creation failed unless `Cache = LiteRtCache.Disabled` (upstream
@@ -40,6 +43,9 @@ chat.Send("Hello!");
 
 if (chat.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b)
     Console.WriteLine($"{b.LastDecodeTokensPerSecond:F1} tok/s decode · TTFT {b.TimeToFirstTokenSeconds:F2}s");
+
+// Native v0.18.0+: opt one conversation out of the engine setting (or in, on an engine loaded without it).
+using var plain = engine.CreateConversation(new LiteRtConversationOptions { EnableSpeculativeDecoding = false });
 ```
 
 `GetBenchmarkInfo()` works after both blocking (`Send`) and streaming
@@ -76,11 +82,11 @@ dotnet test LiteRtLmSharp.Tests/LiteRtLmSharp.Tests.csproj -c Release `
   --filter "FullyQualifiedName~SpeculativeDecodingBenchmarkTests" --logger "console;verbosity=detailed"
 ```
 
-In CI it runs on the CPU leg of `model-tests.yml` on each push via ci.yml (linux-x64 / win-x64 /
-osx-arm64); the printed row lands in that job's console log.
+In CI it runs on the CPU leg of `model-tests.yml` on each push via ci.yml (linux-x64 / linux-arm64 /
+win-x64 / osx-arm64); the printed row lands in that job's console log and step summary.
 
-> Sampler note: the v0.13.1 native build only implements the **TopP** sampler (Greedy and TopK
-> return *"not implemented yet"*). Speculative decoding preserves the output *distribution*, not the
+> Sampler note: the CPU sampler factory only implements the **TopP** sampler (Greedy and TopK
+> return *"not implemented yet"*; verified on v0.14.0 and v0.15.0). Speculative decoding preserves the output *distribution*, not the
 > exact token sequence under sampling, so the A/B checks coherence + throughput rather than asserting
 > byte-identical output.
 
@@ -91,6 +97,8 @@ native benchmark API's `decode_tokens_per_sec` for the turn.
 
 | Platform / backend | spec OFF | spec ON | speedup | Notes |
 |---|---:|---:|---:|---|
+| win-x64 · CPU (dev box, LiteRT-LM v0.18.0, 2026-10-06) | 33.0 tok/s | 25.8 tok/s | **0.78×** | official prebuilt; same ratio as on v0.13.1 |
+| win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, v0.18.0, 2026-10-06) | 84.1 tok/s | 56.8 tok/s | **0.68×** | official prebuilt: default disk cache, GPU sampler embedded (no CPU-sampling fallback) |
 | win-x64 · CPU (dev box, 2026-06-15) | 29.9 tok/s | 23.4 tok/s | **0.78×** | works, but slower — see below |
 | win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, 2026-06-15) | 41.8 tok/s | 35.5 tok/s | **0.85×** | A/B both with cache off; plain GPU *with* the disk cache ≈85 tok/s |
 | linux-x64 · CPU (CI ubuntu-latest, 2026-06-16) | 16.7 tok/s | 12.2 tok/s | **0.73×** | from `model-tests.yml` |
@@ -105,7 +113,11 @@ native benchmark API's `decode_tokens_per_sec` for the turn.
   speculative decoding helps memory-bandwidth-bound (accelerator) decode, not compute-bound CPU
   decode. Both outputs were coherent, full paragraphs, and the `*.mtp_drafter.xnnpack_cache_*` file
   produced alongside the model confirms the drafter was actually engaged.
-- **Desktop WebGPU GPU works (with the cache off), but doesn't help here.** With
+- **Desktop WebGPU GPU on the official prebuilts (v0.18.0): works, still slower.** With the default disk
+  cache and the GPU sampler embedded in the library (so neither factor below applies any more), the
+  drafter costs a third of the decode throughput on an RTX 3080: 84.1 → 56.8 tok/s (0.68×). The
+  drafter's overhead, not the sampling path, dominates at this acceptance rate.
+- **Desktop WebGPU GPU on v0.13.1 worked (with the cache off), but didn't help.** With
   `Cache = LiteRtCache.Disabled` the engine loads and the drafter speculates on the GPU (the CLI reports
   ~0.32 draft-acceptance on this prompt). In a fair A/B with the cache off on both legs, spec is a
   slight regression (35.5 vs 41.8 tok/s, 0.85×). Two compounding factors: our package's WebGPU
@@ -168,7 +180,8 @@ reloads. The whole section above is kept as the v0.13.1 historical record.
   compiled binary) — it needs an upstream re-export. Per flutter_gemma #287 the steady-state cost is
   small (~3%), but it weighs more on the speculative draft/verify loop.
 
-In short: ship the flag; on CPU it works (default cache) but can be slower; on v0.14.0+ the desktop
-WebGPU GPU works with the default cache too (on v0.13.1 it needed `Cache = LiteRtCache.Disabled`);
-reach for it on a modern/fast accelerator with an MTP-capable model (older mobile GPUs like the
-Adreno 650 show no win at ~32% acceptance).
+In short: the flag works on every backend we tested with the default cache (v0.13.1 needed
+`Cache = LiteRtCache.Disabled` on desktop WebGPU), but on desktop CPU and GPU it slows decoding down for
+gemma-4-E2B (0.78× and 0.68× on v0.18.0), and an older mobile GPU (Adreno 650) shows no win at ~32%
+acceptance. Measure it on your target accelerator and workload before turning it on, and use the
+per-conversation override to keep it where it pays off.

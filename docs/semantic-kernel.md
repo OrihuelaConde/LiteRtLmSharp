@@ -101,7 +101,7 @@ using Microsoft.SemanticKernel;
 var template = new LiteRtConversationOptions
 {
     SystemMessage = "You are a terse, on-device assistant.",
-    VisualTokenBudget = 256,
+    VisualTokenBudget = 70,          // ~70 tokens per image instead of ~260
 };
 
 var builder = Kernel.CreateBuilder();

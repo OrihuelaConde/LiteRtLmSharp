@@ -31,13 +31,16 @@ NuGet packages (LLamaSharp-style). Status: **stable (1.x)**.
 |---|:---:|:---:|:---:|:---:|---|
 | win-x64 | ✅ | ✅ | ✅ | ✅ | real hardware |
 | linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware |
+| linux-arm64 | ✅ | ⏳ | ✅ | — | CI |
 | android-arm64 | ✅ | ✅ | ✅ | ✅ | real device |
+| android-x64 (emulator) | ✅ | ⏳ | — | — | build and packaging |
 | osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI |
 | ios-arm64 | ✅ | ⏳ | — | — | pending |
 
 <sub>**CPU / GPU** = inference validated on that backend. macOS GPU runs in CI on the **WebGPU**
-(Dawn→Metal) delegate; the native Metal delegate ships as a real-hardware fallback. The iOS
-runtime package ships once on-device validation lands.</sub>
+(Dawn→Metal) delegate; the native Metal delegate ships as a real-hardware fallback. linux-arm64 and
+android-x64 publish with the next release. The iOS runtime package ships once on-device validation
+lands.</sub>
 
 ## Quick start
 
@@ -145,9 +148,9 @@ conversations** (MEAI `ConversationId`) are supported — see the
   too small can make blocking generation return nothing.
 - **Conversations are not thread-safe** — serialize sends per engine (the Microsoft.Extensions.AI
   client does this for you).
-- **linux-x64 needs the system Vulkan loader.** The official native library depends on `libvulkan.so.1`
-  and does not load without it: `sudo apt install libvulkan1` (Debian/Ubuntu) or your distribution's
-  equivalent. No GPU is required for the CPU backend; the loader alone is enough.
+- **Linux needs no extra system package for the CPU backend.** The official library has no hard
+  dependency on the Vulkan loader. The GPU backend runs on Vulkan: install your GPU's Vulkan driver and
+  the Vulkan loader (`libvulkan1` on Debian/Ubuntu).
 - **win-x64 needs no Visual C++ Redistributable** since 1.2.0 (the official library links the CRT
   statically). The GPU backend's shader compiler (`dxcompiler.dll`, `dxil.dll`) ships in the runtime package.
 - **Android GPU needs manifest declarations.** Android 12+ only grants access to vendor native

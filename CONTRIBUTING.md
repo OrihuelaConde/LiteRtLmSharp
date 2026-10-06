@@ -49,7 +49,14 @@ skipped:
 
 - `LITERTLM_TEST_MODEL` — path to a `.litertlm` file (e.g. from
   [huggingface.co/litert-community](https://huggingface.co/litert-community)).
+- `LITERTLM_TEST_BACKEND=gpu` — run them on the GPU backend (default `cpu`).
 - `LITERTLM_TEST_TOOLS=1` — also run the function-calling tests.
+- `LITERTLM_TEST_VISION=1` — also run the image and audio tests (needs a multimodal model such as
+  gemma-4-E2B-it).
+- `LITERTLM_TEST_BENCH=1` — also run the speculative-decoding A/B benchmark.
+
+Run model-backed tests with `--blame-hang-timeout` (for example `--blame-hang-timeout 10m`): a native
+hang otherwise outlives the test run and keeps the model loaded.
 
 ## Repository layout
 
@@ -58,7 +65,6 @@ skipped:
 | `LiteRtLmSharp/` | The managed library (source-generated P/Invoke over the LiteRT-LM C API) |
 | `LiteRtLmSharp.Tests/` | Tests (interop + opt-in model tests) |
 | `packaging/` | Per-RID `LiteRtLmSharp.runtime.<rid>` package projects |
-| `native/` | Patch script that adds the shared-library target upstream lacks |
 | `runtimes/` | Native binaries restored locally by `restore-natives.ps1` (never committed) |
 | `samples/` | Console and MAUI sample apps (separate solution) |
 | `scripts/` | Dev scripts |

@@ -111,9 +111,22 @@ await foreach (var chunk in chat.SendStreamingAsync(
     Console.Write(chunk.Text);
 ```
 
-Attachments follow the text in content-part order; pass several to interleave them. Cap how much of the
-context window an image consumes with `LiteRtConversationOptions.VisualTokenBudget`. Vision runs on CPU
-or GPU; some models constrain their audio backend (Gemma 4's audio sub-model requires CPU, so
+Attachments follow the text in content-part order; pass several to interleave them.
+
+Each image expands to about 256 tokens by default on the Gemma 4 E-series. To spend less of the context
+window, set a per-image budget: the runtime downscales the image to the smallest vision signature that
+fits (the Gemma 4 bundles carry 70, 140 and 280).
+
+```csharp
+using var chat = engine.CreateConversation(new LiteRtConversationOptions
+{
+    VisualTokenBudget = 70,   // measured on gemma-4-E2B-it: 68 tokens per image instead of 260
+});
+```
+
+`LiteRtSendOptions.VisualTokenBudget` overrides it for one send. `LiteRtEngineOptions.MaxVisionTokensPerImage`
+caps the budget engine-wide; with a cap below the default size, every image send needs a budget at or
+below the cap. Vision runs on CPU or GPU; some models constrain their audio backend (Gemma 4's audio sub-model requires CPU, so
 `AudioBackend = LiteRtBackend.Gpu` fails engine creation for it on any platform) — keep audio on CPU when the main
 backend is GPU. A plain `CreateConversation()` can send attachments: the binding configures the
 conversation for the engine's encoders automatically, so you don't have to set a sampler or output cap.

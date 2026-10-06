@@ -141,23 +141,22 @@ public sealed record LiteRtEngineOptions
     public LiteRtCache Cache { get; init; }
 
     /// <summary>
-    /// Enable speculative decoding — the model drafts several tokens ahead with a small
-    /// Multi-Token-Prediction (MTP) drafter and the main model verifies them in one step,
-    /// giving a large decode-throughput win (≈3× on supported models, per LiteRT-LM#2211).
+    /// Enable speculative decoding: the model drafts several tokens ahead with a small
+    /// Multi-Token-Prediction (MTP) drafter and the main model verifies them in one step. It pays off
+    /// only where verification is cheap relative to the drafter (memory-bound accelerators, high
+    /// acceptance); measure it before turning it on.
     /// </summary>
     /// <remarks>
     /// Requires a <c>.litertlm</c> that ships an MTP drafter (e.g. the Gemma 4 E2B/E4B/12B
     /// builds). On a model without one the flag is a no-op (no speedup, no error). The setting
-    /// is fixed at engine creation. Pair with <see cref="EnableBenchmark"/> to measure the gain
-    /// (see <see cref="LiteRtConversation.GetBenchmarkInfo"/>).
+    /// is fixed at engine creation; <see cref="LiteRtConversationOptions.EnableSpeculativeDecoding"/>
+    /// overrides it per conversation (native v0.18.0+). Pair with <see cref="EnableBenchmark"/> to measure
+    /// the effect (see <see cref="LiteRtConversation.GetBenchmarkInfo"/>).
     /// <para>
-    /// Backend caveats (measured against LiteRT-LM v0.13.1 — see
-    /// <c>docs/speculative-decoding.md</c>): the win comes from memory-bound accelerator decode.
-    /// On desktop <b>CPU</b> it can REGRESS throughput (the drafter + verification overhead is not
-    /// amortized). On the desktop <b>WebGPU</b> GPU backend it works, but only with the disk cache
-    /// disabled — set <see cref="Cache"/> = <see cref="LiteRtCache.Disabled"/>, otherwise the drafter's
-    /// shared weight-cache file fails to open ("Access denied") and engine creation fails (an
-    /// upstream issue that reproduces in Google's own CLI).
+    /// Measured with gemma-4-E2B on LiteRT-LM v0.18.0 (see <c>docs/speculative-decoding.md</c>): it
+    /// slows decoding down on desktop <b>CPU</b> (0.78×) and on the desktop <b>WebGPU</b> GPU backend
+    /// (0.68× on an RTX 3080), with the default disk cache in both cases; an Adreno 650 phone GPU showed
+    /// no change.
     /// </para>
     /// </remarks>
     public bool EnableSpeculativeDecoding { get; init; }
