@@ -20,8 +20,8 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// between calls and send only the new messages each turn.
 /// </para>
 /// <para>
-/// <b>Serialized.</b> Calls are serialized with an internal gate: LiteRtLmSharp allows only one live engine
-/// per process and conversations are not thread-safe.
+/// <b>Serialized.</b> Calls are serialized with an internal gate: LiteRtLmSharp allows only one live chat
+/// engine per process and conversations are not thread-safe.
 /// </para>
 /// <para>
 /// <b>Reasoning.</b> Enable the model's reasoning ("thinking") mode with the <c>enable_thinking</c> key in
