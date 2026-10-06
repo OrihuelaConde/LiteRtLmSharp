@@ -1,7 +1,7 @@
 name: Pack NuGet packages
 
 # Builds the NuGet packages: the managed LiteRtLmSharp (pure) + per-RID native runtime packages
-# (LiteRtLmSharp.runtime.win-x64 / .linux-x64 / ...). Native binaries are pulled from the GitHub Release
+# (LiteRtLmSharp.runtime.win-x64 / .linux-x64 / .linux-arm64 / .android-arm64 / .android-x64 / .osx-arm64). Native binaries are pulled from the GitHub Release
 # published by native-release.yml (tag native-<native_ref>, Google's official prebuilts), so run that first.
 #
 # Structure: pack -> consumer-smoke -> publish. The smoke consumes the just-packed nupkgs from a
@@ -91,7 +91,9 @@ jobs:
           declare -A map=(
             [litertlm-windows_x86_64.tar.gz]=win-x64
             [litertlm-linux_x86_64.tar.gz]=linux-x64
+            [litertlm-linux_arm64.tar.gz]=linux-arm64
             [litertlm-android_arm64.tar.gz]=android-arm64
+            [litertlm-android_x86_64.tar.gz]=android-x64
             [litertlm-macos_arm64.tar.gz]=osx-arm64
           )
           for asset in "${!map[@]}"; do
@@ -138,7 +140,7 @@ jobs:
           # Semantic Kernel connector: pure managed, no natives. Depends on the LiteRtLmSharp +
           # LiteRtLmSharp.Extensions.AI packages (same version) + Microsoft.SemanticKernel.Abstractions.
           dotnet pack LiteRtLmSharp.SemanticKernel/LiteRtLmSharp.SemanticKernel.csproj $common
-          for rid in win-x64 linux-x64 android-arm64 osx-arm64; do
+          for rid in win-x64 linux-x64 linux-arm64 android-arm64 android-x64 osx-arm64; do
             if [ -n "$(ls runtimes/$rid/native 2>/dev/null)" ]; then
               dotnet pack "packaging/LiteRtLmSharp.runtime.$rid/LiteRtLmSharp.runtime.$rid.csproj" $common
             else

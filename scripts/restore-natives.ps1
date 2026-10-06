@@ -8,13 +8,13 @@ Run once after cloning, before building the samples/tests. Downloads over plain 
 no GitHub CLI or authentication needed.
 
 Usage:
-  pwsh scripts/restore-natives.ps1                 # current desktop OS only
+  pwsh scripts/restore-natives.ps1                 # current desktop OS and architecture only
   pwsh scripts/restore-natives.ps1 -Rid android-arm64
   pwsh scripts/restore-natives.ps1 -All
 #>
 param(
-    [string]$Version = 'v0.16.0',
-    [ValidateSet('win-x64', 'linux-x64', 'android-arm64', 'osx-arm64', 'ios-arm64')]
+    [string]$Version = 'v0.18.0',
+    [ValidateSet('win-x64', 'linux-x64', 'linux-arm64', 'android-arm64', 'android-x64', 'osx-arm64', 'ios-arm64')]
     [string[]]$Rid,
     [switch]$All
 )
@@ -25,14 +25,19 @@ $repo = 'OrihuelaConde/LiteRtLmSharp'
 $assets = @{
     'win-x64'       = 'litertlm-windows_x86_64.tar.gz'
     'linux-x64'     = 'litertlm-linux_x86_64.tar.gz'
+    'linux-arm64'   = 'litertlm-linux_arm64.tar.gz'
     'android-arm64' = 'litertlm-android_arm64.tar.gz'
+    'android-x64'   = 'litertlm-android_x86_64.tar.gz'
     'osx-arm64'     = 'litertlm-macos_arm64.tar.gz'
     'ios-arm64'     = 'litertlm-ios_arm64.tar.gz'
 }
 
 if ($All) { $Rid = @($assets.Keys) }
 elseif (-not $Rid) {
-    $Rid = @(if ($IsWindows) { 'win-x64' } elseif ($IsLinux) { 'linux-x64' } elseif ($IsMacOS) { 'osx-arm64' }
+    $arm64 = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64'
+    $Rid = @(if ($IsWindows) { 'win-x64' }
+             elseif ($IsLinux) { if ($arm64) { 'linux-arm64' } else { 'linux-x64' } }
+             elseif ($IsMacOS) { 'osx-arm64' }
              else { throw 'Unsupported OS; pass -Rid explicitly.' })
 }
 

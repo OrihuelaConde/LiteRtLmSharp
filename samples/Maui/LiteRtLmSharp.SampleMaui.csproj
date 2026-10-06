@@ -37,8 +37,8 @@
 		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</SupportedOSPlatformVersion>
 		<TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
 
-		<!-- We only ship arm64 native binaries (physical devices). -->
-		<RuntimeIdentifiers Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">android-arm64</RuntimeIdentifiers>
+		<!-- arm64 for physical devices, x64 for the x86_64 Android emulator (CPU backend). -->
+		<RuntimeIdentifiers Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">android-arm64;android-x64</RuntimeIdentifiers>
 		<RuntimeIdentifiers Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">ios-arm64</RuntimeIdentifiers>
 	</PropertyGroup>
 
@@ -81,6 +81,9 @@
 		-->
 		<AndroidNativeLibrary Include="..\..\runtimes\android-arm64\native\*.so"
 		                      Abi="arm64-v8a" />
+		<!-- The same official library built for x86_64, for the Android emulator. -->
+		<AndroidNativeLibrary Include="..\..\runtimes\android-x64\native\*.so"
+		                      Abi="x86_64" />
 	</ItemGroup>
 
 	<!--

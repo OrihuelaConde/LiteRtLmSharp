@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Native-only NuGet package: LiteRT-LM linux-arm64 binaries under runtimes/linux-arm64/native/.
+    No managed assembly. Pair with the managed LiteRtLmSharp package (same version).
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IncludeSymbols>false</IncludeSymbols>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+
+    <PackageId>LiteRtLmSharp.runtime.linux-arm64</PackageId>
+    <Description>Native LiteRT-LM runtime (linux-arm64) for LiteRtLmSharp. Built from LiteRT-LM $(LiteRtLmVersion). $(LiteRtLmDisclaimer)</Description>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\runtimes\linux-arm64\native\*"
+          Pack="true"
+          PackagePath="runtimes\linux-arm64\native\" />
+  </ItemGroup>
+
+  <!-- Upstream's third-party notices for the official binaries (a native-release.yml asset, laid into
+       runtimes/ by pack-nuget.yml and scripts/restore-natives.ps1). Packed at the package root. -->
+  <ItemGroup>
+    <None Include="..\..\runtimes\THIRD_PARTY_NOTICES.litert-lm.txt"
+          Pack="true"
+          PackagePath=""
+          Condition="Exists('..\..\runtimes\THIRD_PARTY_NOTICES.litert-lm.txt')" />
+  </ItemGroup>
+
+</Project>

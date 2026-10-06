@@ -1,9 +1,9 @@
 name: Model tests
 
 # Runs the model-backed interop tests with a real .litertlm model — the path the regular CI job
-# skips (no LITERTLM_TEST_MODEL). Matrix over linux-x64 / win-x64 / osx-arm64 (choose via the
-# platforms input, like native-release.yml; ci.yml calls it with all platforms, a manual run can pick
-# a single OS). Scenarios per OS:
+# skips (no LITERTLM_TEST_MODEL). Matrix over linux-x64 / linux-arm64 / win-x64 / osx-arm64 (choose via
+# the platforms input, like native-release.yml; ci.yml calls it with all platforms, a manual run can
+# pick a single OS). Scenarios per OS:
 # blocking chat, streaming, tool calling without constrained decoding, tool calling WITH
 # constrained decoding, a speculative-decoding A/B benchmark (decode tok/s, drafter off vs on), and
 # multimodal image/audio attachments (gemma-4-E2B-it is text+vision+audio; the gated tests assert the
@@ -29,20 +29,20 @@ on:
   workflow_call:
     inputs:
       platforms:
-        description: 'Platforms to test (comma-separated: linux-x64,win-x64,osx-arm64) or "all"'
+        description: 'Platforms to test (comma-separated: linux-x64,linux-arm64,win-x64,osx-arm64) or "all"'
         type: string
         required: false
         default: 'all'
   workflow_dispatch:
     inputs:
       platforms:
-        description: 'Platforms to test (comma-separated: linux-x64,win-x64,osx-arm64) or "all"'
+        description: 'Platforms to test (comma-separated: linux-x64,linux-arm64,win-x64,osx-arm64) or "all"'
         required: true
         default: 'all'
 
 env:
   # Keep in sync with Directory.Build.props <LiteRtLmVersion>.
-  NATIVE_REF: v0.16.0
+  NATIVE_REF: v0.18.0
   MODEL_FILE: gemma-4-E2B-it.litertlm
   MODEL_URL: https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm
   # LFS oid of the file on Hugging Face; also guards against a cached/partial download.
@@ -62,19 +62,21 @@ jobs:
           PLATFORMS: ${{ inputs.platforms || 'all' }}
         run: |
           linux='{"os":"ubuntu-latest","rid":"linux-x64","asset":"litertlm-linux_x86_64.tar.gz"}'
+          linuxarm='{"os":"ubuntu-24.04-arm","rid":"linux-arm64","asset":"litertlm-linux_arm64.tar.gz"}'
           win='{"os":"windows-latest","rid":"win-x64","asset":"litertlm-windows_x86_64.tar.gz"}'
           mac='{"os":"macos-15","rid":"osx-arm64","asset":"litertlm-macos_arm64.tar.gz"}'
-          [ "$PLATFORMS" = "all" ] && PLATFORMS="linux-x64,win-x64,osx-arm64"
+          [ "$PLATFORMS" = "all" ] && PLATFORMS="linux-x64,linux-arm64,win-x64,osx-arm64"
           entries=""
           IFS=',' read -ra rids <<< "$PLATFORMS"
           for rid in "${rids[@]}"; do
             rid="${rid// /}"
             case "$rid" in
-              linux-x64) entry="$linux" ;;
-              win-x64)   entry="$win" ;;
-              osx-arm64) entry="$mac" ;;
-              "")        continue ;;
-              *) echo "::error::Unknown platform '$rid' (valid: linux-x64,win-x64,osx-arm64 or all)"; exit 1 ;;
+              linux-x64)   entry="$linux" ;;
+              linux-arm64) entry="$linuxarm" ;;
+              win-x64)     entry="$win" ;;
+              osx-arm64)   entry="$mac" ;;
+              "")          continue ;;
+              *) echo "::error::Unknown platform '$rid' (valid: linux-x64,linux-arm64,win-x64,osx-arm64 or all)"; exit 1 ;;
             esac
             entries="${entries:+$entries,}$entry"
           done
@@ -112,7 +114,9 @@ jobs:
       # Sample available memory / test-process working set / disk every 5 s for the whole job
       # (covers model download + build + tests) so a recurrence of the overflow-guard crash can be correlated
       # with runner resource pressure. Summarized and uploaded by the teardown step below.
+      # Diagnostics only: tolerated on the arm64 runner image in case it lacks PowerShell.
       - name: Start resource sampler
+        continue-on-error: ${{ matrix.rid == 'linux-arm64' }}
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force diag | Out-Null
@@ -134,11 +138,12 @@ jobs:
           Set-ItemProperty $key DumpType 1
           Set-ItemProperty $key DumpCount 3
 
-      # The official linux-x64 library hard-depends on the Vulkan loader (DT_NEEDED libvulkan.so.1);
-      # without it the library does not load at all. Consumers need the same package (docs/README).
-      - name: Install Vulkan loader (linux)
-        if: matrix.rid == 'linux-x64'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libvulkan1
+      # The v0.16.0 Linux library hard-depended on the Vulkan loader (DT_NEEDED libvulkan.so.1); the
+      # v0.18.0 ones load without it, so nothing is installed here. The log records whether this runner
+      # image happens to carry a loader, which tells whether this run proved the "no libvulkan1" claim.
+      - name: Report the Vulkan loader (linux)
+        if: startsWith(matrix.rid, 'linux-')
+        run: ldconfig -p | grep -i 'libvulkan' || echo "No Vulkan loader on this runner."
 
       - name: Restore native binaries (${{ matrix.rid }})
         shell: bash
@@ -165,7 +170,7 @@ jobs:
         with:
           path: models/${{ env.MODEL_FILE }}
           key: litertlm-model-${{ env.MODEL_SHA256 }}
-          # One 2.6 GB blob shared by all three OS legs instead of 3x within the 10 GB limit.
+          # One 2.6 GB blob shared by every leg instead of one copy per OS within the 10 GB limit.
           enableCrossOsArchive: true
 
       - name: Download model
@@ -243,6 +248,7 @@ jobs:
 
       - name: Stop sampler and summarize resources
         if: always()
+        continue-on-error: ${{ matrix.rid == 'linux-arm64' }}
         shell: pwsh
         run: |
           if (Test-Path diag/sampler.pid) {
