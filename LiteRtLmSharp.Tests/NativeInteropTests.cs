@@ -188,7 +188,8 @@ public class NativeResolverMessageTests
         string msg = NativeLibraryResolver.BuildFoundButFailedMessage("C:\\app\\LiteRtLm.dll");
 
         Assert.Contains("C:\\app\\LiteRtLm.dll", msg);
-        Assert.Contains("libvulkan1", msg);   // the official linux library needs the system Vulkan loader
+        Assert.Contains("architecture mismatch", msg);
+        Assert.Contains("ldd", msg);
         // Must NOT steer the user to the runtime package — it is already installed in this scenario.
         Assert.DoesNotContain("LiteRtLmSharp.runtime.", msg);
     }
@@ -1195,11 +1196,13 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     }
 
     /// <summary>
-    /// Sending an image to an engine that was NOT loaded with a vision backend fails with a clear,
-    /// actionable managed error instead of the bare native "Vision executor should not be null". The
-    /// shared fixture engine has no vision backend (and a small context), so this is the exact misuse a
-    /// developer hits first; the message must name the likely causes (VisionBackend, MaxNumTokens).
-    /// Skipped unless LITERTLM_TEST_MODEL is set.
+    /// Sending an image to an engine that was NOT loaded with a vision backend fails with the runtime's
+    /// own reason ("Vision executor should not be null", with its status) plus the binding's actionable
+    /// guidance. The shared fixture engine has no vision backend (and a small context), so this is the
+    /// exact misuse a developer hits first; the message must name the likely causes (VisionBackend,
+    /// MaxNumTokens). A real PNG keeps the failure on the missing encoder: since v0.18.0 the runtime
+    /// decodes the image first, so invalid bytes fail earlier with their own reason. Skipped unless
+    /// LITERTLM_TEST_MODEL is set.
     /// </summary>
     [SkippableFact]
     public void Multimodal_SendWithoutVisionBackend_ThrowsHelpfulError()
@@ -1207,9 +1210,11 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
         Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
         using var conv = _fixture.Engine!.CreateConversation();
-        var ex = Assert.Throws<LiteRtException>(
-            () => conv.Send("Describe this image.", [LiteRtAttachment.Image(new byte[] { 1, 2, 3, 4 })]));
+        var ex = Assert.Throws<LiteRtException>(() => conv.Send(
+            "Describe this image.", [LiteRtAttachment.Image(Convert.FromBase64String(MultimodalModelTests.RedPngBase64))]));
 
+        Assert.NotNull(ex.StatusCode);
+        Assert.Contains("executor should not be null", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("VisionBackend", ex.Message);
         Assert.Contains("MaxNumTokens", ex.Message);
     }
@@ -1508,7 +1513,7 @@ public sealed class MultimodalModelTests(ITestOutputHelper output)
 
     // A 64x64 solid red PNG (246 bytes), generated once and embedded so the test is self-contained
     // and runs cross-platform in CI with no fixture file.
-    private const string RedPngBase64 =
+    internal const string RedPngBase64 =
         "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJ" +
         "cEhZcwAADsMAAA7DAcdvqGQAAACLSURBVHhe7dAhAQBADIDAJVn/UN9l76kA4gySebtnNgw2DWCwaQCDTQMYbBrA" +
         "YNMABpsGMNg0gMGmAQw2DWCwaQCDTQMYbBrAYNMABpsGMNg0gMGmAQw2DWCwaQCDTQMYbBrAYNMABpsGMNg0gMGm" +

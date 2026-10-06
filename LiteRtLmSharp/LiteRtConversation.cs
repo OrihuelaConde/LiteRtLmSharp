@@ -110,6 +110,7 @@ public sealed class LiteRtConversation : IDisposable
             bool needsSessionConfig =
                 options?.Sampler is not null || options?.MaxOutputTokens > 0
                 || options?.LoraPath is not null || options?.AudioLoraPath is not null
+                || options?.EnableSpeculativeDecoding is not null
                 || engineIsMultimodal;
             bool needsConfig = needsSessionConfig ||
                 (options is not null &&
@@ -121,16 +122,18 @@ public sealed class LiteRtConversation : IDisposable
 
             if (needsConfig)
             {
+                NativeError.Clear();
                 configPtr = LiteRtLmNative.litert_lm_conversation_config_create();
                 if (configPtr == nint.Zero)
-                    throw new LiteRtException("litert_lm_conversation_config_create returned null.");
+                    throw NativeError.Exception("litert_lm_conversation_config_create returned null.");
                 config = new ConversationConfigHandle(configPtr);
 
                 if (needsSessionConfig)
                 {
+                    NativeError.Clear();
                     nint sessionPtr = LiteRtLmNative.litert_lm_session_config_create();
                     if (sessionPtr == nint.Zero)
-                        throw new LiteRtException("litert_lm_session_config_create returned null.");
+                        throw NativeError.Exception("litert_lm_session_config_create returned null.");
                     sessionConfig = new SessionConfigHandle(sessionPtr);
 
                     if (options?.MaxOutputTokens > 0)
@@ -147,9 +150,10 @@ public sealed class LiteRtConversation : IDisposable
                         // v0.14.0: build the opaque sampler params, set ALL four fields (create() zeroes
                         // them — not the ecosystem defaults our record always carries), copy them into the
                         // session config, then delete immediately (try/finally so it can't leak).
+                        NativeError.Clear();
                         nint samplerParams = LiteRtLmNative.litert_lm_sampler_params_create((LiteRtLmSamplerType)s.Strategy);
                         if (samplerParams == nint.Zero)
-                            throw new LiteRtException("litert_lm_sampler_params_create returned null.");
+                            throw NativeError.Exception("litert_lm_sampler_params_create returned null.");
                         try
                         {
                             LiteRtLmNative.litert_lm_sampler_params_set_top_k(samplerParams, s.TopK);
@@ -170,21 +174,29 @@ public sealed class LiteRtConversation : IDisposable
                     // path surfaces here as a clear LiteRtException rather than a later create failure.
                     if (options?.LoraPath is { } loraPath)
                     {
+                        NativeError.Clear();
                         int rc = LiteRtLmNative.litert_lm_session_config_set_lora_path(sessionPtr, loraPath);
                         if (rc != 0)
-                            throw new LiteRtException(
-                                $"litert_lm_session_config_set_lora_path failed (returned {rc}) for '{loraPath}'. " +
-                                "The path must point to a readable LoRA weights file, and the model must be LoRA-enabled.");
+                            throw NativeError.Exception(
+                                $"litert_lm_session_config_set_lora_path failed (returned {rc}) for '{loraPath}'.",
+                                hint: "The path must point to a readable LoRA weights file, and the model must be LoRA-enabled.");
                     }
 
                     if (options?.AudioLoraPath is { } audioLoraPath)
                     {
+                        NativeError.Clear();
                         int rc = LiteRtLmNative.litert_lm_session_config_set_audio_lora_path(sessionPtr, audioLoraPath);
                         if (rc != 0)
-                            throw new LiteRtException(
-                                $"litert_lm_session_config_set_audio_lora_path failed (returned {rc}) for '{audioLoraPath}'. " +
-                                "The path must point to a readable audio LoRA weights file, and the model must be LoRA-enabled.");
+                            throw NativeError.Exception(
+                                $"litert_lm_session_config_set_audio_lora_path failed (returned {rc}) for '{audioLoraPath}'.",
+                                hint: "The path must point to a readable audio LoRA weights file, and the model must be LoRA-enabled.");
                     }
+
+                    // Per-conversation speculative decoding (v0.18.0): unset inherits the engine setting; true
+                    // on an engine loaded without it makes the executor load the MTP drafter lazily on this
+                    // conversation's first send; false turns it off here even when the engine enables it.
+                    if (options?.EnableSpeculativeDecoding is { } speculative)
+                        LiteRtLmNative.litert_lm_session_config_set_enable_speculative_decoding(sessionPtr, speculative);
                     // Multimodal-only (no sampler/output cap/LoRA): the session config stays bare — its
                     // mere presence is what lets the encoder executor load.
 
@@ -243,9 +255,10 @@ public sealed class LiteRtConversation : IDisposable
                 }
             }
 
+            NativeError.Clear();
             nint convPtr = LiteRtLmNative.litert_lm_conversation_create(engine.Handle.Ptr, configPtr);
             if (convPtr == nint.Zero)
-                throw new LiteRtException("litert_lm_conversation_create returned null.");
+                throw NativeError.Exception("litert_lm_conversation_create returned null.");
 
             return new LiteRtConversation(
                 new ConversationHandle(convPtr), config, sessionConfig, engine,
@@ -383,13 +396,15 @@ public sealed class LiteRtConversation : IDisposable
                 "another conversation's context once any other conversation runs on the engine. Send one " +
                 "message on this conversation first, then clone it.");
 
+        NativeError.Clear();
         nint clonedPtr = LiteRtLmNative.litert_lm_conversation_clone(_conversation.Ptr);
         if (clonedPtr == nint.Zero)
-            throw new LiteRtException(
-                "litert_lm_conversation_clone returned null. Cloning duplicates the conversation's " +
-                "prefilled KV-cache state into a new conversation, but some engines/backends do not " +
-                "implement it (the native layer returns 'Unimplemented'). To restore a conversation " +
-                "from persisted messages instead, create one with LiteRtConversationOptions.History.");
+            throw NativeError.Exception(
+                "litert_lm_conversation_clone returned null.",
+                hint: "Cloning duplicates the conversation's prefilled KV-cache state into a new conversation, " +
+                "and some engines or backends do not implement it (the native layer then reports " +
+                "UNIMPLEMENTED). To restore a conversation from persisted messages instead, create one with " +
+                "LiteRtConversationOptions.History.");
 
         // The clone is a fully independent native conversation; it does not share or need the parent's
         // config handles (those are only read at create time). Each conversation frees its own native
@@ -670,6 +685,7 @@ public sealed class LiteRtConversation : IDisposable
 
         options = GuardContextOverflow(messageJson, options, unmeasured);
         using ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs(options);
+        NativeError.Clear();
         nint responsePtr = LiteRtLmNative.litert_lm_conversation_send_message(
             _conversation.Ptr, messageJson, extraContext, optionalArgs?.Ptr ?? nint.Zero);
         // The send can run for seconds. Without this, a caller whose LAST use of the conversation is
@@ -678,14 +694,20 @@ public sealed class LiteRtConversation : IDisposable
         GC.KeepAlive(this);
         if (responsePtr == nint.Zero)
         {
-            // The blocking send returns null with no error string (the native reason goes to stderr).
-            // When the message carried media, the usual cause is a multimodal-setup problem, so name it.
-            string msg = "litert_lm_conversation_send_message returned null.";
-            if (MessageHasMedia(messageJson))
-                msg += " " + MultimodalSendHint;
-            if (LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(_engineOwner.MaxNumTokens))
-                msg += " " + SmallContextSendHint;
-            throw new LiteRtException(msg);
+            // The blocking send returns null; the runtime's reason comes from this thread's error report.
+            // The multimodal setup guidance goes next to it only for the unconfigured-encoder failure ("Vision
+            // executor should not be null"), or when the runtime reported nothing; a specific native reason
+            // (an undecodable image, a visual budget above the per-image cap) speaks for itself.
+            bool hasMedia = MessageHasMedia(messageJson);
+            bool smallContext = LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(_engineOwner.MaxNumTokens);
+            throw NativeError.Exception("litert_lm_conversation_send_message returned null.", nativeMessage =>
+            {
+                string? hint = hasMedia && (nativeMessage is null || IsMissingEncoderError(nativeMessage))
+                    ? MultimodalSendHint : null;
+                if (smallContext)
+                    hint = hint is null ? SmallContextSendHint : hint + " " + SmallContextSendHint;
+                return hint;
+            });
         }
 
         using var response = new JsonResponseHandle(responsePtr);
@@ -727,9 +749,10 @@ public sealed class LiteRtConversation : IDisposable
 
         // The returned pointer is owned by the conversation and only valid until the next render call;
         // PtrToStringUTF8 copies it out here, so the managed string outlives that window.
+        NativeError.Clear();
         nint strPtr = LiteRtLmNative.litert_lm_conversation_render_message_to_string(_conversation.Ptr, messageJson);
         if (strPtr == nint.Zero)
-            throw new LiteRtException("litert_lm_conversation_render_message_to_string returned null.");
+            throw NativeError.Exception("litert_lm_conversation_render_message_to_string returned null.");
         return Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
     }
 
@@ -751,11 +774,17 @@ public sealed class LiteRtConversation : IDisposable
 
         // The returned pointer is owned by the conversation and only valid until the next render call;
         // PtrToStringUTF8 copies it out here, so the managed string outlives that window.
+        NativeError.Clear();
         nint strPtr = LiteRtLmNative.litert_lm_conversation_render_preface_to_string(_conversation.Ptr);
         if (strPtr == nint.Zero)
-            throw new LiteRtException("litert_lm_conversation_render_preface_to_string returned null.");
+            throw NativeError.Exception("litert_lm_conversation_render_preface_to_string returned null.");
         return Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
     }
+
+    /// <summary>Whether a native failure message is the one the runtime gives when an image/audio arrives
+    /// at an engine loaded without that encoder ("Vision/Audio executor should not be null").</summary>
+    internal static bool IsMissingEncoderError(string nativeMessage)
+        => nativeMessage.Contains("executor should not be null", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Guidance appended when a send carrying an image/audio attachment fails the way an unconfigured
@@ -839,9 +868,10 @@ public sealed class LiteRtConversation : IDisposable
                 "LiteRtConversationOptions.ConstraintProvider set (e.g. LiteRtConstraintProvider.LlGuidance) — " +
                 "without a provider the native runtime has nothing to enforce the constraint with.");
 
+        NativeError.Clear();
         nint p = LiteRtLmNative.litert_lm_conversation_optional_args_create();
         if (p == nint.Zero)
-            throw new LiteRtException("litert_lm_conversation_optional_args_create returned null.");
+            throw NativeError.Exception("litert_lm_conversation_optional_args_create returned null.");
 
         var handle = new ConversationOptionalArgsHandle(p);
         try
@@ -855,9 +885,10 @@ public sealed class LiteRtConversation : IDisposable
             // the build-set-attach-delete lifetime stays inside this method (sampler-params pattern).
             if (options?.RepetitionPenalties is { } penalties)
             {
+                NativeError.Clear();
                 nint cfg = LiteRtLmNative.litert_lm_repetition_penalty_config_create();
                 if (cfg == nint.Zero)
-                    throw new LiteRtException("litert_lm_repetition_penalty_config_create returned null.");
+                    throw NativeError.Exception("litert_lm_repetition_penalty_config_create returned null.");
                 try
                 {
                     LiteRtLmNative.litert_lm_repetition_penalty_config_set_repetition_penalty(cfg, penalties.RepetitionPenalty);
@@ -874,9 +905,10 @@ public sealed class LiteRtConversation : IDisposable
 
             if (options?.NoRepeatNgram is { } ngram)
             {
+                NativeError.Clear();
                 nint cfg = LiteRtLmNative.litert_lm_no_repeat_ngram_config_create();
                 if (cfg == nint.Zero)
-                    throw new LiteRtException("litert_lm_no_repeat_ngram_config_create returned null.");
+                    throw NativeError.Exception("litert_lm_no_repeat_ngram_config_create returned null.");
                 try
                 {
                     LiteRtLmNative.litert_lm_no_repeat_ngram_config_set_no_repeat_ngram_size(cfg, ngram.NgramSize);
@@ -891,9 +923,10 @@ public sealed class LiteRtConversation : IDisposable
 
             if (options?.SuppressTokens is { Count: > 0 } suppress)
             {
+                NativeError.Clear();
                 nint cfg = LiteRtLmNative.litert_lm_suppress_tokens_config_create();
                 if (cfg == nint.Zero)
-                    throw new LiteRtException("litert_lm_suppress_tokens_config_create returned null.");
+                    throw NativeError.Exception("litert_lm_suppress_tokens_config_create returned null.");
                 try
                 {
                     int[] ids = suppress as int[] ?? [.. suppress];
@@ -946,9 +979,10 @@ public sealed class LiteRtConversation : IDisposable
     /// conversation-level and per-send thinking configs.</summary>
     private static void ApplyThinkingConfig(bool enableThinking, int tokenBudget, Action<nint> attach)
     {
+        NativeError.Clear();
         nint cfg = LiteRtLmNative.litert_lm_thinking_config_create();
         if (cfg == nint.Zero)
-            throw new LiteRtException("litert_lm_thinking_config_create returned null.");
+            throw NativeError.Exception("litert_lm_thinking_config_create returned null.");
         try
         {
             // Always set BOTH fields: the native default ctor is enabled + infinite, not zeroes.
@@ -1009,6 +1043,7 @@ public sealed class LiteRtConversation : IDisposable
         var gcHandle = GCHandle.Alloc(state);
 
         int rc;
+        NativeError.Clear();
         unsafe
         {
             rc = LiteRtLmNative.litert_lm_conversation_send_message_stream(
@@ -1020,7 +1055,7 @@ public sealed class LiteRtConversation : IDisposable
         {
             if (gcHandle.IsAllocated) gcHandle.Free();
             optionalArgs?.Dispose();
-            throw new LiteRtException($"litert_lm_conversation_send_message_stream failed with code {rc}.");
+            throw NativeError.Exception($"litert_lm_conversation_send_message_stream failed with code {rc}.");
         }
 
         try
@@ -1089,9 +1124,9 @@ public sealed class LiteRtConversation : IDisposable
             if (errorMsg != nint.Zero)
             {
                 string msg = Marshal.PtrToStringUTF8(errorMsg) ?? "unknown error";
-                // The streaming path DOES surface the native string; when it is the unconfigured-multimodal
-                // failure ("Vision/Audio executor should not be null"), append the same setup guidance.
-                if (msg.Contains("executor should not be null", StringComparison.OrdinalIgnoreCase))
+                // The streaming path carries the native string in the chunk; when it is the
+                // unconfigured-multimodal failure, append the same setup guidance as the blocking path.
+                if (IsMissingEncoderError(msg))
                     msg += " " + MultimodalSendHint;
                 if (LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(state.MaxNumTokens))
                     msg += " " + SmallContextSendHint;

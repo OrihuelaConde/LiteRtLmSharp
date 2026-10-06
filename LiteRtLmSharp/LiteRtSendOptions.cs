@@ -14,9 +14,10 @@ namespace LiteRtLmSharp;
 public sealed record LiteRtSendOptions
 {
     /// <summary>
-    /// Budget (in tokens) that <b>image</b> attachments in this send may consume during prefill.
-    /// 0 (default) = inherit <see cref="LiteRtConversationOptions.VisualTokenBudget"/> (whose own 0
-    /// means the engine default). Only meaningful when the send carries image attachments.
+    /// Tokens each <b>image</b> attachment in this send may expand to. 0 (default) = inherit
+    /// <see cref="LiteRtConversationOptions.VisualTokenBudget"/> (whose own 0 means the model's default
+    /// size). Only meaningful when the send carries image attachments; see
+    /// <see cref="LiteRtConversationOptions.VisualTokenBudget"/> for the values and costs.
     /// </summary>
     public int VisualTokenBudget { get; init; }
 

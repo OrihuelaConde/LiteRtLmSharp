@@ -99,6 +99,34 @@ public sealed record LiteRtEngineOptions
     /// </remarks>
     public int MaxNumImages { get; init; }
 
+    private readonly int? _maxVisionTokensPerImage;
+
+    /// <summary>
+    /// Upper bound on the vision tokens one image may expand to, which limits the vision encoder
+    /// signatures the engine selects. <c>null</c> (default) leaves every signature of the model available.
+    /// </summary>
+    /// <remarks>
+    /// It caps the image size; it does not choose it. Images still expand to the model's default size
+    /// (about 256 tokens for the Gemma 4 E-series) unless a visual token budget asks for less, so pair a cap
+    /// below that default with <see cref="LiteRtConversationOptions.VisualTokenBudget"/> (or
+    /// <see cref="LiteRtSendOptions.VisualTokenBudget"/>) at or below the cap. Without one, an image send
+    /// fails with <see cref="LiteRtStatusCode.InvalidArgument"/> ("No signature found…"), and a budget
+    /// above the cap fails the same way. It applies only when <see cref="VisionBackend"/> is set and the
+    /// model declares a per-image token count. Maps to
+    /// <c>engine_settings_set_max_vision_tokens_per_image</c> (native LiteRT-LM v0.18.0+).
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">The value is zero or negative.</exception>
+    public int? MaxVisionTokensPerImage
+    {
+        get => _maxVisionTokensPerImage;
+        init
+        {
+            if (value is { } v)
+                ArgumentOutOfRangeException.ThrowIfNegativeOrZero(v);
+            _maxVisionTokensPerImage = value;
+        }
+    }
+
     /// <summary>
     /// Where the engine keeps its compiled-artifact cache (GPU shaders / converted weights), which
     /// speeds up subsequent loads. Defaults to <see cref="LiteRtCache.Default"/> (written next to the
@@ -106,11 +134,9 @@ public sealed record LiteRtEngineOptions
     /// <see cref="LiteRtCache.Directory"/> for an explicit path.
     /// </summary>
     /// <remarks>
-    /// Set this to <see cref="LiteRtCache.Disabled"/> to make <see cref="EnableSpeculativeDecoding"/>
-    /// work on the desktop <b>WebGPU</b> GPU backend: with the default disk cache the MTP drafter's
-    /// shared weight-cache file fails to open ("Access denied") on Windows and engine creation fails.
-    /// This is an upstream issue (Google's own <c>litert-lm</c> CLI fails the same way with
-    /// <c>--cache disk</c> and succeeds with <c>--cache no</c>); see <c>docs/speculative-decoding.md</c>.
+    /// The cache files are named after the model file (its name, modification time and size), not after
+    /// the native runtime version. A newer runtime detects a GPU cache written by an older one and
+    /// rebuilds it on the first load, which makes that load slower once.
     /// </remarks>
     public LiteRtCache Cache { get; init; }
 
@@ -245,9 +271,10 @@ public sealed record LiteRtEngineOptions
     /// disabled). Requires a LoRA-enabled model and a matching adapter passed per conversation via
     /// <see cref="LiteRtConversationOptions.LoraPath"/>. Maps to <c>engine_settings_set_lora_rank</c>.
     /// </summary>
-    /// <remarks>The full LoRA path (rank here + adapter file on the conversation) has not yet been
-    /// validated end-to-end in this binding — no LoRA adapter artifact was available at the time of
-    /// writing — so treat it as wired-through but unverified against a real adapter.</remarks>
+    /// <remarks>Validated end to end against upstream's LoRA test bundle: with this rank and a matching
+    /// adapter in <see cref="LiteRtConversationOptions.LoraPath"/>, generation changes. The published
+    /// Gemma 4 bundles carry no LoRA slots (google-ai-edge/LiteRT-LM#3173), so an adapter fails fast on
+    /// them.</remarks>
     /// <exception cref="ArgumentOutOfRangeException">The value is zero or negative.</exception>
     public int? LoraRank
     {
@@ -286,8 +313,8 @@ public sealed record LiteRtEngineOptions
     /// <summary>
     /// LoRA rank for the <b>audio</b> executor. <c>null</c> (default) leaves the engine default. Only
     /// applies when an audio executor is configured (<see cref="AudioBackend"/> set). Maps to
-    /// <c>engine_settings_set_audio_lora_rank</c>. See <see cref="LoraRank"/> for the not-yet-validated
-    /// caveat.
+    /// <c>engine_settings_set_audio_lora_rank</c>. Unlike the text path, audio LoRA has not been validated
+    /// against a real adapter in this binding.
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">The value is zero or negative.</exception>
     public int? AudioLoraRank
@@ -352,12 +379,14 @@ public sealed record LiteRtEngineOptions
 
     /// <summary>
     /// Lets the experimental YNNPACK delegate take the CPU operations it supports before XNNPACK.
-    /// <c>null</c> (default) = engine default (off). CPU backend only. Requires native LiteRT-LM v0.16.0+.
+    /// <c>null</c> (default) = engine default (off). CPU backend, linux-arm64 only. Requires native
+    /// LiteRT-LM v0.16.0+.
     /// </summary>
     /// <remarks>
-    /// Maps to <c>engine_settings_set_enable_ynnpack</c>. Upstream ships the YNNPACK kernels in its
-    /// linux-arm64 builds; the other official prebuilts accept the flag and run unchanged, so treat any
-    /// speed-up as something to measure on the target device, not assume.
+    /// Maps to <c>engine_settings_set_enable_ynnpack</c>. Of the official libraries, only linux-arm64 carries
+    /// the YNNPACK kernels. Elsewhere, <c>true</c> makes <see cref="LiteRtEngine.Load"/> fail with
+    /// <see cref="LiteRtStatusCode.Unimplemented"/> (native v0.18.0; v0.16.0 ignored the flag). Measure any
+    /// speed-up on the target device rather than assume one.
     /// </remarks>
     public bool? EnableYnnpack { get; init; }
 
@@ -371,6 +400,17 @@ public sealed record LiteRtEngineOptions
     /// <remarks>Maps to <c>engine_settings_set_use_ringbuffers_local_attention</c> (the knob the JS
     /// API exposes as <c>use_autosized_ringbuffers</c>).</remarks>
     public bool? UseRingbuffersLocalAttention { get; init; }
+
+    /// <summary>
+    /// Whether the GPU backend keeps the model weights and allocations resident in GPU memory through
+    /// Apple's <c>MTLResidencySet</c> API, which prevents them from being paged out and lowers allocation
+    /// overhead. <c>null</c> (default) leaves the engine default. Apple platforms with the Metal GPU
+    /// backend only; other platforms and backends ignore it.
+    /// </summary>
+    /// <remarks>Maps to <c>engine_settings_set_gpu_enable_metal_residency_set</c> (native LiteRT-LM
+    /// v0.18.0+). The desktop macOS GPU backend runs on WebGPU over Metal; measure the effect on the
+    /// target device rather than assume one.</remarks>
+    public bool? EnableMetalResidencySet { get; init; }
 
     private static void ValidateRanks(IReadOnlyList<int>? ranks)
     {
@@ -573,11 +613,19 @@ public sealed record LiteRtConversationOptions
     public bool StreamToolCalls { get; init; }
 
     /// <summary>
-    /// Budget (in tokens) that <b>image</b> attachments may consume during prefill. 0 (default) =
-    /// engine default. Lower it to cap how much of the context window an image eats on a vision model;
-    /// only meaningful when sending image attachments. Applied per send via the C API
-    /// <c>conversation_optional_args_set_visual_token_budget</c>.
+    /// Tokens each <b>image</b> attachment may expand to. 0 (default) = the model's default size. The
+    /// runtime downscales each image to the smallest vision signature that fits the budget, so a lower
+    /// budget leaves more of the context window for text at the cost of image detail. Only meaningful
+    /// when sending image attachments.
     /// </summary>
+    /// <remarks>
+    /// The Gemma 4 E-series bundles carry vision signatures of 70, 140 and 280 tokens and default to
+    /// about 256 tokens per image. Measured on gemma-4-E2B-it, one image costs 260 tokens by default and
+    /// 68 with a budget of 70. When the engine sets <see cref="LiteRtEngineOptions.MaxVisionTokensPerImage"/>,
+    /// the budget must not exceed it. Applied per send via the C API
+    /// <c>conversation_optional_args_set_visual_token_budget</c>; <see cref="LiteRtSendOptions.VisualTokenBudget"/>
+    /// overrides it for one send.
+    /// </remarks>
     public int VisualTokenBudget { get; init; }
 
     /// <summary>
@@ -586,21 +634,34 @@ public sealed record LiteRtConversationOptions
     /// <see cref="LiteRtEngineOptions.LoraRank"/>.
     /// </summary>
     /// <remarks>
-    /// The native side opens the file when the conversation is created, so a missing/unreadable path
-    /// fails fast with <see cref="LiteRtException"/> at <see cref="LiteRtEngine.CreateConversation"/> —
-    /// not silently at first send. Maps to the C API <c>session_config_set_lora_path</c>. <b>Not yet
-    /// validated end-to-end</b> in this binding (no LoRA adapter artifact was available at the time of
-    /// writing): the plumbing is in place and a bad path is reported coherently, but a successful load
-    /// against a real adapter has not been exercised here.
+    /// The native side opens the file when the conversation is created, so a missing or unreadable path
+    /// fails fast with <see cref="LiteRtException"/> at <see cref="LiteRtEngine.CreateConversation"/>,
+    /// not silently at first send. Validated end to end against upstream's LoRA test bundle (the adapter
+    /// changes generation); the published Gemma 4 bundles carry no LoRA slots
+    /// (google-ai-edge/LiteRT-LM#3173). Maps to the C API <c>session_config_set_lora_path</c>.
     /// </remarks>
     public string? LoraPath { get; init; }
 
     /// <summary>
     /// Path to an <b>audio</b> LoRA adapter (weights file) to apply to this conversation. <c>null</c>
     /// (default) = no adapter. Requires an audio-capable, LoRA-enabled model and a matching
-    /// <see cref="LiteRtEngineOptions.AudioLoraRank"/>. Opened at conversation creation (see
-    /// <see cref="LoraPath"/> for the fail-fast and not-yet-validated notes). Maps to the C API
-    /// <c>session_config_set_audio_lora_path</c>.
+    /// <see cref="LiteRtEngineOptions.AudioLoraRank"/>. Opened at conversation creation, so a bad path fails
+    /// fast like <see cref="LoraPath"/>. Not validated against a real audio adapter in this binding. Maps
+    /// to the C API <c>session_config_set_audio_lora_path</c>.
     /// </summary>
     public string? AudioLoraPath { get; init; }
+
+    /// <summary>
+    /// Speculative decoding for this conversation, overriding
+    /// <see cref="LiteRtEngineOptions.EnableSpeculativeDecoding"/>. <c>null</c> (default) inherits the
+    /// engine setting.
+    /// </summary>
+    /// <remarks>
+    /// <c>true</c> on an engine loaded without speculative decoding makes the runtime load the model's
+    /// Multi-Token-Prediction (MTP) drafter lazily, on this conversation's first send, so you can enable it
+    /// only where it pays off. <c>false</c> turns it off for this conversation even when the engine enables
+    /// it. Requires a model that ships an MTP drafter (such as the Gemma 4 E-series). Maps to the C API
+    /// <c>session_config_set_enable_speculative_decoding</c> (native LiteRT-LM v0.18.0+).
+    /// </remarks>
+    public bool? EnableSpeculativeDecoding { get; init; }
 }

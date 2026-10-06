@@ -46,8 +46,8 @@ public sealed class LiteRtEngine : IDisposable
 
     /// <summary>Sets the global minimum log level (0=VERBOSE … 5=FATAL, 1000=SILENT).</summary>
     /// <exception cref="DllNotFoundException">The native LiteRT-LM library could not be loaded; the
-    /// message names the fix (the missing <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package, or a system
-    /// prerequisite such as the VC++ Redistributable on Windows).</exception>
+    /// message names the fix (the missing <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package, a runtime
+    /// package for another architecture, or a missing system library).</exception>
     public static void SetMinLogLevel(int level) => LiteRtLmNative.litert_lm_set_min_log_level(level);
 
     /// <summary>
@@ -58,8 +58,8 @@ public sealed class LiteRtEngine : IDisposable
     /// <exception cref="ArgumentException">The model file does not exist.</exception>
     /// <exception cref="InvalidOperationException">Another engine is still alive in this process.</exception>
     /// <exception cref="DllNotFoundException">The native LiteRT-LM library could not be loaded; the
-    /// message names the fix (the missing <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package, or a system
-    /// prerequisite such as the VC++ Redistributable on Windows).</exception>
+    /// message names the fix (the missing <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package, a runtime
+    /// package for another architecture, or a missing system library).</exception>
     /// <exception cref="LiteRtException">Native engine creation failed.</exception>
     public static LiteRtEngine Load(LiteRtEngineOptions options)
     {
@@ -81,16 +81,21 @@ public sealed class LiteRtEngine : IDisposable
         {
             // Passing null for vision/audio leaves that modality unconfigured (NULL = "not set" per
             // the C API). Set a LiteRtBackend on a multimodal model to enable image/audio input.
+            NativeError.Clear();
             nint settingsPtr = LiteRtLmNative.litert_lm_engine_settings_create(
                 options.ModelPath, options.Backend.Value, options.VisionBackend?.Value, options.AudioBackend?.Value);
             if (settingsPtr == nint.Zero)
-                throw new LiteRtException("litert_lm_engine_settings_create returned null.");
+                throw NativeError.Exception("litert_lm_engine_settings_create returned null.");
 
             using var settings = new EngineSettingsHandle(settingsPtr);
             if (options.MaxNumTokens > 0)
                 LiteRtLmNative.litert_lm_engine_settings_set_max_num_tokens(settings.Ptr, options.MaxNumTokens);
             if (options.MaxNumImages > 0)
                 LiteRtLmNative.litert_lm_engine_settings_set_max_num_images(settings.Ptr, options.MaxNumImages);
+            if (options.MaxVisionTokensPerImage is { } maxVisionTokens)
+                LiteRtLmNative.litert_lm_engine_settings_set_max_vision_tokens_per_image(settings.Ptr, maxVisionTokens);
+            if (options.EnableMetalResidencySet is { } metalResidency)
+                LiteRtLmNative.litert_lm_engine_settings_set_gpu_enable_metal_residency_set(settings.Ptr, metalResidency);
             if (options.Cache.NativeValue is { } cacheDir)
                 LiteRtLmNative.litert_lm_engine_settings_set_cache_dir(settings.Ptr, cacheDir);
             if (options.EnableBenchmark)
@@ -128,13 +133,15 @@ public sealed class LiteRtEngine : IDisposable
             if (options.SupportedAudioLoraRanks is { } supportedAudioLoraRanks)
                 ApplySupportedLoraRanks(settings.Ptr, supportedAudioLoraRanks, audio: true);
 
+            NativeError.Clear();
             nint enginePtr = LiteRtLmNative.litert_lm_engine_create(settings.Ptr);
             if (enginePtr == nint.Zero)
-                throw new LiteRtException(
-                    "litert_lm_engine_create returned null. The C API does not expose the reason " +
-                    "(it is logged to the native stderr). Common causes: corrupt/incomplete model " +
-                    "file, or a backend the model does not support — some published .litertlm " +
-                    "files carry a backend constraint (e.g. GPU-only) and refuse to load on CPU.");
+                throw NativeError.Exception(
+                    "litert_lm_engine_create returned null.",
+                    hint: options.EnableYnnpack == true ? YnnpackUnavailableHint : null,
+                    fallbackHint: "The runtime reported no reason (see the native stderr). Common causes: a " +
+                    "corrupt or incomplete model file, or a backend the model does not support: some published " +
+                    ".litertlm files carry a backend constraint (for example GPU-only) and refuse to load on CPU.");
 
             return new LiteRtEngine(
                 new EngineHandle(enginePtr),
@@ -150,6 +157,13 @@ public sealed class LiteRtEngine : IDisposable
         }
     }
 
+    /// <summary>Appended to a failed engine creation when <see cref="LiteRtEngineOptions.EnableYnnpack"/> is
+    /// set: the official libraries carry the YNNPACK kernels only for linux-arm64, and since v0.18.0 the
+    /// other platforms reject the flag at engine creation (UNIMPLEMENTED) instead of ignoring it.</summary>
+    internal const string YnnpackUnavailableHint =
+        "EnableYnnpack is set: the official native libraries carry the YNNPACK kernels only for linux-arm64, " +
+        "and on other platforms engine creation fails with UNIMPLEMENTED. Leave EnableYnnpack unset there.";
+
     /// <summary>
     /// Marshals a supported-LoRA-ranks list to the native <c>const int*</c>/count setter (text or audio)
     /// and surfaces a non-zero return as a <see cref="LiteRtException"/>. The list is validated non-empty
@@ -159,14 +173,15 @@ public sealed class LiteRtEngine : IDisposable
     {
         int[] arr = ranks as int[] ?? [.. ranks];
         int rc;
+        NativeError.Clear();
         fixed (int* p = arr)
             rc = audio
                 ? LiteRtLmNative.litert_lm_engine_settings_set_supported_audio_lora_ranks(settings, p, (nuint)arr.Length)
                 : LiteRtLmNative.litert_lm_engine_settings_set_supported_lora_ranks(settings, p, (nuint)arr.Length);
         if (rc != 0)
-            throw new LiteRtException(
-                $"litert_lm_engine_settings_set_supported{(audio ? "_audio" : "")}_lora_ranks failed (returned {rc}). " +
-                (audio ? "Audio LoRA ranks require an audio executor (set AudioBackend)." : "Check the provided ranks."));
+            throw NativeError.Exception(
+                $"litert_lm_engine_settings_set_supported{(audio ? "_audio" : "")}_lora_ranks failed (returned {rc}).",
+                hint: audio ? "Audio LoRA ranks require an audio executor (set AudioBackend)." : "Check the provided ranks.");
     }
 
     /// <summary>Creates a new stateful conversation from this engine.</summary>
@@ -190,9 +205,10 @@ public sealed class LiteRtEngine : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(text);
 
+        NativeError.Clear();
         nint resultPtr = LiteRtLmNative.litert_lm_engine_tokenize(_engine.Ptr, text);
         if (resultPtr == nint.Zero)
-            throw new LiteRtException("litert_lm_engine_tokenize returned null.");
+            throw NativeError.Exception("litert_lm_engine_tokenize returned null.");
 
         using var result = new TokenizeResultHandle(resultPtr);
         nuint count = LiteRtLmNative.litert_lm_tokenize_result_get_num_tokens(result.Ptr);
@@ -217,9 +233,10 @@ public sealed class LiteRtEngine : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        NativeError.Clear();
         nint resultPtr = LiteRtLmNative.litert_lm_engine_tokenize(_engine.Ptr, text);
         if (resultPtr == nint.Zero)
-            throw new LiteRtException("litert_lm_engine_tokenize returned null.");
+            throw NativeError.Exception("litert_lm_engine_tokenize returned null.");
 
         using var result = new TokenizeResultHandle(resultPtr);
         return checked((int)LiteRtLmNative.litert_lm_tokenize_result_get_num_tokens(result.Ptr));
@@ -238,13 +255,14 @@ public sealed class LiteRtEngine : IDisposable
             return string.Empty;
 
         nint resultPtr;
+        NativeError.Clear();
         unsafe
         {
             fixed (int* p = tokens)
                 resultPtr = LiteRtLmNative.litert_lm_engine_detokenize(_engine.Ptr, p, (nuint)tokens.Length);
         }
         if (resultPtr == nint.Zero)
-            throw new LiteRtException("litert_lm_engine_detokenize returned null.");
+            throw NativeError.Exception("litert_lm_engine_detokenize returned null.");
 
         using var result = new DetokenizeResultHandle(resultPtr);
         nint strPtr = LiteRtLmNative.litert_lm_detokenize_result_get_string(result.Ptr);
