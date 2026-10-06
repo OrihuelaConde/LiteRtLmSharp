@@ -42,7 +42,43 @@ internal static class NativeError
             message = message[prefix.Length..].TrimStart();
         // A dangling colon (a native message whose detail was empty) would read as "…read:." once the
         // sentence is closed.
-        return (status, message.TrimEnd(':', ' '));
+        return (status, Untrace(message).TrimEnd(':', ' '));
+    }
+
+    /// <summary>
+    /// Rewrites a LiteRT status trace into one line: the reason first, then the innermost source location.
+    /// </summary>
+    /// <remarks>
+    /// Errors raised through LiteRT's status macros arrive as a call trace: one <c>ERROR: [path:line]</c>
+    /// location per line, the lines after the first prefixed with <c>└</c>, and the reason, when there is
+    /// one, on the last line. A missing cache directory, for example, arrives as three lines
+    /// (<c>embedding_engine_impl.cc:402</c>, <c>embedding_engine_settings.cc:316</c>, then
+    /// <c>Cache directory does not exist or is not writable: …</c>) and reads as
+    /// "Cache directory does not exist or is not writable: … (at embedding_engine_settings.cc:316)". A trace
+    /// without a reason keeps only the innermost location. Other messages are returned unchanged.
+    /// </remarks>
+    internal static string Untrace(string message)
+    {
+        if (!message.Contains("ERROR: [", StringComparison.Ordinal))
+            return message;
+        string? location = null;
+        var reason = new StringBuilder();
+        foreach (string rawLine in message.Split('\n'))
+        {
+            string line = rawLine.Trim().TrimStart('└').Trim();
+            if (line.StartsWith("ERROR: [", StringComparison.Ordinal) && line.IndexOf(']') is var end and > 0)
+            {
+                location = line[8..end];
+                line = line[(end + 1)..].Trim();
+            }
+            if (line.Length > 0)
+                reason.Append(reason.Length > 0 ? " " : "").Append(line);
+        }
+        if (location is null)
+            return message;
+        // The file and line are enough for a bug report; the repository path is noise.
+        string where = location[(location.LastIndexOf('/') + 1)..];
+        return reason.Length > 0 ? $"{reason.ToString().TrimEnd(':', ' ')} (at {where})" : $"no details, failed at {where}";
     }
 
     /// <summary>

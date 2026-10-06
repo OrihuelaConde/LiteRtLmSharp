@@ -42,6 +42,57 @@ public sealed class NativeErrorTests(ITestOutputHelper output)
         }
     }
 
+    /// <summary>The model metadata reader and the embedding engine turn down a file that is not a model
+    /// with the runtime's reason, like the chat engine does.</summary>
+    [Fact]
+    public void ModelInfoAndEmbeddingEngine_InvalidFile_ReportNativeReason()
+    {
+        LiteRtEngine.SetMinLogLevel(3);
+        string bogus = Path.Combine(Path.GetTempPath(), $"not-a-model-{Guid.NewGuid():N}.litertlm");
+        File.WriteAllBytes(bogus, [.. Enumerable.Range(0, 4096).Select(i => (byte)(i * 31))]);
+        try
+        {
+            var info = Assert.Throws<LiteRtException>(() => LiteRtModelInfo.Read(bogus));
+            output.WriteLine($"model info: [{info.StatusCode}] {info.Message}");
+            Assert.StartsWith("litert_lm_loaded_file_create", info.Message, StringComparison.Ordinal);
+            Assert.NotNull(info.StatusCode);
+
+            var load = Assert.Throws<LiteRtException>(() => LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions { ModelPath = bogus }));
+            output.WriteLine($"embedding engine: [{load.StatusCode}] {load.Message}");
+            Assert.StartsWith("litert_lm_embedding_engine", load.Message, StringComparison.Ordinal);
+            Assert.NotNull(load.StatusCode);
+            // The runtime's call trace reads as one line: the reason, then where it was raised.
+            Assert.DoesNotContain("ERROR: [", load.Message, StringComparison.Ordinal);
+            Assert.Contains("(at ", load.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(bogus);
+        }
+    }
+
+    /// <summary>LiteRT's multi-line status traces (real messages from v0.18.0) read as one line: the reason,
+    /// then the innermost source location; a trace without a reason keeps the location.</summary>
+    [Fact]
+    public void Untrace_PutsTheReasonFirst()
+    {
+        const string cacheDir =
+            "ERROR: [third_party/odml/litert_lm/runtime/core/embedding_engine_impl.cc:402]\n" +
+            "\u2514 ERROR: [third_party/odml/litert_lm/runtime/engine/embedding_engine_settings.cc:316]\n" +
+            "\u2514 Cache directory does not exist or is not writable: C:\\missing";
+        Assert.Equal(
+            "Cache directory does not exist or is not writable: C:\\missing (at embedding_engine_settings.cc:316)",
+            NativeError.Untrace(cacheDir));
+
+        const string bareTrace =
+            "ERROR: [third_party/odml/litert_lm/runtime/executor/llm_litert_compiled_model_executor_factory.cc:236]\n" +
+            "\u2514 ERROR: [third_party/odml/litert/litert/runtime/compiled_model.cc:1036]";
+        Assert.Equal("no details, failed at compiled_model.cc:1036", NativeError.Untrace(bareTrace));
+
+        const string plain = "Unsupported backend: tpu. Supported backends are: [CPU, GPU, NPU]";
+        Assert.Same(plain, NativeError.Untrace(plain));
+    }
+
     /// <summary>A report is consumed when read: the next read on the same thread sees nothing, so a later
     /// failure can never be described with an earlier one's reason.</summary>
     [Fact]
