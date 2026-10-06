@@ -97,10 +97,12 @@ Every feature has a full guide on the [documentation site](https://orihuelaconde
 | **Reasoning mode** | Gemma "thinking", surfaced separately from the answer (blocking & streaming) — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/chat.html#reasoning-mode-thinking) |
 | **Multimodal** | Image and audio attachments, in-memory or memory-mapped from disk — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/chat.html#multimodal-messages-image--audio) |
 | **Conversation state** | Persist/restore chats across restarts; clone a live conversation to branch it — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html) |
+| **Embeddings** | On-device text embeddings (EmbeddingGemma 2) for semantic search and RAG, next to a chat model — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/embeddings.html) |
+| **Model metadata** | Read a model file's type, context size, inputs and backends without loading it — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/chat.html#read-a-models-metadata) |
 | **Token counting** | Tokenize/detokenize with the model's own tokenizer; budget the context window — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/chat.html#token-counting-tokenize--detokenize) |
 | **Speculative decoding** | MTP drafter support plus a built-in benchmark API (tok/s, TTFT) — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/speculative-decoding.html) |
 | **Engine tuning** | Activation precision, prefill chunking, thread counts, cache control — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/engine-tuning.html) |
-| **.NET AI ecosystem** | `IChatClient` + Semantic Kernel connectors (below) |
+| **.NET AI ecosystem** | `IChatClient`, `IEmbeddingGenerator` + Semantic Kernel connectors (below) |
 | **AOT & trimming** | Source-generated P/Invoke, no runtime marshalling — Native AOT compatible |
 
 ## .NET AI integrations
@@ -109,8 +111,8 @@ Two optional companion packages plug the on-device model into the .NET AI ecosys
 
 | Package | Exposes the model as | Works with |
 |---|---|---|
-| [`LiteRtLmSharp.Extensions.AI`](https://orihuelaconde.github.io/LiteRtLmSharp/extensions-ai.html) | `Microsoft.Extensions.AI.IChatClient` | Microsoft Agent Framework, Semantic Kernel, plain MEAI |
-| [`LiteRtLmSharp.SemanticKernel`](https://orihuelaconde.github.io/LiteRtLmSharp/semantic-kernel.html) | `IChatCompletionService` | Semantic Kernel |
+| [`LiteRtLmSharp.Extensions.AI`](https://orihuelaconde.github.io/LiteRtLmSharp/extensions-ai.html) | `Microsoft.Extensions.AI.IChatClient`, `IEmbeddingGenerator` | Microsoft Agent Framework, Semantic Kernel, plain MEAI |
+| [`LiteRtLmSharp.SemanticKernel`](https://orihuelaconde.github.io/LiteRtLmSharp/semantic-kernel.html) | `IChatCompletionService`, embedding generator | Semantic Kernel |
 
 ```csharp
 using IChatClient client = new LiteRtChatClient(engine);
@@ -141,9 +143,10 @@ conversations** (MEAI `ConversationId`) are supported — see the
 
 ## Important notes
 
-- **One engine alive at a time.** Loading a second engine while one is alive throws (it would
-  hang in the native layer). To switch model or backend, dispose the conversations and the
-  engine, then `LiteRtEngine.Load` again — same pattern as Google's Edge Gallery.
+- **One chat engine alive at a time.** Loading a second `LiteRtEngine` while one is alive throws (it
+  would hang in the native layer). To switch model or backend, dispose the conversations and the
+  engine, then `LiteRtEngine.Load` again — same pattern as Google's Edge Gallery. An embedding engine
+  (`LiteRtEmbeddingEngine`) does not count, so a chat model and an embedding model can stay loaded together.
 - **`MaxNumTokens`** is the total context window (prompt + response, across turns). Use >= 1024;
   too small can make blocking generation return nothing.
 - **Conversations are not thread-safe** — serialize sends per engine (the Microsoft.Extensions.AI

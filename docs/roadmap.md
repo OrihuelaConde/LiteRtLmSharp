@@ -1,8 +1,8 @@
 # Project status and roadmap
 
 Last updated: 2026-10-06 (v0.18.0 cycle in progress toward 1.3.0: repin + linux-arm64/android-x64 +
-native error reporting on the `repin-v0.18.0` branch, then embeddings + model info; latest on nuget.org:
-1.2.0, LiteRT-LM v0.16.0). Source of truth for "what's done and what's pending".
+native error reporting on the `repin-v0.18.0` branch, embeddings + model info on the `embeddings` branch;
+latest on nuget.org: 1.2.0, LiteRT-LM v0.16.0). Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -68,10 +68,12 @@ sampler; our public `Unspecified` still sends no sampler params). New: `c/embedd
 EmbeddingGemma 2 embeddings), `c/model_info.h` (21, `loaded_file_*` metadata read without loading the
 engine), `c/error_reporter.h` (3), `c/experimental.h` (6) and 4 in `engine.h`.
 
-**Bound on the `repin-v0.18.0` branch: 122 of 212** (116 before + the error reporter (3) +
+**Bound: 166 of 212.** The `repin-v0.18.0` branch binds 122 (116 before + the error reporter (3) +
 `set_max_vision_tokens_per_image`, `set_gpu_enable_metal_residency_set` and the per-session
-`session_config_set_enable_speculative_decoding`). Next: the embedding engine and model info (PR 2 of
-the cycle). Deliberately unbound:
+`session_config_set_enable_speculative_decoding`); the `embeddings` branch adds 44: the embedding engine
+(23 of the 34 in `embedding_engine.h`, plus `input_data_create`/`delete` from `engine.h`) and the model
+metadata (19 of 21). Per header: `engine.h` 83/110, `conversation.h` 38/38, `embedding_engine.h` 23/34,
+`model_info.h` 19/21, `error_reporter.h` 3/3, `experimental.h` 0/6. Deliberately unbound:
 
 - `engine_settings_set_single_threaded_execution` — **fails our readiness protocol**: with it on, the
   blocking send works but a streaming send never completes and disposing that conversation then hangs
@@ -80,9 +82,14 @@ the cycle). Deliberately unbound:
   consumer.
 - `c/experimental.h` (6: session debug info, debugger probe, live Metal-residency update) —
   experimental by name.
-- The raw Session API (13, now including the checkpoint/rewind trio), responses introspection (10), the
-  raw-FD engine load (#3139 kills the process on Windows when the caller does not share the DLL's CRT)
-  and the NPU dispatch dir (NPU is unsupported on our side).
+- The raw Session API (14: `engine_create_session`, the `session_*` calls including the checkpoint/rewind
+  trio, and `session_config_set_apply_prompt_template`), responses introspection (10), the raw-FD engine
+  load (#3139 kills the process on Windows when the caller does not share the DLL's CRT) and the NPU
+  dispatch dir (NPU is unsupported on our side).
+- Embedding engine (11): the image and audio inputs (`set_vision_tokens_per_image` on the settings and
+  the options, `set_audio_num_threads`) wait for multimodal embeddings; the three dispatch-lib-dir setters
+  are NPU-only; the five `embedding_options_get_*` getters would only read back what the binding set.
+- Model metadata (2): `modality_npu_brand` and `modality_soc_name`, NPU-only.
 
 Previous audit (2026-09-05, header v0.16.0): **116 of 144 `litert_lm_*` functions bound** against the
 v0.16.0 official prebuilt (everything we bind exists in the header, no drift; the 1.2.0 docs said 117). v0.16.0 added 4 functions with no removals or signature changes:
@@ -156,15 +163,15 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
 
 | Feature | Functions | Notes |
 |---|---|---|
-| Raw Session API (13) | `engine_create_session`, `session_run_prefill`, `session_run_decode(_async)`, `session_generate_content(_stream)`, `session_run_text_scoring`, `session_cancel_process`, `session_config_set_apply_prompt_template`, `session_delete`, `session_get_benchmark_info`, `input_data_create`/`_delete` | Low-level prefill/decode bypassing chat templates; includes text scoring (log-prob ranking) and the raw no-template mode. v0.14.0 added `input_data_create`/`_delete` and changed the `run_prefill`/`generate_content` signatures; still out of scope (the Conversation API covers our use cases). |
+| Raw Session API (14) | `engine_create_session`, `session_run_prefill`, `session_run_decode(_async)`, `session_generate_content(_stream)`, `session_run_text_scoring`, `session_cancel_process`, `session_config_set_apply_prompt_template`, `session_delete`, `session_get_benchmark_info`, `session_save_checkpoint`, `session_rewind_to_checkpoint`/`_to_step` | Low-level prefill/decode bypassing chat templates; includes text scoring (log-prob ranking), the raw no-template mode and (v0.16.0) checkpoint/rewind. v0.14.0 changed the `run_prefill`/`generate_content` signatures; still out of scope (the Conversation API covers our use cases). Its `input_data_create`/`_delete` are bound since the embedding engine, which takes the same inputs. |
 | Responses introspection (10) | `responses_*` | Candidates, scores, per-token logits — only meaningful with the Session API. |
 | Raw-FD engine load | `engine_settings_create_from_raw_file_descriptor` | **Deferred** (new in v0.14.0). Loads a model from an open file descriptor (mainly Android `content://` scenarios); the path-based `engine_settings_create` covers the desktop/MAUI paths we ship. |
 | ✅ Benchmark fake tokens | `engine_settings_set_num_prefill_tokens`, `set_num_decode_tokens` | **Done 2026-06-20** (`LiteRtEngineOptions.BenchmarkPrefillTokens` / `BenchmarkDecodeTokens`). Synthetic-token benchmarking: the prompt is padded/truncated to the prefill count and decode runs exactly the decode count (ignoring the stop token), so `GetBenchmarkInfo` reports throughput at FIXED counts — content-independent device benchmarking. **Confirmed observable through the Conversation API** (not a benchmark-main-only path): both fields feed `EngineSettings::benchmark_params_`, read by the default `EngineAdvancedImpl`/`SessionAdvanced` (source trace + win-x64 probe: a tiny "Hi" reports 256/64). Setting either also flips benchmark mode on; the reply is not a real answer. |
 | NPU dispatch dir | `engine_settings_set_litert_dispatch_lib_dir` | Qualcomm/Intel NPU dispatch library location. |
 
-> Note: the C API still has **no embeddings functions** at v0.14.0 (flutter_gemma implements
-> embeddings via a separate native library, not this header), so embeddings stay out of
-> scope until upstream exposes them.
+> Embeddings: v0.18.0 added `c/embedding_engine.h` and `c/model_info.h`; text embeddings and the
+> metadata reader are bound (`LiteRtEmbeddingEngine`, `LiteRtModelInfo`; counts in the coverage audit
+> above). Multimodal embeddings (image and audio inputs) are the open part.
 
 ## Actionable next steps (suggested order)
 
@@ -189,10 +196,22 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
      778 MB); CPU speculative decoding 0.78× (unchanged). GPU suite: one host crash in
      `ChatClient_MultiTurn_CarriesContext` on the first full run (under investigation, see watchlist).
      Pending: Moto G100 (arm64 GPU) and an x86_64 emulator run; Linux GPU has no hardware on hand.
-   - **PR 2 `embeddings`**: `LiteRtEmbeddingEngine` (own handle, outside the one-engine guard: the
-     downstream consumer measured Engine + EmbeddingEngine coexisting on CPU and GPU through the Python
-     wheel), `LiteRtModelInfo`, `IEmbeddingGenerator<string, Embedding<float>>` + DI, SK registration,
-     EmbeddingGemma 2 text 270M model tests, `docs/embeddings.md`.
+   - **PR 2 `embeddings`** (implemented 2026-10-06, stacked on PR 1): `LiteRtEmbeddingEngine` (own
+     handles, outside the one-engine gate; serialized and thread-safe, async variants), `LiteRtModelInfo`
+     (metadata without loading), MEAI `LiteRtEmbeddingGenerator` + `AddLiteRtEmbeddingGenerator`, SK
+     `AddLiteRtEmbeddingGenerator` (keyed with `serviceId`); 44 more C functions (166/212). The binding
+     does not add task instructions: the model card and the LiteRT-LM guide list different ones, so
+     `docs/embeddings.md` cites both. Measured with EmbeddingGemma 2 Text 270M (i9-14900K / RTX 3080,
+     `Float32` on GPU): CPU load 0.15 s, one sentence 35 ms, ~300 words 150 ms; GPU load 2.4 to 3.3 s,
+     15 ms, 32 ms; a batch costs the same as single calls (the runtime loops); the default input limit
+     is the model's declared 1,024 tokens, not 8,192 (verified against the metadata and empirically);
+     on GPU the process commit grows by 3.6 GB at load (7.1 GB with `MaxInputLength = 2048`); GPU vs
+     CPU cosine 0.9994 with `Float32`, 0.9965 with the runtime's float16 default; in a 24-query check
+     both instruction sets and none ranked 23 or 24 first, the model card's set with the widest margin.
+     Tests: 27 embedding and model-info tests pass on CPU and GPU (win-x64); the model-tests legs fetch
+     the model (165 MB, cached). One silent GPU host crash in 8 runs, in
+     `ChatAndEmbeddingEngines_Coexist` (6 of 6 isolated runs clean): same class as the GPU churn
+     crash in the watchlist.
    - **Release 1.3.0** with the maintainer's GO.
 
 -3. **v0.16.0 CYCLE — evaluation of Google's official C API prebuilts DONE (2026-08-12 →
@@ -718,7 +737,11 @@ AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AO
   with no managed failure; ~2 of 4 full-suite GPU runs locally, different tests each time, clean
   runs in between). Same failure class as the intermittent CI win-x64 crash first seen 2026-07-17
   (which the model-tests forensics telemetry was added for) — pre-existing, NOT a v0.15.0
-  regression gate. Needs a dedicated investigation session.
+  regression gate. Needs a dedicated investigation session. Still present at v0.18.0 (2026-10-06):
+  2 of 4 full GPU runs (`ChatClient_MultiTurn_CarriesContext`,
+  `Send_WithThinkingTokenBudget_BoundsThinkingLength`) and 1 of 8 runs of the embedding tests
+  (`ChatAndEmbeddingEngines_Coexist`), with no dump or fatal log; capturing one needs WER LocalDumps,
+  a machine-wide setting (the maintainer's call).
 - **LlGuidance constrained decoding works end-to-end** (regex + JSON Schema verified on win-x64
   CPU/GPU with real-model assertions) and is compiled from source — the linux-x64 model-tests leg
   now exercises it on every push, giving Linux its first working constrained-decoding path while

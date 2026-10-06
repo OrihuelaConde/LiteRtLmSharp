@@ -15,9 +15,9 @@ same version number**:
 <!-- or LiteRtLmSharp.runtime.linux-x64 / android-arm64 / osx-arm64, per target -->
 ```
 
-Optional integrations: `LiteRtLmSharp.Extensions.AI` (a `Microsoft.Extensions.AI.IChatClient` —
-works with the Microsoft Agent Framework, Semantic Kernel and plain MEAI) and
-`LiteRtLmSharp.SemanticKernel` (an `IChatCompletionService`).
+Optional integrations: `LiteRtLmSharp.Extensions.AI` (a `Microsoft.Extensions.AI.IChatClient` and an
+`IEmbeddingGenerator` — works with the Microsoft Agent Framework, Semantic Kernel and plain MEAI) and
+`LiteRtLmSharp.SemanticKernel` (an `IChatCompletionService` and an embedding generator).
 
 ## First tokens
 
@@ -44,6 +44,8 @@ await foreach (var chunk in chat.SendStreamingAsync("Tell me a joke"))
 - Reasoning mode (Gemma "thinking"), surfaced separately from the answer
 - Multimodal input: image and audio attachments
 - Conversation restore & clone, token counting, speculative decoding, benchmarking
+- Text embeddings (EmbeddingGemma 2) for semantic search and RAG, next to a chat model
+- Model metadata (type, context size, inputs, backends) read without loading the model
 - AOT- and trim-compatible (source-generated P/Invoke)
 
 ## Documentation
@@ -57,4 +59,4 @@ await foreach (var chunk in chat.SendStreamingAsync("Tell me a joke"))
 
 Apache-2.0. This is an unofficial, community-maintained project — **not affiliated with, sponsored,
 or endorsed by Google**. LiteRT, LiteRT-LM and Gemma are trademarks of Google LLC. The native
-binaries are built from LiteRT-LM source (Apache-2.0) at pinned release tags.
+binaries are Google's official LiteRT-LM prebuilts (Apache-2.0) at pinned release tags.

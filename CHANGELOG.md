@@ -30,6 +30,24 @@ are published together.
 
 ### Added
 
+- **Embeddings.** `LiteRtEmbeddingEngine` loads an embedding model, such as EmbeddingGemma 2, and turns
+  text into vectors for semantic search, retrieval-augmented generation, clustering or classification:
+  `Embed`, `EmbedBatch` and their async versions, with Matryoshka truncation
+  (`LiteRtEmbeddingOptions.OutputDimensions`), normalization and a choice of what happens to texts longer
+  than the loaded input signatures (`OverflowStrategy`). An embedding engine does not count toward the
+  one-live-engine rule, so a chat model and an embedding model can stay loaded together. Calls on one
+  embedding engine are serialized, so it is safe to share across threads. See the
+  [Embeddings guide](https://orihuelaconde.github.io/LiteRtLmSharp/embeddings.html) for the task
+  instructions EmbeddingGemma 2 expects and for measurements.
+- **`IEmbeddingGenerator<string, Embedding<float>>`** in `LiteRtLmSharp.Extensions.AI`:
+  `LiteRtEmbeddingGenerator`, `LiteRtEmbeddingGenerationOptions` and
+  `services.AddLiteRtEmbeddingGenerator(...)`, which coexists with `AddLiteRtChatClient`. In
+  `LiteRtLmSharp.SemanticKernel`, `IKernelBuilder.AddLiteRtEmbeddingGenerator(...)` registers the same
+  generator for Semantic Kernel's vector stores (keyed when you pass a `serviceId`).
+- **Model metadata without loading.** `LiteRtModelInfo.Read(path)` reports what a `.litertlm` file
+  declares: model type, context size, input modalities, backends per modality, speculative-decoding
+  support, vision token sizes, default sampler and, for embedding models, the vector length and input
+  lengths. `LiteRtEmbeddingEngine.Load` uses it to reject a language model with a clear message.
 - **Runtime packages for linux-arm64 and android-x64**: `LiteRtLmSharp.runtime.linux-arm64` (the CI
   model suite runs on GitHub's arm64 Linux runner) and `LiteRtLmSharp.runtime.android-x64` (the x86_64
   Android emulator; use the CPU backend there). The MAUI sample's APK carries both Android ABIs.
@@ -37,7 +55,8 @@ are published together.
   LiteRT-LM's thread-local error state: `litert_lm_engine_create returned null: INVALID_ARGUMENT:
   Invalid magic number or failed to read` instead of a bare "returned null" plus a list of guesses.
   `LiteRtException.StatusCode` exposes the status (`LiteRtStatusCode`, the canonical absl codes);
-  it is `null` when the runtime reported nothing or the binding detected the failure itself.
+  it is `null` when the runtime reported nothing or the binding detected the failure itself. A
+  multi-line native call trace reads as one line: the reason, then where the runtime raised it.
 - `LiteRtEngineOptions.MaxVisionTokensPerImage` — an upper bound on the vision tokens one image may
   expand to (the engine only selects vision signatures up to it). Pair a cap below the model's
   default image size with a `VisualTokenBudget` at or below it.

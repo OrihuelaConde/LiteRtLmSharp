@@ -391,18 +391,78 @@ status text such as `INVALID_ARGUMENT: Invalid magic number or failed to read`),
   the thread pool move there as a whole, read included.
 
 The binding appends the runtime's reason to `LiteRtException` (dropping the code prefix the message
-repeats) and exposes the status as `LiteRtException.StatusCode` (`LiteRtStatusCode`). Measured messages:
-an invalid model file reports `INVALID_ARGUMENT: Invalid magic number or failed to read`; a missing LoRA
-adapter `UNKNOWN: Failed to open: <path>`; an image sent to an engine without a vision backend
-`INVALID_ARGUMENT: Vision executor should not be null, please TryLoadingVisionExecutor() first`; and
-`EnableYnnpack` on a library without YNNPACK kernels `UNIMPLEMENTED` with a native call trace as the
-message. The streaming path keeps reporting through the stream chunk's own error string.
+repeats) and exposes the status as `LiteRtException.StatusCode` (`LiteRtStatusCode`). Errors raised
+through LiteRT's status macros arrive as a multi-line call trace (one `ERROR: [path:line]` per level, the
+reason, when there is one, on the last line); the binding rewrites it to one line, the reason first and
+then the innermost location. Measured messages: an invalid model file reports `INVALID_ARGUMENT: Invalid
+magic number or failed to read`; a missing LoRA adapter `UNKNOWN: Failed to open: <path>`; an image sent
+to an engine without a vision backend `INVALID_ARGUMENT: Vision executor should not be null, please
+TryLoadingVisionExecutor() first`; a missing embedding cache directory `INVALID_ARGUMENT: Cache directory
+does not exist or is not writable: <dir> (at embedding_engine_settings.cc:316)`; and `EnableYnnpack` on a
+library without YNNPACK kernels `UNIMPLEMENTED` with only a trace (`no details, failed at
+compiled_model.cc:1036`). The streaming path keeps reporting through the stream chunk's own error
+string.
+
+## Embedding engine (v0.18.0, `c/embedding_engine.h`) — verified
+
+The embedding engine is a separate object from `LiteRtLmEngine`, with its own settings, options and
+response types. The binding gives it its own handles (`EmbeddingEngineHandle` and friends), outside the
+one-live-engine gate: a chat engine and an embedding engine coexist, verified on CPU and GPU (win-x64),
+including an embedding computed on another thread while the chat engine streams.
+
+- **Create:** `litert_lm_embedding_engine_settings_create(model_path, backend, vision_backend,
+  audio_backend)`; the binding passes `NULL` for the vision and audio backends (text only). The setters
+  (`set_cache_dir`, `set_num_threads`, `set_activation_data_type`, `set_max_input_length`,
+  `set_min_input_length`) apply before `litert_lm_embedding_engine_create(settings)`, and the settings
+  can be deleted right after it. A cache directory that does not exist fails the create (`Cache
+  directory does not exist or is not writable`, at the end of a call trace); the binding checks the
+  directory first, to name it and point to `LiteRtCache.Default`.
+- **Input:** `litert_lm_input_data_create(kLiteRtLmInputDataTypeText, bytes, size)` (declared in
+  `c/engine.h`) copies the UTF-8 bytes into the input, so the managed buffer can be released right
+  after the call; the caller deletes the input with `litert_lm_input_data_delete`.
+- **One embedding:** `litert_lm_embedding_engine_compute_embedding(engine, inputs, num_inputs, options)`
+  combines **all** `inputs` into **one** embedding (the multimodal case: text plus an image), so one text
+  is one input. It returns a response the caller deletes; `response_get_values` points into the response
+  (copy the floats out before deleting it) and `response_get_size` gives their count.
+- **Batch:** `compute_embedding_batch(engine, inputs_batch, num_inputs_per_batch, batch_size, options)`
+  takes, per request, an array of inputs and its length; the binding builds one single-input request per
+  text. The returned collection owns its responses: `responses_get_at` returns a borrowed pointer, and
+  only `responses_delete` frees them. The runtime processes the requests one after another
+  (`EmbeddingEngineImpl::ComputeEmbeddingBatch` is a loop), so a batch saves call overhead but not
+  compute, and the first failing request fails the call.
+- **Options:** `NULL` options mean the defaults: normalized, special tokens inserted, overflow strategy
+  `Error` (`kInvalidArgument` for a text longer than the loaded signatures), full output size.
+  `set_output_size` truncates (Matryoshka) and the runtime normalizes after truncating.
+- **Input length:** without `set_max_input_length`, the engine takes the bounds from the model's
+  `EmbeddingMetadata` (`max_input_length: 1024` for EmbeddingGemma 2) and loads the smallest text
+  signature that holds the maximum plus the shorter ones. Verified: the default and an explicit 1024
+  accept the same 1,022 one-token words (plus BOS and EOS), and 1025 already loads the 2,048 signature.
+  The C API does not expose the declared bounds.
+- **Activations:** precedence is the explicit setting, then the model's preferred type, then float16 on
+  GPU. CPU runs float32 by default.
+- **Errors** go through the error reporter: a text over the limit under `Error` reports
+  `INVALID_ARGUMENT`.
+
+## Model metadata (v0.18.0, `c/model_info.h`) — verified
+
+`litert_lm_loaded_file_create(path)` opens a `.litertlm` file for capability queries without creating
+an engine (it returns `NULL`, with a report, for a file it cannot open), and `loaded_file_delete`
+closes it. The queries return `false`, `0` or `-1` for what the file does not declare, and most files
+declare little (see [chat.md](chat.md#read-a-models-metadata)). The list queries
+(`modality_supported_backends`, `vision_signature_selection`, `embedding_signature_selection`) follow a
+two-call pattern: a `NULL` buffer returns the count, then a buffer of that size is filled.
+`LiteRtLmBackendType` starts at 1 (`Cpu = 1`, `Gpu = 2`, `Npu = 3`), unlike the backend strings of the
+engine settings; the binding maps the three known values and skips any newer one.
+`min_runtime_version` returns a string owned by the file, or `NULL`. The NPU queries (`npu_brand`,
+`soc_name`) are not bound.
 
 ## Official shared-library status
-- **Since v0.16.0 upstream publishes official C API prebuilts on every release**
-  (`litert_lm_c_api-<version>.zip` for linux/windows/macos/android, `CLiteRTLM.xcframework.zip`
-  for iOS), and 1.2.0 ships those — see [native-build.md](native-build.md). The self-built target
-  (`native/patch_c_api.sh`, v0.13.1 → v0.15.0) is retired.
+- **Upstream published official C API prebuilts with v0.16.0** (`litert_lm_c_api-<version>.zip` for
+  linux/windows/macos/android, `CLiteRTLM.xcframework.zip` for iOS), and 1.2.0 ships those. v0.17.x and
+  v0.18.0 shipped only the Apple xcframeworks (the zip is paused, LiteRT-LM#3569), so the v0.18.0
+  natives come from the same official build in the `litert-lm-api` wheels on PyPI — see
+  [native-build.md](native-build.md). The self-built target (`native/patch_c_api.sh`, v0.13.1 →
+  v0.15.0) is retired.
 - Before that: as of v0.14.0 upstream had its own `cc_binary litert-lm` in `c/BUILD` (the
   Python-wheel build); earlier tags shipped only the Bazel `cc_library` (`:engine`, `:engine_cpu`)
   and `add_litertlm_library(... STATIC)` in CMake, with no shared-lib target (issue #2154 / PR #2155).

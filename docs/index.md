@@ -5,8 +5,8 @@ LLM inference (e.g. Gemma) for any .NET app, including MAUI.** P/Invoke over Lit
 native binaries distributed per-RID as NuGet packages.
 
 Chat (blocking, awaitable + cancellable, streaming), function calling, multimodal (image/audio),
-conversation restore/clone, reasoning mode, tokenizer, speculative decoding and benchmarking — all
-running locally, no server.
+conversation restore/clone, reasoning mode, tokenizer, speculative decoding, benchmarking and text
+embeddings for semantic search — all running locally, no server.
 
 <p align="center">
   <img src="images/maui-chat-hero.gif" width="270" alt="Streaming chat on-device in the MAUI sample (Android)" />
@@ -24,8 +24,9 @@ running locally, no server.
 
 Install the managed package plus the runtime package for your platform, always with the same version
 number. Optional integrations:
-[`LiteRtLmSharp.Extensions.AI`](extensions-ai.md) (`IChatClient` — Microsoft Agent Framework, MEAI) and
-[`LiteRtLmSharp.SemanticKernel`](semantic-kernel.md) (`IChatCompletionService`).
+[`LiteRtLmSharp.Extensions.AI`](extensions-ai.md) (`IChatClient` and `IEmbeddingGenerator` — Microsoft
+Agent Framework, MEAI) and [`LiteRtLmSharp.SemanticKernel`](semantic-kernel.md) (`IChatCompletionService`
+and an embedding generator).
 
 ## First tokens
 
@@ -52,6 +53,8 @@ feature with runnable snippets; the guides here go deeper per topic.
 
 - **[Chat & generation](chat.md)** — function calling, reasoning mode, multimodal (image/audio),
   token counting.
+- **[Embeddings](embeddings.md)** — on-device text embeddings (EmbeddingGemma 2) for semantic search and
+  RAG, also as an `IEmbeddingGenerator`.
 - **[Microsoft.Extensions.AI integration](extensions-ai.md)** — plug the model into the .NET AI
   ecosystem as an `IChatClient` (Agent Framework, Semantic Kernel, MEAI middleware).
 - **[Semantic Kernel connector](semantic-kernel.md)** — `IChatCompletionService` over the same bridge.

@@ -1,7 +1,8 @@
 # Microsoft.Extensions.AI integration (IChatClient)
 
 `LiteRtLmSharp.Extensions.AI` is a **separate, optional companion package** that exposes a LiteRtLmSharp
-on-device model as a [`Microsoft.Extensions.AI.IChatClient`](https://learn.microsoft.com/dotnet/ai/ichatclient).
+on-device model as a [`Microsoft.Extensions.AI.IChatClient`](https://learn.microsoft.com/dotnet/ai/ichatclient)
+(and an embedding model as an `IEmbeddingGenerator`; see [Embeddings](#embeddings-iembeddinggenerator)).
 `IChatClient` is the .NET ecosystem's provider-agnostic abstraction for chat models, so this one package
 makes the model usable from:
 
@@ -20,9 +21,9 @@ helpers), and the Semantic Kernel connector is built on top of it.
 | `LiteRtLmSharp.Extensions.AI` | `LiteRtLmSharp` (same version) + `Microsoft.Extensions.AI.Abstractions` 10.7.0 + `Microsoft.Extensions.DependencyInjection.Abstractions` 10.0.9 | `net10.0` |
 
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="1.1.1" />
-<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.1.1" />
-<PackageReference Include="LiteRtLmSharp.Extensions.AI" Version="1.1.1" />
+<PackageReference Include="LiteRtLmSharp" Version="1.2.0" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.2.0" />
+<PackageReference Include="LiteRtLmSharp.Extensions.AI" Version="1.2.0" />
 ```
 
 ## Quick start
@@ -53,7 +54,7 @@ await foreach (ChatResponseUpdate update in client.GetStreamingResponseAsync("Te
 ### Dependency injection
 
 ```csharp
-// Container loads, owns and disposes a single shared engine (one engine per process):
+// Container loads, owns and disposes a single shared engine (one chat engine per process):
 services.AddLiteRtChatClient(new LiteRtEngineOptions
 {
     ModelPath = "gemma-4-E2B-it.litertlm", Backend = LiteRtBackend.Cpu, MaxNumTokens = 4096,
@@ -453,6 +454,21 @@ long? output = response.Usage?.OutputTokenCount;   // decode tokens
 
 When streaming, the usage arrives as a final `UsageContent` update, which MEAI aggregates into the response's `Usage`.
 
+## Embeddings (`IEmbeddingGenerator`)
+
+`LiteRtEmbeddingGenerator` exposes an embedding model, such as EmbeddingGemma 2, as an
+`IEmbeddingGenerator<string, Embedding<float>>`, and `AddLiteRtEmbeddingGenerator` registers it next to the
+chat client:
+
+```csharp
+services.AddLiteRtEmbeddingGenerator(
+    new LiteRtEmbeddingEngineOptions { ModelPath = "embeddinggemma-2-text-270m.litertlm" },
+    modelId: "embeddinggemma-2-text-270m");
+```
+
+An embedding engine does not count toward the one-live-engine rule, so it coexists with the chat engine.
+Options, task instructions and measurements are in the [Embeddings guide](embeddings.md#microsoftextensionsai).
+
 ## Design
 
 - **Stateless by default.** `IChatClient` hands the full message list every call, so the client rebuilds a
@@ -462,7 +478,7 @@ When streaming, the usage arrives as a final `UsageContent` update, which MEAI a
   very long chats, opt into [stateful conversations](#stateful-conversations-opt-in) (keep the live native
   conversation alive between calls and re-prefill only the new turn) or drive the native
   [`LiteRtConversation`](conversation-state.md) API directly.
-- **Serialized.** LiteRtLmSharp allows one live engine per process and conversations are not thread-safe, so
+- **Serialized.** LiteRtLmSharp allows one live chat engine per process and conversations are not thread-safe, so
   the client serializes calls through an internal `SemaphoreSlim`.
 - **Engine ownership.** Pass a `LiteRtEngine` you own (you dispose it), or register from
   `LiteRtEngineOptions` so the container loads/owns/disposes a single shared engine. The same
@@ -486,8 +502,8 @@ When streaming, the usage arrives as a final `UsageContent` update, which MEAI a
 ## Scope
 
 - **Tool calling** is supported (see [Function calling](#function-calling-tools)).
-- **Embeddings**: the LiteRT-LM C API exposes no embeddings functions at v0.14.0, so there is no
-  `IEmbeddingGenerator`.
+- **Embeddings** are supported through `LiteRtEmbeddingGenerator` (see
+  [Embeddings](#embeddings-iembeddinggenerator)).
 - **Not AOT/trim-clean.** The core `LiteRtLmSharp` package stays AOT/trim-friendly; this companion does not
   carry that guarantee.
 

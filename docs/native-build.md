@@ -20,7 +20,7 @@ cases.
 
 Until v0.15.0 the natives were built here with Bazel (`build-native.yml` + `native/patch_c_api.sh`,
 both in git history) and shipped next to upstream's companion `.so`/`.dll`/`.dylib` files. The
-switch was decided after the v0.16.0 evaluation recorded in [`roadmap.md`](roadmap.md): the same
+switch was decided after the v0.16.0 evaluation recorded in [`roadmap.md`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md): the same
 model-backed suite is green on every platform, the linux-x64 tools + constrained-decoding crash is
 gone, and on a real Android device the official library runs GPU, CPU and tool calling where the
 self-built v0.15.0 set failed on GPU (upstream's separately shipped sampler lagged behind its own

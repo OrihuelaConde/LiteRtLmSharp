@@ -2,7 +2,8 @@
 
 `LiteRtLmSharp.SemanticKernel` is a **separate, optional companion package** that plugs a LiteRtLmSharp
 on-device model into [Microsoft Semantic Kernel](https://learn.microsoft.com/semantic-kernel/overview/) as a
-standard `IChatCompletionService`.
+standard `IChatCompletionService`, and an embedding model as the `IEmbeddingGenerator` that Semantic Kernel's
+vector stores consume (see [Embeddings](embeddings.md#semantic-kernel)).
 
 It is a **thin layer over the [Microsoft.Extensions.AI `IChatClient`](extensions-ai.md)**: it registers the
 LiteRtLmSharp `IChatClient` and exposes it to Semantic Kernel through SK's own
@@ -16,9 +17,9 @@ Microsoft Agent Framework and plain MEAI from the same registration.
 | `LiteRtLmSharp.SemanticKernel` | `LiteRtLmSharp` + `LiteRtLmSharp.Extensions.AI` (same version) + `Microsoft.SemanticKernel.Abstractions` 1.77.0 + `Microsoft.Extensions.AI` 10.7.0 | `net10.0` |
 
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="1.1.1" />
-<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.1.1" />
-<PackageReference Include="LiteRtLmSharp.SemanticKernel" Version="1.1.1" />
+<PackageReference Include="LiteRtLmSharp" Version="1.2.0" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.2.0" />
+<PackageReference Include="LiteRtLmSharp.SemanticKernel" Version="1.2.0" />
 ```
 
 ## Quick start
@@ -136,7 +137,7 @@ ChatHistory:  [System, User₁, Assistant₁, User₂]   (what SK hands the conn
 
 This keeps SK's history and the model's KV cache in lockstep (SK owns the history and can edit it). The cost
 is an `O(history)` prefill per turn — fine for typical chats; for very long conversations, drive the native
-[`LiteRtConversation`](conversation-state.md) API directly. Calls are **serialized** (one live engine per
+[`LiteRtConversation`](conversation-state.md) API directly. Calls are **serialized** (one live chat engine per
 process; conversations are not thread-safe), and the engine lifecycle is handled by the
 [Extensions.AI registration](extensions-ai.md) the connector builds on. A `ChatHistory` system message is
 restored through that same History path, so this connector was **never** affected by the pre-v0.14.0
@@ -283,7 +284,8 @@ text). See [docs/extensions-ai.md](extensions-ai.md#multimodal-image--audio) for
 - **Multimodal** (image / audio) is supported (see [Multimodal](#multimodal-image--audio)).
 - **Text generation** (`ITextGenerationService`) is not provided — Semantic Kernel and the wider .NET AI
   stack are chat-centric; use chat completion.
-- **Embeddings** are not provided (the LiteRT-LM C API exposes none at v0.14.0).
+- **Embeddings**: `AddLiteRtEmbeddingGenerator` registers an `IEmbeddingGenerator<string, Embedding<float>>`
+  over an embedding model, keyed when you pass a `serviceId` (see [Embeddings](embeddings.md#semantic-kernel)).
 - **Not AOT/trim-clean.** Semantic Kernel itself is not; the core `LiteRtLmSharp` package stays
   AOT/trim-friendly, this companion does not carry that guarantee.
 

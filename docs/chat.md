@@ -173,6 +173,41 @@ if (chat.TokenCount + next > contextWindow - replyHeadroom)
 message first with `chat.RenderMessage(text)` (it returns the templated prompt without sending), then
 tokenize that: `engine.Tokenize(chat.RenderMessage(text)).Length`.
 
+## Read a model's metadata
+
+`LiteRtModelInfo.Read` opens a `.litertlm` file, reads what it declares and closes it, without loading an
+engine. Use it before a load to reject a file that is not a chat model, to size `MaxNumTokens`, or to show
+which inputs and backends a model supports.
+
+```csharp
+LiteRtModelInfo info = LiteRtModelInfo.Read("gemma-4-E2B-it.litertlm");
+
+if (info.ModelType != LiteRtModelType.LanguageModel)
+    throw new InvalidOperationException("Pick a chat model.");
+Console.WriteLine($"context: {info.MaxContextTokens} tokens (configurable: {info.IsDynamicContext})");
+Console.WriteLine($"inputs: {string.Join(", ", info.InputModalities)}");   // Text, Vision, Audio
+foreach (var (modality, backends) in info.SupportedBackends)
+    Console.WriteLine($"{modality}: {string.Join(", ", backends)}");        // Text: cpu, gpu ...
+```
+
+The metadata is only as complete as the file: every field is optional, and the litert-community builds we
+test with declare few of them.
+
+| File | `MaxContextTokens` | Speculative decoding | Inputs | Thinking, tools, default sampler |
+|---|---|---|---|---|
+| gemma-4-E2B-it | 32,003 (dynamic) | Yes | Text, vision, audio | Not declared |
+| gemma-4-E4B-it | Not declared | Yes | Text, vision, audio | Not declared |
+| Phi-4-mini-instruct | Not declared | No | Text | Not declared |
+| Ministral-3-3B-Instruct | 4,096 (static) | No | Text | Not declared |
+
+So read `false`, `0` or `null` as "not declared", not as "not supported": gemma-4-E2B-it reasons and calls
+tools although its file declares neither. `SupportedBackends` is a declaration too, not a complete list:
+the same file declares only CPU for vision, and its vision encoder also runs on the GPU backend.
+
+The other fields are `DefaultSampler`, `VisionTokenSizes` and `MaxVisionTokenBudget` (the per-image token
+sizes for `VisualTokenBudget`: 70, 140 and 280 on gemma-4-E2B-it), `MinRuntimeVersion`, and, for embedding
+models, `EmbeddingDimension` and `EmbeddingInputLengths` (see [Embeddings](embeddings.md)).
+
 ## Runnable demos
 
 See [`samples/Console`](https://github.com/OrihuelaConde/LiteRtLmSharp/tree/master/samples/Console)
