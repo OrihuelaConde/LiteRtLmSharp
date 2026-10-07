@@ -31,7 +31,7 @@ NuGet packages (LLamaSharp-style). Status: **stable (1.x)**.
 |---|:---:|:---:|:---:|:---:|---|
 | win-x64 | ✅ | ✅ | ✅ | ✅ | real hardware |
 | linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware (GPU last checked with the v0.13.1 libraries) |
-| linux-arm64 | ✅ | ⏳ | ⏳ | — | CI (first run pending) |
+| linux-arm64 | ✅ | ⏳ | ✅ | — | CI |
 | android-arm64 | ✅ | ✅ | ✅ | ✅ | real device |
 | android-x64 (emulator) | ✅ | ⏳ | ✅ | — | emulator |
 | osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI |

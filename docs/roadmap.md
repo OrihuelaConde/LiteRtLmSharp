@@ -1,8 +1,8 @@
 # Project status and roadmap
 
-Last updated: 2026-10-06 (v0.18.0 cycle in progress toward 1.3.0: repin + linux-arm64/android-x64 +
-native error reporting on the `repin-v0.18.0` branch, embeddings + model info on the `embeddings` branch;
-latest on nuget.org: 1.2.0, LiteRT-LM v0.16.0). Source of truth for "what's done and what's pending".
+Last updated: 2026-10-07 (v0.18.0 cycle toward 1.3.0: repin, linux-arm64/android-x64, native error
+reporting, embeddings and model info merged to master (#12, #13); release pending; latest on nuget.org:
+1.2.0, LiteRT-LM v0.16.0). Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -10,10 +10,10 @@ latest on nuget.org: 1.2.0, LiteRT-LM v0.16.0). Source of truth for "what's done
 |---|:---:|:---:|:---:|:---:|---|
 | win-x64 | ✅ | ✅ | ✅ | ✅ | real hardware (+ CI, CPU) |
 | linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware with the self-built v0.13.1 set (CPU + GPU); official prebuilts: Docker + CI (CPU) |
-| linux-arm64 | ✅ | ⏳ 1.3.0 | ⏳ | — | CI (ubuntu-24.04-arm, CPU): first run with the 1.3.0 pull request; no arm64 GPU on hand |
+| linux-arm64 | ✅ | ⏳ 1.3.0 | ✅ | — | CI (ubuntu-24.04-arm, CPU): full suite green since 2026-10-07, YNNPACK included; no arm64 GPU on hand |
 | android-arm64 | ✅ | ✅ | ✅ | ✅ | real device (Moto G100, Adreno 650; v0.18.0 from the packed 1.3.0 packages, 2026-10-06) |
 | android-x64 | ✅ | ⏳ 1.3.0 | ✅ | — | x86_64 emulator (API 35): chat and embeddings on CPU from the packed packages; emulators expose no GPU |
-| osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI only (macos-15; GPU via WebGPU); the v0.18.0 libraries run there first with the 1.3.0 pull request |
+| osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI only (macos-15; GPU via WebGPU); v0.18.0 green on CPU and GPU since 2026-10-07 |
 | ios-arm64 | ✅ | ⏳ | — | — | CI build/link only (no device); on-device runtime + publish pending |
 
 <sub>**CPU / GPU** = inference validated on that backend. **CI** = the `model-tests.yml` model leg
@@ -191,7 +191,7 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
    before publishing `native-v0.18.0`). No zip had appeared 10.5 hours after the release, so
    `native-v0.18.0` was published on 2026-10-07 from the wheels (run 37573093012; the same library files the
    local suites ran). Plan agreed with the maintainer: two PRs, one release.
-   - **PR 1 `repin-v0.18.0`** (in progress): pin + `native-v0.18.0` from the chosen source; runtime
+   - **PR 1 `repin-v0.18.0`** (merged 2026-10-07 as #12): pin + `native-v0.18.0` from the chosen source; runtime
      packages `linux-arm64` (CI leg on `ubuntu-24.04-arm`) and `android-x64` (x86_64 emulator; MAUI APK
      carries both ABIs, 58.5 MB Release); native error reporting in every failing call
      (`LiteRtException.StatusCode`); `MaxVisionTokensPerImage`, `EnableMetalResidencySet`,
@@ -212,7 +212,7 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
      on GPU 14.1 to 14.8 tok/s with F32 (the new default) and 15.2 with F16 (TTFT 0.57 vs 0.31 s, F32 about
      150 MB more RAM); every configuration passed the fidelity checks; embeddings 504 ms (CPU), 188 ms
      (GPU F32), 103 ms (GPU F16) per sentence. Linux GPU has no hardware on hand.
-   - **PR 2 `embeddings`** (implemented 2026-10-06, stacked on PR 1): `LiteRtEmbeddingEngine` (own
+   - **PR 2 `embeddings`** (implemented 2026-10-06, stacked on PR 1, merged 2026-10-07 as #13): `LiteRtEmbeddingEngine` (own
      handles, outside the one-engine gate; serialized and thread-safe, async variants), `LiteRtModelInfo`
      (metadata without loading), MEAI `LiteRtEmbeddingGenerator` + `AddLiteRtEmbeddingGenerator`, SK
      `AddLiteRtEmbeddingGenerator` (keyed with `serviceId`); 44 more C functions (166/212). The binding
@@ -238,7 +238,14 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
      effect, with or without `LoraRank` (the 1.2.0 docs said it failed fast). The test bundle does not
      load on GPU. Docs corrected and three tests pin the behavior; the watchlist below follows
      LiteRT-LM#3173.
-   - **Release 1.3.0** with the maintainer's GO.
+   - **CI on both pull requests (2026-10-07)**: every leg green. Model suites: linux-x64, linux-arm64 and
+     osx-arm64 CPU 330 passed, win-x64 329, osx-arm64 GPU 328 (the skips: a GPU-only test on the CPU runners,
+     audio and the benchmark on the GPU pass, and on win-x64 one test whose model stopped before the context
+     filled). The iOS package check
+     needed the .NET-for-iOS workload and Xcode pinned as a pair (workload set 10.0.400.1 with Xcode 26.6:
+     the latest workload set asked for Xcode 27, which the macos-26 image lacks).
+   - **Release 1.3.0** with the maintainer's GO. Before publishing, the maintainer chose to wait until the
+     afternoon of 2026-10-07 in case Google attaches the C API zip to v0.18.0 after all.
 
 -3. **v0.16.0 CYCLE — evaluation of Google's official C API prebuilts DONE (2026-08-12 →
    2026-09-02, branch `capi-prebuilts-probe`); the repin shipped in 1.2.0 (2026-09-05).**

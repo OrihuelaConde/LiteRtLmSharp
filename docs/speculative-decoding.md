@@ -113,13 +113,18 @@ native benchmark API's `decode_tokens_per_sec` for the turn.
 | win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, 2026-06-15) | 41.8 tok/s | 35.5 tok/s | **0.85×** | A/B both with cache off; plain GPU *with* the disk cache ≈85 tok/s |
 | linux-x64 · CPU (CI ubuntu-latest, 2026-06-16) | 16.7 tok/s | 12.2 tok/s | **0.73×** | from `model-tests.yml` |
 | osx-arm64 · CPU (CI macos-15, 2026-06-16) | 21.1 tok/s | 20.5 tok/s | **0.97×** | from `model-tests.yml` |
+| linux-x64 · CPU (CI ubuntu-latest, v0.18.0, 2026-10-07) | 25.6 and 26.1 tok/s | 12.7 and 12.8 tok/s | **0.49× to 0.50×** | two CI runs |
+| linux-arm64 · CPU (CI ubuntu-24.04-arm, v0.18.0, 2026-10-07) | 25.2 and 26.0 tok/s | 17.9 and 17.9 tok/s | **0.69× to 0.71×** | two CI runs |
+| win-x64 · CPU (CI windows-latest, v0.18.0, 2026-10-07) | 16.1 and 25.8 tok/s | 8.8 and 20.6 tok/s | **0.55× to 0.80×** | two CI runs; shared runners are noisy |
+| osx-arm64 · CPU (CI macos-15, v0.18.0, 2026-10-07) | 21.1 and 12.8 tok/s | 17.1 and 11.7 tok/s | **0.81× to 0.92×** | two CI runs; shared runners are noisy |
 | android-arm64 · GPU OpenCL, Adreno 650 (Moto G100, 2026-06-16) | 13.9 tok/s | 14.1 tok/s | **~1.01×** | runs correctly on GPU (drafter on OpenCL, GPU sampler active, no fallback); ~32% draft acceptance, too low to beat the drafter overhead on this older GPU |
 
 ### Findings
 
 - **CPU regresses (every platform).** The drafter + verification overhead is not amortized on CPU, so
   speculative decoding is a net loss-to-neutral for this model: **0.73×** (linux-x64 CI), **0.78×**
-  (win-x64 dev box), **0.97×** (osx-arm64 CI). This matches the general result that
+  (win-x64 dev box), **0.97×** (osx-arm64 CI). On v0.18.0 the CI runners measured 0.49× (linux-x64) to
+  0.92× (osx-arm64), and the dev box again 0.78×. This matches the general result that
   speculative decoding helps memory-bandwidth-bound (accelerator) decode, not compute-bound CPU
   decode. Both outputs were coherent, full paragraphs, and the `*.mtp_drafter.xnnpack_cache_*` file
   produced alongside the model confirms the drafter was actually engaged.
