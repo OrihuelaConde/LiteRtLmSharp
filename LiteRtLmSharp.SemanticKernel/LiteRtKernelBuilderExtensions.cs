@@ -123,8 +123,10 @@ public static class LiteRtKernelBuilderExtensions
     }
 
     /// <summary>Adds an embedding generator from <paramref name="options"/>; the container loads, owns and
-    /// disposes a single shared <see cref="LiteRtEmbeddingEngine"/>. It coexists with a chat-completion
-    /// registration: an embedding engine does not count toward the one-live-engine rule.</summary>
+    /// disposes the <see cref="LiteRtEmbeddingEngine"/>: one shared engine without a
+    /// <paramref name="serviceId"/>, and one engine per <paramref name="serviceId"/> otherwise, so keyed
+    /// generators can run different models or backends. It coexists with a chat-completion registration: an
+    /// embedding engine does not count toward the one-live-engine rule.</summary>
     /// <param name="builder">The kernel builder to register into.</param>
     /// <param name="options">Options the container uses to load the shared embedding engine.</param>
     /// <param name="modelId">Optional model id surfaced on the generator's metadata and on each embedding.</param>
@@ -133,12 +135,17 @@ public static class LiteRtKernelBuilderExtensions
     /// otherwise it is loaded on first use.</param>
     /// <param name="defaultOptions">Optional options applied to every call unless the call overrides them.</param>
     /// <returns>The kernel builder, for chaining.</returns>
+    /// <exception cref="InvalidOperationException">The same <paramref name="serviceId"/> (or none) is already
+    /// registered from different options.</exception>
     public static IKernelBuilder AddLiteRtEmbeddingGenerator(this IKernelBuilder builder, LiteRtEmbeddingEngineOptions options, string? modelId = null, string? serviceId = null, bool eager = false, LiteRtEmbeddingOptions? defaultOptions = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(options);
-        LiteRtEmbeddingGeneratorServiceCollectionExtensions.RegisterSharedEngine(builder.Services, options, eager);
-        RegisterEmbeddingGenerator(builder.Services, static sp => sp.GetRequiredService<LiteRtEmbeddingEngine>(), modelId, serviceId, defaultOptions);
+        LiteRtEmbeddingGeneratorServiceCollectionExtensions.RegisterSharedEngine(builder.Services, options, eager, serviceId);
+        Func<IServiceProvider, LiteRtEmbeddingEngine> engine = serviceId is null
+            ? static sp => sp.GetRequiredService<LiteRtEmbeddingEngine>()
+            : sp => sp.GetRequiredKeyedService<LiteRtEmbeddingEngine>(serviceId);
+        RegisterEmbeddingGenerator(builder.Services, engine, modelId, serviceId, defaultOptions);
         return builder;
     }
 

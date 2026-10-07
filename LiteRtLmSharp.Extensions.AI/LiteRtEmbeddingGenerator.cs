@@ -1,4 +1,4 @@
-using System.Globalization;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.AI;
 
@@ -19,7 +19,9 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// <para>
 /// The runtime does not apply a model's task instructions: prepend them to each value (EmbeddingGemma 2
 /// distinguishes queries from documents; see <c>docs/embeddings.md</c>). Large inputs are embedded in batches
-/// of 32 texts. The generator does not own the engine: dispose the engine after the generator.
+/// of 32 texts. The engine runs one model, so each embedding carries the generator's model id;
+/// <see cref="EmbeddingGenerationOptions.ModelId"/> is ignored, as it is by the chat client. The generator
+/// does not own the engine: dispose the engine after the generator.
 /// </para>
 /// </remarks>
 public sealed class LiteRtEmbeddingGenerator : IEmbeddingGenerator<string, Embedding<float>>
@@ -34,7 +36,8 @@ public sealed class LiteRtEmbeddingGenerator : IEmbeddingGenerator<string, Embed
     /// <summary>Initializes a new instance of the <see cref="LiteRtEmbeddingGenerator"/> class over an embedding
     /// engine <b>you own</b> (dispose it after the generator).</summary>
     /// <param name="engine">The loaded embedding engine. Must outlive this generator.</param>
-    /// <param name="modelId">Identifier surfaced as the metadata's default model id and on each embedding. Optional.</param>
+    /// <param name="modelId">Identifier surfaced as the metadata's default model id and on each embedding, whatever
+    /// the request's <see cref="EmbeddingGenerationOptions.ModelId"/> says. Optional.</param>
     /// <param name="defaultOptions">Options applied to every call unless the call overrides them. Optional.</param>
     public LiteRtEmbeddingGenerator(LiteRtEmbeddingEngine engine, string? modelId = null, LiteRtEmbeddingOptions? defaultOptions = null)
     {
@@ -45,15 +48,22 @@ public sealed class LiteRtEmbeddingGenerator : IEmbeddingGenerator<string, Embed
     }
 
     /// <inheritdoc/>
-    /// <exception cref="ArgumentException">A value is <c>null</c>, or an option has an invalid value.</exception>
+    /// <exception cref="ArgumentException">A value is <c>null</c> (checked before anything is embedded), or an
+    /// option has an invalid value.</exception>
     /// <exception cref="LiteRtException">The native computation failed; the message carries the runtime's reason.</exception>
     public async Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
         IEnumerable<string> values, EmbeddingGenerationOptions? options = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(values);
         string[] texts = values as string[] ?? [.. values];
+        for (int i = 0; i < texts.Length; i++)
+        {
+            if (texts[i] is null)
+                throw new ArgumentException($"values[{i}] is null.", nameof(values));
+        }
         LiteRtEmbeddingOptions? nativeOptions = LiteRtEmbeddingMapping.ToEmbeddingOptions(options, _defaultOptions);
-        string? modelId = options?.ModelId ?? _metadata.DefaultModelId;
+        // The engine runs one model: a request's ModelId cannot switch it, so it never relabels the vectors.
+        string? modelId = _metadata.DefaultModelId;
 
         var result = new GeneratedEmbeddings<Embedding<float>>(texts.Length);
         for (int start = 0; start < texts.Length; start += BatchSize)
@@ -96,7 +106,8 @@ public sealed class LiteRtEmbeddingGenerator : IEmbeddingGenerator<string, Embed
 public sealed class LiteRtEmbeddingGenerationOptions : EmbeddingGenerationOptions
 {
     /// <summary>Gets or sets a value indicating whether the vector is L2-normalized; <c>null</c> keeps the
-    /// generator's default (normalized). Backed by the <c>normalize</c> key.</summary>
+    /// generator's default (normalized). Backed by the <c>normalize</c> key. A stored value that is not a
+    /// boolean reads as <c>null</c> here and fails the call.</summary>
     [JsonIgnore]
     public bool? Normalize
     {
@@ -105,7 +116,8 @@ public sealed class LiteRtEmbeddingGenerationOptions : EmbeddingGenerationOption
     }
 
     /// <summary>Gets or sets a value indicating whether the runtime inserts the model's special tokens;
-    /// <c>null</c> keeps the generator's default (inserted). Backed by the <c>insert_special_tokens</c> key.</summary>
+    /// <c>null</c> keeps the generator's default (inserted). Backed by the <c>insert_special_tokens</c> key. A
+    /// stored value that is not a boolean reads as <c>null</c> here and fails the call.</summary>
     [JsonIgnore]
     public bool? InsertSpecialTokens
     {
@@ -114,11 +126,13 @@ public sealed class LiteRtEmbeddingGenerationOptions : EmbeddingGenerationOption
     }
 
     /// <summary>Gets or sets how a text longer than the model's largest loaded input is handled; <c>null</c>
-    /// keeps the generator's default (the runtime fails the call). Backed by the <c>overflow_strategy</c> key.</summary>
+    /// keeps the generator's default (the runtime fails the call). Backed by the <c>overflow_strategy</c> key. A
+    /// stored value that names no strategy reads as <c>null</c> here and fails the call.</summary>
     [JsonIgnore]
     public LiteRtInputOverflowStrategy? OverflowStrategy
     {
-        get => LiteRtEmbeddingMapping.GetOverflowStrategy(this);
+        get => LiteRtEmbeddingMapping.ParseOverflowStrategy(
+            AdditionalProperties?.TryGetValue(LiteRtEmbeddingMapping.OverflowStrategyKey, out object? value) == true ? value : null);
         set => Set(LiteRtEmbeddingMapping.OverflowStrategyKey, value);
     }
 
@@ -148,49 +162,68 @@ internal static class LiteRtEmbeddingMapping
         // MEAI's own setter already rejects a non-positive Dimensions.
         if (options.Dimensions is { } dimensions)
             merged = merged with { OutputDimensions = dimensions };
-        if (GetBool(options, NormalizeKey) is { } normalize)
+        if (GetBoolOrThrow(options, NormalizeKey) is { } normalize)
             merged = merged with { Normalize = normalize };
-        if (GetBool(options, InsertSpecialTokensKey) is { } insert)
+        if (GetBoolOrThrow(options, InsertSpecialTokensKey) is { } insert)
             merged = merged with { InsertSpecialTokens = insert };
         if (GetOverflowStrategy(options) is { } overflow)
             merged = merged with { OverflowStrategy = overflow };
         return merged == new LiteRtEmbeddingOptions() && defaults is null ? null : merged;
     }
 
+    /// <summary>The getter-safe read of a boolean knob: <c>null</c> when absent or unreadable.</summary>
     internal static bool? GetBool(EmbeddingGenerationOptions options, string key)
         => options.AdditionalProperties?.TryGetValue(key, out object? value) == true ? LiteRtChatMapping.AsBool(value) : null;
 
-    /// <summary>Reads the overflow strategy from the enum, its name (case-insensitive) or its numeric value, so
-    /// options deserialized from JSON or configuration work too.</summary>
+    /// <summary>Reads a boolean knob for a call: <c>null</c> when absent, an error when present but unreadable,
+    /// so a typo in configuration does not silently fall back to the default.</summary>
+    /// <exception cref="ArgumentException">The value is present but is not a boolean.</exception>
+    private static bool? GetBoolOrThrow(EmbeddingGenerationOptions options, string key)
+    {
+        if (options.AdditionalProperties?.TryGetValue(key, out object? value) != true || value is null)
+            return null;
+        return LiteRtChatMapping.AsBool(value)
+            ?? throw new ArgumentException($"'{Describe(value)}' is not a valid '{key}' value (true or false).", nameof(options));
+    }
+
+    /// <summary>Reads the overflow strategy for a call from the enum, its name (case-insensitive) or its
+    /// number, including the <see cref="JsonElement"/> values of options deserialized from JSON.</summary>
     /// <exception cref="ArgumentException">The value names no strategy.</exception>
     internal static LiteRtInputOverflowStrategy? GetOverflowStrategy(EmbeddingGenerationOptions options)
     {
         if (options.AdditionalProperties?.TryGetValue(OverflowStrategyKey, out object? value) != true || value is null)
             return null;
-        LiteRtInputOverflowStrategy? strategy = value switch
-        {
-            LiteRtInputOverflowStrategy s => s,
-            string text when Enum.TryParse(text, ignoreCase: true, out LiteRtInputOverflowStrategy parsed) => parsed,
-            IConvertible number when value is not string && TryToInt(number, out int n) => (LiteRtInputOverflowStrategy)n,
-            _ => null,
-        };
-        if (strategy is not { } result || !Enum.IsDefined(result))
-            throw new ArgumentException(
-                $"'{value}' is not an embedding overflow strategy (ChunkAndAverage, Truncate or Error).", nameof(options));
-        return result;
+        return ParseOverflowStrategy(value)
+            ?? throw new ArgumentException(
+                $"'{Describe(value)}' is not an embedding overflow strategy (ChunkAndAverage, Truncate or Error).", nameof(options));
     }
 
-    private static bool TryToInt(IConvertible value, out int result)
+    /// <summary>Parses an overflow strategy without throwing: <c>null</c> for an absent value or one that names
+    /// no strategy (a boolean, a fractional number, a list of names, an undefined number).</summary>
+    internal static LiteRtInputOverflowStrategy? ParseOverflowStrategy(object? value)
     {
-        try
+        LiteRtInputOverflowStrategy? strategy = value switch
         {
-            result = value.ToInt32(CultureInfo.InvariantCulture);
-            return true;
-        }
-        catch (Exception e) when (e is FormatException or InvalidCastException or OverflowException)
-        {
-            result = 0;
-            return false;
-        }
+            null or bool => null,
+            LiteRtInputOverflowStrategy s => s,
+            string text => ParseName(text),
+            JsonElement { ValueKind: JsonValueKind.String } json => ParseName(json.GetString()),
+            _ => LiteRtChatMapping.AsInt32(value) is { } n ? (LiteRtInputOverflowStrategy)n : null,
+        };
+        return strategy is { } result && Enum.IsDefined(result) ? result : null;
     }
+
+    // Exact names only: Enum.TryParse would also take numbers in strings and comma-separated lists.
+    private static LiteRtInputOverflowStrategy? ParseName(string? text)
+    {
+        string trimmed = text?.Trim() ?? "";
+        foreach (LiteRtInputOverflowStrategy candidate in Enum.GetValues<LiteRtInputOverflowStrategy>())
+        {
+            if (string.Equals(candidate.ToString(), trimmed, StringComparison.OrdinalIgnoreCase))
+                return candidate;
+        }
+        return LiteRtChatMapping.AsInt32(trimmed) is { } n ? (LiteRtInputOverflowStrategy)n : null;
+    }
+
+    private static string Describe(object value) => value is JsonElement json ? json.GetRawText() : value.ToString() ?? "";
 }

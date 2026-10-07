@@ -9,7 +9,8 @@ namespace Microsoft.Extensions.DependencyInjection;
 /// Registration helpers for the LiteRtLmSharp <see cref="IEmbeddingGenerator{TInput, TEmbedding}"/>. Register
 /// over an embedding engine you own, or from a <see cref="LiteRtEmbeddingEngineOptions"/> (the container loads,
 /// owns and disposes a single shared embedding engine). An embedding engine does not count toward the
-/// one-live-engine rule, so this registration coexists with <c>AddLiteRtChatClient</c>.
+/// one-live-engine rule, so this registration coexists with <c>AddLiteRtChatClient</c>. One container holds one
+/// generator: registering again with the same options is a no-op, and with different options throws.
 /// </summary>
 public static class LiteRtEmbeddingGeneratorServiceCollectionExtensions
 {
@@ -36,9 +37,12 @@ public static class LiteRtEmbeddingGeneratorServiceCollectionExtensions
     /// <param name="options">Options the container uses to load the shared embedding engine.</param>
     /// <param name="modelId">Optional model id surfaced on the generator's metadata and on each embedding.</param>
     /// <param name="eager">When <c>true</c>, load the engine now (a bad model path or backend throws here);
-    /// otherwise it is loaded on first use.</param>
+    /// otherwise it is loaded on first use. Either way the container disposes the engine once it has resolved
+    /// it, so an eager engine that is never resolved lives until the process ends.</param>
     /// <param name="defaultOptions">Optional options applied to every call unless the call overrides them.</param>
     /// <returns>The service collection, for chaining.</returns>
+    /// <exception cref="InvalidOperationException">The collection already registers a shared embedding engine
+    /// from different options.</exception>
     public static IServiceCollection AddLiteRtEmbeddingGenerator(
         this IServiceCollection services, LiteRtEmbeddingEngineOptions options, string? modelId = null, bool eager = false,
         LiteRtEmbeddingOptions? defaultOptions = null)
@@ -51,18 +55,46 @@ public static class LiteRtEmbeddingGeneratorServiceCollectionExtensions
         return services;
     }
 
-    internal static void RegisterSharedEngine(IServiceCollection services, LiteRtEmbeddingEngineOptions options, bool eager)
+    /// <summary>
+    /// Registers the container-owned engine for <paramref name="options"/>, once: the same options again are a
+    /// no-op, different options throw (a second engine would otherwise be silently ignored). With
+    /// <paramref name="serviceKey"/>, registers a keyed engine for that key instead, so keyed generators can
+    /// run different models or backends side by side.
+    /// </summary>
+    internal static void RegisterSharedEngine(
+        IServiceCollection services, LiteRtEmbeddingEngineOptions options, bool eager, object? serviceKey = null)
     {
-        if (services.Any(d => d.ServiceType == typeof(LiteRtEmbeddingEngine)))
-            return;
-        if (eager)
+        SharedEmbeddingEngine? existing = services
+            .Where(d => d.ServiceType == typeof(SharedEmbeddingEngine) && Equals(d.ServiceKey, serviceKey))
+            .Select(d => (serviceKey is null ? d.ImplementationInstance : d.KeyedImplementationInstance) as SharedEmbeddingEngine)
+            .FirstOrDefault();
+        if (existing is not null)
         {
-            LiteRtEmbeddingEngine engine = LiteRtEmbeddingEngine.Load(options);   // load now: a bad path or backend throws here
-            services.AddSingleton(_ => engine);                                    // factory result: the container disposes it
+            if (existing.Options != options)
+                throw new InvalidOperationException(
+                    "An embedding engine is already registered " + (serviceKey is null ? "" : $"for '{serviceKey}' ") +
+                    "from different LiteRtEmbeddingEngineOptions. Register one generator per container, or give each " +
+                    "Semantic Kernel registration its own serviceId.");
+            return;
+        }
+        if (serviceKey is null && services.Any(d => d.ServiceType == typeof(LiteRtEmbeddingEngine) && d.ServiceKey is null))
+            return;   // an engine registered another way (for example an instance you own) stays in charge
+
+        LiteRtEmbeddingEngine? preloaded = eager ? LiteRtEmbeddingEngine.Load(options) : null;   // eager: a bad path throws here
+        // Factory registrations: the container creates (or adopts) and disposes the engine once resolved.
+        Func<IServiceProvider, LiteRtEmbeddingEngine> create = _ => preloaded ?? LiteRtEmbeddingEngine.Load(options);
+        if (serviceKey is null)
+        {
+            services.AddSingleton(new SharedEmbeddingEngine(options));
+            services.AddSingleton(create);
         }
         else
         {
-            services.AddSingleton(_ => LiteRtEmbeddingEngine.Load(options));       // lazy; created and disposed by the container
+            services.AddKeyedSingleton(serviceKey, new SharedEmbeddingEngine(options));
+            services.AddKeyedSingleton(serviceKey, (sp, _) => create(sp));
         }
     }
+
+    /// <summary>Marks the options a container-owned embedding engine was registered from.</summary>
+    internal sealed record SharedEmbeddingEngine(LiteRtEmbeddingEngineOptions Options);
 }
