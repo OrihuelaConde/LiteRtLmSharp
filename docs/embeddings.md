@@ -186,7 +186,10 @@ after a warm-up; texts carry the document instruction.
 - **Alongside a chat engine.** An embedding engine does not count toward the one-live-engine rule of
   `LiteRtEngine`, so an app can keep a chat model and an embedding model loaded at the same time, for
   example to retrieve passages and then answer with them. Validated on CPU and GPU (win-x64), including
-  embeddings computed while the chat engine streams a reply.
+  embeddings computed while the chat engine streams a reply. On a phone the chat model dominates memory:
+  on a Moto G100 (8 GB), gemma-4-E2B on GPU takes about 1.8 GB and the embedding engine adds about 120 MB
+  on CPU or 260 MB on GPU, and the same retrieve-then-answer flow ran with about 0.4 to 0.5 GB of the
+  device's memory still available.
 - **Model check.** `Load` reads the file's metadata first and throws `ArgumentException` when the file
   is a language model (load those with `LiteRtEngine.Load`).
 

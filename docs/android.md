@@ -89,7 +89,10 @@ storage on first run and pass its path to `LiteRtEngine.Load`.
 
    Every configuration answered correctly and passed digit, date and counting fidelity checks. Model
    metadata and EmbeddingGemma 2 work too: one sentence takes 504 ms on CPU, 188 ms on GPU with F32 and
-   103 ms with F16, with a cosine similarity to the CPU vector of 0.9995 (F32) and 0.9962 (F16).
+   103 ms with F16, with a cosine similarity to the CPU vector of 0.9995 (F32) and 0.9962 (F16). Chat and
+   embedding engines also run together: with gemma-4-E2B on GPU (about 1.8 GB), the embedding engine adds
+   about 120 MB on CPU or 260 MB on GPU, and a retrieve-then-answer flow (with an embedding computed while
+   the reply streams) completed with about 0.4 to 0.5 GB of device memory still available.
 
 ## Risks
 - Vendor GPU drivers (see the diagnosis below): older Adreno Vulkan drivers break Dawn's shaders,
