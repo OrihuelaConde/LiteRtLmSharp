@@ -400,8 +400,11 @@ to an engine without a vision backend `INVALID_ARGUMENT: Vision executor should 
 TryLoadingVisionExecutor() first`; a missing embedding cache directory `INVALID_ARGUMENT: Cache directory
 does not exist or is not writable: <dir> (at embedding_engine_settings.cc:316)`; and `EnableYnnpack` on a
 library without YNNPACK kernels `UNIMPLEMENTED` with only a trace (`no details, failed at
-compiled_model.cc:1036`). The streaming path keeps reporting through the stream chunk's own error
-string.
+compiled_model.cc:1036`). A failure during a streamed reply arrives instead as the stream chunk's error
+string, the same `CODE: reason` text; the binding parses the code back and builds the same exception,
+with the status, the one-line reason and the same guidance. With the native log silenced (a level above
+5, such as 1000), LiteRT's status macros record the status without the reason (the text is the bare
+`INVALID_ARGUMENT: `); the exception then keeps the status and says why the reason is missing.
 
 ## Embedding engine (v0.18.0, `c/embedding_engine.h`) — verified
 
@@ -411,7 +414,9 @@ one-live-engine gate: a chat engine and an embedding engine coexist, verified on
 including an embedding computed on another thread while the chat engine streams.
 
 - **Create:** `litert_lm_embedding_engine_settings_create(model_path, backend, vision_backend,
-  audio_backend)`; the binding passes `NULL` for the vision and audio backends (text only). The setters
+  audio_backend)`; the binding passes `NULL` for the vision and audio backends, which the C layer reads as
+  "the main backend for any encoder the bundle carries": a multimodal bundle (EmbeddingGemma 2 Text Vision
+  440M or 740M) still compiles its vision and audio encoders, which the binding cannot feed. The setters
   (`set_cache_dir`, `set_num_threads`, `set_activation_data_type`, `set_max_input_length`,
   `set_min_input_length`) apply before `litert_lm_embedding_engine_create(settings)`, and the settings
   can be deleted right after it. A cache directory that does not exist fails the create (`Cache

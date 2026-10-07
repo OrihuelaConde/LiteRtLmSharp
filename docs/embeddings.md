@@ -20,7 +20,8 @@ consume directly. `LiteRtModelInfo` reads a model file's metadata without loadin
   same repository has variants compiled for specific NPUs (Google Tensor, Qualcomm, MediaTek, Intel);
   LiteRtLmSharp does not support NPUs, so use the plain file on CPU or GPU.
 - Text input. EmbeddingGemma 2 also comes in larger bundles that embed images, audio and video; the
-  binding does not expose those inputs yet.
+  binding does not expose those inputs yet. Use the text-only bundle: the larger ones load their vision
+  and audio encoders anyway, which costs memory and load time for nothing.
 
 ## Quick start
 
@@ -123,10 +124,14 @@ An embedding model runs one of several fixed-size input signatures. EmbeddingGem
 the engine pads each text to the smallest loaded signature that holds it.
 
 By default the engine loads the signatures up to the limit the model file declares, which is **1,024
-tokens** for EmbeddingGemma 2, not 8,192. A longer text then fails, unless `OverflowStrategy` truncates or
-chunks it. To embed longer texts whole, raise `LiteRtEmbeddingEngineOptions.MaxInputLength`: the engine
-loads the smallest signature that holds that many tokens, plus the shorter ones. `MinInputLength` leaves
-out the signatures shorter than its value.
+tokens** for EmbeddingGemma 2, not 8,192 (`LiteRtModelInfo.MaxContextTokens` reports the longest
+signature, 8,192, which only a raised `MaxInputLength` reaches). A longer text then fails, unless
+`OverflowStrategy` truncates or chunks it. To embed longer texts whole, raise
+`LiteRtEmbeddingEngineOptions.MaxInputLength`: the engine loads the smallest signature that holds that many
+tokens, plus the shorter ones, so it accepts texts up to that signature's length (1,500 loads the 2,048
+signature). A value above the longest signature makes `Load` fail. `MinInputLength` leaves out the
+signatures shorter than its value; it must not exceed the effective maximum (`MaxInputLength`, or the
+model's 1,024 when that is unset).
 
 ```csharp
 using var engine = LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions
@@ -144,7 +149,7 @@ hundred tokens and embedding each passage usually retrieves better than one vect
 | Option | Default | Notes |
 |---|---|---|
 | `Backend` | `Cpu` | `Gpu` is faster for longer texts (see [Performance](#performance)). The GPU vectors differ slightly from the CPU ones (cosine similarity 0.9994 between them in our measurement), so index and search on the same backend. |
-| `ActivationDataType` | `Float32` | Unlike the chat engine, the embedding engine defaults to float32. The EmbeddingGemma 2 model card advises against float16 (its activations exceed the float16 range, which degrades the vectors silently), and on GPU the runtime would otherwise fall back to float16: in our measurement those vectors had a cosine similarity of 0.9965 with the CPU ones and slightly narrower ranking margins, and float32 cost no speed. The CPU backend runs float32 either way. Set `Float16` to halve activation memory, or `null` to let the runtime choose. |
+| `ActivationDataType` | `Float32` | Like the chat engine, the embedding engine defaults to float32. The EmbeddingGemma 2 model card advises against float16 (its activations exceed the float16 range, which degrades the vectors silently), and on GPU the runtime would otherwise fall back to float16: in our measurement those vectors had a cosine similarity of 0.9965 with the CPU ones and slightly narrower ranking margins. Float32 cost no speed on a desktop GPU, but on a phone GPU float16 was about twice as fast per sentence (see [Performance](#performance)). The CPU backend runs float32 either way. Set `Float16` to make that trade, or `null` to let the runtime choose. |
 | `MaxInputLength`, `MinInputLength` | The model's limits | See [Input length](#input-length). |
 | `Cache` | Next to the model file | Compiled artifacts written on the first load (67 MB on CPU, 74 MB on GPU for EmbeddingGemma 2 Text 270M). A `LiteRtCache.Directory` must already exist: the runtime does not create it, so `Load` throws `ArgumentException`. |
 | `NumThreads` | Runtime default | CPU only. |
@@ -210,19 +215,25 @@ using var engine = LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions
 using IEmbeddingGenerator<string, Embedding<float>> generator =
     new LiteRtEmbeddingGenerator(engine, modelId: "embeddinggemma-2-text-270m");
 
+// The same options for documents and questions: vectors of different lengths are not comparable.
+var options = new EmbeddingGenerationOptions { Dimensions = 256 };
+
 GeneratedEmbeddings<Embedding<float>> documents = await generator.GenerateAsync(
-    ["title: none | text: The bakery opens at 7 a.m.", "title: none | text: Renew the car insurance."]);
+    ["title: none | text: The bakery opens at 7 a.m.", "title: none | text: Renew the car insurance."], options);
 
 Embedding<float> question = await generator.GenerateAsync(
-    "task: search result | query: When does the bakery open?",
-    new EmbeddingGenerationOptions { Dimensions = 256 });
+    "task: search result | query: When does the bakery open?", options);
 ```
 
 - `EmbeddingGenerationOptions.Dimensions` maps to `OutputDimensions`. The other knobs are on
   `LiteRtEmbeddingGenerationOptions` (`Normalize`, `InsertSpecialTokens`, `OverflowStrategy`), stored in
   `AdditionalProperties` under the keys `normalize`, `insert_special_tokens` and `overflow_strategy`, so
-  setting those keys on a plain `EmbeddingGenerationOptions` (for example, from configuration) works too.
-  `overflow_strategy` accepts the enum, its name or its number.
+  setting those keys on a plain `EmbeddingGenerationOptions` (for example, from configuration or JSON) works
+  too. `overflow_strategy` accepts the enum, its name or its number; `normalize` and
+  `insert_special_tokens` take a boolean. A value that cannot be read fails the call with
+  `ArgumentException`.
+- Every embedding carries the generator's model id: the engine runs one model, so a request's
+  `ModelId` is ignored.
 - The generator embeds large inputs in batches of 32 texts and keeps their order.
 - The generator does not own the engine: dispose the engine after the generator.
 - `GetService<EmbeddingGeneratorMetadata>()` reports the provider `litert-lm`, the model id and the
@@ -238,8 +249,10 @@ services.AddLiteRtEmbeddingGenerator(
 ```
 
 Registered from options, the container loads one shared embedding engine on first use (or at
-registration with `eager: true`), owns it and disposes it. The registration coexists with
-`AddLiteRtChatClient`. To use an engine you own, pass the engine instead of the options.
+registration with `eager: true`), owns it and disposes it once it has resolved it. The registration
+coexists with `AddLiteRtChatClient`. A container holds one generator: registering again with the same
+options does nothing, and with different options throws `InvalidOperationException`. To use an engine
+you own, pass the engine instead of the options.
 
 ## Semantic Kernel
 
@@ -258,7 +271,8 @@ Kernel kernel = builder.Build();
 var generator = kernel.GetRequiredService<IEmbeddingGenerator<string, Embedding<float>>>();
 ```
 
-Pass `serviceId` to register a keyed generator.
+Pass `serviceId` to register a keyed generator. Each `serviceId` gets its own engine, so keyed
+generators can run different models or backends (for example one on CPU and one on GPU).
 
 ## Read a model's metadata
 
