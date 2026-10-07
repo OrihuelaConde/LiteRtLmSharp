@@ -102,7 +102,7 @@ public sealed class EmbeddingConnectorModelTests
 
     private static LiteRtEmbeddingEngineOptions Options => new()
     {
-        ModelPath = EmbeddingModel!, Backend = Backend, ActivationDataType = LiteRtActivationDataType.Float32,
+        ModelPath = EmbeddingModel!, Backend = Backend,
     };
 
     private static void SkipWithoutEmbeddingModel() => Skip.If(

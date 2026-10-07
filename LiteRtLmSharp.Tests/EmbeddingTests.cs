@@ -30,6 +30,15 @@ public class EmbeddingValidationTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new LiteRtEmbeddingEngineOptions { MinInputLength = -1 });
         Assert.Equal(0, new LiteRtEmbeddingEngineOptions { MinInputLength = 0 }.MinInputLength);
     }
+
+    /// <summary>EmbeddingGemma must not run in float16, which is the runtime's GPU fallback: the embedding
+    /// options default to float32, and null still hands the choice to the runtime.</summary>
+    [Fact]
+    public void Options_DefaultToFloat32Activations()
+    {
+        Assert.Equal(LiteRtActivationDataType.Float32, new LiteRtEmbeddingEngineOptions().ActivationDataType);
+        Assert.Null(new LiteRtEmbeddingEngineOptions { ActivationDataType = null }.ActivationDataType);
+    }
 }
 
 /// <summary>
@@ -51,12 +60,11 @@ public sealed class EmbeddingModelTests(ITestOutputHelper output)
         string.IsNullOrEmpty(EmbeddingModel) || !File.Exists(EmbeddingModel),
         "Set LITERTLM_TEST_EMBEDDING_MODEL to an embedding .litertlm (e.g. embeddinggemma-2-text-270m) to run.");
 
+    // Default options on purpose: they must already be right for EmbeddingGemma (float32 activations).
     private static LiteRtEmbeddingEngine LoadEngine(LiteRtBackend? backend = null) => LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions
     {
         ModelPath = EmbeddingModel!,
         Backend = backend ?? Backend,
-        // EmbeddingGemma must not run in float16; F32 is a no-op on CPU and the safe choice on GPU.
-        ActivationDataType = LiteRtActivationDataType.Float32,
     });
 
     private static double Norm(float[] v) => Math.Sqrt(v.Sum(x => (double)x * x));
@@ -243,7 +251,7 @@ public sealed class EmbeddingModelTests(ITestOutputHelper output)
         LiteRtEngine.SetMinLogLevel(3);
         using var engine = LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions
         {
-            ModelPath = EmbeddingModel!, Backend = Backend, ActivationDataType = LiteRtActivationDataType.Float32,
+            ModelPath = EmbeddingModel!, Backend = Backend,
             MaxInputLength = 128,
         });
         string longText = Document + string.Join(" ", Enumerable.Range(0, 120).Select(i => $"Sentence number {i} talks about lighthouses and the sea."));
@@ -282,7 +290,7 @@ public sealed class EmbeddingModelTests(ITestOutputHelper output)
         string[] pool = "alpha beta gamma delta river mountain cloud signal paper window garden engine".Split(' ');
         string text = string.Join(' ', Enumerable.Range(0, 1100).Select(i => pool[i % pool.Length]));
 
-        var options = new LiteRtEmbeddingEngineOptions { ModelPath = EmbeddingModel!, Backend = Backend, ActivationDataType = LiteRtActivationDataType.Float32 };
+        var options = new LiteRtEmbeddingEngineOptions { ModelPath = EmbeddingModel!, Backend = Backend };
         using (var byDefault = LiteRtEmbeddingEngine.Load(options))
             Assert.Equal(LiteRtStatusCode.InvalidArgument, Assert.Throws<LiteRtException>(() => byDefault.Embed(text)).StatusCode);
         using var raised = LiteRtEmbeddingEngine.Load(options with { MaxInputLength = 2048 });
@@ -310,13 +318,16 @@ public sealed class EmbeddingModelTests(ITestOutputHelper output)
             output.WriteLine($"gpu batch of {texts.Length}: {sw.ElapsedMilliseconds} ms");
         }
         double[] cosines = cpu.Zip(gpu, Cosine).ToArray();
-        output.WriteLine($"cpu vs gpu (float32 activations) cosine: min {cosines.Min():F5}, mean {cosines.Average():F5}");
+        output.WriteLine($"cpu vs gpu (default options, float32 activations) cosine: min {cosines.Min():F5}, mean {cosines.Average():F5}");
 
-        // For the docs: the engine's default GPU precision, which EmbeddingGemma advises against.
-        using (var gpuDefault = LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions { ModelPath = EmbeddingModel!, Backend = LiteRtBackend.Gpu }))
+        // For the docs: the runtime's own GPU precision (float16), which EmbeddingGemma advises against.
+        using (var gpuRuntimeDefault = LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions
         {
-            double[] defaults = cpu.Zip(gpuDefault.EmbedBatch(texts), Cosine).ToArray();
-            output.WriteLine($"cpu vs gpu (default activations) cosine: min {defaults.Min():F5}, mean {defaults.Average():F5}");
+            ModelPath = EmbeddingModel!, Backend = LiteRtBackend.Gpu, ActivationDataType = null,
+        }))
+        {
+            double[] f16 = cpu.Zip(gpuRuntimeDefault.EmbedBatch(texts), Cosine).ToArray();
+            output.WriteLine($"cpu vs gpu (runtime default, float16) cosine: min {f16.Min():F5}, mean {f16.Average():F5}");
         }
         Assert.True(cosines.Min() > 0.99, $"GPU vectors drifted from CPU: min cosine {cosines.Min():F5}");
     }

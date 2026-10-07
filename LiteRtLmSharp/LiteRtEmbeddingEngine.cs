@@ -357,9 +357,7 @@ public sealed record LiteRtEmbeddingEngineOptions
 
     /// <summary>Gets the backend to run the model on. Defaults to <see cref="LiteRtBackend.Cpu"/>.</summary>
     /// <remarks>On the GPU backend the vectors differ slightly from the CPU ones (cosine similarity above
-    /// 0.99 between the two in our measurement), so index and query on the same backend. EmbeddingGemma
-    /// recommends against 16-bit float activations: on GPU set <see cref="ActivationDataType"/> to
-    /// <see cref="LiteRtActivationDataType.Float32"/>.</remarks>
+    /// 0.99 between the two in our measurement), so index and query on the same backend.</remarks>
     public LiteRtBackend Backend { get; init; } = LiteRtBackend.Cpu;
 
     /// <summary>
@@ -384,9 +382,15 @@ public sealed record LiteRtEmbeddingEngineOptions
         }
     }
 
-    /// <summary>Gets the activation precision, or <c>null</c> (default) for the engine default. See
-    /// <see cref="Backend"/> for the GPU recommendation.</summary>
-    public LiteRtActivationDataType? ActivationDataType { get; init; }
+    /// <summary>
+    /// Gets the activation precision. Defaults to <see cref="LiteRtActivationDataType.Float32"/>, unlike
+    /// <see cref="LiteRtEngineOptions.ActivationDataType"/>: EmbeddingGemma's activations exceed the float16
+    /// range, so its model card advises against float16, and on the GPU backend the runtime would otherwise
+    /// fall back to float16 (which measured no faster). The CPU backend runs float32 either way. Set
+    /// <see cref="LiteRtActivationDataType.Float16"/> to halve activation memory at some precision, or
+    /// <c>null</c> to let the runtime choose (the model's preferred type, else float16 on GPU).
+    /// </summary>
+    public LiteRtActivationDataType? ActivationDataType { get; init; } = LiteRtActivationDataType.Float32;
 
     private readonly int? _maxInputLength;
 
