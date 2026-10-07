@@ -24,14 +24,32 @@ if (mode == "embed")
     });
     using IEmbeddingGenerator<string, Embedding<float>> generator = new LiteRtEmbeddingGenerator(embedder);
     var vectors = await generator.GenerateAsync(
-        ["title: none | text: The bakery opens at 7 a.m. on weekdays.", "task: search result | query: When does the bakery open?"]);
-    ReadOnlySpan<float> doc = vectors[0].Vector.Span, query = vectors[1].Vector.Span;
-    float cosine = 0;
-    for (int i = 0; i < doc.Length; i++)
-        cosine += doc[i] * query[i];
-    Console.WriteLine($"ConsumerSmoke[{backend}/embed] {vectors.Count} vectors of {doc.Length}, cosine {cosine:F3}");
-    if (doc.Length == 0 || doc.Length != query.Length || cosine < 0.5f)
-        throw new InvalidOperationException("The embeddings are empty or unrelated.");
+    [
+        "title: none | text: The bakery opens at 7 a.m. on weekdays.",
+        "title: none | text: Renew the car insurance before March.",
+        "task: search result | query: When does the bakery open?",
+    ]);
+    ReadOnlySpan<float> bakery = vectors[0].Vector.Span, insurance = vectors[1].Vector.Span, query = vectors[2].Vector.Span;
+    static float Dot(ReadOnlySpan<float> a, ReadOnlySpan<float> b)
+    {
+        float sum = 0;
+        for (int i = 0; i < a.Length; i++)
+            sum += a[i] * b[i];
+        return sum;
+    }
+    bool finite = true;
+    foreach (var vector in vectors)
+        foreach (float x in vector.Vector.Span)
+            finite &= float.IsFinite(x);
+    float related = Dot(query, bakery), unrelated = Dot(query, insurance), norm = MathF.Sqrt(Dot(query, query));
+    Console.WriteLine($"ConsumerSmoke[{backend}/embed] {vectors.Count} vectors of {query.Length}, " +
+                      $"related {related:F3}, unrelated {unrelated:F3}, norm {norm:F4}");
+    // Written as the passing condition: a NaN fails every comparison, so it cannot slip through.
+    bool ok = finite && query.Length > 0 && bakery.Length == query.Length && insurance.Length == query.Length
+              && MathF.Abs(norm - 1) < 0.01f && related > unrelated + 0.05f;
+    if (!ok)
+        throw new InvalidOperationException(
+            "The embeddings are empty, not finite, not normalized, or do not rank the related text first.");
     return;
 }
 
