@@ -31,22 +31,21 @@ NuGet packages (LLamaSharp-style). Status: **stable (1.x)**.
 |---|:---:|:---:|:---:|:---:|---|
 | win-x64 | ✅ | ✅ | ✅ | ✅ | real hardware |
 | linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware (GPU last checked with the v0.13.1 libraries) |
-| linux-arm64 | ✅ | ⏳ | ✅ | — | CI |
+| linux-arm64 | ✅ | ✅ | ✅ | — | CI |
 | android-arm64 | ✅ | ✅ | ✅ | ✅ | real device |
-| android-x64 (emulator) | ✅ | ⏳ | ✅ | — | emulator |
+| android-x64 (emulator) | ✅ | ✅ | ✅ | — | emulator |
 | osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI |
 | ios-arm64 | ✅ | ⏳ | — | — | pending |
 
 <sub>**CPU / GPU** = inference validated on that backend. macOS GPU runs in CI on the **WebGPU**
-(Dawn→Metal) delegate; the native Metal delegate ships as a real-hardware fallback. linux-arm64 and
-android-x64 publish with the next release. The iOS runtime package ships once on-device validation
-lands.</sub>
+(Dawn→Metal) delegate; the native Metal delegate ships as a real-hardware fallback. The iOS runtime
+package ships once on-device validation lands.</sub>
 
 ## Quick start
 
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="1.2.0" />
-<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.2.0" />
+<PackageReference Include="LiteRtLmSharp" Version="1.3.0" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.3.0" />
 <!-- or LiteRtLmSharp.runtime.linux-x64 / linux-arm64 / android-arm64 / android-x64 (emulator) / osx-arm64, per target -->
 ```
 
@@ -55,6 +54,7 @@ version number**. Which LiteRT-LM native build each release wraps:
 
 | LiteRtLmSharp | LiteRT-LM native |
 |---|---|
+| 1.3.0 | v0.18.0 (Google's official prebuilts) |
 | 1.2.0 | v0.16.0 (Google's official C API prebuilts) |
 | 1.1.1 | v0.14.0 |
 | 1.1.0 | v0.14.0 |

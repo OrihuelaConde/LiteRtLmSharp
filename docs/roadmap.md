@@ -10,9 +10,9 @@ reporting, embeddings and model info merged to master (#12, #13); release pendin
 |---|:---:|:---:|:---:|:---:|---|
 | win-x64 | ✅ | ✅ | ✅ | ✅ | real hardware (+ CI, CPU) |
 | linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware with the self-built v0.13.1 set (CPU + GPU); official prebuilts: Docker + CI (CPU) |
-| linux-arm64 | ✅ | ⏳ 1.3.0 | ✅ | — | CI (ubuntu-24.04-arm, CPU): full suite green since 2026-10-07, YNNPACK included; no arm64 GPU on hand |
+| linux-arm64 | ✅ | ✅ 1.3.0 | ✅ | — | CI (ubuntu-24.04-arm, CPU): full suite green since 2026-10-07, YNNPACK included; no arm64 GPU on hand |
 | android-arm64 | ✅ | ✅ | ✅ | ✅ | real device (Moto G100, Adreno 650; v0.18.0 from the packed 1.3.0 packages, 2026-10-06) |
-| android-x64 | ✅ | ⏳ 1.3.0 | ✅ | — | x86_64 emulator (API 35): chat and embeddings on CPU from the packed packages; emulators expose no GPU |
+| android-x64 | ✅ | ✅ 1.3.0 | ✅ | — | x86_64 emulator (API 35): chat and embeddings on CPU from the packed packages; emulators expose no GPU |
 | osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI only (macos-15; GPU via WebGPU); v0.18.0 green on CPU and GPU since 2026-10-07 |
 | ios-arm64 | ✅ | ⏳ | — | — | CI build/link only (no device); on-device runtime + publish pending |
 

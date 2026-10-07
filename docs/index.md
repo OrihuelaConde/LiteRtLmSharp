@@ -17,8 +17,8 @@ embeddings for semantic search — all running locally, no server.
 ## Install
 
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="1.2.0" />
-<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.2.0" />
+<PackageReference Include="LiteRtLmSharp" Version="1.3.0" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.3.0" />
 <!-- or LiteRtLmSharp.runtime.linux-x64 / linux-arm64 / android-arm64 / android-x64 (emulator) / osx-arm64, per target -->
 ```
 
