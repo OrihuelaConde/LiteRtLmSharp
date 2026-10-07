@@ -107,9 +107,9 @@ each release:
 1. Read the release notes and diff the C API headers (`c/*.h`) against the P/Invoke layer:
    signatures, not only names. The workflow's export-count floor (`MIN_EXPORTS`) catches a truncated
    or wrong-architecture binary, not a changed signature.
-2. Run `native-release.yml` with the tag: `source=zip` when the release carries a
-   `litert_lm_c_api-*.zip` asset, otherwise `source=pypi`. Inspect the run, then run it again with
-   `publish_release` to create the `native-<tag>` release.
+2. Run `native-release.yml` with the tag. The default `source=auto` takes the release's
+   `litert_lm_c_api-*.zip` asset when there is one and the PyPI wheels otherwise. Inspect the run, then
+   run it again with `publish_release` to create the `native-<tag>` release.
 3. Bump `LiteRtLmVersion` in `Directory.Build.props`, `NATIVE_REF` in `ci.yml` and `model-tests.yml`,
    and the default in `scripts/restore-natives.ps1`.
 4. Run the full model-backed suite locally (CPU and GPU) and let CI run it on every desktop leg.
