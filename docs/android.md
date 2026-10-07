@@ -48,9 +48,13 @@ storage on first run and pass its path to `LiteRtEngine.Load`.
 2. ✅ `pack-nuget.yml` produces `LiteRtLmSharp.runtime.android-arm64`.
 3. ✅ **Validated on a physical device** (Moto G100, Android 12): model load, chat, streaming —
    **CPU and GPU** (see the GPU diagnosis below). Sample app in `samples/Maui`.
-4. `android-x64` (x86_64 emulator): the official library ships as `LiteRtLmSharp.runtime.android-x64`,
+4. ✅ `android-x64` (x86_64 emulator): the official library ships as `LiteRtLmSharp.runtime.android-x64`,
    and the MAUI sample's Release APK carries both ABIs (`lib/arm64-v8a/` and `lib/x86_64/`, 58.5 MB in
-   total). Emulators expose no OpenCL GPU, so the emulator runs the CPU backend.
+   total). Emulators expose no OpenCL GPU, so the emulator runs the CPU backend. Validated on an API 35
+   x86_64 emulator (2026-10-06, 8 cores, WHPX acceleration) with an app built from the packed packages:
+   gemma-4-E2B chats on CPU at 14.8 tok/s decode, and EmbeddingGemma 2 returns the same vectors as on
+   desktop. Copy models into the app's own external files folder after the app has created it: a folder
+   created by `adb` belongs to the shell user, and the app cannot read it.
 5. ✅ Re-tested on device with the patched samplers: **the patchelf works** (device==local
    checksums; zero `sampler_factory` warnings → GPU sampling active; correct output). No
    perceptible speed gain yet: the big jump (~3×, #2211) additionally requires speculative
@@ -77,6 +81,11 @@ storage on first run and pass its path to `LiteRtEngine.Load`.
 - Vendor GPU drivers (see the diagnosis below): older Adreno Vulkan drivers break Dawn's shaders,
   and OpenCL must be reachable through the manifest declaration.
 - Model size/memory on low-RAM devices.
+- Activation precision on mobile GPUs. Since 1.3.0 the binding asks for F32 activations by default
+  (`LiteRtEngineOptions.ActivationDataType`), because the runtime's F16 default corrupts structured
+  output on the GPUs we measured. The device measurements above used F16; the cost of F32 on a mobile GPU
+  (speed and memory) is not measured yet. If a phone runs too slowly or out of memory on GPU, try
+  `ActivationDataType = LiteRtActivationDataType.Float16` and check your outputs.
 
 ## Android GPU — full diagnosis (validated on device, 2026-06-10)
 

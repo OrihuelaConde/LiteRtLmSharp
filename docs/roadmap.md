@@ -12,7 +12,7 @@ latest on nuget.org: 1.2.0, LiteRT-LM v0.16.0). Source of truth for "what's done
 | linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware with the self-built v0.13.1 set (CPU + GPU); official prebuilts: Docker + CI (CPU) |
 | linux-arm64 | ✅ | ⏳ 1.3.0 | ✅ | — | CI (ubuntu-24.04-arm, CPU); no arm64 GPU on hand |
 | android-arm64 | ✅ | ✅ | ✅ | ✅ | real device (Adreno 650; v0.16.0 libraries, v0.18.0 pending the device) |
-| android-x64 | ✅ | ⏳ 1.3.0 | — | — | build + APK packaging (x86_64 emulator, CPU); emulator run pending |
+| android-x64 | ✅ | ⏳ 1.3.0 | ✅ | — | x86_64 emulator (API 35): chat and embeddings on CPU from the packed packages; emulators expose no GPU |
 | osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI only (macos-15; GPU via WebGPU) |
 | ios-arm64 | ✅ | ⏳ | — | — | CI build/link only (no device); on-device runtime + publish pending |
 
@@ -198,7 +198,11 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
      linux-x64 (2026-10-06, Docker, Ubuntu 24.04 with no Vulkan loader installed; `ldd` lists only
      libc, libm, libpthread, libdl and librt): full suite on CPU with PR 2 on top, 306 passed and 3
      skipped (GPU-only, the LoRA bundle not mounted, the benchmark).
-     Pending: Moto G100 (arm64 GPU) and an x86_64 emulator run; Linux GPU has no hardware on hand.
+     android-x64 (2026-10-06, x86_64 emulator, API 35, 8 cores, WHPX): an app built from the packed
+     1.3.0 packages carries `lib/x86_64/libLiteRtLm.so` and runs model info, gemma-4-E2B on CPU ("Paris",
+     14.8 tok/s decode) and EmbeddingGemma 2 (same vectors as on desktop: cosine 0.870 for the probe pair).
+     Pending: Moto G100 (arm64 GPU, now with float32 activations by default); Linux GPU has no hardware
+     on hand.
    - **PR 2 `embeddings`** (implemented 2026-10-06, stacked on PR 1): `LiteRtEmbeddingEngine` (own
      handles, outside the one-engine gate; serialized and thread-safe, async variants), `LiteRtModelInfo`
      (metadata without loading), MEAI `LiteRtEmbeddingGenerator` + `AddLiteRtEmbeddingGenerator`, SK

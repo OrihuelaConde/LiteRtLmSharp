@@ -33,7 +33,7 @@ NuGet packages (LLamaSharp-style). Status: **stable (1.x)**.
 | linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware |
 | linux-arm64 | ✅ | ⏳ | ✅ | — | CI |
 | android-arm64 | ✅ | ✅ | ✅ | ✅ | real device |
-| android-x64 (emulator) | ✅ | ⏳ | — | — | build and packaging |
+| android-x64 (emulator) | ✅ | ⏳ | ✅ | — | emulator |
 | osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI |
 | ios-arm64 | ✅ | ⏳ | — | — | pending |
 
