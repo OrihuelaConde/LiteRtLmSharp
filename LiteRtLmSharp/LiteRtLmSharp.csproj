@@ -39,8 +39,15 @@
     </None>
   </ItemGroup>
 
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Linux')) And Exists('..\runtimes\linux-x64\native')">
-    <None Include="..\runtimes\linux-x64\native\*.so" Pack="false">
+  <!-- A Linux build host takes the native set of its own architecture (an arm64 runner or dev box needs
+       the arm64 library; copying the x64 one would fail to load at test time). -->
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Linux'))">
+    <LiteRtLmHostLinuxRid Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'Arm64'">linux-arm64</LiteRtLmHostLinuxRid>
+    <LiteRtLmHostLinuxRid Condition="'$(LiteRtLmHostLinuxRid)' == ''">linux-x64</LiteRtLmHostLinuxRid>
+  </PropertyGroup>
+
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Linux')) And Exists('..\runtimes\$(LiteRtLmHostLinuxRid)\native')">
+    <None Include="..\runtimes\$(LiteRtLmHostLinuxRid)\native\*.so" Pack="false">
       <Link>%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

@@ -30,8 +30,10 @@ on:
 jobs:
   ios-check:
     name: ios-arm64 package + link
-    # macos-26 ships Xcode 26.5 as default, matching the current .NET-for-iOS workload (26.5).
-    # macos-15 tops out at Xcode 26.3, which the workload rejects ("requires Xcode 26.5").
+    # The .NET-for-iOS workload and Xcode are pinned as a pair: each workload release requires one Xcode
+    # version, and the image's default Xcode and the latest workload move independently. On 2026-10-07 the
+    # latest workload set (10.0.401.1, iOS 27.0) required Xcode 27, which macos-26 does not carry (it is
+    # only on the xcode-27 preview image). macos-15 tops out at Xcode 26.3.
     runs-on: macos-26
     timeout-minutes: 60
     steps:
@@ -39,7 +41,15 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
+          # The pinned workload set below belongs to the 10.0.4xx SDK band.
+          dotnet-version: '10.0.4xx'
+
+      - name: Select Xcode 26.6
+        # The version the pinned workload's iOS SDK requires: 26.5.10315 asks for Xcode 26.6 (the pack's
+        # version does not name its Xcode). Selected explicitly so a new image default cannot break it.
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app
+          xcodebuild -version
 
       - name: Resolve native ref
         # The dispatch input if given, else the single source of truth in Directory.Build.props.
@@ -54,8 +64,9 @@ jobs:
 
       - name: Install MAUI workload
         # Full maui (covers the sample's android+ios TFMs); the workload check evaluates every TFM
-        # the multi-target sample declares, even when -f selects only the iOS slice to build.
-        run: dotnet workload install maui
+        # the multi-target sample declares, even when -f selects only the iOS slice to build. Pinned to the
+        # last workload set whose iOS SDK runs on the selected Xcode (see runs-on).
+        run: dotnet workload install maui --version 10.0.400.1
 
       - name: Restore ios-arm64 natives from release native-${{ env.NATIVE_REF }}
         env:

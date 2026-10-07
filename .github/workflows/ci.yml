@@ -2,8 +2,8 @@ name: CI
 
 # Build + no-model tests (the interop tests load the native lib, so this also validates the runtimes;
 # model/tools tests auto-skip without LITERTLM_TEST_MODEL) AND the model-backed tests against a real
-# model, both across linux-x64 / win-x64 / osx-arm64. The model leg reuses model-tests.yml, which also
-# stays runnable on demand for a single OS.
+# model, both across linux-x64 / linux-arm64 / win-x64 / osx-arm64. The model leg reuses
+# model-tests.yml, which also stays runnable on demand for a single OS.
 
 on:
   push:
@@ -18,7 +18,7 @@ concurrency:
 
 env:
   # Keep in sync with Directory.Build.props <LiteRtLmVersion>.
-  NATIVE_REF: v0.16.0
+  NATIVE_REF: v0.18.0
 
 jobs:
   build-test:
@@ -29,6 +29,10 @@ jobs:
           - os: ubuntu-latest
             rid: linux-x64
             asset: litertlm-linux_x86_64.tar.gz
+          # GitHub's arm64 Linux runner (free for public repositories).
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+            asset: litertlm-linux_arm64.tar.gz
           - os: windows-latest
             rid: win-x64
             asset: litertlm-windows_x86_64.tar.gz
@@ -43,11 +47,12 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      # The official linux-x64 library hard-depends on the Vulkan loader (DT_NEEDED libvulkan.so.1);
-      # without it the library does not load at all. Consumers need the same package (docs/README).
-      - name: Install Vulkan loader (linux)
-        if: matrix.rid == 'linux-x64'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libvulkan1
+      # The v0.16.0 Linux library hard-depended on the Vulkan loader (DT_NEEDED libvulkan.so.1); the
+      # v0.18.0 ones load without it, so nothing is installed here. The log records whether this runner
+      # image happens to carry a loader, which tells whether this run proved the "no libvulkan1" claim.
+      - name: Report the Vulkan loader (linux)
+        if: startsWith(matrix.rid, 'linux-')
+        run: ldconfig -p | grep -i 'libvulkan' || echo "No Vulkan loader on this runner."
 
       - name: Restore native binaries (${{ matrix.rid }})
         shell: bash
@@ -107,8 +112,8 @@ jobs:
           # (exit $LASTEXITCODE) would fail the step on our deliberately non-zero exit code.
           exit 0
 
-  # Model-backed tests against a real .litertlm model across all three OSes (linux/win/macOS CPU, plus
-  # macOS GPU). Reuses model-tests.yml, which also stays runnable on demand for a single OS. Runs in
+  # Model-backed tests against a real .litertlm model on every desktop leg (linux x64 and arm64, win and
+  # macOS CPU, plus macOS GPU). Reuses model-tests.yml, which also stays runnable on demand for a single OS. Runs in
   # parallel with build-test; the ~2.6 GB model is cached across runs.
   model-tests:
     name: Model tests

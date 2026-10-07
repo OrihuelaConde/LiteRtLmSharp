@@ -106,13 +106,40 @@ CPU operations it supports before XNNPACK. `null` (default) leaves the engine de
 LiteRT-LM v0.16.0+.
 
 ```csharp
-EnableYnnpack = true,   // CPU backend only
+EnableYnnpack = true,   // CPU backend, linux-arm64 only
 ```
 
 - **CPU backend only**; the GPU backends ignore it.
-- Upstream ships the YNNPACK kernels in its linux-arm64 builds (the Raspberry Pi target). The other official
-  prebuilts accept the flag and run unchanged — the model-backed smoke test loads and generates with it on
-  win-x64 — so measure on the target device before assuming a speed-up.
+- **linux-arm64 only.** Of the official libraries, only linux-arm64 (the Raspberry Pi target) carries the
+  YNNPACK kernels (a model test on CI's arm64 leg loads an engine with the flag on and generates). On every other platform the v0.18.0
+  libraries reject it at engine creation with `UNIMPLEMENTED` (v0.16.0 ignored it), and the exception
+  names the setting. Measure on the target device before assuming a speed-up.
+
+## Vision token cap — `MaxVisionTokensPerImage`
+
+An upper bound on the vision tokens one image may expand to: the engine only selects vision encoder
+signatures up to the cap (native v0.18.0+). It caps the size; the per-image budget chooses it.
+
+```csharp
+MaxVisionTokensPerImage = 140,   // engine-wide ceiling (Gemma 4 signatures: 70, 140, 280)
+// and per conversation (or per send), at or below the cap:
+// new LiteRtConversationOptions { VisualTokenBudget = 140 }
+```
+
+- Images still expand to the model's default size (about 256 tokens on Gemma 4) unless
+  `VisualTokenBudget` asks for less, so a cap below that default needs a budget at or below the cap on
+  every image send. Without one the send fails with `INVALID_ARGUMENT` ("No signature found…"), and a
+  budget above the cap fails the same way.
+- To make images cheaper, the budget alone is enough: `VisualTokenBudget = 70` brings an image from 260
+  to 68 tokens on gemma-4-E2B-it, with or without a cap. See the
+  [multimodal section](chat.md#multimodal-messages-image--audio).
+
+## Metal residency — `EnableMetalResidencySet`
+
+Keeps the model weights and allocations resident in GPU memory through Apple's `MTLResidencySet` API
+(native v0.18.0+). Apple platforms with the Metal GPU backend only; other platforms and backends ignore
+it, which the model-backed test checks on Windows. On macOS the GPU backend runs WebGPU over Metal (see the
+[native ABI notes](native-abi.md)), so measure its effect on the target device rather than assume one.
 
 ## CPU thread counts: `NumThreads` / `AudioNumThreads`
 

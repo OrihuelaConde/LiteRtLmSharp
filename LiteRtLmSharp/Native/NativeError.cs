@@ -1,0 +1,117 @@
+using System.Runtime.InteropServices;
+using System.Text;
+
+namespace LiteRtLmSharp.Native;
+
+/// <summary>
+/// Reads the LiteRT-LM C API's error report (native v0.18.0+, <c>c/error_reporter.h</c>): the canonical
+/// status code and message that the last <i>failing</i> call left on the calling thread, so a failed native
+/// call surfaces the runtime's own reason instead of a bare "returned null".
+/// </summary>
+/// <remarks>
+/// The native contract is errno-style: the report is thread-local, it is set only on failure (a successful
+/// call never clears it), and the message belongs to the library until the next failure or clear on that
+/// thread. The binding therefore (1) clears the slot right before a call it may need to diagnose, so a
+/// report can never be a stale one left by an earlier, unrelated failure; (2) decides failure from the
+/// call's own return value, never from the report; and (3) reads the report on the same thread right after
+/// the failing call, then clears it, which also frees the message on long-lived thread-pool threads. Every
+/// diagnosed call site is synchronous on one thread: the blocking sends that the async APIs move to the
+/// thread pool move there as a whole, read included.
+/// </remarks>
+internal static class NativeError
+{
+    /// <summary>Clears the calling thread's report before a call that may need diagnosing.</summary>
+    internal static void Clear() => LiteRtLmNative.litert_lm_clear_last_error();
+
+    /// <summary>Reads and clears the calling thread's report; <c>null</c> when the runtime recorded none.</summary>
+    internal static (LiteRtStatusCode Code, string Message)? Take()
+    {
+        int code = LiteRtLmNative.litert_lm_get_last_error_code();
+        string? message = Marshal.PtrToStringUTF8(LiteRtLmNative.litert_lm_get_last_error_message());
+        LiteRtLmNative.litert_lm_clear_last_error();
+        if (code == 0 && string.IsNullOrEmpty(message))
+            return null;
+        // The header freezes the canonical set but asks callers to read unrecognized values as Unknown, so a
+        // binding built against this version stays correct with a newer native library.
+        var status = Enum.IsDefined((LiteRtStatusCode)code) ? (LiteRtStatusCode)code : LiteRtStatusCode.Unknown;
+        message = message?.Trim() ?? "";
+        // The runtime stores the full absl status text ("INVALID_ARGUMENT: Invalid magic number…"); drop
+        // the leading code so the exception does not repeat it next to the code it prints itself.
+        string prefix = CanonicalName(status) + ": ";
+        if (message.StartsWith(prefix, StringComparison.Ordinal))
+            message = message[prefix.Length..].TrimStart();
+        // A dangling colon (a native message whose detail was empty) would read as "…read:." once the
+        // sentence is closed.
+        return (status, message.TrimEnd(':', ' '));
+    }
+
+    /// <summary>
+    /// Builds the exception for a failed native call. The message is <paramref name="failure"/> (what
+    /// failed), then the runtime's status and message when it reported one; <paramref name="fallbackHint"/>
+    /// only when it reported nothing (the binding's guess at the usual causes); and <paramref name="hint"/>
+    /// in both cases (guidance that stays useful next to the runtime's reason).
+    /// </summary>
+    internal static LiteRtException Exception(string failure, string? hint = null, string? fallbackHint = null)
+        => Build(failure, Take(), hint, fallbackHint);
+
+    /// <summary>
+    /// Builds the exception like <see cref="Exception(string, string?, string?)"/>, choosing the guidance
+    /// from the runtime's message (<c>null</c> when it reported nothing), for hints that only fit some causes.
+    /// </summary>
+    internal static LiteRtException Exception(string failure, Func<string?, string?> hintFor)
+    {
+        var report = Take();
+        return Build(failure, report, hintFor(report?.Message), fallbackHint: null);
+    }
+
+    private static LiteRtException Build(
+        string failure, (LiteRtStatusCode Code, string Message)? report, string? hint, string? fallbackHint)
+    {
+        var sb = new StringBuilder(failure.TrimEnd('.', ' '));
+        if (report is { } r)
+        {
+            sb.Append(": ").Append(CanonicalName(r.Code));
+            if (r.Message.Length > 0)
+                sb.Append(": ").Append(r.Message);
+        }
+        EndSentence(sb);
+        if (report is null && fallbackHint is not null)
+            sb.Append(' ').Append(fallbackHint);
+        if (hint is not null)
+        {
+            EndSentence(sb);
+            sb.Append(' ').Append(hint);
+        }
+        string message = sb.ToString();
+        return report is { } rep ? new LiteRtException(message, rep.Code) : new LiteRtException(message);
+    }
+
+    /// <summary>The absl canonical spelling (<c>INVALID_ARGUMENT</c>, …) the native logs use, so a reported
+    /// status reads the same in an exception and in the runtime's own stderr.</summary>
+    internal static string CanonicalName(LiteRtStatusCode code) => code switch
+    {
+        LiteRtStatusCode.Ok => "OK",
+        LiteRtStatusCode.Cancelled => "CANCELLED",
+        LiteRtStatusCode.InvalidArgument => "INVALID_ARGUMENT",
+        LiteRtStatusCode.DeadlineExceeded => "DEADLINE_EXCEEDED",
+        LiteRtStatusCode.NotFound => "NOT_FOUND",
+        LiteRtStatusCode.AlreadyExists => "ALREADY_EXISTS",
+        LiteRtStatusCode.PermissionDenied => "PERMISSION_DENIED",
+        LiteRtStatusCode.ResourceExhausted => "RESOURCE_EXHAUSTED",
+        LiteRtStatusCode.FailedPrecondition => "FAILED_PRECONDITION",
+        LiteRtStatusCode.Aborted => "ABORTED",
+        LiteRtStatusCode.OutOfRange => "OUT_OF_RANGE",
+        LiteRtStatusCode.Unimplemented => "UNIMPLEMENTED",
+        LiteRtStatusCode.Internal => "INTERNAL",
+        LiteRtStatusCode.Unavailable => "UNAVAILABLE",
+        LiteRtStatusCode.DataLoss => "DATA_LOSS",
+        LiteRtStatusCode.Unauthenticated => "UNAUTHENTICATED",
+        _ => "UNKNOWN",
+    };
+
+    private static void EndSentence(StringBuilder sb)
+    {
+        if (sb.Length > 0 && sb[^1] is not ('.' or '!' or '?'))
+            sb.Append('.');
+    }
+}

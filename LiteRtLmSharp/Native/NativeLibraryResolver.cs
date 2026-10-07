@@ -78,7 +78,8 @@ internal static partial class NativeLibraryResolver
     }
 
     /// <summary>The RIDs this project publishes a <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package for.</summary>
-    private static readonly string[] OfficialRids = ["win-x64", "linux-x64", "osx-arm64", "android-arm64"];
+    private static readonly string[] OfficialRids =
+        ["win-x64", "linux-x64", "linux-arm64", "osx-arm64", "android-arm64", "android-x64"];
 
     /// <summary>Name of the official iOS framework (Google's <c>CLiteRTLM.xcframework</c>), loaded as
     /// <c>Frameworks/CLiteRTLM.framework/CLiteRTLM</c> inside the app bundle.</summary>
@@ -101,11 +102,11 @@ internal static partial class NativeLibraryResolver
     /// <summary>Failure message when a native binary exists but failed to load: points at system
     /// prerequisites rather than the (already installed) runtime package.</summary>
     internal static string BuildFoundButFailedMessage(string path)
-        => $"The LiteRT-LM native library was found at '{path}' but failed to load. Common causes: the " +
-           "Vulkan loader is not installed (Linux: the library depends on libvulkan.so.1 — install the " +
-           "'libvulkan1' package or your distribution's equivalent), other missing system libraries " +
-           "(Linux/macOS), a missing <uses-native-library> manifest entry for vendor GPU libraries " +
-           "(Android 12+), or a process/binary architecture mismatch.";
+        => $"The LiteRT-LM native library was found at '{path}' but failed to load. Common causes: a " +
+           "process/binary architecture mismatch (for example the linux-x64 runtime package on an arm64 " +
+           "machine), a system library the binary links that is missing (Linux: check with 'ldd'; macOS: " +
+           "'otool -L'), or a missing <uses-native-library> manifest entry for vendor GPU libraries " +
+           "(Android 12+).";
 
     private static IEnumerable<string> CandidateDirectories()
     {

@@ -3,13 +3,15 @@
 > Source of truth: [`c/engine.h`](https://github.com/google-ai-edge/LiteRT-LM/blob/main/c/engine.h)
 > in the official repo. This document summarizes the ABI as **verified** against the real binary.
 
-> **Current state (v0.16.0, Google's official C API prebuilts — see [native-build.md](native-build.md)):** the findings about the community binary
+> **Current state (v0.18.0, Google's official C API prebuilts — see [native-build.md](native-build.md)):** the findings about the community binary
 > `0.12.0-a` and the interim commit `032334d8` (`conversation_config_create` crash, missing
 > `get_token_count`, blocking `send_message` returning null, streaming segfault) are
 > **HISTORICAL** — first resolved by compiling our own binaries from the `v0.13.1` tag with the
 > matching header (the self-built era, v0.13.1 → v0.15.0), and since v0.16.0 by shipping upstream's
-> official prebuilts (144 `litert_lm_*` exports, 117 bound). Today config/system-prompt/sampler, tools, streaming and token count work on
-> all 5 platforms. Speculative decoding, the benchmark API, and the engine cache-dir setting were
+> official prebuilts (v0.18.0: 212 `litert_lm_*` exports across `c/engine.h`, `c/conversation.h`,
+> `c/embedding_engine.h`, `c/model_info.h`, `c/error_reporter.h` and `c/experimental.h`; the binding's
+> coverage is tracked in [`roadmap.md`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md)).
+> Today config/system-prompt/sampler, tools, streaming and token count work on every platform. Speculative decoding, the benchmark API, and the engine cache-dir setting were
 > bound on 2026-06-15; multimodal image/audio messages on 2026-06-17; the tokenizer surface
 > (tokenize/detokenize + start/stop tokens) on 2026-06-19; and the v0.14.0 surface (LoRA, CPU thread
 > counts, per-send output cap, tool-call streaming, preface rendering, plus the internal sampler-builder
@@ -125,8 +127,8 @@ typedef void (*LiteRtLmStreamCallback)(void* callback_data, const char* chunk,
 
 ## v0.14.0 ABI changes (sampler struct → opaque builder)
 
-The binding is pinned to **LiteRT-LM v0.14.0** (repinned from v0.13.1 on 2026-07-10). v0.14.0 grew the C
-API from 89 to 109 functions (84 now bound). The one **breaking** ABI change the binding depends on:
+The v0.14.0 repin (from v0.13.1, July 2026) grew the C API from 89 to 109 functions (84 bound at the
+time). The one **breaking** ABI change the binding depends on:
 
 - **Sampler params: by-value struct → opaque builder.** v0.14.0 removed the by-value `LiteRtLmSamplerParams`
   struct (the pre-v0.14.0 shape above) and replaced it with an opaque builder: `sampler_params_create` +
@@ -343,10 +345,9 @@ litert_lm_detokenize_result_delete(d);
   (On Android: OpenCL/Vulkan.)
 - Verified: with `Backend="gpu"` the log selects the discrete GPU (e.g.
   `NVIDIA RTX 3080, backend=Direct3D 12`) and runs the transformer layers on GPU
-  (`delegate_webgpu.cc`, `delegate_kernel.cc`). Enabling companions (already shipped):
-  `libLiteRtWebGpuAccelerator.dll` (loaded at runtime by base name from libLiteRt) +
-  `dxcompiler.dll`/`dxil.dll` (DirectX Shader Compiler, loaded lazily by Dawn at the first
-  shader compile).
+  (`delegate_webgpu.cc`, `delegate_kernel.cc`). The WebGPU accelerator is embedded in the official
+  library; the only companions are `dxcompiler.dll`/`dxil.dll` (DirectX Shader Compiler, loaded lazily
+  by Dawn at the first shader compile), which the win-x64 runtime package ships.
 - Seeing "Created TensorFlow Lite XNNPACK delegate for CPU" alongside is normal: non-GPU ops +
   mmap'd embeddings run on CPU (mixed delegation). The bulk (matmuls) runs on GPU. Init is
   slower than CPU (~1.6 s vs ~0.2 s) due to weight upload and kernel compilation.
@@ -371,6 +372,31 @@ litert_lm_detokenize_result_delete(d);
 
 > Note: `I0000 …` logs show up despite `SetMinLogLevel(3)` because they are emitted **before**
 > `absl::InitializeLog()` (straight to STDERR); our log level cannot silence them.
+
+## Error reporting (v0.18.0, `c/error_reporter.h`)
+
+v0.18.0 reports why a call failed through errno-style, **thread-local** state:
+`litert_lm_get_last_error_code()` (an `int` with the canonical absl status values, frozen by the
+header) and `litert_lm_get_last_error_message()` (a library-owned string, typically the full absl
+status text such as `INVALID_ARGUMENT: Invalid magic number or failed to read`), plus
+`litert_lm_clear_last_error()`. The contract shapes how the binding reads it (`NativeError`):
+
+- The state is set **only on failure**: a later successful call does not clear it, so the binding clears
+  it right before every call it may need to diagnose, so a report is never left over from an earlier,
+  unrelated failure.
+- Failure is decided by the call's own return value (a null pointer or a non-zero code), never by the
+  report.
+- The report is read on the **same thread**, right after the failing call, and then cleared, which also
+  frees the message on long-lived thread-pool threads. The blocking sends that the async APIs move to
+  the thread pool move there as a whole, read included.
+
+The binding appends the runtime's reason to `LiteRtException` (dropping the code prefix the message
+repeats) and exposes the status as `LiteRtException.StatusCode` (`LiteRtStatusCode`). Measured messages:
+an invalid model file reports `INVALID_ARGUMENT: Invalid magic number or failed to read`; a missing LoRA
+adapter `UNKNOWN: Failed to open: <path>`; an image sent to an engine without a vision backend
+`INVALID_ARGUMENT: Vision executor should not be null, please TryLoadingVisionExecutor() first`; and
+`EnableYnnpack` on a library without YNNPACK kernels `UNIMPLEMENTED` with a native call trace as the
+message. The streaming path keeps reporting through the stream chunk's own error string.
 
 ## Official shared-library status
 - **Since v0.16.0 upstream publishes official C API prebuilts on every release**

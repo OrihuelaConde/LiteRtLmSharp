@@ -1,23 +1,27 @@
 # Project status and roadmap
 
-Last updated: 2026-09-05 (1.2.0 published on nuget.org: LiteRT-LM v0.16.0 on Google's official C API prebuilts). Source of truth for "what's done and what's pending".
+Last updated: 2026-10-06 (v0.18.0 cycle in progress toward 1.3.0: repin + linux-arm64/android-x64 +
+native error reporting on the `repin-v0.18.0` branch, then embeddings + model info; latest on nuget.org:
+1.2.0, LiteRT-LM v0.16.0). Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
 | Platform | Native | NuGet | CPU | GPU | Validated on |
 |---|:---:|:---:|:---:|:---:|---|
 | win-x64 | ✅ | ✅ | ✅ | ✅ | real hardware (+ CI, CPU) |
-| linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware (+ CI, CPU) |
-| android-arm64 | ✅ | ✅ | ✅ | ✅ | real device (Adreno 650) |
+| linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware with the self-built v0.13.1 set (CPU + GPU); official prebuilts: Docker + CI (CPU) |
+| linux-arm64 | ✅ | ⏳ 1.3.0 | ⏳ | — | CI (ubuntu-24.04-arm, CPU): first run with the 1.3.0 pull request; no arm64 GPU on hand |
+| android-arm64 | ✅ | ✅ | ✅ | ✅ | real device (Adreno 650; v0.16.0 libraries, v0.18.0 pending the device) |
+| android-x64 | ✅ | ⏳ 1.3.0 | — | — | build + APK packaging (x86_64 emulator, CPU); emulator run pending |
 | osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI only (macos-15; GPU via WebGPU) |
 | ios-arm64 | ✅ | ⏳ | — | — | CI build/link only (no device); on-device runtime + publish pending |
 
 <sub>**CPU / GPU** = inference validated on that backend. **CI** = the `model-tests.yml` model leg
-(all three OSes on each push via ci.yml; also runnable on demand) with a real model, incl. constrained
-decoding; real-hardware results are from dev machines/devices. macOS GPU
+(every desktop leg on each push via ci.yml; also runnable on demand) with a real model, incl.
+constrained decoding; real-hardware results are from dev machines/devices. macOS GPU
 specifics and dates are in [§macOS validation](#actionable-next-steps-suggested-order) below.</sub>
 
-Native binaries are pinned to **LiteRT-LM v0.15.0** (repinned from v0.14.0 on 2026-08-09).
+Native binaries are pinned to **LiteRT-LM v0.18.0** on the `repin-v0.18.0` branch (1.2.0 ships v0.16.0).
 
 ## Versioning policy
 
@@ -43,18 +47,45 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Render a message (`RenderMessage`) or the whole preface (`RenderPreface`) to its templated prompt for debugging / exact-cost budgeting | ✅ |
 | CPU thread counts, LoRA adapters (engine ranks + per-conversation paths), per-send output cap, tool-call streaming (v0.14.0 surface) | ✅ |
 | .NET AI integrations: `Microsoft.Extensions.AI` `IChatClient` (+ Agent Framework) and a Semantic Kernel connector (separate packages) | ✅ |
+| Native error reporting (v0.18.0 `error_reporter.h`): every failed native call surfaces the runtime's own status and reason in `LiteRtException` (+ `StatusCode`, `LiteRtStatusCode`) instead of a bare "returned null" | ✅ (branch) |
+| v0.18.0 options: per-image vision token cap (`MaxVisionTokensPerImage`), Metal residency (`EnableMetalResidencySet`), per-conversation speculative decoding (`LiteRtConversationOptions.EnableSpeculativeDecoding`) | ✅ (branch) |
 | KV overflow guard (`LiteRtContextOverflowException`): sends clamp their reply to the remaining context and throw instead of overflowing the KV cache, which the native runtime does not police (heap corruption + deferred `0xC0000005`/`0xC0000374` crash — found by a downstream consumer app, 2026-07-13, in a stateful tool loop). Same-turn signal: `LiteRtConversation.IsContextFull` (true exactly when the next send would throw) → `ChatFinishReason.Length` in the MEAI client, overriding `ToolCalls` on a full conversation. Armed by an explicit `MaxNumTokens`; pure binding, no new native surface. **Done 2026-07-15** | ✅ |
 
 Known constraints (documented in the README): one engine ALIVE at a time (reloading after
 `Dispose` works — verified on win-x64 cpu→cpu and cpu→gpu; this is Edge Gallery's pattern for
-switching model/backend without restarting); conversations are not thread-safe; `MaxNumTokens`
-is the total context window; VC++ Redistributable required on win-x64; Android GPU requires
-`<uses-native-library>` in the app manifest.
+switching model/backend without restarting); conversations are not thread-safe (serialize sends per
+engine); `MaxNumTokens` is the total context window; Android GPU requires `<uses-native-library>` in
+the app manifest. Gone with the official prebuilts: the VC++ Redistributable on win-x64 (static CRT,
+1.2.0) and the Vulkan loader on Linux (v0.18.0 libraries have no hard dependency on it).
 
-## C API coverage (audit 2026-09-05, header v0.16.0)
+## C API coverage (audit 2026-10-06, headers v0.18.0)
 
-**117 of 144 `litert_lm_*` functions bound** against the v0.16.0 official prebuilt (everything we bind
-exists in the header, no drift). v0.16.0 added 4 functions with no removals or signature changes:
+**v0.18.0 declares 212 `litert_lm_*` functions across six headers, and every one is exported by the
+official libraries of all six non-Apple platforms** (checked on the PyPI wheels). Against v0.16.0's 144:
+**no removals, no signature changes, no enum value changes** (full declaration diff, not just names);
+`kLiteRtLmSamplerTypeUnspecified = 0` is back in the sampler enum (for model metadata that declares no
+sampler; our public `Unspecified` still sends no sampler params). New: `c/embedding_engine.h` (34,
+EmbeddingGemma 2 embeddings), `c/model_info.h` (21, `loaded_file_*` metadata read without loading the
+engine), `c/error_reporter.h` (3), `c/experimental.h` (6) and 4 in `engine.h`.
+
+**Bound on the `repin-v0.18.0` branch: 122 of 212** (116 before + the error reporter (3) +
+`set_max_vision_tokens_per_image`, `set_gpu_enable_metal_residency_set` and the per-session
+`session_config_set_enable_speculative_decoding`). Next: the embedding engine and model info (PR 2 of
+the cycle). Deliberately unbound:
+
+- `engine_settings_set_single_threaded_execution` — **fails our readiness protocol**: with it on, the
+  blocking send works but a streaming send never completes and disposing that conversation then hangs
+  the process (win-x64 CPU, 2026-10-06). The runtime switches to its `SerialExecutionManager`
+  ("not thread-safe" per its header), upstream tests only the setter, and the JS/WASM binding is its
+  consumer.
+- `c/experimental.h` (6: session debug info, debugger probe, live Metal-residency update) —
+  experimental by name.
+- The raw Session API (13, now including the checkpoint/rewind trio), responses introspection (10), the
+  raw-FD engine load (#3139 kills the process on Windows when the caller does not share the DLL's CRT)
+  and the NPU dispatch dir (NPU is unsupported on our side).
+
+Previous audit (2026-09-05, header v0.16.0): **116 of 144 `litert_lm_*` functions bound** against the
+v0.16.0 official prebuilt (everything we bind exists in the header, no drift; the 1.2.0 docs said 117). v0.16.0 added 4 functions with no removals or signature changes:
 `set_enable_ynnpack` (bound in the repin) and the session checkpoint/rewind trio (out of scope for
 now). The 3 `capabilities` functions declared in the v0.16.0 header are absent from the shipped zip
 (upstream PR #3273, post-release) and are not bound. Previous audit (2026-08-09, header v0.15.0):
@@ -136,6 +167,35 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
 > scope until upstream exposes them.
 
 ## Actionable next steps (suggested order)
+
+-4. **v0.18.0 CYCLE → 1.3.0 — IN PROGRESS (started 2026-10-06).** Upstream v0.18.0 (2026-10-06) ships
+   EmbeddingGemma 2 (multimodal embeddings, Matryoshka truncation), a model-info API, a thread-local
+   error reporter and four engine/session settings; v0.17.0/v0.17.1 (skipped) brought local-attention
+   memory work, Metal residency and Gemma 4 12B extensions. **The C API zip is not published for
+   v0.17.x/v0.18.0** (upstream paused it to rename functions, LiteRT-LM#3569, "the C API release will
+   resume in the future"); the `litert-lm-api` wheels on PyPI carry the same C API library for all six
+   platforms except iOS with every release, so `native-release.yml` gained `source=pypi` and the default
+   `source=auto` next to `source=zip` (decision 2026-10-06: develop on the wheels, wait one day for a zip
+   before publishing `native-v0.18.0`). No zip had appeared 10.5 hours after the release, so
+   `native-v0.18.0` was published on 2026-10-07 from the wheels (run 37573093012; the same library files the
+   local suites ran). Plan agreed with the maintainer: two PRs, one release.
+   - **PR 1 `repin-v0.18.0`** (in progress): pin + `native-v0.18.0` from the chosen source; runtime
+     packages `linux-arm64` (CI leg on `ubuntu-24.04-arm`) and `android-x64` (x86_64 emulator; MAUI APK
+     carries both ABIs, 58.5 MB Release); native error reporting in every failing call
+     (`LiteRtException.StatusCode`); `MaxVisionTokensPerImage`, `EnableMetalResidencySet`,
+     per-conversation `EnableSpeculativeDecoding`; docs pass incl. the stale items found 2026-10-06.
+     Measured so far (win-x64, RTX 3080): full suite on CPU 278/280 and the two failures were
+     behaviour changes, now fixed in the tests (invalid image bytes now fail at decoding; YNNPACK is
+     rejected with UNIMPLEMENTED off linux-arm64); per-image `VisualTokenBudget = 70` → 68 tokens
+     instead of 260; GPU caches written by v0.16.0 are rebuilt automatically (weight cache 2.3 GB →
+     778 MB); CPU speculative decoding 0.78× (unchanged). GPU suite: one host crash in
+     `ChatClient_MultiTurn_CarriesContext` on the first full run (under investigation, see watchlist).
+     Pending: Moto G100 (arm64 GPU) and an x86_64 emulator run; Linux GPU has no hardware on hand.
+   - **PR 2 `embeddings`**: `LiteRtEmbeddingEngine` (own handle, outside the one-engine guard: the
+     downstream consumer measured Engine + EmbeddingEngine coexisting on CPU and GPU through the Python
+     wheel), `LiteRtModelInfo`, `IEmbeddingGenerator<string, Embedding<float>>` + DI, SK registration,
+     EmbeddingGemma 2 text 270M model tests, `docs/embeddings.md`.
+   - **Release 1.3.0** with the maintainer's GO.
 
 -3. **v0.16.0 CYCLE — evaluation of Google's official C API prebuilts DONE (2026-08-12 →
    2026-09-02, branch `capi-prebuilts-probe`); the repin itself is PENDING the maintainer's go.**
@@ -607,7 +667,31 @@ AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AO
 
 ## Watchlist (re-check periodically)
 
-**Last re-checked: 2026-08-09 (v0.15.0 repin cycle).** Headline findings of the cycle:
+**Last re-checked: 2026-10-06 (start of the v0.18.0 cycle).**
+
+- **Releases:** v0.16.1 (build-flag fix, no new artifacts), v0.17.0, v0.17.1 and v0.18.0 (2026-10-06).
+  None after v0.16.0 carries the C API zip (LiteRT-LM#3569, closed with "the C API release will resume
+  in the future"); the PyPI wheels fill the gap (see the v0.18.0 cycle above). `upstream-watch.yml` now
+  files one issue per upstream version and closes the ones a newer release supersedes.
+- **Closed upstream, moot for us since the official prebuilts:** #2073 (WebGPU sampler exports, closed
+  2026-09-22) and #3135 (v0.15.0 Android sampler exports, closed 2026-09-10).
+- **#3444** (a bundle whose smallest prefill signature exceeds the free context fails natively; no way
+  to query the ceiling): closed 2026-09-15 as completed. v0.18.0's `model_info.h` exposes
+  `loaded_file_max_context_tokens`, the query the issue asked for; the KV guard tests still pass on
+  v0.18.0 CPU with the 128-token reserve.
+- **#3446** (~1 MB retained per conversation create/destroy on macOS/Metal, 0.16.0): open, maintainer
+  follow-up pending (2026-10-06).
+- **#2807** (multi-conversation state, ours): no maintainer activity since 2026-08-13 (a third party
+  confirmed the interleaved fix on iOS and Android).
+- **#2572** (our GPU cache bug, fixed in v0.14.0): still no comments; the close-request with our
+  verification is pending (draft with the maintainer).
+- **#3173** (LoRA slots in the gemma-4 bundles) and **#2149** (our data posted 2026-09-05): no response.
+- **PR #2552** (listing in upstream's bindings table): untouched since June.
+- **Gemma 4 bundles:** the base `.litertlm` files are unchanged (E2B and E4B byte-identical in size to
+  ours); the 2026-08-31 E2B commit only added a Tensor G6 variant. **EmbeddingGemma 2** bundles appeared
+  on litert-community (text 270M, text-vision 440M, multimodal 740M, NPU variants per SoC).
+
+**Previous re-check: 2026-08-09 (v0.15.0 repin cycle).** Headline findings of that cycle:
 
 - **#2807 (multi-conversation state loss, ours): FIXED by v0.15.0.** The sentinel that pinned the
   loss fired on the first v0.15.0 suite run (the suspended conversation now recalls its own facts
@@ -881,7 +965,12 @@ shipping NEW native surface, check ALL of:
   Whisper.net wraps whisper.cpp), and the collision it would guard against (a .NET binding of base
   LiteRT used in-process with this one) does not exist. Bonus: the internal native-mirror layer keeps
   the `LiteRtLm*` names (`LiteRtLmNative`, raw structs), cleanly separated from the public surface.
-- **Self-built** native binaries from release tags (never loose commits — lesson from the
+- **Official prebuilts since v0.16.0 (1.2.0)**: the runtime packages ship Google's own C API
+  libraries, one monolith per platform, repackaged by `native-release.yml` from the C API zip or, when a
+  release carries none (v0.17.0 onward), from the `litert-lm-api` PyPI wheels (same library, verified
+  against PyPI's digests); notices come from the release asset or the xcframework's license bundle.
+  The self-built era below is history.
+- *(History, v0.13.1 → v0.15.0)* **Self-built** native binaries from release tags (never loose commits — lesson from the
   streaming segfault at `032334d8`), via `native/patch_c_api.sh` + `build-native.yml`
   (`platforms` input to avoid rebuilding existing assets; the release accumulates assets).
   v0.14.0 now ships its **own** shared-lib target (`cc_binary litert-lm` in `c/BUILD`, the
@@ -892,7 +981,7 @@ shipping NEW native surface, check ALL of:
   now carried in the release tarballs and picked up by the collect globs.
 - LLamaSharp-style distribution: pure managed + per-RID `runtime.<rid>` packages, all sharing
   one version per release (see Versioning policy above).
-- Desktop (linux/win/macOS) links `libLiteRt` as a separate shared lib (`litert_link_capi_so`
+- *(History, self-built era)* Desktop (linux/win/macOS) links `libLiteRt` as a separate shared lib (`litert_link_capi_so`
   + `resolve_symbols_in_exec=false`; without the second define macOS hits an
   "illegal ambiguous match" because the repo .bazelrc defaults it to true); Android/iOS link
   it statically. macOS switched to dynamic on 2026-06-12: the prebuilt Metal sampler carries

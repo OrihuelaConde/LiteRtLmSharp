@@ -8,8 +8,10 @@ LLamaSharp-style model: **one pure managed package + per-RID native runtime pack
 | `LiteRtLmSharp.Extensions.AI` | `IChatClient` connector (Microsoft.Extensions.AI). Depends on `LiteRtLmSharp` (same version). | net10.0 |
 | `LiteRtLmSharp.SemanticKernel` | `IChatCompletionService` connector, built on `LiteRtLmSharp.Extensions.AI` (same version). | net10.0 |
 | `LiteRtLmSharp.runtime.win-x64` | `runtimes/win-x64/native/`: the official `LiteRtLm.dll` (static CRT) + the DirectX Shader Compiler runtime (`dxcompiler.dll`, `dxil.dll`) the GPU backend needs. No lib. | (native-only) |
-| `LiteRtLmSharp.runtime.linux-x64` | `runtimes/linux-x64/native/libLiteRtLm.so` (one official library; needs the system Vulkan loader, `libvulkan1`). No lib. | (native-only) |
+| `LiteRtLmSharp.runtime.linux-x64` | `runtimes/linux-x64/native/libLiteRtLm.so` (one official library). No lib. | (native-only) |
+| `LiteRtLmSharp.runtime.linux-arm64` | `runtimes/linux-arm64/native/libLiteRtLm.so` (one official library). No lib. | (native-only) |
 | `LiteRtLmSharp.runtime.android-arm64` | `runtimes/android-arm64/native/libLiteRtLm.so` (one official library, accelerators and samplers embedded; packed into the APK as `lib/arm64-v8a/`). | (native-only) |
+| `LiteRtLmSharp.runtime.android-x64` | `runtimes/android-x64/native/libLiteRtLm.so` (the same library for the x86_64 Android emulator; packed into the APK as `lib/x86_64/`). | (native-only) |
 | `LiteRtLmSharp.runtime.osx-arm64` | `runtimes/osx-arm64/native/libLiteRtLm.dylib` (one official library, Apple Silicon). | (native-only) |
 | `LiteRtLmSharp.runtime.ios-arm64` | Google's official `CLiteRTLM.xcframework` (device + simulator slices) injected via `NativeReference` (buildTransitive `.targets`); CPU backend. No lib. | (native-only) |
 
@@ -36,7 +38,7 @@ compatibility table. Install the managed and runtime packages with the same vers
 ```xml
 <PackageReference Include="LiteRtLmSharp" Version="1.2.0" />
 <PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.2.0" />
-<!-- and/or linux-x64 / android-arm64 / osx-arm64, per target -->
+<!-- and/or linux-x64 / linux-arm64 / android-arm64 / android-x64 (emulator) / osx-arm64, per target -->
 ```
 
 The SDK copies `runtimes/<rid>/native/*` into the consumer's output; `NativeLibraryResolver`
@@ -48,10 +50,11 @@ picks its RID, like LLamaSharp).
 
 ## Producing the packages
 
-1. **Native release** (`native-release.yml`) pinned to the upstream tag (`v0.16.0`, the current pin)
-   with `publish_release` → downloads Google's official prebuilts, verifies them against the upstream
-   release digests, inspects each library and publishes the `native-v0.16.0` release with the
-   `litertlm-*.tar.gz` assets (plus upstream's `THIRD_PARTY_NOTICES.litert-lm.txt`).
+1. **Native release** (`native-release.yml`) pinned to the upstream tag (`v0.18.0`, the current pin)
+   with `publish_release` → downloads Google's official prebuilts (the C API zip release asset, or the
+   `litert-lm-api` wheels on PyPI when the release carries no zip), verifies each download against the
+   digest its host publishes, inspects each library and publishes the `native-v0.18.0` release with the
+   `litertlm-*.tar.gz` assets plus `THIRD_PARTY_NOTICES.litert-lm.txt`.
 2. **Pack** (`pack-nuget.yml`): downloads those assets, lays them into
    `runtimes/<rid>/native/`, runs `dotnet pack` with the given `package_version`, uploads the
    `.nupkg`s as an artifact, and (optionally, `push=true`) publishes to nuget.org via
@@ -64,10 +67,10 @@ the projects under `packaging/` (these need the natives already present in
 
 ## Notes / pending
 
-- **Vulkan loader on Linux**: the official `libLiteRtLm.so` hard-depends on `libvulkan.so.1`; consumers
-  install `libvulkan1` (documented in the README; the resolver's load-failure message names it).
+- **No Vulkan loader needed on Linux** for the CPU backend: the v0.18.0 libraries carry no hard
+  dependency on `libvulkan.so.1` (the v0.16.0 one did, which is why 1.2.0 documented `libvulkan1`). The
+  GPU backend runs on Vulkan and needs the GPU's Vulkan driver plus the Vulkan loader.
 - **No VC++ Redistributable on Windows** since 1.2.0: the official `LiteRtLm.dll` links the CRT statically.
-- Possible future RIDs: `linux-arm64`, `android-x64` (emulators).
 - Optional future: a `LiteRtLmSharp.Backend.Desktop` meta-package depending on the win/linux
   runtime packages.
 - Android GPU: consumers must declare `<uses-native-library>` in their manifest (see the README

@@ -40,7 +40,9 @@ body:
       options:
         - win-x64
         - linux-x64
+        - linux-arm64
         - android-arm64
+        - android-x64 (emulator)
         - osx-arm64
         - ios-arm64
         - Other / built from source

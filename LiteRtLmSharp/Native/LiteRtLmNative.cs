@@ -19,6 +19,27 @@ internal static unsafe partial class LiteRtLmNative
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial void litert_lm_set_min_log_level(int level);
 
+    // --- Error reporting (v0.18.0, c/error_reporter.h) --------------------
+    // errno-style and thread-local: a FAILING call stores a canonical status code and a message on the
+    // calling thread; successful calls never clear them. NativeError owns the read/clear discipline.
+
+    /// <summary>The calling thread's last failure status (absl canonical code), or 0 when none is
+    /// recorded.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial int litert_lm_get_last_error_code();
+
+    /// <summary>The calling thread's last failure message, or null. Owned by the library (thread-local)
+    /// and valid until the next failing call or clear on that thread — copy it out immediately.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint litert_lm_get_last_error_message();
+
+    /// <summary>Resets the calling thread's error state (code 0, message null) and frees the message.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_clear_last_error();
+
     // --- Engine settings -------------------------------------------------
 
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
@@ -72,6 +93,21 @@ internal static unsafe partial class LiteRtLmNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_engine_settings_set_max_num_images(nint settings, int max_num_images);
+
+    /// <summary>Caps the vision tokens generated per image: the engine picks the smallest vision
+    /// encoder/adapter signature that fits (engine_advanced_impl.cc). Must be positive; only applies when
+    /// a vision executor is configured and the model declares vision tokens per image. Per-send visual
+    /// token budgets above it are then rejected (conversation.cc ValidateVisualTokenBudget) (v0.18.0+).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_max_vision_tokens_per_image(nint settings, int max_vision_tokens_per_image);
+
+    /// <summary>Keeps model weights and allocations resident in GPU memory through Apple's MTLResidencySet
+    /// API. Apple platforms with the Metal GPU backend only; ignored elsewhere (v0.18.0+).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_engine_settings_set_gpu_enable_metal_residency_set(
+        nint settings, [MarshalAs(UnmanagedType.U1)] bool enable_metal_residency_set);
 
     /// <summary>Enables speculative decoding (MTP drafter); requires a model that ships a drafter.</summary>
     [LibraryImport(Library)]
@@ -215,6 +251,14 @@ internal static unsafe partial class LiteRtLmNative
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial int litert_lm_session_config_set_audio_lora_path(nint config, string audio_lora_path);
+
+    /// <summary>Per-session speculative decoding. Unset = inherit the engine setting; true on an engine
+    /// created without it lazily loads the MTP drafter on the session's first request; false disables it
+    /// for this session even when the engine enables it (v0.18.0+).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void litert_lm_session_config_set_enable_speculative_decoding(
+        nint config, [MarshalAs(UnmanagedType.U1)] bool enable_speculative_decoding);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -695,7 +739,8 @@ internal static unsafe partial class LiteRtLmNative
 }
 
 /// <summary>Mirrors <c>LiteRtLmSamplerType</c> in engine.h. v0.14.0 removed the <c>Unspecified = 0</c>
-/// member; a public <see cref="LiteRtSamplerType.Unspecified"/> never reaches this enum — the binding
+/// member and v0.18.0 restored it (for model metadata that declares no sampler); a public
+/// <see cref="LiteRtSamplerType.Unspecified"/> still never reaches the sampler builder — the binding
 /// skips setting sampler params entirely so the executor's internal default applies
 /// (see <see cref="LiteRtConversation.Create"/>).</summary>
 internal enum LiteRtLmSamplerType

@@ -259,7 +259,7 @@ using Microsoft.Extensions.AI;
 var template = new LiteRtConversationOptions
 {
     SystemMessage = "You are a terse, on-device assistant.",
-    VisualTokenBudget = 256,          // cap what an image costs during prefill
+    VisualTokenBudget = 70,           // ~70 tokens per image instead of ~260 (Gemma 4: 70, 140 or 280)
     FilterThinkingFromKvCache = true, // keep long reasoning out of later turns' context
 };
 

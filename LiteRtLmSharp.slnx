@@ -7,7 +7,9 @@
   <Project Path="LiteRtLmSharp.Tests/LiteRtLmSharp.Tests.csproj" />
   <Project Path="packaging/LiteRtLmSharp.runtime.win-x64/LiteRtLmSharp.runtime.win-x64.csproj" />
   <Project Path="packaging/LiteRtLmSharp.runtime.linux-x64/LiteRtLmSharp.runtime.linux-x64.csproj" />
+  <Project Path="packaging/LiteRtLmSharp.runtime.linux-arm64/LiteRtLmSharp.runtime.linux-arm64.csproj" />
   <Project Path="packaging/LiteRtLmSharp.runtime.android-arm64/LiteRtLmSharp.runtime.android-arm64.csproj" />
+  <Project Path="packaging/LiteRtLmSharp.runtime.android-x64/LiteRtLmSharp.runtime.android-x64.csproj" />
   <Project Path="packaging/LiteRtLmSharp.runtime.osx-arm64/LiteRtLmSharp.runtime.osx-arm64.csproj" />
   <Project Path="packaging/LiteRtLmSharp.runtime.ios-arm64/LiteRtLmSharp.runtime.ios-arm64.csproj" />
 </Solution>

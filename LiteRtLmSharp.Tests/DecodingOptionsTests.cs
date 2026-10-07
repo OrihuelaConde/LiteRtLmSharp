@@ -435,23 +435,35 @@ public sealed class DecodingConnectorModelTests
         Assert.DoesNotContain("Paris", suppressed[0].Content ?? "", StringComparison.Ordinal);
     }
 
-    /// <summary>The experimental YNNPACK toggle (native v0.16.0+) reaches the engine settings: an engine
-    /// loaded with it on the CPU backend still creates and generates. Upstream ships the YNNPACK kernels in
-    /// its linux-arm64 builds; the other official prebuilts accept the flag without a visible effect, which
-    /// is what this smoke pins (no crash, no rejected settings).</summary>
+    /// <summary>The experimental YNNPACK toggle (native v0.16.0+) reaches the engine settings. Only the
+    /// linux-arm64 library carries the YNNPACK kernels: there an engine loaded with it on the CPU backend
+    /// creates and generates (CI's arm64 leg). The other official v0.18.0 libraries reject the flag at engine
+    /// creation with UNIMPLEMENTED (v0.16.0 ignored it), and the exception names the setting.</summary>
     [SkippableFact]
-    public void EngineLoad_WithYnnpack_LoadsAndGenerates()
+    public void EngineLoad_WithYnnpack_GeneratesOnLinuxArm64_AndIsRejectedElsewhere()
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
-        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        var options = new LiteRtEngineOptions
         {
             ModelPath = Model!,
             Backend = LiteRtBackend.Cpu,
             MaxNumTokens = 1024,
             EnableYnnpack = true,
-        });
+        };
+        bool hasYnnpackKernels = OperatingSystem.IsLinux()
+            && System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
+               == System.Runtime.InteropServices.Architecture.Arm64;
+        if (!hasYnnpackKernels)
+        {
+            var ex = Assert.Throws<LiteRtException>(() => LiteRtEngine.Load(options));
+            Assert.Equal(LiteRtStatusCode.Unimplemented, ex.StatusCode);
+            Assert.Contains("EnableYnnpack", ex.Message, StringComparison.Ordinal);
+            return;
+        }
+
+        using var engine = LiteRtEngine.Load(options);
         using var conv = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
         Assert.False(string.IsNullOrWhiteSpace(conv.Send("Say hello.").Text));
     }

@@ -11,12 +11,17 @@ LiteRtLmSharp redistributes, or is derived from, the following third-party compo
 - License: Apache License 2.0 (same text as this repository's `LICENSE.txt`)
 
 The native libraries shipped in the `LiteRtLmSharp.runtime.*` packages are Google's official
-LiteRT-LM C API prebuilts (`litert_lm_c_api-<version>.zip` and `CLiteRTLM.xcframework.zip`
-from the pinned upstream release), redistributed unmodified apart from the file name
-(`LiteRtLm.dll`, `libLiteRtLm.so`, `libLiteRtLm.dylib`). Each library embeds the LiteRT
-runtime, the GPU accelerators and samplers, the constraint provider and LlGuidance, among
-other components; upstream's notice file covering those binaries ships in every runtime
-package as `THIRD_PARTY_NOTICES.litert-lm.txt`.
+LiteRT-LM C API prebuilts from the pinned upstream release, redistributed unmodified apart from
+the file name (`LiteRtLm.dll`, `libLiteRtLm.so`, `libLiteRtLm.dylib`). They come from the
+release's `litert_lm_c_api-<version>.zip` when upstream ships one (it did for v0.16.0),
+otherwise from the `litert-lm-api` wheels on PyPI for the same version, each a wrapper around
+the same C API library; the iOS framework is the release's `CLiteRTLM.xcframework.zip`. Every
+download is verified against the sha256 digest its host publishes. Each library embeds the
+LiteRT runtime, the GPU accelerators and samplers, the constraint provider and LlGuidance,
+among other components. The notices covering those binaries ship in every runtime package as
+`THIRD_PARTY_NOTICES.litert-lm.txt`: upstream's `THIRD_PARTY_NOTICES.txt` release asset when
+the release has one, otherwise the license files bundled in the release's official
+`CLiteRTLM.xcframework`.
 
 LiteRT, LiteRT-LM and Gemma are trademarks of Google LLC. This project is not
 affiliated with, sponsored, or endorsed by Google.

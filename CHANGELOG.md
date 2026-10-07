@@ -6,6 +6,53 @@ LiteRT-LM native version it wraps (see the compatibility table in the [README](R
 managed `LiteRtLmSharp` package and every `LiteRtLmSharp.runtime.<rid>` package share one version and
 are published together.
 
+## [Unreleased]
+
+### Changed
+
+- **Native binaries are LiteRT-LM v0.18.0** (from v0.16.0), still Google's official C API prebuilts.
+  The C API grew from 144 to 212 functions with no removals and no signature changes, so every
+  existing call keeps its ABI. Behaviour differences you may notice:
+  - **Linux needs no extra system package for the CPU backend.** The v0.18.0 libraries have no hard
+    dependency on the Vulkan loader, so `libvulkan1` is no longer a prerequisite (1.2.0's library did
+    not load without it). The GPU backend still runs on Vulkan and needs the GPU's Vulkan driver and
+    the loader.
+  - **`LiteRtEngineOptions.EnableYnnpack = true` now fails engine creation off linux-arm64.** Only the
+    linux-arm64 library carries the YNNPACK kernels; the others reject the flag with
+    `LiteRtStatusCode.Unimplemented` (v0.16.0 ignored it). The exception names the setting.
+  - **Image bytes are decoded before anything else.** Bytes that are not an image fail with the
+    runtime's decoding reason (`INVALID_ARGUMENT: Failed to decode image…`) instead of a setup error.
+  - **GPU caches written by an older runtime are rebuilt automatically** on the first load (one slower
+    load); nothing to clean up by hand.
+- The documentation of `VisualTokenBudget` (conversation and per send) now describes what the runtime
+  does: it is a **per-image** budget, and the runtime downscales each image to the smallest vision
+  signature that fits. On gemma-4-E2B-it a budget of 70 brings an image from 260 tokens to 68.
+
+### Added
+
+- **Runtime packages for linux-arm64 and android-x64**: `LiteRtLmSharp.runtime.linux-arm64` (the CI
+  model suite runs on GitHub's arm64 Linux runner) and `LiteRtLmSharp.runtime.android-x64` (the x86_64
+  Android emulator; use the CPU backend there). The MAUI sample's APK carries both Android ABIs.
+- **Native failure reasons.** A failed native call now reports the runtime's own reason, read from
+  LiteRT-LM's thread-local error state: `litert_lm_engine_create returned null: INVALID_ARGUMENT:
+  Invalid magic number or failed to read` instead of a bare "returned null" plus a list of guesses.
+  `LiteRtException.StatusCode` exposes the status (`LiteRtStatusCode`, the canonical absl codes);
+  it is `null` when the runtime reported nothing or the binding detected the failure itself.
+- `LiteRtEngineOptions.MaxVisionTokensPerImage` — an upper bound on the vision tokens one image may
+  expand to (the engine only selects vision signatures up to it). Pair a cap below the model's
+  default image size with a `VisualTokenBudget` at or below it.
+- `LiteRtEngineOptions.EnableMetalResidencySet` — keeps model weights and allocations resident in GPU
+  memory through Apple's `MTLResidencySet` API (Apple GPU backend only; ignored elsewhere).
+- `LiteRtConversationOptions.EnableSpeculativeDecoding` — per-conversation speculative decoding that
+  overrides the engine setting: `true` on an engine loaded without it loads the MTP drafter lazily on
+  the conversation's first send, `false` turns it off for one conversation.
+
+### Fixed
+
+- XML documentation that had gone stale: text LoRA is validated end to end (since 1.2.0), and the
+  disk-cache workaround for speculative decoding on the desktop GPU backend is gone (fixed upstream in
+  LiteRT-LM v0.14.0).
+
 ## [1.2.0] — 2026-09-05
 
 ### Changed

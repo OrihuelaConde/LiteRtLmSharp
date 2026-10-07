@@ -24,8 +24,8 @@ all running locally via LiteRtLmSharp.
   device info via MAUI essentials) and a mock weather service. Each question runs in a fresh
   conversation, so Chat and Tools never share context.
 
-Targets today: **Android** (physical arm64 device) and **Windows**. iOS/macOS arrive with the Apple
-phase (the csproj documents how to add the TFMs).
+Targets: **Android** (arm64 devices and the x86_64 emulator) and **Windows**. iOS/macOS arrive with
+the Apple phase (the csproj documents how to add the TFMs).
 
 ## Prerequisites
 
@@ -33,18 +33,19 @@ Native binaries restored at `runtimes/<rid>/native/` (the samples reference the 
 project so they always exercise the current source; consumers should use the NuGet packages
 instead — see the repo README):
 
-- Android: extract `litertlm-android_arm64.tar.gz` from the `native-v0.16.0` GitHub release into
-  `runtimes/android-arm64/native/`
+- Android: extract `litertlm-android_arm64.tar.gz` (devices) and `litertlm-android_x86_64.tar.gz`
+  (emulator) from the `native-v0.18.0` GitHub release into `runtimes/android-arm64/native/` and
+  `runtimes/android-x64/native/`
 - Windows: `litertlm-windows_x86_64.tar.gz` into `runtimes/win-x64/native/`
 
 ```
-pwsh scripts/restore-natives.ps1 -Rid android-arm64   # and/or -Rid win-x64
+pwsh scripts/restore-natives.ps1 -Rid android-arm64,android-x64,win-x64
 ```
 
 ## Run on an Android device
 
-Physical **arm64** device (we only ship arm64 binaries), Android 7.0+ (API 24), ideally 8 GB+ RAM
-for Gemma 4 E2B. Enable USB debugging, plug in, then:
+Physical **arm64** device, Android 7.0+ (API 24), ideally 8 GB+ RAM for Gemma 4 E2B. Enable USB
+debugging, plug in, then:
 
 ```
 cd samples/Maui
@@ -53,6 +54,9 @@ dotnet build -f net10.0-android -t:Run
 
 (or F5 in Visual Studio with the device selected). In the app: Models → Download E2B (~2.5 GB,
 resumable) → Load → CPU → chat.
+
+The APK also carries the x86_64 library for the **Android emulator** (x86_64 image, API 24+). Use the
+**CPU** backend there: emulators expose no OpenCL GPU. Give the emulator enough RAM for the model.
 
 ## Run on Windows
 
