@@ -98,6 +98,7 @@ native benchmark API's `decode_tokens_per_sec` for the turn.
 | Platform / backend | spec OFF | spec ON | speedup | Notes |
 |---|---:|---:|---:|---|
 | win-x64 · CPU (dev box, LiteRT-LM v0.18.0, 2026-10-06) | 33.0 tok/s | 25.8 tok/s | **0.78×** | official prebuilt; same ratio as on v0.13.1 |
+| win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, v0.18.0, 2026-10-06, F32 activations, the default since 1.3.0) | 91.4 tok/s | 60.5 tok/s | **0.66×** | two runs (91.7/60.7 and 91.1/60.2) |
 | win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, v0.18.0, 2026-10-06) | 84.1 tok/s | 56.8 tok/s | **0.68×** | official prebuilt: default disk cache, GPU sampler embedded (no CPU-sampling fallback); F16 activations (the default before 1.3.0) |
 | win-x64 · CPU (dev box, 2026-06-15) | 29.9 tok/s | 23.4 tok/s | **0.78×** | works, but slower — see below |
 | win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, 2026-06-15) | 41.8 tok/s | 35.5 tok/s | **0.85×** | A/B both with cache off; plain GPU *with* the disk cache ≈85 tok/s |
@@ -115,8 +116,9 @@ native benchmark API's `decode_tokens_per_sec` for the turn.
   produced alongside the model confirms the drafter was actually engaged.
 - **Desktop WebGPU GPU on the official prebuilts (v0.18.0): works, still slower.** With the default disk
   cache and the GPU sampler embedded in the library (so neither factor below applies any more), the
-  drafter costs a third of the decode throughput on an RTX 3080: 84.1 → 56.8 tok/s (0.68×). The
-  drafter's overhead, not the sampling path, dominates at this acceptance rate.
+  drafter costs a third of the decode throughput on an RTX 3080: 91.4 → 60.5 tok/s (0.66×) with the F32
+  activations the binding uses by default, 84.1 → 56.8 tok/s (0.68×) with F16. The drafter's overhead, not
+  the sampling path, dominates at this acceptance rate.
 - **Desktop WebGPU GPU on v0.13.1 worked (with the cache off), but didn't help.** With
   `Cache = LiteRtCache.Disabled` the engine loads and the drafter speculates on the GPU (the CLI reports
   ~0.32 draft-acceptance on this prompt). In a fair A/B with the cache off on both legs, spec is a
