@@ -174,9 +174,11 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
    memory work, Metal residency and Gemma 4 12B extensions. **The C API zip is not published for
    v0.17.x/v0.18.0** (upstream paused it to rename functions, LiteRT-LM#3569, "the C API release will
    resume in the future"); the `litert-lm-api` wheels on PyPI carry the same C API library for all six
-   non-Apple platforms with every release, so `native-release.yml` gained `source=pypi` next to
-   `source=zip` (decision 2026-10-06: develop on the wheels, wait one day for a zip before publishing
-   `native-v0.18.0`). Plan agreed with the maintainer: two PRs, one release.
+   platforms except iOS with every release, so `native-release.yml` gained `source=pypi` and the default
+   `source=auto` next to `source=zip` (decision 2026-10-06: develop on the wheels, wait one day for a zip
+   before publishing `native-v0.18.0`). No zip had appeared 10.5 hours after the release, so
+   `native-v0.18.0` was published on 2026-10-07 from the wheels (run 37573093012; the same library files the
+   local suites ran). Plan agreed with the maintainer: two PRs, one release.
    - **PR 1 `repin-v0.18.0`** (in progress): pin + `native-v0.18.0` from the chosen source; runtime
      packages `linux-arm64` (CI leg on `ubuntu-24.04-arm`) and `android-x64` (x86_64 emulator; MAUI APK
      carries both ABIs, 58.5 MB Release); native error reporting in every failing call
