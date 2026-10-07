@@ -63,6 +63,14 @@ jobs:
           [ -n "$pkg" ] || pkg=$(grep -oE '<Version>[^<]+' Directory.Build.props | head -1 | sed 's/<Version>//')
           [ -n "$ref" ] || ref=$(grep -oE '<LiteRtLmVersion>[^<]+' Directory.Build.props | sed 's/<LiteRtLmVersion>//')
           echo "package_version=$pkg / native_ref=$ref"
+          # The release notes packed into every package must describe the version being published.
+          if [ "${{ inputs.push }}" = "true" ]; then
+            notes=$(grep -oE '<PackageReleaseNotes>[^<]*' Directory.Build.props | sed 's/<PackageReleaseNotes>//')
+            case "$notes" in
+              "$pkg:"*) echo "PackageReleaseNotes describe $pkg." ;;
+              *) echo "::error::PackageReleaseNotes in Directory.Build.props do not start with \"$pkg:\"; update them before publishing."; exit 1 ;;
+            esac
+          fi
           echo "PKG_VERSION=$pkg" >> "$GITHUB_ENV"
           echo "NATIVE_REF=$ref" >> "$GITHUB_ENV"
           echo "package_version=$pkg" >> "$GITHUB_OUTPUT"
@@ -104,8 +112,11 @@ jobs:
               # strip macOS AppleDouble files if any
               find "runtimes/$rid/native" -name '._*' -delete
               echo "$rid:"; ls "runtimes/$rid/native"
+            elif [ "${{ inputs.push }}" = "true" ]; then
+              echo "::error::native-${NATIVE_REF} has no $asset: publishing would leave LiteRtLmSharp.runtime.$rid out of the release (run native-release.yml for it)"
+              exit 1
             else
-              echo "$rid: no asset ($asset) — its runtime package will be skipped"
+              echo "$rid: no asset ($asset) — its runtime package will be skipped (dry run)"
             fi
           done
 

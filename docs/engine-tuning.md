@@ -111,7 +111,7 @@ EnableYnnpack = true,   // CPU backend, linux-arm64 only
 
 - **CPU backend only**; the GPU backends ignore it.
 - **linux-arm64 only.** Of the official libraries, only linux-arm64 (the Raspberry Pi target) carries the
-  YNNPACK kernels; CI's arm64 leg loads and generates with the flag on. On every other platform the v0.18.0
+  YNNPACK kernels (a model test on CI's arm64 leg loads an engine with the flag on and generates). On every other platform the v0.18.0
   libraries reject it at engine creation with `UNIMPLEMENTED` (v0.16.0 ignored it), and the exception
   names the setting. Measure on the target device before assuming a speed-up.
 

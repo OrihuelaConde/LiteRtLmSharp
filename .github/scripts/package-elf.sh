@@ -35,13 +35,14 @@ if grep -q 'libLiteRt' <<< "$deps"; then
   exit 1
 fi
 if [ "$kind" = linux ]; then
-  # The v0.16.0 zip linked the Vulkan loader as a hard dependency; the v0.18.0 libraries load without it.
-  # Either way the docs and the CI prerequisite must match, so report which one this build is.
+  # The v0.16.0 zip linked the Vulkan loader as a hard dependency; the v0.18.0 libraries load without it,
+  # and the docs, the CHANGELOG and model-tests.yml (which no longer installs libvulkan1) rely on that.
+  # A build that brings the dependency back fails here instead of on a consumer without the loader.
   if grep -q 'libvulkan\.so' <<< "$deps"; then
-    echo "::notice::$(basename "$out"): the library DT_NEEDs the Vulkan loader (libvulkan.so.1); it does not load without libvulkan1."
-  else
-    echo "::notice::$(basename "$out"): the library has no hard dependency on the Vulkan loader."
+    echo "::error::$(basename "$out"): the library DT_NEEDs the Vulkan loader (libvulkan.so.1), which the docs say it does not need. Update the docs and model-tests.yml before packaging it."
+    exit 1
   fi
+  echo "OK: no hard dependency on the Vulkan loader."
 fi
 
 bash "$(dirname "$0")/assert-elf-exports.sh" "$lib" "$MIN_EXPORTS"

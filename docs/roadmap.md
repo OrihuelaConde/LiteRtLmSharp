@@ -10,7 +10,7 @@ native error reporting on the `repin-v0.18.0` branch, then embeddings + model in
 |---|:---:|:---:|:---:|:---:|---|
 | win-x64 | ✅ | ✅ | ✅ | ✅ | real hardware (+ CI, CPU) |
 | linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware with the self-built v0.13.1 set (CPU + GPU); official prebuilts: Docker + CI (CPU) |
-| linux-arm64 | ✅ | ⏳ 1.3.0 | ✅ | — | CI (ubuntu-24.04-arm, CPU); no arm64 GPU on hand |
+| linux-arm64 | ✅ | ⏳ 1.3.0 | ⏳ | — | CI (ubuntu-24.04-arm, CPU): first run with the 1.3.0 pull request; no arm64 GPU on hand |
 | android-arm64 | ✅ | ✅ | ✅ | ✅ | real device (Adreno 650; v0.16.0 libraries, v0.18.0 pending the device) |
 | android-x64 | ✅ | ⏳ 1.3.0 | — | — | build + APK packaging (x86_64 emulator, CPU); emulator run pending |
 | osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI only (macos-15; GPU via WebGPU) |

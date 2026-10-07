@@ -31,7 +31,7 @@ NuGet packages (LLamaSharp-style). Status: **stable (1.x)**.
 |---|:---:|:---:|:---:|:---:|---|
 | win-x64 | ✅ | ✅ | ✅ | ✅ | real hardware |
 | linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware |
-| linux-arm64 | ✅ | ⏳ | ✅ | — | CI |
+| linux-arm64 | ✅ | ⏳ | ⏳ | — | CI (first run pending) |
 | android-arm64 | ✅ | ✅ | ✅ | ✅ | real device |
 | android-x64 (emulator) | ✅ | ⏳ | — | — | build and packaging |
 | osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI |
@@ -47,7 +47,7 @@ lands.</sub>
 ```xml
 <PackageReference Include="LiteRtLmSharp" Version="1.2.0" />
 <PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.2.0" />
-<!-- or LiteRtLmSharp.runtime.linux-x64 / android-arm64 / osx-arm64, per target -->
+<!-- or LiteRtLmSharp.runtime.linux-x64 / linux-arm64 / android-arm64 / android-x64 (emulator) / osx-arm64, per target -->
 ```
 
 Install the managed package plus the runtime package for your platform, **always with the same

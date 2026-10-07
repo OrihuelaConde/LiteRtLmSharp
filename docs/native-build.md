@@ -31,14 +31,16 @@ engine, LiteRT-LM#3135).
 GitHub → **Actions** → *Native release (official LiteRT-LM prebuilts)* → **Run workflow**:
 
 - `litertlm_version`: the upstream release tag. The release created here is `native-<tag>`.
-- `source`: `zip` (the C API zip release asset) or `pypi` (the `litert-lm-api` wheels).
+- `source`: `auto` (default: the C API zip when the release carries it, else the PyPI wheels), `zip`
+  (the C API zip release asset) or `pypi` (the `litert-lm-api` wheels).
 - `capi_version`: with `source=zip`, the zip name suffix (`litert_lm_c_api-<capi_version>.zip`,
   `0.1.0` at v0.16.0).
 - `pypi_version`: with `source=pypi`, the `litert-lm-api` version; empty takes the tag without its
   leading `v`.
 - `platforms`: comma-separated
-  (`linux-x64,linux-arm64,win-x64,android-arm64,android-x64,macos-arm64,ios-arm64`) or `all`. The
-  release accumulates assets and merges `checksums.txt` across partial runs.
+  (`linux-x64,linux-arm64,win-x64,android-arm64,android-x64,macos-arm64,ios-arm64`) or `all`; an
+  unknown name fails the run. The release accumulates assets and merges `checksums.txt` across partial
+  runs, and a run that packages only the iOS framework keeps the release's notes.
 - `publish_release`: publish the tarballs and `THIRD_PARTY_NOTICES.litert-lm.txt` to the
   `native-<tag>` release. Unchecked, the run only packages and uploads artifacts.
 

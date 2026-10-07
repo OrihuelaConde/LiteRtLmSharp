@@ -6,11 +6,13 @@ name: Native release (official LiteRT-LM prebuilts)
 #
 # Upstream ships ONE monolithic shared library per platform (constraint provider, GPU accelerators,
 # GPU samplers and LlGuidance embedded; static CRT on Windows) plus `CLiteRTLM.xcframework.zip` for
-# iOS. Two sources carry the non-Apple libraries (`source` input, see fetch-capi-libs.sh):
+# iOS. Two sources carry the Linux, Windows, Android and macOS libraries (`source` input, see
+# fetch-capi-libs.sh):
 #   zip   `litert_lm_c_api-<capi_version>.zip`, a release asset. Upstream shipped it with v0.16.0 only
 #         and paused it while it renames functions (LiteRT-LM#3569).
 #   pypi  the `litert-lm-api` wheels, published with every release: each is a ctypes wrapper around the
 #         same C API library, with every function of the release's headers exported.
+#   auto  (default) the zip when the release carries it, else the wheels.
 # This workflow replaced the Bazel self-build (git history: build-native.yml + native/patch_c_api.sh)
 # after the v0.16.0 evaluation recorded in docs/roadmap.md.
 #
@@ -38,10 +40,10 @@ on:
         required: true
         default: 'v0.18.0'
       source:
-        description: 'Where the non-Apple libraries come from: the C API zip release asset, or the litert-lm-api wheels on PyPI.'
+        description: 'Where the Linux, Windows, Android and macOS libraries come from: the C API zip release asset, the litert-lm-api wheels on PyPI, or auto (the zip when the release has it, else PyPI).'
         type: choice
-        options: [zip, pypi]
-        default: zip
+        options: [auto, zip, pypi]
+        default: auto
       capi_version:
         description: 'C API prebuilt version (source=zip only: the zip name suffix, litert_lm_c_api-<capi_version>.zip).'
         required: false
@@ -63,7 +65,8 @@ env:
   UPSTREAM_REPO: google-ai-edge/LiteRT-LM
   # Defaults keep the workflow runnable when an input is left empty.
   UPSTREAM_TAG: ${{ inputs.litertlm_version || 'v0.18.0' }}
-  SOURCE: ${{ inputs.source || 'zip' }}
+  # The jobs read the resolved source (auto -> zip or pypi) from the prepare job.
+  SOURCE_INPUT: ${{ inputs.source || 'auto' }}
   CAPI_ZIP: litert_lm_c_api-${{ inputs.capi_version || '0.1.0' }}.zip
   PYPI_VERSION: ${{ inputs.pypi_version }}
   PLATFORMS: ${{ inputs.platforms || 'all' }}
@@ -78,73 +81,140 @@ env:
   DXC_SHA256: a1e89031421cf3c1fca6627766ab3020ca4f962ac7e2caa7fab2b33a8436151e
 
 jobs:
+  # Reads the inputs once: rejects unknown platform names, turns the list into one flag per platform
+  # (the jobs test the flags, never the raw string, so a name cannot match as a substring of another)
+  # and resolves source=auto against the release's assets.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      source: ${{ steps.resolve.outputs.source }}
+      zip_available: ${{ steps.resolve.outputs.zip_available }}
+      elf_platforms: ${{ steps.resolve.outputs.elf_platforms }}
+      capi_packaged: ${{ steps.resolve.outputs.capi_packaged }}
+      linux_x64: ${{ steps.resolve.outputs.linux_x64 }}
+      linux_arm64: ${{ steps.resolve.outputs.linux_arm64 }}
+      win_x64: ${{ steps.resolve.outputs.win_x64 }}
+      android_arm64: ${{ steps.resolve.outputs.android_arm64 }}
+      android_x64: ${{ steps.resolve.outputs.android_x64 }}
+      macos_arm64: ${{ steps.resolve.outputs.macos_arm64 }}
+      ios_arm64: ${{ steps.resolve.outputs.ios_arm64 }}
+    steps:
+      - name: Resolve the platforms and the source
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          all="linux-x64 linux-arm64 win-x64 android-arm64 android-x64 macos-arm64 ios-arm64"
+          list=$(printf '%s' "$PLATFORMS" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+          if [ -z "$list" ] || [ "$list" = all ]; then selected="$all"; else selected=$(tr ',' ' ' <<< "$list"); fi
+          [ -n "${selected// /}" ] || { echo "::error::No platform selected."; exit 1; }
+          for p in $selected; do
+            case " $all " in
+              *" $p "*) ;;
+              *) echo "::error::Unknown platform '$p' (valid: ${all// /,} or all)"; exit 1 ;;
+            esac
+          done
+          on() { case " $selected " in *" $1 "*) echo true ;; *) echo false ;; esac; }
+          elf=""
+          for p in $all; do
+            flag=$(on "$p")
+            echo "${p//-/_}=$flag" >> "$GITHUB_OUTPUT"
+            echo "$p: $flag"
+          done
+          [ "$(on linux-x64)" = true ] && elf+=" linux_x86_64"
+          [ "$(on linux-arm64)" = true ] && elf+=" linux_arm64"
+          [ "$(on android-arm64)" = true ] && elf+=" android_arm64"
+          [ "$(on android-x64)" = true ] && elf+=" android_x86_64"
+          echo "elf_platforms=${elf# }" >> "$GITHUB_OUTPUT"
+          capi=false
+          if [ -n "$elf" ] || [ "$(on win-x64)" = true ] || [ "$(on macos-arm64)" = true ]; then capi=true; fi
+          echo "capi_packaged=$capi" >> "$GITHUB_OUTPUT"
+
+          has_zip=$(gh api "repos/${UPSTREAM_REPO}/releases/tags/${UPSTREAM_TAG}" \
+            --jq "[.assets[] | select(.name == \"${CAPI_ZIP}\")] | length")
+          zip_available=false
+          [ "$has_zip" = 1 ] && zip_available=true
+          source=$SOURCE_INPUT
+          if [ "$source" = auto ]; then
+            if [ "$zip_available" = true ]; then source=zip; else source=pypi; fi
+          elif [ "$source" = zip ] && [ "$zip_available" = false ] && [ "$capi" = true ]; then
+            echo "::error::${UPSTREAM_TAG} has no ${CAPI_ZIP} asset: run with source=auto or source=pypi."
+            exit 1
+          fi
+          echo "source=$source (input $SOURCE_INPUT; ${CAPI_ZIP} on the release: $zip_available)"
+          echo "source=$source" >> "$GITHUB_OUTPUT"
+          echo "zip_available=$zip_available" >> "$GITHUB_OUTPUT"
+
   # The Linux and Android libraries are all ELF, so one Linux runner inspects them with binutils.
   elf:
     name: linux + android
-    if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'linux-x64') || contains(inputs.platforms, 'linux-arm64') || contains(inputs.platforms, 'android-arm64') || contains(inputs.platforms, 'android-x64')
+    needs: prepare
+    if: needs.prepare.outputs.elf_platforms != ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      SOURCE: ${{ needs.prepare.outputs.source }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Fetch and verify the official libraries
         env:
           GH_TOKEN: ${{ github.token }}
+          ELF_PLATFORMS: ${{ needs.prepare.outputs.elf_platforms }}
         run: |
           set -euo pipefail
-          want() { [ "$PLATFORMS" = all ] || [[ ",$PLATFORMS," == *",$1,"* ]]; }
-          plats=()
-          want linux-x64 && plats+=(linux_x86_64)
-          want linux-arm64 && plats+=(linux_arm64)
-          want android-arm64 && plats+=(android_arm64)
-          want android-x64 && plats+=(android_x86_64)
+          read -r -a plats <<< "$ELF_PLATFORMS"
           bash .github/scripts/fetch-capi-libs.sh "$SOURCE" capi "${plats[@]}"
 
       - name: Package linux-x64
-        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'linux-x64')
+        if: needs.prepare.outputs.linux_x64 == 'true'
         run: bash .github/scripts/package-elf.sh capi/lib/linux_x86_64/liblitert-lm.so artifacts/linux_x86_64 linux X86-64
 
       - name: Package linux-arm64
-        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'linux-arm64')
+        if: needs.prepare.outputs.linux_arm64 == 'true'
         run: bash .github/scripts/package-elf.sh capi/lib/linux_arm64/liblitert-lm.so artifacts/linux_arm64 linux AArch64
 
       - name: Package android-arm64
-        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'android-arm64')
+        if: needs.prepare.outputs.android_arm64 == 'true'
         run: bash .github/scripts/package-elf.sh capi/lib/android_arm64/liblitert-lm.so artifacts/android_arm64 android AArch64
 
       - name: Package android-x64
-        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'android-x64')
+        if: needs.prepare.outputs.android_x64 == 'true'
         run: bash .github/scripts/package-elf.sh capi/lib/android_x86_64/liblitert-lm.so artifacts/android_x86_64 android X86-64
 
       - uses: actions/upload-artifact@v4
-        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'linux-x64')
+        if: needs.prepare.outputs.linux_x64 == 'true'
         with:
           name: litertlm-linux_x86_64
           path: artifacts/linux_x86_64/
 
       - uses: actions/upload-artifact@v4
-        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'linux-arm64')
+        if: needs.prepare.outputs.linux_arm64 == 'true'
         with:
           name: litertlm-linux_arm64
           path: artifacts/linux_arm64/
 
       - uses: actions/upload-artifact@v4
-        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'android-arm64')
+        if: needs.prepare.outputs.android_arm64 == 'true'
         with:
           name: litertlm-android_arm64
           path: artifacts/android_arm64/
 
       - uses: actions/upload-artifact@v4
-        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'android-x64')
+        if: needs.prepare.outputs.android_x64 == 'true'
         with:
           name: litertlm-android_x86_64
           path: artifacts/android_x86_64/
 
   win-x64:
     name: win-x64
-    if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'win-x64')
+    needs: prepare
+    if: needs.prepare.outputs.win_x64 == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      SOURCE: ${{ needs.prepare.outputs.source }}
     defaults:
       run:
         shell: pwsh
@@ -187,20 +257,23 @@ jobs:
 
   apple:
     name: macos-arm64 + ios-arm64
-    if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64') || contains(inputs.platforms, 'ios-arm64')
+    needs: prepare
+    if: needs.prepare.outputs.macos_arm64 == 'true' || needs.prepare.outputs.ios_arm64 == 'true'
     runs-on: macos-15
     timeout-minutes: 30
+    env:
+      SOURCE: ${{ needs.prepare.outputs.source }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Fetch and verify the official macOS library
-        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64')
+        if: needs.prepare.outputs.macos_arm64 == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/fetch-capi-libs.sh "$SOURCE" capi macos_arm64
 
       - name: Package macos-arm64
-        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64')
+        if: needs.prepare.outputs.macos_arm64 == 'true'
         run: |
           set -euo pipefail
           mkdir -p artifacts/macos
@@ -224,13 +297,13 @@ jobs:
           ls -la artifacts/macos
 
       - name: Download and verify the official iOS xcframework
-        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'ios-arm64')
+        if: needs.prepare.outputs.ios_arm64 == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/fetch-upstream-asset.sh CLiteRTLM.xcframework.zip upstream
 
       - name: Package ios-arm64
-        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'ios-arm64')
+        if: needs.prepare.outputs.ios_arm64 == 'true'
         # The official xcframework is shipped AS IS under its own name (CLiteRTLM): the managed
         # resolver loads Frameworks/CLiteRTLM.framework/CLiteRTLM on iOS and the runtime package's
         # buildTransitive .targets references CLiteRTLM.xcframework. Re-wrapping it under our name
@@ -260,25 +333,29 @@ jobs:
           ls -R artifacts/ios | head -40
 
       - uses: actions/upload-artifact@v4
-        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'macos-arm64')
+        if: needs.prepare.outputs.macos_arm64 == 'true'
         with:
           name: litertlm-macos_arm64
           path: artifacts/macos/
 
       - uses: actions/upload-artifact@v4
-        if: inputs.platforms == '' || inputs.platforms == 'all' || contains(inputs.platforms, 'ios-arm64')
+        if: needs.prepare.outputs.ios_arm64 == 'true'
         with:
           name: litertlm-ios_arm64
           path: artifacts/ios/
 
   publish-release:
     name: Publish GitHub Release
-    needs: [elf, win-x64, apple]
+    needs: [prepare, elf, win-x64, apple]
     # Run as long as nothing failed (skipped platform jobs are fine) and publishing was requested.
     if: ${{ !cancelled() && inputs.publish_release && !contains(needs.*.result, 'failure') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      SOURCE: ${{ needs.prepare.outputs.source }}
+      ZIP_AVAILABLE: ${{ needs.prepare.outputs.zip_available }}
+      CAPI_PACKAGED: ${{ needs.prepare.outputs.capi_packaged }}
     steps:
       - uses: actions/checkout@v4
 
@@ -307,11 +384,45 @@ jobs:
               upstream/CLiteRTLM.xcframework.zip release/THIRD_PARTY_NOTICES.litert-lm.txt "$UPSTREAM_TAG"
             echo "NOTICES_SOURCE=the license bundle of the release's CLiteRTLM.xcframework (the release has no THIRD_PARTY_NOTICES.txt)" >> "$GITHUB_ENV"
           fi
-          if [ "$SOURCE" = pypi ]; then
-            echo "LIB_SOURCE=the litert-lm-api ${PYPI_VERSION:-${UPSTREAM_TAG#v}} wheels on PyPI (verified against PyPI's sha256 digests; upstream published no C API zip for this release)" >> "$GITHUB_ENV"
-          else
-            echo "LIB_SOURCE=${CAPI_ZIP} (verified against GitHub's per-asset sha256 digest)" >> "$GITHUB_ENV"
+          # The body names the library source only when this run packaged C API libraries; a run that
+          # repackaged only the iOS framework keeps the body the release already has (next step).
+          if [ "$CAPI_PACKAGED" = true ]; then
+            if [ "$SOURCE" = pypi ]; then
+              note=""
+              [ "$ZIP_AVAILABLE" = true ] || note="; upstream published no C API zip for this release"
+              echo "LIB_SOURCE=the litert-lm-api ${PYPI_VERSION:-${UPSTREAM_TAG#v}} wheels on PyPI (verified against PyPI's sha256 digests${note})" >> "$GITHUB_ENV"
+            else
+              echo "LIB_SOURCE=${CAPI_ZIP} (verified against GitHub's per-asset sha256 digest)" >> "$GITHUB_ENV"
+            fi
           fi
+
+      - name: Release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${LIB_SOURCE:-}" ] \
+             && gh release view "native-${UPSTREAM_TAG}" --repo "${{ github.repository }}" --json body --jq .body > body.md 2>/dev/null \
+             && [ -s body.md ]; then
+            echo "No C API library packaged in this run: the release keeps its current notes."
+            exit 0
+          fi
+          python3 - > body.md <<'PY'
+          import os
+          tag = os.environ["UPSTREAM_TAG"]
+          libs = os.environ.get("LIB_SOURCE") or "the official C API libraries (not packaged in this run)"
+          notices = os.environ["NOTICES_SOURCE"]
+          print(f"""Google's official LiteRT-LM C API prebuilts from the upstream release `{tag}`,
+          repackaged into this repo's `runtimes/<rid>/native` layout under the library names the binding
+          loads. The Linux, Windows, Android and macOS libraries come from {libs}; the iOS framework is the
+          release's `CLiteRTLM.xcframework.zip` (verified against GitHub's sha256 digest). win-x64 adds the
+          DirectX Shader Compiler runtime (`dxcompiler.dll`, `dxil.dll`, DXC v1.9.2602) that the official
+          library's Dawn backend requires on Direct3D 12. `THIRD_PARTY_NOTICES.litert-lm.txt` comes from
+          {notices}. Assets accumulate across platform-filtered runs.
+
+          Consume with `scripts/restore-natives.ps1` (its default version tracks `LiteRtLmVersion`).""")
+          PY
+          cat body.md
 
       - name: Package archives + checksums
         env:
@@ -341,15 +452,6 @@ jobs:
         with:
           tag_name: native-${{ env.UPSTREAM_TAG }}
           name: Native binaries — LiteRT-LM ${{ env.UPSTREAM_TAG }} (official prebuilts)
-          body: |
-            Google's official LiteRT-LM C API prebuilts from the upstream release `${{ env.UPSTREAM_TAG }}`,
-            repackaged into this repo's `runtimes/<rid>/native` layout under the library names the binding
-            loads. The non-Apple libraries come from ${{ env.LIB_SOURCE }}; the iOS framework is the
-            release's `CLiteRTLM.xcframework.zip` (verified against GitHub's sha256 digest). win-x64 adds
-            the DirectX Shader Compiler runtime (`dxcompiler.dll`, `dxil.dll`, DXC v1.9.2602) that the
-            official library's Dawn backend requires on Direct3D 12. `THIRD_PARTY_NOTICES.litert-lm.txt`
-            comes from ${{ env.NOTICES_SOURCE }}. Assets accumulate across platform-filtered runs.
-
-            Consume with `scripts/restore-natives.ps1` (its default version tracks `LiteRtLmVersion`).
+          body_path: body.md
           files: release/*
           fail_on_unmatched_files: false
