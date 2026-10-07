@@ -15,8 +15,8 @@
       adapter. NOT marked AOT/trim-clean (Semantic Kernel itself is not); the core LiteRtLmSharp package stays AOT.
     -->
     <PackageId>LiteRtLmSharp.SemanticKernel</PackageId>
-    <Description>Microsoft Semantic Kernel connector (IChatCompletionService) for LiteRtLmSharp on-device LLM inference — a thin layer over the LiteRtLmSharp.Extensions.AI IChatClient. Companion to the LiteRtLmSharp package. $(LiteRtLmDisclaimer)</Description>
-    <PackageTags>litert;litert-lm;semantic-kernel;llm;gemma;on-device;inference;ai</PackageTags>
+    <Description>Microsoft Semantic Kernel connector (IChatCompletionService and an embedding generator) for LiteRtLmSharp on-device LLM inference and embeddings — a thin layer over the LiteRtLmSharp.Extensions.AI IChatClient and IEmbeddingGenerator. Companion to the LiteRtLmSharp package. $(LiteRtLmDisclaimer)</Description>
+    <PackageTags>litert;litert-lm;semantic-kernel;llm;gemma;embeddings;on-device;inference;ai</PackageTags>
 
     <!-- Debugger source mapping for the published package (SourceLink ships with the SDK). -->
     <IncludeSymbols>true</IncludeSymbols>

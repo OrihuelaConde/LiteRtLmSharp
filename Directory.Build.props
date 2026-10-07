@@ -20,7 +20,7 @@
     <PackageProjectUrl>https://github.com/OrihuelaConde/LiteRtLmSharp</PackageProjectUrl>
     <RepositoryUrl>https://github.com/OrihuelaConde/LiteRtLmSharp</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageTags>litert;litert-lm;llm;gemma;on-device;inference;ai;maui</PackageTags>
+    <PackageTags>litert;litert-lm;llm;gemma;embeddings;on-device;inference;ai;maui</PackageTags>
     <!-- Every package embeds a dedicated concise README (shown on nuget.org, which renders no
          HTML — the repo-root README uses an HTML hero). Packed below as README.md. -->
     <PackageReadmeFile>README.md</PackageReadmeFile>

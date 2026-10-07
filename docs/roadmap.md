@@ -1,8 +1,8 @@
 # Project status and roadmap
 
 Last updated: 2026-10-06 (v0.18.0 cycle in progress toward 1.3.0: repin + linux-arm64/android-x64 +
-native error reporting on the `repin-v0.18.0` branch, then embeddings + model info; latest on nuget.org:
-1.2.0, LiteRT-LM v0.16.0). Source of truth for "what's done and what's pending".
+native error reporting on the `repin-v0.18.0` branch, embeddings + model info on the `embeddings` branch;
+latest on nuget.org: 1.2.0, LiteRT-LM v0.16.0). Source of truth for "what's done and what's pending".
 
 ## Status per platform
 
@@ -11,9 +11,9 @@ native error reporting on the `repin-v0.18.0` branch, then embeddings + model in
 | win-x64 | ✅ | ✅ | ✅ | ✅ | real hardware (+ CI, CPU) |
 | linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware with the self-built v0.13.1 set (CPU + GPU); official prebuilts: Docker + CI (CPU) |
 | linux-arm64 | ✅ | ⏳ 1.3.0 | ⏳ | — | CI (ubuntu-24.04-arm, CPU): first run with the 1.3.0 pull request; no arm64 GPU on hand |
-| android-arm64 | ✅ | ✅ | ✅ | ✅ | real device (Adreno 650; v0.16.0 libraries, v0.18.0 pending the device) |
-| android-x64 | ✅ | ⏳ 1.3.0 | — | — | build + APK packaging (x86_64 emulator, CPU); emulator run pending |
-| osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI only (macos-15; GPU via WebGPU) |
+| android-arm64 | ✅ | ✅ | ✅ | ✅ | real device (Moto G100, Adreno 650; v0.18.0 from the packed 1.3.0 packages, 2026-10-06) |
+| android-x64 | ✅ | ⏳ 1.3.0 | ✅ | — | x86_64 emulator (API 35): chat and embeddings on CPU from the packed packages; emulators expose no GPU |
+| osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI only (macos-15; GPU via WebGPU); the v0.18.0 libraries run there first with the 1.3.0 pull request |
 | ios-arm64 | ✅ | ⏳ | — | — | CI build/link only (no device); on-device runtime + publish pending |
 
 <sub>**CPU / GPU** = inference validated on that backend. **CI** = the `model-tests.yml` model leg
@@ -45,13 +45,16 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Multimodal messages (image/audio attachments, vision/audio backend, visual token budget) | ✅ |
 | Tokenize/detokenize + start/stop tokens (exact token counting, no inference) | ✅ |
 | Render a message (`RenderMessage`) or the whole preface (`RenderPreface`) to its templated prompt for debugging / exact-cost budgeting | ✅ |
-| CPU thread counts, LoRA adapters (engine ranks + per-conversation paths), per-send output cap, tool-call streaming (v0.14.0 surface) | ✅ |
-| .NET AI integrations: `Microsoft.Extensions.AI` `IChatClient` (+ Agent Framework) and a Semantic Kernel connector (separate packages) | ✅ |
+| CPU thread counts, LoRA adapters (engine ranks + per-conversation paths; the runtime applies an adapter engine-wide, see [engine-tuning](engine-tuning.md#lora-adapters-engine-ranks-and-adapter-paths)), per-send output cap, tool-call streaming (v0.14.0 surface) | ✅ |
+| .NET AI integrations: `Microsoft.Extensions.AI` `IChatClient` (+ Agent Framework) and `IEmbeddingGenerator`, and a Semantic Kernel connector (separate packages) | ✅ (embedding generator: branch) |
+| Embeddings: `LiteRtEmbeddingEngine` (EmbeddingGemma 2; Matryoshka truncation, normalization, overflow strategies, thread-safe; coexists with a chat engine) | ✅ (branch) |
+| Model metadata without loading (`LiteRtModelInfo.Read`: type, context, inputs, backends, speculative support, embedding sizes) | ✅ (branch) |
 | Native error reporting (v0.18.0 `error_reporter.h`): every failed native call surfaces the runtime's own status and reason in `LiteRtException` (+ `StatusCode`, `LiteRtStatusCode`) instead of a bare "returned null" | ✅ (branch) |
 | v0.18.0 options: per-image vision token cap (`MaxVisionTokensPerImage`), Metal residency (`EnableMetalResidencySet`), per-conversation speculative decoding (`LiteRtConversationOptions.EnableSpeculativeDecoding`) | ✅ (branch) |
 | KV overflow guard (`LiteRtContextOverflowException`): sends clamp their reply to the remaining context and throw instead of overflowing the KV cache, which the native runtime does not police (heap corruption + deferred `0xC0000005`/`0xC0000374` crash — found by a downstream consumer app, 2026-07-13, in a stateful tool loop). Same-turn signal: `LiteRtConversation.IsContextFull` (true exactly when the next send would throw) → `ChatFinishReason.Length` in the MEAI client, overriding `ToolCalls` on a full conversation. Armed by an explicit `MaxNumTokens`; pure binding, no new native surface. **Done 2026-07-15** | ✅ |
 
-Known constraints (documented in the README): one engine ALIVE at a time (reloading after
+Known constraints (documented in the README): one chat engine ALIVE at a time (an embedding engine does
+not count; reloading after
 `Dispose` works — verified on win-x64 cpu→cpu and cpu→gpu; this is Edge Gallery's pattern for
 switching model/backend without restarting); conversations are not thread-safe (serialize sends per
 engine); `MaxNumTokens` is the total context window; Android GPU requires `<uses-native-library>` in
@@ -61,17 +64,21 @@ the app manifest. Gone with the official prebuilts: the VC++ Redistributable on 
 ## C API coverage (audit 2026-10-06, headers v0.18.0)
 
 **v0.18.0 declares 212 `litert_lm_*` functions across six headers, and every one is exported by the
-official libraries of all six non-Apple platforms** (checked on the PyPI wheels). Against v0.16.0's 144:
+official libraries of all six platforms except iOS** (checked on the PyPI wheels). Against v0.16.0's 144:
 **no removals, no signature changes, no enum value changes** (full declaration diff, not just names);
 `kLiteRtLmSamplerTypeUnspecified = 0` is back in the sampler enum (for model metadata that declares no
 sampler; our public `Unspecified` still sends no sampler params). New: `c/embedding_engine.h` (34,
 EmbeddingGemma 2 embeddings), `c/model_info.h` (21, `loaded_file_*` metadata read without loading the
-engine), `c/error_reporter.h` (3), `c/experimental.h` (6) and 4 in `engine.h`.
+engine), `c/error_reporter.h` (3), `c/experimental.h` (6) and 4 in `engine.h`. (The embedding and
+capabilities headers arrived in v0.17.0, which we skipped; v0.18.0 renamed capabilities to model info and
+added the error reporter.)
 
-**Bound on the `repin-v0.18.0` branch: 122 of 212** (116 before + the error reporter (3) +
+**Bound: 166 of 212.** The `repin-v0.18.0` branch binds 122 (116 before + the error reporter (3) +
 `set_max_vision_tokens_per_image`, `set_gpu_enable_metal_residency_set` and the per-session
-`session_config_set_enable_speculative_decoding`). Next: the embedding engine and model info (PR 2 of
-the cycle). Deliberately unbound:
+`session_config_set_enable_speculative_decoding`); the `embeddings` branch adds 44: the embedding engine
+(23 of the 34 in `embedding_engine.h`, plus `input_data_create`/`delete` from `engine.h`) and the model
+metadata (19 of 21). Per header: `engine.h` 83/110, `conversation.h` 38/38, `embedding_engine.h` 23/34,
+`model_info.h` 19/21, `error_reporter.h` 3/3, `experimental.h` 0/6. Deliberately unbound:
 
 - `engine_settings_set_single_threaded_execution` — **fails our readiness protocol**: with it on, the
   blocking send works but a streaming send never completes and disposing that conversation then hangs
@@ -80,9 +87,14 @@ the cycle). Deliberately unbound:
   consumer.
 - `c/experimental.h` (6: session debug info, debugger probe, live Metal-residency update) —
   experimental by name.
-- The raw Session API (13, now including the checkpoint/rewind trio), responses introspection (10), the
-  raw-FD engine load (#3139 kills the process on Windows when the caller does not share the DLL's CRT)
-  and the NPU dispatch dir (NPU is unsupported on our side).
+- The raw Session API (14: `engine_create_session`, the `session_*` calls including the checkpoint/rewind
+  trio, and `session_config_set_apply_prompt_template`), responses introspection (10), the raw-FD engine
+  load (#3139 kills the process on Windows when the caller does not share the DLL's CRT) and the NPU
+  dispatch dir (NPU is unsupported on our side).
+- Embedding engine (11): the image and audio inputs (`set_vision_tokens_per_image` on the settings and
+  the options, `set_audio_num_threads`) wait for multimodal embeddings; the three dispatch-lib-dir setters
+  are NPU-only; the five `embedding_options_get_*` getters would only read back what the binding set.
+- Model metadata (2): `modality_npu_brand` and `modality_soc_name`, NPU-only.
 
 Previous audit (2026-09-05, header v0.16.0): **116 of 144 `litert_lm_*` functions bound** against the
 v0.16.0 official prebuilt (everything we bind exists in the header, no drift; the 1.2.0 docs said 117). v0.16.0 added 4 functions with no removals or signature changes:
@@ -132,10 +144,10 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
 | ✅ Restore chat history | `conversation_config_set_messages` | **Done 2026-06-16** (`LiteRtConversationOptions.History` typed `LiteRtMessage` list + raw `HistoryJson`; `LiteRtResponse.ToMessage()` + `LiteRtMessage.Serialize/Deserialize` for the caller-owned round-trip — the C API has no history getter). Replays the history through prefill (not a KV snapshot). Verified on gemma-4-E2B (CPU + win-x64 GPU/WebGPU): a restored conversation holds strictly more KV tokens than a fresh one. See [conversation-state.md](conversation-state.md). |
 | ✅ Extra context | `conversation_config_set_extra_context` | **Done 2026-06-16** (`LiteRtConversationOptions.EnableThinking` for Gemma reasoning mode + raw `ExtraContext` escape hatch). Both samples expose a thinking toggle; pairs with the KV-cache thinking filter below. |
 | ✅ Conversation clone | `conversation_clone` | **Done 2026-06-16** (`LiteRtConversation.Clone()` → independent conversation duplicating the prefilled KV-cache state; throws `LiteRtException` when the engine/backend returns `Unimplemented`). NOT CPU-only — verified on gemma-4-E2B on both CPU and win-x64 GPU (WebGPU): the clone copies the parent's token count, advances on its own, and leaves the parent untouched. See [conversation-state.md](conversation-state.md). |
-| ✅ Engine cache dir | `engine_settings_set_cache_dir` | **Done 2026-06-15** (`LiteRtEngineOptions.CacheDir`, + `CacheDisabled`/`CacheInMemory` sentinels). Persistent compiled-shader/weight cache → faster GPU re-init; also the fix for speculative decoding on WebGPU (set `CacheDisabled`). |
-| ✅ Speculative decoding | `engine_settings_set_enable_speculative_decoding` | **Done 2026-06-15** (`EnableSpeculativeDecoding`). Measured (gemma-4-E2B): desktop CPU **regresses** (~0.78×); desktop **WebGPU works** with `CacheDir=CacheDisabled` but doesn't help here (0.85× in a fair cache-off A/B; CPU-sampling fallback) — the disk-cache requirement is an upstream issue, see watchlist; accelerators are the expected ~3× win. See [speculative-decoding.md](speculative-decoding.md). |
+| ✅ Engine cache dir | `engine_settings_set_cache_dir` | **Done 2026-06-15** (`LiteRtEngineOptions.CacheDir`, + `CacheDisabled`/`CacheInMemory` sentinels). Persistent compiled-shader/weight cache → faster GPU re-init. (Disabling it was the v0.13.1 workaround for speculative decoding on WebGPU, obsolete since v0.14.0.) |
+| ✅ Speculative decoding | `engine_settings_set_enable_speculative_decoding` | **Done 2026-06-15** (`EnableSpeculativeDecoding`). Measured (gemma-4-E2B): desktop CPU **regresses** (~0.78×); desktop **WebGPU works** with `CacheDir=CacheDisabled` but doesn't help here (0.85× in a fair cache-off A/B; CPU-sampling fallback) — the disk-cache requirement is an upstream issue, see watchlist; accelerators are the expected ~3× win. **Update (v0.18.0, 2026-10-07):** the cache workaround is gone since v0.14.0; with the default cache desktop CPU runs 0.78× and an RTX 3080 0.52×, an Adreno 650 ~1.01×; a model without a drafter fails engine creation; per-conversation override since v0.18.0. See [speculative-decoding.md](speculative-decoding.md). |
 | ✅ Multimodal messages | `engine_settings_set_max_num_images`, `conversation_optional_args_create/delete/set_visual_token_budget` | **Done 2026-06-17.** `LiteRtAttachment` (`Image`/`ImageFile`/`Audio`/`AudioFile`) + `Send`/`SendMessage`/`SendMessageStreamingAsync` attachment overloads build the content-part wire format (`{"type":"image"\|"audio","blob":<base64>\|"path":<file>}`, byte-verified against `runtime/conversation/.../data_utils.cc`); `LiteRtEngineOptions.VisionBackend`/`AudioBackend` enable the encoders via the already-bound `engine_settings_create`; `LiteRtConversationOptions.VisualTokenBudget` → `optional_args`. **Validated against gemma-4-E2B-it (2026-06-17): vision+audio on CPU across linux-x64/win-x64/osx-arm64 and vision on the osx-arm64 GPU leg (model-tests run 27712370474), plus win-x64 GPU locally.** An image adds a ~261-token vision block (28 → 289) and the model answered "…a solid, vibrant **red** color"; a real spoken 5→0 countdown adds ~130 audio tokens (35 → 165) and the model transcribed "Five, four, three, two, one, zero." Vision runs on GPU. **Gemma 4's audio sub-model is CPU-constrained** (`audio_backend="gpu"` → `engine_create` fails with "Audio backend constraint mismatch. Model requires one of [cpu]") — a model property, not a platform one (the model-tests macOS GPU leg confirms the same skip), so MAUI runs audio on CPU when the main backend is GPU. MAUI Chat tab gains 📷/🎵 attach buttons + a modality label (gated on model capability). `set_max_num_images` is bound for Kotlin-binding parity but legacy-only per the header. |
-| ✅ LoRA adapters | `engine_settings_set_lora_rank`, `set_supported_lora_ranks`, `set_audio_lora_rank`, `set_supported_audio_lora_ranks`, `session_config_set_lora_path`, `session_config_set_audio_lora_path` | **Done 2026-07-10** (`LiteRtEngineOptions.LoraRank`/`SupportedLoraRanks`/`AudioLoraRank`/`SupportedAudioLoraRanks` + `LiteRtConversationOptions.LoraPath`/`AudioLoraPath`). The adapter file is opened when the conversation is created, so a bad path fails fast with `LiteRtException`. Requires a LoRA-enabled model; the supported-ranks lists are only honored on the GPU (Artisan) backend. **Not yet validated end-to-end against a real adapter** (no adapter artifact on hand), but the plumbing is in place and the failure modes surface coherently. |
+| ✅ LoRA adapters | `engine_settings_set_lora_rank`, `set_supported_lora_ranks`, `set_audio_lora_rank`, `set_supported_audio_lora_ranks`, `session_config_set_lora_path`, `session_config_set_audio_lora_path` | **Done 2026-07-10** (`LiteRtEngineOptions.LoraRank`/`SupportedLoraRanks`/`AudioLoraRank`/`SupportedAudioLoraRanks` + `LiteRtConversationOptions.LoraPath`/`AudioLoraPath`). The adapter file is opened when the conversation is created, so a bad path fails fast with `LiteRtException`. Requires a LoRA-enabled model; the supported-ranks lists are only honored on the GPU (Artisan) backend. **Validated on v0.18.0 (2026-10)** against upstream's LoRA test bundle and two rank-32 adapters: an adapter changes generation, but the runtime applies it to the whole engine (see [engine-tuning](engine-tuning.md#lora-adapters-engine-ranks-and-adapter-paths)). `LoraTextAdapterTests` pins the behavior; `model-tests.yml` downloads the artifacts. |
 | ✅ Tool-call streaming | `conversation_config_set_stream_tool_calls` | **Done 2026-07-10** (`LiteRtConversationOptions.StreamToolCalls` + `LiteRtStreamChunkKind.ToolCallDelta`). Streams the raw, unparsed text of a tool call as the model generates it (incremental progress fragments on the native `tool_call` channel), ahead of the usual complete parsed `ToolCall` chunk. Opt-in, off by default; progress display only, act on the final parsed chunk. |
 
 ### Medium value (developer utilities)
@@ -156,15 +168,15 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
 
 | Feature | Functions | Notes |
 |---|---|---|
-| Raw Session API (13) | `engine_create_session`, `session_run_prefill`, `session_run_decode(_async)`, `session_generate_content(_stream)`, `session_run_text_scoring`, `session_cancel_process`, `session_config_set_apply_prompt_template`, `session_delete`, `session_get_benchmark_info`, `input_data_create`/`_delete` | Low-level prefill/decode bypassing chat templates; includes text scoring (log-prob ranking) and the raw no-template mode. v0.14.0 added `input_data_create`/`_delete` and changed the `run_prefill`/`generate_content` signatures; still out of scope (the Conversation API covers our use cases). |
+| Raw Session API (14) | `engine_create_session`, `session_run_prefill`, `session_run_decode(_async)`, `session_generate_content(_stream)`, `session_run_text_scoring`, `session_cancel_process`, `session_config_set_apply_prompt_template`, `session_delete`, `session_get_benchmark_info`, `session_save_checkpoint`, `session_rewind_to_checkpoint`/`_to_step` | Low-level prefill/decode bypassing chat templates; includes text scoring (log-prob ranking), the raw no-template mode and (v0.16.0) checkpoint/rewind. v0.14.0 changed the `run_prefill`/`generate_content` signatures; still out of scope (the Conversation API covers our use cases). Its `input_data_create`/`_delete` are bound since the embedding engine, which takes the same inputs. |
 | Responses introspection (10) | `responses_*` | Candidates, scores, per-token logits — only meaningful with the Session API. |
 | Raw-FD engine load | `engine_settings_create_from_raw_file_descriptor` | **Deferred** (new in v0.14.0). Loads a model from an open file descriptor (mainly Android `content://` scenarios); the path-based `engine_settings_create` covers the desktop/MAUI paths we ship. |
 | ✅ Benchmark fake tokens | `engine_settings_set_num_prefill_tokens`, `set_num_decode_tokens` | **Done 2026-06-20** (`LiteRtEngineOptions.BenchmarkPrefillTokens` / `BenchmarkDecodeTokens`). Synthetic-token benchmarking: the prompt is padded/truncated to the prefill count and decode runs exactly the decode count (ignoring the stop token), so `GetBenchmarkInfo` reports throughput at FIXED counts — content-independent device benchmarking. **Confirmed observable through the Conversation API** (not a benchmark-main-only path): both fields feed `EngineSettings::benchmark_params_`, read by the default `EngineAdvancedImpl`/`SessionAdvanced` (source trace + win-x64 probe: a tiny "Hi" reports 256/64). Setting either also flips benchmark mode on; the reply is not a real answer. |
 | NPU dispatch dir | `engine_settings_set_litert_dispatch_lib_dir` | Qualcomm/Intel NPU dispatch library location. |
 
-> Note: the C API still has **no embeddings functions** at v0.14.0 (flutter_gemma implements
-> embeddings via a separate native library, not this header), so embeddings stay out of
-> scope until upstream exposes them.
+> Embeddings: v0.18.0 added `c/embedding_engine.h` and `c/model_info.h`; text embeddings and the
+> metadata reader are bound (`LiteRtEmbeddingEngine`, `LiteRtModelInfo`; counts in the coverage audit
+> above). Multimodal embeddings (image and audio inputs) are the open part.
 
 ## Actionable next steps (suggested order)
 
@@ -188,17 +200,48 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
      behaviour changes, now fixed in the tests (invalid image bytes now fail at decoding; YNNPACK is
      rejected with UNIMPLEMENTED off linux-arm64); per-image `VisualTokenBudget = 70` → 68 tokens
      instead of 260; GPU caches written by v0.16.0 are rebuilt automatically (weight cache 2.3 GB →
-     778 MB); CPU speculative decoding 0.78× (unchanged). GPU suite: one host crash in
-     `ChatClient_MultiTurn_CarriesContext` on the first full run (under investigation, see watchlist).
-     Pending: Moto G100 (arm64 GPU) and an x86_64 emulator run; Linux GPU has no hardware on hand.
-   - **PR 2 `embeddings`**: `LiteRtEmbeddingEngine` (own handle, outside the one-engine guard: the
-     downstream consumer measured Engine + EmbeddingEngine coexisting on CPU and GPU through the Python
-     wheel), `LiteRtModelInfo`, `IEmbeddingGenerator<string, Embedding<float>>` + DI, SK registration,
-     EmbeddingGemma 2 text 270M model tests, `docs/embeddings.md`.
+     778 MB); CPU speculative decoding 0.78× (unchanged). GPU suite: the silent host crash of the
+     watchlist in 2 of 4 full runs; the full run with PR 2 on top was clean (306 passed, 3 skipped).
+     linux-x64 (2026-10-06, Docker, Ubuntu 24.04 with no Vulkan loader installed; `ldd` lists only
+     libc, libm, libpthread, libdl and librt): full suite on CPU with PR 2 on top, 306 passed and 3
+     skipped (GPU-only, the LoRA bundle not mounted, the benchmark).
+     android-x64 (2026-10-06, x86_64 emulator, API 35, 8 cores, WHPX): an app built from the packed
+     1.3.0 packages carries `lib/x86_64/libLiteRtLm.so` and runs model info, gemma-4-E2B on CPU ("Paris",
+     14.8 tok/s decode) and EmbeddingGemma 2 (same vectors as on desktop: cosine 0.870 for the probe pair).
+     Moto G100 (2026-10-06, Adreno 650, Android 12, packed 1.3.0 packages): gemma-4-E2B on CPU 12.9 tok/s,
+     on GPU 14.1 to 14.8 tok/s with F32 (the new default) and 15.2 with F16 (TTFT 0.57 vs 0.31 s, F32 about
+     150 MB more RAM); every configuration passed the fidelity checks; embeddings 504 ms (CPU), 188 ms
+     (GPU F32), 103 ms (GPU F16) per sentence. Linux GPU has no hardware on hand.
+   - **PR 2 `embeddings`** (implemented 2026-10-06, stacked on PR 1): `LiteRtEmbeddingEngine` (own
+     handles, outside the one-engine gate; serialized and thread-safe, async variants), `LiteRtModelInfo`
+     (metadata without loading), MEAI `LiteRtEmbeddingGenerator` + `AddLiteRtEmbeddingGenerator`, SK
+     `AddLiteRtEmbeddingGenerator` (keyed with `serviceId`); 44 more C functions (166/212). The binding
+     does not add task instructions: the model card and the LiteRT-LM guide list different ones, so
+     `docs/embeddings.md` cites both. Measured with EmbeddingGemma 2 Text 270M (i9-14900K / RTX 3080,
+     `Float32` on GPU): CPU load 0.15 s, one sentence 35 ms, ~300 words 150 ms; GPU load 2.4 to 3.3 s,
+     15 ms, 32 ms; a batch costs the same as single calls (the runtime loops); the default input limit
+     is the model's declared 1,024 tokens, not 8,192 (verified against the metadata and empirically);
+     on GPU the process commit grows by 3.6 GB at load (7.1 GB with `MaxInputLength = 2048`); GPU vs
+     CPU cosine 0.9994 with `Float32`, 0.9965 with the runtime's float16 default; in a 24-query check
+     both instruction sets and none ranked 23 or 24 first, the model card's set with the widest margin.
+     Tests: 27 embedding and model-info tests pass on CPU and GPU (win-x64); the model-tests legs fetch
+     the model (165 MB, cached). One silent GPU host crash in 8 runs, in
+     `ChatAndEmbeddingEngines_Coexist` (6 of 6 isolated runs clean): same class as the GPU churn
+     crash in the watchlist. Maintainer decision (2026-10-06): the embedding engine defaults to
+     `Float32` activations (float16, the runtime's GPU fallback, is what the model card advises
+     against; no speed cost on the RTX 3080, while on the Moto G100 float32 takes 188 ms per sentence
+     against 103 ms with float16).
+   - **LoRA re-checked 2026-10-06 (v0.18.0, CPU, upstream test bundle)**: the adapter changes generation
+     but applies to the whole engine, not to its conversation (a later conversation without an adapter
+     still generates with it; while an adapter conversation exists, a send without one fails with
+     INTERNAL "No LoRA ID is set"); on gemma-4-E2B (no LoRA slots) an adapter is accepted and has no
+     effect, with or without `LoraRank` (the 1.2.0 docs said it failed fast). The test bundle does not
+     load on GPU. Docs corrected and three tests pin the behavior; the watchlist below follows
+     LiteRT-LM#3173.
    - **Release 1.3.0** with the maintainer's GO.
 
 -3. **v0.16.0 CYCLE — evaluation of Google's official C API prebuilts DONE (2026-08-12 →
-   2026-09-02, branch `capi-prebuilts-probe`); the repin itself is PENDING the maintainer's go.**
+   2026-09-02, branch `capi-prebuilts-probe`); the repin shipped in 1.2.0 (2026-09-05).**
    Upstream v0.16.0 (2026-08-11; v0.16.1 is the same commit with a Kotlin/Windows build-flag fix
    and no new artifacts) ships the first versioned C API prebuilts: `litert_lm_c_api-0.1.0.zip`, one
    monolithic shared library per platform (win/linux/mac/android, plus linux-arm64 and
@@ -471,7 +514,7 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
    tool-call streaming and preface rendering, taking coverage to **84/109**. FD-based load
    (`engine_settings_create_from_raw_file_descriptor`, mainly Android `content://`) is the one
    deferred item left; the raw Session API and responses introspection stay out of scope.
-   `android-x64` for emulators; Desktop meta-package;
+   ~~`android-x64` for emulators~~ (1.3.0); Desktop meta-package;
    ✅ ~~CONTRIBUTING + issue templates~~ (2026-06-11: CONTRIBUTING.md, issue forms, PR template,
    SECURITY.md, Discussions enabled); scheduled smoke-test workflow that consumes the published
    packages from nuget.org; PR upstream to be listed among the language bindings (planned right
@@ -646,7 +689,8 @@ native tool name via a call-id↔name map). MEAI's `UseFunctionInvocation()` dri
 empirical probe proved the `AsChatCompletionService` adapter passes the kernel functions as tools but does NOT
 run the auto-invoke loop, so `AddLiteRtChatCompletion` wraps the client with `UseFunctionInvocation` (no-op
 when a request has no tools). Opt-in `EnableConstrainedDecoding` (off by default; blocked on linux-x64 per
-the core guard) makes small models emit valid tool-call arguments — used in the gated tests/sample off-Linux.
+the core guard until 1.2.0 removed it) makes small models emit valid tool-call arguments — used in the gated
+tests and the sample.
 Streaming surfaces tool-call chunks as `FunctionCallContent` updates; the post-tool continuation uses a
 blocking `SendToolResults` fallback (no native streaming tool-results call). `ChatOptions.ToolMode` /
 `FunctionChoiceBehavior` honored: `None` → no tools offered; `RequireAny`/`RequireSpecific` → best-effort
@@ -662,7 +706,8 @@ MEAI `DataContent` (inline bytes) / file-path `UriContent`, or Semantic Kernel `
 preserved). `conv.Send(text, attachments)` / streaming overload. Requires the engine loaded with
 `VisionBackend`/`AudioBackend`; only the triggering turn's media is sent (history restored as text); remote
 (non-file) URIs skipped. Gated tests pass on win-x64 (vision + audio, `LITERTLM_TEST_VISION=1`). No sample
-change (per the user). Remaining: embeddings blocked (no C-API embeddings at v0.13.1). **Neither companion is
+change (per the user). Embeddings, blocked then (no C-API embeddings at v0.13.1), arrive in 1.3.0 as an
+`IEmbeddingGenerator` (see the [embeddings guide](embeddings.md)). **Neither companion is
 AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AOT guarantee.
 
 ## Watchlist (re-check periodically)
@@ -720,7 +765,11 @@ AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AO
   with no managed failure; ~2 of 4 full-suite GPU runs locally, different tests each time, clean
   runs in between). Same failure class as the intermittent CI win-x64 crash first seen 2026-07-17
   (which the model-tests forensics telemetry was added for) — pre-existing, NOT a v0.15.0
-  regression gate. Needs a dedicated investigation session.
+  regression gate. Needs a dedicated investigation session. Still present at v0.18.0 (2026-10-06):
+  2 of 4 full GPU runs (`ChatClient_MultiTurn_CarriesContext`,
+  `Send_WithThinkingTokenBudget_BoundsThinkingLength`) and 1 of 8 runs of the embedding tests
+  (`ChatAndEmbeddingEngines_Coexist`), with no dump or fatal log; capturing one needs WER LocalDumps,
+  a machine-wide setting (the maintainer's call).
 - **LlGuidance constrained decoding works end-to-end** (regex + JSON Schema verified on win-x64
   CPU/GPU with real-model assertions) and is compiled from source — the linux-x64 model-tests leg
   now exercises it on every push, giving Linux its first working constrained-decoding path while

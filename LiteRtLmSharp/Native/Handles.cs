@@ -147,3 +147,69 @@ internal sealed class TokenUnionsHandle(nint handle) : LiteRtLmHandle(handle)
         return true;
     }
 }
+
+internal sealed class EmbeddingEngineSettingsHandle(nint handle) : LiteRtLmHandle(handle)
+{
+    protected override bool ReleaseHandle()
+    {
+        LiteRtLmNative.litert_lm_embedding_engine_settings_delete(handle);
+        return true;
+    }
+}
+
+/// <summary>The native embedding engine. Unlike <see cref="EngineHandle"/> it takes no part in the
+/// one-live-engine gate (<see cref="EngineLiveness"/>): an embedding engine coexists with a chat engine, and
+/// releasing it must never free the chat engine's slot.</summary>
+internal sealed class EmbeddingEngineHandle(nint handle) : LiteRtLmHandle(handle)
+{
+    protected override bool ReleaseHandle()
+    {
+        LiteRtLmNative.litert_lm_embedding_engine_delete(handle);
+        return true;
+    }
+}
+
+internal sealed class EmbeddingOptionsHandle(nint handle) : LiteRtLmHandle(handle)
+{
+    protected override bool ReleaseHandle()
+    {
+        LiteRtLmNative.litert_lm_embedding_options_delete(handle);
+        return true;
+    }
+}
+
+internal sealed class EmbeddingResponseHandle(nint handle) : LiteRtLmHandle(handle)
+{
+    protected override bool ReleaseHandle()
+    {
+        LiteRtLmNative.litert_lm_embedding_response_delete(handle);
+        return true;
+    }
+}
+
+internal sealed class EmbeddingResponsesHandle(nint handle) : LiteRtLmHandle(handle)
+{
+    protected override bool ReleaseHandle()
+    {
+        LiteRtLmNative.litert_lm_embedding_responses_delete(handle);
+        return true;
+    }
+}
+
+internal sealed class InputDataHandle(nint handle) : LiteRtLmHandle(handle)
+{
+    protected override bool ReleaseHandle()
+    {
+        LiteRtLmNative.litert_lm_input_data_delete(handle);
+        return true;
+    }
+}
+
+internal sealed class LoadedFileHandle(nint handle) : LiteRtLmHandle(handle)
+{
+    protected override bool ReleaseHandle()
+    {
+        LiteRtLmNative.litert_lm_loaded_file_delete(handle);
+        return true;
+    }
+}

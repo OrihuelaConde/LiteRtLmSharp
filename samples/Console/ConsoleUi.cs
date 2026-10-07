@@ -141,7 +141,7 @@ static class Picker
     {
         Ui.WriteLine("\nSelect a backend:", ConsoleColor.White);
         Ui.WriteLine("  1) CPU  (most compatible)", ConsoleColor.Gray);
-        Ui.WriteLine("  2) GPU  (WebGPU → D3D12/Vulkan/Metal; sampling falls back to CPU)", ConsoleColor.Gray);
+        Ui.WriteLine("  2) GPU  (WebGPU → D3D12/Vulkan/Metal)", ConsoleColor.Gray);
         return Ui.Pick(1, 2) == 2 ? "gpu" : "cpu";
     }
 
@@ -150,7 +150,7 @@ static class Picker
     {
         Ui.WriteLine("\nSpeculative decoding (needs an MTP-drafter model, e.g. Gemma 4 E2B/E4B):", ConsoleColor.White);
         Ui.WriteLine("  1) Off  (default)", ConsoleColor.Gray);
-        Ui.WriteLine("  2) On   (faster decode on supported models)", ConsoleColor.Gray);
+        Ui.WriteLine("  2) On   (measure it: it slowed decoding on desktop CPU and GPU)", ConsoleColor.Gray);
         return Ui.Pick(1, 2) == 2;
     }
 

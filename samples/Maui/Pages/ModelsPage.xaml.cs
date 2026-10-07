@@ -51,8 +51,8 @@ public partial class ModelsPage : ContentPage
     internal Task<bool> AskSpeculativeDecoding() => DisplayAlertAsync(
         "Speculative decoding",
         "The model drafts several tokens ahead with a small MTP drafter and verifies them in one " +
-        "step — this can speed up decoding on models that ship a drafter (this one does). The gain " +
-        "is largest on accelerator GPUs; on desktop CPU it may be slower. Enable it?",
+        "step. In our measurements it slowed decoding on desktop CPU and GPU and made no difference " +
+        "on an Adreno 650 phone GPU, so measure it on your device. Enable it?",
         "Enable", "Off");
 
     /// <summary>Asks whether to enable the model's reasoning ("thinking") mode. Shown right after the

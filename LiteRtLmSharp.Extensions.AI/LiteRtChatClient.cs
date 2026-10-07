@@ -20,8 +20,8 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// between calls and send only the new messages each turn.
 /// </para>
 /// <para>
-/// <b>Serialized.</b> Calls are serialized with an internal gate: LiteRtLmSharp allows only one live engine
-/// per process and conversations are not thread-safe.
+/// <b>Serialized.</b> Calls are serialized with an internal gate: LiteRtLmSharp allows only one live chat
+/// engine per process and conversations are not thread-safe.
 /// </para>
 /// <para>
 /// <b>Reasoning.</b> Enable the model's reasoning ("thinking") mode with the <c>enable_thinking</c> key in
@@ -95,6 +95,7 @@ public sealed class LiteRtChatClient : IChatClient
     /// <see cref="LiteRtConversationOptions.LoraPath"/> / <see cref="LiteRtConversationOptions.AudioLoraPath"/>,
     /// <see cref="LiteRtConversationOptions.StreamToolCalls"/>, <see cref="LiteRtConversationOptions.VisualTokenBudget"/>,
     /// <see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/>, <see cref="LiteRtConversationOptions.ExtraContext"/>,
+    /// <see cref="LiteRtConversationOptions.EnableSpeculativeDecoding"/>,
     /// and a session-default <see cref="LiteRtConversationOptions.MaxOutputTokens"/>) — apply to every call, while
     /// any value the per-call <see cref="ChatOptions"/> supplies (sampler, thinking, constrained decoding, tools,
     /// system message) wins. See <see cref="LiteRtChatMapping.ToConversationOptions"/> for the full merge rules.

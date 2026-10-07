@@ -24,12 +24,51 @@ are published together.
     runtime's decoding reason (`INVALID_ARGUMENT: Failed to decode image…`) instead of a setup error.
   - **GPU caches written by an older runtime are rebuilt automatically** on the first load (one slower
     load); nothing to clean up by hand.
+  - **A visual token budget above the per-image maximum fails image sends.** The runtime checks
+    `VisualTokenBudget` against the engine's per-image maximum (`MaxVisionTokensPerImage`, or the
+    model's own: 280 on the Gemma 4 E-series) and fails the send with `LiteRtStatusCode.InvalidArgument`
+    (v0.16.0 clamped it). The binding attaches the budget only to sends that carry an image, so text-only
+    sends are unaffected.
+  - **A cache directory that does not exist fails engine creation.** v0.18.0 checks a
+    `LiteRtCache.Directory` path when the engine loads and fails with `LiteRtStatusCode.InvalidArgument`
+    ("Cache directory does not exist or is not writable"); v0.16.0 did not check it then. Create the
+    directory first, or use `LiteRtCache.Default`.
+  - **Speculative decoding on a model without a drafter fails.** The 1.2.0 documentation said
+    `EnableSpeculativeDecoding` did nothing on such a model; with v0.18.0, engine creation fails
+    (Ministral 3: `NOT_FOUND: tf_lite_mtp_drafter not found in the model`) and the exception names the
+    setting. `LiteRtModelInfo.SupportsSpeculativeDecoding` tells before loading.
+- **`LiteRtEngineOptions.ActivationDataType` defaults to `Float32`** (it was `null`, the runtime's choice:
+  F16 for the text executor on GPU). F16 corrupts structured output (digits, dates, JSON) on the GPUs we
+  measured, and on a desktop GPU it is no faster: gemma-4-E2B on an RTX 3080 decodes 113 tok/s with F16
+  and 117 with F32, and F32 commits about 0.3 to 0.6 GB more memory. The CPU backend ignores the setting.
+  On a Moto G100 (Adreno 650) F32 decodes about 5% slower, doubles the time to first token and uses about
+  150 MB more RAM. Set `Float16` to opt back in (after checking your outputs), or `null` for the runtime's
+  choice.
 - The documentation of `VisualTokenBudget` (conversation and per send) now describes what the runtime
-  does: it is a **per-image** budget, and the runtime downscales each image to the smallest vision
-  signature that fits. On gemma-4-E2B-it a budget of 70 brings an image from 260 tokens to 68.
+  does: it is a **per-image** budget, and the runtime scales each image down to about the budget in
+  tokens. On gemma-4-E2B-it a budget of 70 brings an image from 260 tokens to 68.
 
 ### Added
 
+- **Embeddings.** `LiteRtEmbeddingEngine` loads an embedding model, such as EmbeddingGemma 2, and turns
+  text into vectors for semantic search, retrieval-augmented generation, clustering or classification:
+  `Embed`, `EmbedBatch` and their async versions, with Matryoshka truncation
+  (`LiteRtEmbeddingOptions.OutputDimensions`), normalization and a choice of what happens to texts longer
+  than the loaded input signatures (`OverflowStrategy`). An embedding engine does not count toward the
+  one-live-engine rule, so a chat model and an embedding model can stay loaded together. Calls on one
+  embedding engine are serialized, so it is safe to share across threads. Activations default to
+  float32 (EmbeddingGemma's model card advises against float16, the runtime's GPU fallback). See the
+  [Embeddings guide](https://orihuelaconde.github.io/LiteRtLmSharp/embeddings.html) for the task
+  instructions EmbeddingGemma 2 expects and for measurements.
+- **`IEmbeddingGenerator<string, Embedding<float>>`** in `LiteRtLmSharp.Extensions.AI`:
+  `LiteRtEmbeddingGenerator`, `LiteRtEmbeddingGenerationOptions` and
+  `services.AddLiteRtEmbeddingGenerator(...)`, which coexists with `AddLiteRtChatClient`. In
+  `LiteRtLmSharp.SemanticKernel`, `IKernelBuilder.AddLiteRtEmbeddingGenerator(...)` registers the same
+  generator for Semantic Kernel's vector stores (keyed when you pass a `serviceId`).
+- **Model metadata without loading.** `LiteRtModelInfo.Read(path)` reports what a `.litertlm` file
+  declares: model type, context size, input modalities, backends per modality, speculative-decoding
+  support, vision token sizes, default sampler and, for embedding models, the vector length and input
+  lengths. `LiteRtEmbeddingEngine.Load` uses it to reject a language model with a clear message.
 - **Runtime packages for linux-arm64 and android-x64**: `LiteRtLmSharp.runtime.linux-arm64` (the CI
   model suite runs on GitHub's arm64 Linux runner) and `LiteRtLmSharp.runtime.android-x64` (the x86_64
   Android emulator; use the CPU backend there). The MAUI sample's APK carries both Android ABIs.
@@ -37,21 +76,34 @@ are published together.
   LiteRT-LM's thread-local error state: `litert_lm_engine_create returned null: INVALID_ARGUMENT:
   Invalid magic number or failed to read` instead of a bare "returned null" plus a list of guesses.
   `LiteRtException.StatusCode` exposes the status (`LiteRtStatusCode`, the canonical absl codes);
-  it is `null` when the runtime reported nothing or the binding detected the failure itself.
+  it is `null` when the runtime reported nothing or the binding detected the failure itself. Streamed
+  replies that fail carry the same status and reason. A multi-line native call trace reads as one line:
+  the reason, then where the runtime raised it. With the native log silenced
+  (`LiteRtEngine.SetMinLogLevel` above 5) LiteRT drops some reasons; the status remains.
 - `LiteRtEngineOptions.MaxVisionTokensPerImage` — an upper bound on the vision tokens one image may
-  expand to (the engine only selects vision signatures up to it). Pair a cap below the model's
-  default image size with a `VisualTokenBudget` at or below it.
+  expand to (the engine loads the vision signatures up to it, rounded up to the next signature). Pair a
+  cap below the model's default image size with a `VisualTokenBudget` at or below it. A cap above the
+  model's largest signature (280 on Gemma 4) fails engine creation.
 - `LiteRtEngineOptions.EnableMetalResidencySet` — keeps model weights and allocations resident in GPU
   memory through Apple's `MTLResidencySet` API (Apple GPU backend only; ignored elsewhere).
 - `LiteRtConversationOptions.EnableSpeculativeDecoding` — per-conversation speculative decoding that
   overrides the engine setting: `true` on an engine loaded without it loads the MTP drafter lazily on
-  the conversation's first send, `false` turns it off for one conversation.
+  the conversation's first send, `false` turns it off for one conversation. Unset keeps the engine
+  setting, also after another conversation loaded the drafter (the runtime would otherwise keep using
+  it). The `Microsoft.Extensions.AI` and Semantic Kernel conversation-options templates carry it too.
 
 ### Fixed
 
-- XML documentation that had gone stale: text LoRA is validated end to end (since 1.2.0), and the
-  disk-cache workaround for speculative decoding on the desktop GPU backend is gone (fixed upstream in
-  LiteRT-LM v0.14.0).
+- XML documentation that had gone stale: the disk-cache workaround for speculative decoding on the
+  desktop GPU backend is gone (fixed upstream in LiteRT-LM v0.14.0).
+- **The LoRA documentation now describes what the runtime does.** A text adapter applies to the whole
+  engine, not to the conversation that names it: after a conversation with `LoraPath` has generated,
+  conversations without an adapter on the same engine generate with it too, and while a conversation
+  with an adapter exists, a send on one without it fails with `LiteRtStatusCode.Internal`. Reload the
+  engine to switch adapters. On the published gemma-4 bundles, which have no LoRA slots, an adapter is
+  accepted and has no effect (1.2.0 said it failed fast). Tests pin these behaviors.
+- A failed send on an engine loaded with `MaxNumTokens` below 1024 no longer blames the small context
+  when the runtime reports an unrelated reason.
 
 ## [1.2.0] — 2026-09-05
 

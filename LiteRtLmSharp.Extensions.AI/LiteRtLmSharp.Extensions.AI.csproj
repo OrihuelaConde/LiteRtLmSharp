@@ -17,8 +17,8 @@
       Microsoft.Extensions.DependencyInjection.Abstractions (for the DI helpers).
     -->
     <PackageId>LiteRtLmSharp.Extensions.AI</PackageId>
-    <Description>Microsoft.Extensions.AI (IChatClient) integration for LiteRtLmSharp on-device LLM inference. Works with Microsoft Agent Framework, Semantic Kernel, and any IChatClient consumer. Companion to the LiteRtLmSharp package. $(LiteRtLmDisclaimer)</Description>
-    <PackageTags>litert;litert-lm;microsoft-extensions-ai;ichatclient;agent-framework;semantic-kernel;llm;gemma;on-device;inference;ai</PackageTags>
+    <Description>Microsoft.Extensions.AI (IChatClient, IEmbeddingGenerator) integration for LiteRtLmSharp on-device LLM inference and embeddings. Works with Microsoft Agent Framework, Semantic Kernel, and any IChatClient or IEmbeddingGenerator consumer. Companion to the LiteRtLmSharp package. $(LiteRtLmDisclaimer)</Description>
+    <PackageTags>litert;litert-lm;microsoft-extensions-ai;ichatclient;iembeddinggenerator;embeddings;agent-framework;semantic-kernel;llm;gemma;on-device;inference;ai</PackageTags>
 
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>

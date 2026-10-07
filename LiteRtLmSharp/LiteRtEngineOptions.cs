@@ -75,10 +75,11 @@ public sealed record LiteRtEngineOptions
     /// (~128) are unusable outright: every send is rejected.</para>
     /// <para><b>Keep the value at or above the model's largest prefill signature</b> (1024 for the
     /// published gemma conversions). The native loader accepts a smaller limit, but a send whose prefill
-    /// spans more than the smallest work group then fails inside the native graph (an internal
-    /// <c>DYNAMIC_UPDATE_SLICE</c> error) instead of cleanly. The C API exposes no way to query the
-    /// signatures, so the binding cannot validate this up front; when a send fails on an engine loaded
-    /// with a limit below 1024, the exception names this as the likely cause.</para>
+    /// spans more than the smallest work group then fails inside the native graph (v0.18.0 reports
+    /// "Failed to invoke the compiled model Failed to allocate tensors") instead of cleanly. The C API
+    /// exposes no way to query the signatures, so the binding cannot validate this up front; when a send
+    /// fails that way on an engine loaded with a limit below 1024, the exception names this as the likely
+    /// cause.</para>
     /// </remarks>
     public int MaxNumTokens { get; init; }
 
@@ -103,16 +104,21 @@ public sealed record LiteRtEngineOptions
 
     /// <summary>
     /// Upper bound on the vision tokens one image may expand to, which limits the vision encoder
-    /// signatures the engine selects. <c>null</c> (default) leaves every signature of the model available.
+    /// signatures the engine loads (up to the cap, rounded up to the next signature). <c>null</c> (default)
+    /// leaves every signature of the model available.
     /// </summary>
     /// <remarks>
     /// It caps the image size; it does not choose it. Images still expand to the model's default size
     /// (about 256 tokens for the Gemma 4 E-series) unless a visual token budget asks for less, so pair a cap
     /// below that default with <see cref="LiteRtConversationOptions.VisualTokenBudget"/> (or
     /// <see cref="LiteRtSendOptions.VisualTokenBudget"/>) at or below the cap. Without one, an image send
-    /// fails with <see cref="LiteRtStatusCode.InvalidArgument"/> ("No signature found…"), and a budget
-    /// above the cap fails the same way. It applies only when <see cref="VisionBackend"/> is set and the
-    /// model declares a per-image token count. Maps to
+    /// fails with <see cref="LiteRtStatusCode.InvalidArgument"/> ("No signature found…"), and an image send
+    /// whose budget exceeds the cap fails the same way ("Visual token budget (…) cannot be larger than the
+    /// engine's max vision tokens per image (…)"). Left <c>null</c>, the engine checks the budget against the
+    /// model's own maximum instead (<see cref="LiteRtModelInfo.MaxVisionTokenBudget"/>, 280 on the Gemma 4
+    /// E-series). It applies only when <see cref="VisionBackend"/> is set and the model declares a per-image
+    /// token count. A cap above the model's largest signature (280 on the Gemma 4 E-series) fails
+    /// <see cref="LiteRtEngine.Load"/> with <see cref="LiteRtStatusCode.InvalidArgument"/>. Maps to
     /// <c>engine_settings_set_max_vision_tokens_per_image</c> (native LiteRT-LM v0.18.0+).
     /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">The value is zero or negative.</exception>
@@ -136,7 +142,9 @@ public sealed record LiteRtEngineOptions
     /// <remarks>
     /// The cache files are named after the model file (its name, modification time and size), not after
     /// the native runtime version. A newer runtime detects a GPU cache written by an older one and
-    /// rebuilds it on the first load, which makes that load slower once.
+    /// rebuilds it on the first load, which makes that load slower once. A <see cref="LiteRtCache.Directory"/>
+    /// must exist: the runtime does not create it, and since native v0.18.0 <see cref="LiteRtEngine.Load"/>
+    /// fails with <see cref="LiteRtStatusCode.InvalidArgument"/> when it is missing.
     /// </remarks>
     public LiteRtCache Cache { get; init; }
 
@@ -147,16 +155,19 @@ public sealed record LiteRtEngineOptions
     /// acceptance); measure it before turning it on.
     /// </summary>
     /// <remarks>
-    /// Requires a <c>.litertlm</c> that ships an MTP drafter (e.g. the Gemma 4 E2B/E4B/12B
-    /// builds). On a model without one the flag is a no-op (no speedup, no error). The setting
-    /// is fixed at engine creation; <see cref="LiteRtConversationOptions.EnableSpeculativeDecoding"/>
-    /// overrides it per conversation (native v0.18.0+). Pair with <see cref="EnableBenchmark"/> to measure
-    /// the effect (see <see cref="LiteRtConversation.GetBenchmarkInfo"/>).
+    /// Requires a <c>.litertlm</c> that ships an MTP drafter (e.g. the Gemma 4 E2B/E4B/12B builds;
+    /// <see cref="LiteRtModelInfo.SupportsSpeculativeDecoding"/> tells before loading). On a model without
+    /// one, engine creation fails with <see cref="LiteRtException"/> (Ministral 3 reports NOT_FOUND
+    /// "tf_lite_mtp_drafter not found in the model"). The setting is fixed at engine creation;
+    /// <see cref="LiteRtConversationOptions.EnableSpeculativeDecoding"/> overrides it per conversation
+    /// (native v0.18.0+). Pair with <see cref="EnableBenchmark"/> to measure the effect (see
+    /// <see cref="LiteRtConversation.GetBenchmarkInfo"/>).
     /// <para>
     /// Measured with gemma-4-E2B on LiteRT-LM v0.18.0 (see <c>docs/speculative-decoding.md</c>): it
     /// slows decoding down on desktop <b>CPU</b> (0.78×) and on the desktop <b>WebGPU</b> GPU backend
-    /// (0.68× on an RTX 3080), with the default disk cache in both cases; an Adreno 650 phone GPU showed
-    /// no change.
+    /// (0.52× on an RTX 3080 with the default float32 activations), with the default disk cache in both
+    /// cases. On an Adreno 650 phone GPU it made no difference (measured in June 2026 on LiteRT-LM
+    /// v0.13.1).
     /// </para>
     /// </remarks>
     public bool EnableSpeculativeDecoding { get; init; }
@@ -179,15 +190,24 @@ public sealed record LiteRtEngineOptions
     public bool? ParallelFileSectionLoading { get; init; }
 
     /// <summary>
-    /// Activation tensor precision. <c>null</c> (default) uses the engine default (F16 for the text
-    /// executor on GPU). <b>Only the GPU backend honors this, and only as F32 vs F16</b>:
-    /// <see cref="LiteRtActivationDataType.Float32"/> is higher precision at more memory and lower speed,
-    /// <see cref="LiteRtActivationDataType.Float16"/> is the faster default. On CPU it is a <b>no-op</b>,
-    /// and <see cref="LiteRtActivationDataType.Int16"/> / <see cref="LiteRtActivationDataType.Int8"/> are
-    /// accepted by the native API but not distinctly implemented by the shipped executors (folded to F16
-    /// on GPU). Maps to <c>engine_settings_set_activation_data_type</c>. See <c>docs/engine-tuning.md</c>.
+    /// Activation tensor precision. Defaults to <see cref="LiteRtActivationDataType.Float32"/>.
+    /// <b>Only the GPU backend honors this, and only as F32 vs F16</b>; on CPU it is a <b>no-op</b>.
     /// </summary>
-    public LiteRtActivationDataType? ActivationDataType { get; init; }
+    /// <remarks>
+    /// The runtime's own GPU default for the text executor is F16, which corrupts structured output
+    /// (digits, dates, JSON) on the GPUs we measured, with no speed gain on a desktop GPU: gemma-4-E2B on an
+    /// RTX 3080 decodes 113 tok/s with F16 and 117 with F32, and F32 commits about 0.3 to 0.6 GB more. So
+    /// the binding asks for F32. Set <see cref="LiteRtActivationDataType.Float16"/> to trade precision for
+    /// activation memory (for example on a mobile GPU, after checking your outputs), or <c>null</c> to let
+    /// the runtime choose: the precision the model file declares for its text model (F16 for the Gemma 4
+    /// E-series), else F16 on GPU. The setting reaches the text executor only: the vision and audio encoders
+    /// run at the precision the model file declares for them (F16 for the Gemma 4 E-series vision encoder),
+    /// else F32. <see cref="LiteRtActivationDataType.Int16"/> and
+    /// <see cref="LiteRtActivationDataType.Int8"/> are accepted by the native API but not distinctly
+    /// implemented by the shipped executors (folded to F16 on GPU). Maps to
+    /// <c>engine_settings_set_activation_data_type</c>. See <c>docs/engine-tuning.md</c>.
+    /// </remarks>
+    public LiteRtActivationDataType? ActivationDataType { get; init; } = LiteRtActivationDataType.Float32;
 
     /// <summary>
     /// Maximum prompt tokens prefilled per step. 0 (default) = no chunking (the whole prompt is
@@ -270,10 +290,21 @@ public sealed record LiteRtEngineOptions
     /// disabled). Requires a LoRA-enabled model and a matching adapter passed per conversation via
     /// <see cref="LiteRtConversationOptions.LoraPath"/>. Maps to <c>engine_settings_set_lora_rank</c>.
     /// </summary>
-    /// <remarks>Validated end to end against upstream's LoRA test bundle: with this rank and a matching
-    /// adapter in <see cref="LiteRtConversationOptions.LoraPath"/>, generation changes. The published
-    /// Gemma 4 bundles carry no LoRA slots (google-ai-edge/LiteRT-LM#3173), so an adapter fails fast on
-    /// them.</remarks>
+    /// <remarks>
+    /// <para>
+    /// The adapter applies to the whole engine, not to one conversation (LiteRT-LM v0.18.0, measured on
+    /// CPU with upstream's LoRA test bundle): after a conversation with
+    /// <see cref="LiteRtConversationOptions.LoraPath"/> has generated, conversations without an adapter on
+    /// the same engine generate with it too, and while a conversation with an adapter exists, a send on one
+    /// without it fails with <see cref="LiteRtStatusCode.Internal"/>. Use one adapter per engine, and reload
+    /// the engine to switch adapters or to return to the base model.
+    /// </para>
+    /// <para>
+    /// The published Gemma 4 bundles carry no LoRA slots (google-ai-edge/LiteRT-LM#3173): an adapter is
+    /// accepted and has no effect on them. The GPU backend is not validated (the test bundle does not load
+    /// on it).
+    /// </para>
+    /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">The value is zero or negative.</exception>
     public int? LoraRank
     {
@@ -430,10 +461,11 @@ public sealed record LiteRtEngineOptions
 /// </summary>
 public enum LiteRtActivationDataType
 {
-    /// <summary>32-bit float — higher precision, more memory, slower (GPU).</summary>
+    /// <summary>32-bit float: full precision, more activation memory on GPU. The binding's default.</summary>
     Float32 = 0,
 
-    /// <summary>16-bit float — the faster GPU default for the text executor.</summary>
+    /// <summary>16-bit float: half the activation memory on GPU at lower precision. The runtime's own GPU
+    /// default for the text executor; see <see cref="LiteRtEngineOptions.ActivationDataType"/>.</summary>
     Float16 = 1,
 
     /// <summary>16-bit integer — present for parity with the native enum, but not distinctly implemented
@@ -613,17 +645,20 @@ public sealed record LiteRtConversationOptions
 
     /// <summary>
     /// Tokens each <b>image</b> attachment may expand to. 0 (default) = the model's default size. The
-    /// runtime downscales each image to the smallest vision signature that fits the budget, so a lower
-    /// budget leaves more of the context window for text at the cost of image detail. Only meaningful
-    /// when sending image attachments.
+    /// runtime scales each image down to about the budget in tokens (never above the image's default
+    /// size), so a lower budget leaves more of the context window for text at the cost of image detail.
+    /// Only sends that carry an image use it.
     /// </summary>
     /// <remarks>
     /// The Gemma 4 E-series bundles carry vision signatures of 70, 140 and 280 tokens and default to
-    /// about 256 tokens per image. Measured on gemma-4-E2B-it, one image costs 260 tokens by default and
-    /// 68 with a budget of 70. When the engine sets <see cref="LiteRtEngineOptions.MaxVisionTokensPerImage"/>,
-    /// the budget must not exceed it. Applied per send via the C API
-    /// <c>conversation_optional_args_set_visual_token_budget</c>; <see cref="LiteRtSendOptions.VisualTokenBudget"/>
-    /// overrides it for one send.
+    /// about 256 tokens per image. Measured on gemma-4-E2B-it, one image costs 260 tokens by default, and
+    /// 68, 104 and 200 tokens with budgets of 70, 100 and 200. The budget must not exceed the engine's
+    /// per-image maximum: <see cref="LiteRtEngineOptions.MaxVisionTokensPerImage"/> when the engine sets
+    /// it, else the model's own (<see cref="LiteRtModelInfo.MaxVisionTokenBudget"/>, 280 on the Gemma 4
+    /// E-series). Above it, image sends fail with <see cref="LiteRtStatusCode.InvalidArgument"/>; the
+    /// binding attaches the budget only to sends that carry an image, so text-only sends are unaffected.
+    /// Applied per send via the C API <c>conversation_optional_args_set_visual_token_budget</c>;
+    /// <see cref="LiteRtSendOptions.VisualTokenBudget"/> overrides it for one send.
     /// </remarks>
     public int VisualTokenBudget { get; init; }
 
@@ -635,9 +670,10 @@ public sealed record LiteRtConversationOptions
     /// <remarks>
     /// The native side opens the file when the conversation is created, so a missing or unreadable path
     /// fails fast with <see cref="LiteRtException"/> at <see cref="LiteRtEngine.CreateConversation"/>,
-    /// not silently at first send. Validated end to end against upstream's LoRA test bundle (the adapter
-    /// changes generation); the published Gemma 4 bundles carry no LoRA slots
-    /// (google-ai-edge/LiteRT-LM#3173). Maps to the C API <c>session_config_set_lora_path</c>.
+    /// not silently at first send. Despite the per-conversation setting, the runtime applies the adapter to
+    /// the whole engine: see <see cref="LiteRtEngineOptions.LoraRank"/> for what that means and for the
+    /// published Gemma 4 bundles, which accept an adapter without effect (google-ai-edge/LiteRT-LM#3173).
+    /// Maps to the C API <c>session_config_set_lora_path</c>.
     /// </remarks>
     public string? LoraPath { get; init; }
 
@@ -652,15 +688,18 @@ public sealed record LiteRtConversationOptions
 
     /// <summary>
     /// Speculative decoding for this conversation, overriding
-    /// <see cref="LiteRtEngineOptions.EnableSpeculativeDecoding"/>. <c>null</c> (default) inherits the
-    /// engine setting.
+    /// <see cref="LiteRtEngineOptions.EnableSpeculativeDecoding"/>. <c>null</c> (default) uses the engine
+    /// setting.
     /// </summary>
     /// <remarks>
     /// <c>true</c> on an engine loaded without speculative decoding makes the runtime load the model's
     /// Multi-Token-Prediction (MTP) drafter lazily, on this conversation's first send, so you can enable it
     /// only where it pays off. <c>false</c> turns it off for this conversation even when the engine enables
-    /// it. Requires a model that ships an MTP drafter (such as the Gemma 4 E-series). Maps to the C API
-    /// <c>session_config_set_enable_speculative_decoding</c> (native LiteRT-LM v0.18.0+).
+    /// it. The runtime keeps a lazily loaded drafter on the engine and would use it for every later
+    /// conversation that leaves this unset, so from then on the binding passes the engine setting to those
+    /// conversations explicitly. Requires a model that ships an MTP drafter (such as the Gemma 4 E-series):
+    /// on a model without one, <c>true</c> makes the first send fail with <see cref="LiteRtException"/>.
+    /// Maps to the C API <c>session_config_set_enable_speculative_decoding</c> (native LiteRT-LM v0.18.0+).
     /// </remarks>
     public bool? EnableSpeculativeDecoding { get; init; }
 }

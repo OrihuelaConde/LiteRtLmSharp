@@ -29,12 +29,23 @@ public sealed class LiteRtEngine : IDisposable
     // use-after-free anyway), so the GC recovery only applies once no conversation objects remain
     // reachable either. Disposing conversations and the engine remains the contract.
 
-    private LiteRtEngine(EngineHandle engine, bool isMultimodal, int maxNumTokens)
+    private LiteRtEngine(EngineHandle engine, bool isMultimodal, int maxNumTokens, bool enableSpeculativeDecoding)
     {
         _engine = engine;
         _isMultimodal = isMultimodal;
         MaxNumTokens = maxNumTokens;
+        EnableSpeculativeDecoding = enableSpeculativeDecoding;
     }
+
+    /// <summary>The engine-level speculative-decoding setting (<see cref="LiteRtEngineOptions.EnableSpeculativeDecoding"/>).</summary>
+    internal bool EnableSpeculativeDecoding { get; }
+
+    /// <summary>
+    /// Set once a conversation turned speculative decoding on for an engine loaded without it. The executor
+    /// then keeps the lazily loaded drafter and uses it for every later session that leaves the flag unset,
+    /// so from then on conversations created with <c>null</c> pass the engine setting explicitly.
+    /// </summary>
+    internal volatile bool DrafterLoadedByAConversation;
 
     /// <summary>The native engine handle, for conversations spawned from this engine.</summary>
     internal EngineHandle Handle => _engine;
@@ -45,6 +56,10 @@ public sealed class LiteRtEngine : IDisposable
     internal int MaxNumTokens { get; }
 
     /// <summary>Sets the global minimum log level (0=VERBOSE … 5=FATAL, 1000=SILENT).</summary>
+    /// <remarks>Above 5 (SILENT included) LiteRT also stops recording the reason of the errors its status
+    /// macros raise, so a <see cref="LiteRtException"/> then names the status (for example
+    /// <c>INVALID_ARGUMENT</c>) without saying why. Use 3 (ERROR) to keep the console quiet and the
+    /// reasons.</remarks>
     /// <exception cref="DllNotFoundException">The native LiteRT-LM library could not be loaded; the
     /// message names the fix (the missing <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package, a runtime
     /// package for another architecture, or a missing system library).</exception>
@@ -52,8 +67,9 @@ public sealed class LiteRtEngine : IDisposable
 
     /// <summary>
     /// Loads a model and creates the engine. Only ONE engine may be alive at a time
-    /// (a second concurrent engine hangs in the native layer). To switch model or backend,
-    /// dispose every conversation and the engine first, then call <see cref="Load"/> again.
+    /// (a second concurrent engine hangs in the native layer); a <see cref="LiteRtEmbeddingEngine"/>
+    /// does not count. To switch model or backend, dispose every conversation and the engine first,
+    /// then call <see cref="Load"/> again.
     /// </summary>
     /// <exception cref="ArgumentException">The model file does not exist.</exception>
     /// <exception cref="InvalidOperationException">Another engine is still alive in this process.</exception>
@@ -138,7 +154,15 @@ public sealed class LiteRtEngine : IDisposable
             if (enginePtr == nint.Zero)
                 throw NativeError.Exception(
                     "litert_lm_engine_create returned null.",
-                    hint: options.EnableYnnpack == true ? YnnpackUnavailableHint : null,
+                    // The YNNPACK note fits only the failure it explains: UNIMPLEMENTED (or no reason) on a
+                    // library without the kernels, which is every official one but linux-arm64.
+                    // The speculative-decoding note fits only a failure about the drafter.
+                    report => options.EnableYnnpack == true
+                              && (report is null || report.Value.Code == LiteRtStatusCode.Unimplemented)
+                              && !(OperatingSystem.IsLinux() && RuntimeInformation.OSArchitecture == Architecture.Arm64)
+                        ? YnnpackUnavailableHint
+                        : options.EnableSpeculativeDecoding && IsMissingDrafterFailure(report?.Message)
+                            ? MissingDrafterHint : null,
                     fallbackHint: "The runtime reported no reason (see the native stderr). Common causes: a " +
                     "corrupt or incomplete model file, or a backend the model does not support: some published " +
                     ".litertlm files carry a backend constraint (for example GPU-only) and refuse to load on CPU.");
@@ -146,7 +170,8 @@ public sealed class LiteRtEngine : IDisposable
             return new LiteRtEngine(
                 new EngineHandle(enginePtr),
                 isMultimodal: options.VisionBackend is not null || options.AudioBackend is not null,
-                maxNumTokens: options.MaxNumTokens);
+                maxNumTokens: options.MaxNumTokens,
+                enableSpeculativeDecoding: options.EnableSpeculativeDecoding);
         }
         catch
         {
@@ -163,6 +188,21 @@ public sealed class LiteRtEngine : IDisposable
     internal const string YnnpackUnavailableHint =
         "EnableYnnpack is set: the official native libraries carry the YNNPACK kernels only for linux-arm64, " +
         "and on other platforms engine creation fails with UNIMPLEMENTED. Leave EnableYnnpack unset there.";
+
+    /// <summary>Appended to a failed engine creation with <see cref="LiteRtEngineOptions.EnableSpeculativeDecoding"/>
+    /// set when the runtime's reason is about the drafter: a model without one fails with NOT_FOUND
+    /// ("tf_lite_mtp_drafter not found in the model") or, without an embedding lookup, a bare RET_CHECK.</summary>
+    internal const string MissingDrafterHint =
+        "EnableSpeculativeDecoding is set, and speculative decoding needs a model that ships a " +
+        "Multi-Token-Prediction drafter (LiteRtModelInfo.SupportsSpeculativeDecoding tells before loading). " +
+        "Turn it off for this model.";
+
+    /// <summary>Whether a native reason points at the speculative-decoding drafter or what it needs.</summary>
+    internal static bool IsMissingDrafterFailure(string? nativeMessage) =>
+        nativeMessage is not null
+        && (nativeMessage.Contains("mtp_drafter", StringComparison.OrdinalIgnoreCase)
+            || nativeMessage.Contains("embedding_lookup", StringComparison.OrdinalIgnoreCase)
+            || nativeMessage.Contains("Speculative decoding", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Marshals a supported-LoRA-ranks list to the native <c>const int*</c>/count setter (text or audio)

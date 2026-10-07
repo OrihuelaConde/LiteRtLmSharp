@@ -104,4 +104,56 @@ public static class LiteRtKernelBuilderExtensions
             services.AddKeyedSingleton<IChatCompletionService>(serviceId, Factory);
         return services;
     }
+
+    /// <summary>Adds an embedding generator over an embedding engine <b>you own</b> (you dispose it). Semantic
+    /// Kernel consumes Microsoft.Extensions.AI's <see cref="IEmbeddingGenerator{TInput, TEmbedding}"/> directly
+    /// (vector stores, memory), so this registers a <see cref="LiteRtEmbeddingGenerator"/>.</summary>
+    /// <param name="builder">The kernel builder to register into.</param>
+    /// <param name="engine">The loaded embedding engine (you dispose it, after the container-resolved generator).</param>
+    /// <param name="modelId">Optional model id surfaced on the generator's metadata and on each embedding.</param>
+    /// <param name="serviceId">Optional Semantic Kernel service id; registers a keyed service when set.</param>
+    /// <param name="defaultOptions">Optional options applied to every call unless the call overrides them.</param>
+    /// <returns>The kernel builder, for chaining.</returns>
+    public static IKernelBuilder AddLiteRtEmbeddingGenerator(this IKernelBuilder builder, LiteRtEmbeddingEngine engine, string? modelId = null, string? serviceId = null, LiteRtEmbeddingOptions? defaultOptions = null)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(engine);
+        RegisterEmbeddingGenerator(builder.Services, _ => engine, modelId, serviceId, defaultOptions);
+        return builder;
+    }
+
+    /// <summary>Adds an embedding generator from <paramref name="options"/>; the container loads, owns and
+    /// disposes the <see cref="LiteRtEmbeddingEngine"/>: one shared engine without a
+    /// <paramref name="serviceId"/>, and one engine per <paramref name="serviceId"/> otherwise, so keyed
+    /// generators can run different models or backends. It coexists with a chat-completion registration: an
+    /// embedding engine does not count toward the one-live-engine rule.</summary>
+    /// <param name="builder">The kernel builder to register into.</param>
+    /// <param name="options">Options the container uses to load the shared embedding engine.</param>
+    /// <param name="modelId">Optional model id surfaced on the generator's metadata and on each embedding.</param>
+    /// <param name="serviceId">Optional Semantic Kernel service id; registers a keyed service when set.</param>
+    /// <param name="eager">When <c>true</c>, load the engine now (a bad model path or backend throws here);
+    /// otherwise it is loaded on first use.</param>
+    /// <param name="defaultOptions">Optional options applied to every call unless the call overrides them.</param>
+    /// <returns>The kernel builder, for chaining.</returns>
+    /// <exception cref="InvalidOperationException">The same <paramref name="serviceId"/> (or none) is already
+    /// registered from different options.</exception>
+    public static IKernelBuilder AddLiteRtEmbeddingGenerator(this IKernelBuilder builder, LiteRtEmbeddingEngineOptions options, string? modelId = null, string? serviceId = null, bool eager = false, LiteRtEmbeddingOptions? defaultOptions = null)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(options);
+        LiteRtEmbeddingGeneratorServiceCollectionExtensions.RegisterSharedEngine(builder.Services, options, eager, serviceId);
+        Func<IServiceProvider, LiteRtEmbeddingEngine> engine = serviceId is null
+            ? static sp => sp.GetRequiredService<LiteRtEmbeddingEngine>()
+            : sp => sp.GetRequiredKeyedService<LiteRtEmbeddingEngine>(serviceId);
+        RegisterEmbeddingGenerator(builder.Services, engine, modelId, serviceId, defaultOptions);
+        return builder;
+    }
+
+    private static void RegisterEmbeddingGenerator(IServiceCollection services, Func<IServiceProvider, LiteRtEmbeddingEngine> engine, string? modelId, string? serviceId, LiteRtEmbeddingOptions? defaultOptions)
+    {
+        if (serviceId is null)
+            services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(sp => new LiteRtEmbeddingGenerator(engine(sp), modelId, defaultOptions));
+        else
+            services.AddKeyedSingleton<IEmbeddingGenerator<string, Embedding<float>>>(serviceId, (sp, _) => new LiteRtEmbeddingGenerator(engine(sp), modelId, defaultOptions));
+    }
 }

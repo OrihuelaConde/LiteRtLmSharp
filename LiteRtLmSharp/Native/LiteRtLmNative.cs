@@ -745,6 +745,8 @@ internal static unsafe partial class LiteRtLmNative
 /// (see <see cref="LiteRtConversation.Create"/>).</summary>
 internal enum LiteRtLmSamplerType
 {
+    /// <summary>Only reported by model metadata (<c>loaded_file_sampler_type</c>); never sent.</summary>
+    Unspecified = 0,
     TopK = 1,
     TopP = 2,
     Greedy = 3,

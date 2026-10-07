@@ -362,7 +362,8 @@ internal static class LiteRtChatMapping
         if (history.Count == 0 && sampler is null && enableThinking is null && tools is null && !constrained
             && systemMessage is null && maxOutputTokens == 0 && loraPath is null && audioLoraPath is null
             && !streamToolCalls && visualTokenBudget == 0 && !filterThinkingFromKvCache && extraContext is null
-            && thinkingTokenBudget is null && promptTemplate is null && constraintProvider is null)
+            && thinkingTokenBudget is null && promptTemplate is null && constraintProvider is null
+            && template?.EnableSpeculativeDecoding is null)
             return null;
 
         return new LiteRtConversationOptions
@@ -383,6 +384,7 @@ internal static class LiteRtChatMapping
             ThinkingTokenBudget = thinkingTokenBudget,
             PromptTemplate = promptTemplate,
             ConstraintProvider = constraintProvider,
+            EnableSpeculativeDecoding = template?.EnableSpeculativeDecoding,
         };
     }
 

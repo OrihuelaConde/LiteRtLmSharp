@@ -85,5 +85,5 @@ body:
       options:
         - label: I searched existing issues (including upstream LiteRT-LM for engine-level problems)
           required: true
-        - label: I read the "Important notes" section of the README (one engine at a time, MaxNumTokens, VC++ redist, Android GPU manifest)
+        - label: I read the "Important notes" section of the README (one chat engine at a time, MaxNumTokens, Android GPU manifest)
           required: true
