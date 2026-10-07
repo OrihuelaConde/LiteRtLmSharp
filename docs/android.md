@@ -38,6 +38,8 @@ statically linked C API` is expected on every GPU run (sampling stays on the GPU
 ```xml
 <PackageReference Include="LiteRtLmSharp" Version="1.2.0" />
 <PackageReference Include="LiteRtLmSharp.runtime.android-arm64" Version="1.2.0" />
+<!-- Only to run on the x86_64 Android emulator (CPU backend): -->
+<PackageReference Include="LiteRtLmSharp.runtime.android-x64" Version="1.2.0" />
 ```
 The `.litertlm` model (~2.5 GB for E2B) is **not packed** into the APK: download it to app
 storage on first run and pass its path to `LiteRtEngine.Load`.

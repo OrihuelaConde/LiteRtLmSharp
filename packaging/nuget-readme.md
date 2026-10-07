@@ -12,7 +12,7 @@ same version number**:
 ```xml
 <PackageReference Include="LiteRtLmSharp" Version="1.2.0" />
 <PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.2.0" />
-<!-- or LiteRtLmSharp.runtime.linux-x64 / android-arm64 / osx-arm64, per target -->
+<!-- or LiteRtLmSharp.runtime.linux-x64 / linux-arm64 / android-arm64 / android-x64 (emulator) / osx-arm64, per target -->
 ```
 
 Optional integrations: `LiteRtLmSharp.Extensions.AI` (a `Microsoft.Extensions.AI.IChatClient` and an

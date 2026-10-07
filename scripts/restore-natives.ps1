@@ -10,11 +10,13 @@ no GitHub CLI or authentication needed.
 Usage:
   pwsh scripts/restore-natives.ps1                 # current desktop OS and architecture only
   pwsh scripts/restore-natives.ps1 -Rid android-arm64
+  pwsh scripts/restore-natives.ps1 -Rid android-arm64,android-x64,win-x64
   pwsh scripts/restore-natives.ps1 -All
 #>
 param(
     [string]$Version = 'v0.18.0',
-    [ValidateSet('win-x64', 'linux-x64', 'linux-arm64', 'android-arm64', 'android-x64', 'osx-arm64', 'ios-arm64')]
+    # One or more RIDs. Validated below rather than with ValidateSet: `pwsh script.ps1 -Rid a,b` runs the
+    # script through -File, which passes "a,b" as ONE string, so commas are split here.
     [string[]]$Rid,
     [switch]$All
 )
@@ -33,7 +35,14 @@ $assets = @{
 }
 
 if ($All) { $Rid = @($assets.Keys) }
-elseif (-not $Rid) {
+elseif ($Rid) {
+    $Rid = @($Rid | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $unknown = @($Rid | Where-Object { -not $assets.ContainsKey($_) })
+    if ($unknown) {
+        throw "Unknown RID(s): $($unknown -join ', '). Valid: $(($assets.Keys | Sort-Object) -join ', ')."
+    }
+}
+else {
     $arm64 = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64'
     $Rid = @(if ($IsWindows) { 'win-x64' }
              elseif ($IsLinux) { if ($arm64) { 'linux-arm64' } else { 'linux-x64' } }

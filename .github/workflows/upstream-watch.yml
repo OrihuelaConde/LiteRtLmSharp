@@ -48,7 +48,9 @@ jobs:
             fi
           done
 
-          if [ "$pinned" = "$latest" ]; then
+          # Up to date when the pin is the latest release or newer: GitHub's "latest" release can trail a
+          # pin taken from a newer tag, and an equality test would then open an issue every run.
+          if [ "$(printf '%s\n%s\n' "$latest" "$pinned" | sort -V | tail -n1)" = "$pinned" ]; then
             echo "Up to date."; exit 0
           fi
 
@@ -68,10 +70,10 @@ jobs:
 
           Update checklist (details in \`docs/native-build.md\`, "Staying in sync with upstream"):
           - [ ] Read the release notes and diff the C API headers (\`c/*.h\`) against our P/Invoke surface: signatures, not only names
-          - [ ] Run **Native release (official LiteRT-LM prebuilts)** with \`litertlm_version=$latest\`: \`source=zip\` when the release carries a \`litert_lm_c_api-*.zip\` asset, otherwise \`source=pypi\`; inspect the run, then re-run with \`publish_release=true\`
+          - [ ] Run **Native release (official LiteRT-LM prebuilts)** with \`litertlm_version=$latest\`: \`source=auto\` takes the release's \`litert_lm_c_api-*.zip\` asset when there is one and the PyPI wheels otherwise; inspect the run, then re-run with \`publish_release=true\`
           - [ ] Bump \`LiteRtLmVersion\` in \`Directory.Build.props\`, \`NATIVE_REF\` in \`ci.yml\` and \`model-tests.yml\`, and the \`scripts/restore-natives.ps1\` default
           - [ ] Run the full model suite locally (CPU and GPU) and let CI run every leg
-          - [ ] Release: version bump, CHANGELOG section, README compatibility row, then **Pack NuGet packages**
+          - [ ] Release: version bump, \`PackageReleaseNotes\`, CHANGELOG section, README compatibility row, then **Pack NuGet packages**
           EOF
           )")
           new_num=${new_url##*/}
