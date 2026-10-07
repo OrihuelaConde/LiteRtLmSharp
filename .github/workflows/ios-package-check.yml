@@ -44,10 +44,11 @@ jobs:
           # The pinned workload set below belongs to the 10.0.4xx SDK band.
           dotnet-version: '10.0.4xx'
 
-      - name: Select Xcode 26.5
-        # The version the pinned workload's iOS SDK (26.5.10315) requires; the image's default is 26.6.
+      - name: Select Xcode 26.6
+        # The version the pinned workload's iOS SDK requires: 26.5.10315 asks for Xcode 26.6 (the pack's
+        # version does not name its Xcode). Selected explicitly so a new image default cannot break it.
         run: |
-          sudo xcode-select -s /Applications/Xcode_26.5.app
+          sudo xcode-select -s /Applications/Xcode_26.6.app
           xcodebuild -version
 
       - name: Resolve native ref
