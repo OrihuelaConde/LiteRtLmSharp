@@ -11,7 +11,10 @@ namespace LiteRtLmSharp;
 /// <remarks>
 /// <see cref="Read"/> opens the file, reads every value and closes it, so the object holds no native
 /// resources. Values a model does not declare read as <c>false</c>, <c>0</c>, <c>null</c> or an empty
-/// list, as each property states. Requires native LiteRT-LM v0.18.0+ (<c>c/model_info.h</c>).
+/// list, as each property states. On a multimodal bundle the native reader copies the vision sections into
+/// memory while it reads (gemma-4-E2B-it: about 0.8 GB for a few hundred milliseconds), so on a phone call
+/// it before loading engines rather than next to them. Requires native LiteRT-LM v0.18.0+
+/// (<c>c/model_info.h</c>).
 /// </remarks>
 public sealed class LiteRtModelInfo
 {
@@ -28,12 +31,16 @@ public sealed class LiteRtModelInfo
     /// <summary>
     /// Gets the maximum context size in tokens: the fixed size of a static model, or the largest value a
     /// dynamic model accepts for <see cref="LiteRtEngineOptions.MaxNumTokens"/> (see
-    /// <see cref="IsDynamicContext"/>). 0 when the file does not declare it.
+    /// <see cref="IsDynamicContext"/>). 0 when the file does not declare it. For an embedding model it is
+    /// the longest input signature (8,192 for EmbeddingGemma 2), which an embedding engine only accepts
+    /// with <see cref="LiteRtEmbeddingEngineOptions.MaxInputLength"/>: by default it stops at the limit the
+    /// model declares (1,024 for EmbeddingGemma 2), which the C API does not expose.
     /// </summary>
     public int MaxContextTokens { get; private init; }
 
     /// <summary>Gets a value indicating whether the context size is configurable up to
-    /// <see cref="MaxContextTokens"/> (dynamic) rather than fixed by the model graph.</summary>
+    /// <see cref="MaxContextTokens"/> (dynamic) rather than fixed by the model graph. For an embedding
+    /// model it means the file has several input signatures.</summary>
     public bool IsDynamicContext { get; private init; }
 
     /// <summary>Gets a value indicating whether the model declares a reasoning ("thinking") mode. <c>false</c>
@@ -97,10 +104,23 @@ public sealed class LiteRtModelInfo
         if (!File.Exists(modelPath))
             throw new ArgumentException($"Model file not found: {modelPath}", nameof(modelPath));
 
+        // The native reader opens the file through the C runtime's narrow API, which on Windows reads the
+        // path in the ANSI code page rather than UTF-8 (see NarrowPath).
+        byte[] nativePath = NarrowPath.Encode(modelPath, out bool opens);
         NativeError.Clear();
-        nint filePtr = LiteRtLmNative.litert_lm_loaded_file_create(modelPath);
+        nint filePtr;
+        unsafe
+        {
+            fixed (byte* p = nativePath)
+                filePtr = LiteRtLmNative.litert_lm_loaded_file_create(p);
+        }
         if (filePtr == nint.Zero)
-            throw NativeError.Exception($"litert_lm_loaded_file_create returned null for '{modelPath}'.");
+            throw NativeError.Exception(
+                $"litert_lm_loaded_file_create returned null for '{modelPath}'.",
+                hint: opens ? null
+                    : "On Windows the native metadata reader opens paths in the ANSI code page, which cannot spell " +
+                      "this one, and the volume has no ASCII short name for it: move the model to a folder whose " +
+                      "path uses only characters of the system code page.");
 
         using var file = new LoadedFileHandle(filePtr);
         nint f = file.Ptr;
@@ -117,6 +137,8 @@ public sealed class LiteRtModelInfo
         }
 
         LiteRtLmSamplerType samplerType = LiteRtLmNative.litert_lm_loaded_file_sampler_type(f);
+        float topP = LiteRtLmNative.litert_lm_loaded_file_sampler_top_p(f);
+        float temperature = LiteRtLmNative.litert_lm_loaded_file_sampler_temperature(f);
         int visionBudget = LiteRtLmNative.litert_lm_loaded_file_max_vision_token_budget(f);
         int dimension = LiteRtLmNative.litert_lm_loaded_file_embedding_dimension(f);
         uint maxContext = LiteRtLmNative.litert_lm_loaded_file_max_context_tokens(f);
@@ -136,13 +158,15 @@ public sealed class LiteRtModelInfo
             SupportsSpeculativeDecoding = LiteRtLmNative.litert_lm_loaded_file_has_speculative_decoding_support(f),
             InputModalities = modalities,
             SupportedBackends = backends,
+            // A sampler declared with NaN values (a malformed file) reads as undeclared rather than throwing.
             DefaultSampler = samplerType is LiteRtLmSamplerType.TopK or LiteRtLmSamplerType.TopP or LiteRtLmSamplerType.Greedy
+                             && !float.IsNaN(topP) && !float.IsNaN(temperature)
                 ? new LiteRtSamplerParams
                 {
                     Strategy = (LiteRtSamplerType)samplerType,
                     TopK = Math.Max(1, LiteRtLmNative.litert_lm_loaded_file_sampler_top_k(f)),
-                    TopP = Math.Clamp(LiteRtLmNative.litert_lm_loaded_file_sampler_top_p(f), 0f, 1f),
-                    Temperature = Math.Max(0f, LiteRtLmNative.litert_lm_loaded_file_sampler_temperature(f)),
+                    TopP = Math.Clamp(topP, 0f, 1f),
+                    Temperature = Math.Max(0f, temperature),
                 }
                 : null,
             MaxVisionTokenBudget = visionBudget > 0 ? visionBudget : null,

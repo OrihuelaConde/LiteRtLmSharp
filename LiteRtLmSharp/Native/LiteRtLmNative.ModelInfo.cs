@@ -6,10 +6,12 @@ namespace LiteRtLmSharp.Native;
 // Model metadata read from a .litertlm file without loading an engine (c/model_info.h, native v0.18.0).
 internal static unsafe partial class LiteRtLmNative
 {
-    /// <summary>Opens a model file for capability queries; null when the file cannot be opened.</summary>
-    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    /// <summary>Opens a model file for capability queries; null when the file cannot be opened. The path is
+    /// a null-terminated narrow string that the native side passes to <c>std::ifstream</c>: build it with
+    /// <see cref="NarrowPath.Encode"/>, not as plain UTF-8.</summary>
+    [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_loaded_file_create(string litertlm_path);
+    internal static partial nint litert_lm_loaded_file_create(byte* litertlm_path);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]

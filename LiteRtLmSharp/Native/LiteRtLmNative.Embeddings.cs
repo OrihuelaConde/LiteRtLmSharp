@@ -24,8 +24,9 @@ internal static unsafe partial class LiteRtLmNative
 
     // --- Embedding engine settings ---------------------------------------
 
-    /// <summary>Creates embedding-engine settings for a model file and backend ("cpu", "gpu", "npu"); the
-    /// vision/audio backends may be null (text only). Null on failure.</summary>
+    /// <summary>Creates embedding-engine settings for a model file and backend ("cpu", "gpu", "npu"). Null
+    /// vision/audio backends mean "the main backend for any encoder the bundle carries": a multimodal
+    /// bundle still loads its vision and audio encoders. Null on failure.</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial nint litert_lm_embedding_engine_settings_create(

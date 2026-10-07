@@ -39,6 +39,41 @@ public class EmbeddingValidationTests
         Assert.Equal(LiteRtActivationDataType.Float32, new LiteRtEmbeddingEngineOptions().ActivationDataType);
         Assert.Null(new LiteRtEmbeddingEngineOptions { ActivationDataType = null }.ActivationDataType);
     }
+
+    /// <summary>A minimum above the maximum is rejected before any native call, naming both settings.</summary>
+    [Fact]
+    public void Load_RejectsAMinimumAboveTheMaximum()
+    {
+        string file = Path.Combine(Path.GetTempPath(), $"not-a-model-{Guid.NewGuid():N}.litertlm");
+        File.WriteAllBytes(file, [1, 2, 3]);
+        try
+        {
+            var ex = Assert.Throws<ArgumentException>(() => LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions
+            {
+                ModelPath = file, MinInputLength = 2048, MaxInputLength = 1024,
+            }));
+            Assert.Contains("MinInputLength", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    /// <summary>Off Windows the narrow native API takes UTF-8; plain ASCII passes through everywhere.</summary>
+    [Fact]
+    public void NarrowPath_EncodesAsciiAndUtf8Paths()
+    {
+        byte[] ascii = Native.NarrowPath.Encode("/models/model.litertlm", out bool asciiOpens);
+        Assert.True(asciiOpens);
+        Assert.Equal("/models/model.litertlm\0"u8.ToArray(), ascii);
+        if (!OperatingSystem.IsWindows())
+        {
+            byte[] utf8 = Native.NarrowPath.Encode("/modelos-José/m.litertlm", out bool opens);
+            Assert.True(opens);
+            Assert.Equal("/modelos-José/m.litertlm\0"u8.ToArray(), utf8);
+        }
+    }
 }
 
 /// <summary>
@@ -144,6 +179,12 @@ public sealed class EmbeddingModelTests(ITestOutputHelper output)
         float[] raw = engine.Embed(text, new LiteRtEmbeddingOptions { Normalize = false });
         output.WriteLine($"normalize=false: norm {Norm(raw):F4}, cosine vs normalized {Cosine(raw, full):F6}");
         Assert.InRange(Cosine(raw, full), 0.9999, 1.0001);
+        // Cosine ignores scale, so check the scale itself: the raw vector is far from unit length.
+        Assert.True(Norm(raw) > 2, $"Normalize = false still returned a unit vector (norm {Norm(raw):F4}).");
+        // Without the begin/end tokens the model sees a different input.
+        float[] bare = engine.Embed(text, new LiteRtEmbeddingOptions { InsertSpecialTokens = false });
+        output.WriteLine($"insertSpecialTokens=false: cosine vs default {Cosine(bare, full):F6}");
+        Assert.True(Cosine(bare, full) < 0.99999, "InsertSpecialTokens = false did not change the vector.");
     }
 
     [SkippableFact]
@@ -303,7 +344,7 @@ public sealed class EmbeddingModelTests(ITestOutputHelper output)
     public void GpuVectors_AreCloseToCpuVectors()
     {
         SkipWithoutEmbeddingModel();
-        Skip.If(Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") != "gpu", "Set LITERTLM_TEST_BACKEND=gpu to run.");
+        Skip.If(Backend != LiteRtBackend.Gpu, "Set LITERTLM_TEST_BACKEND=gpu to run.");
         LiteRtEngine.SetMinLogLevel(3);
         string[] texts = Enumerable.Range(0, 16).Select(i => $"{Document}Fact number {i}: the ocean covers most of the planet.").ToArray();
         float[][] cpu, gpu;
@@ -383,10 +424,77 @@ public sealed class EmbeddingModelTests(ITestOutputHelper output)
             while (!stream.IsCompleted)
                 vectors.Add(await embeddings.EmbedAsync(text));
             await stream;
-            double worst = vectors.Count == 0 ? 1 : vectors.Min(v => Cosine(v, reference));
+            Assert.NotEmpty(vectors);
+            double worst = vectors.Min(v => Cosine(v, reference));
             output.WriteLine($"round {round}: {chunks} chunks streamed, {vectors.Count} embeddings in parallel, worst cosine {worst:F7}");
             Assert.True(chunks > 1);
             Assert.InRange(worst, 0.9999, 1.0001);
+        }
+    }
+
+    /// <summary>One engine shared across threads: concurrent calls are serialized and each returns the vector
+    /// a lone call would.</summary>
+    [SkippableFact]
+    public async Task ConcurrentCalls_OnOneEngine_MatchSingleCalls()
+    {
+        SkipWithoutEmbeddingModel();
+        LiteRtEngine.SetMinLogLevel(3);
+        using var engine = LoadEngine();
+        string[] texts = Enumerable.Range(0, 8).Select(i => $"{Document}Parallel note {i} about rivers and bridges.").ToArray();
+        float[][] expected = texts.Select(t => engine.Embed(t)).ToArray();
+        float[][] actual = await Task.WhenAll(texts.Select(t => Task.Run(() => engine.EmbedAsync(t))));
+        for (int i = 0; i < texts.Length; i++)
+            Assert.InRange(Cosine(actual[i], expected[i]), 0.9999, 1.0001);
+    }
+
+    /// <summary>Dispose waits for the call in progress, which completes; later calls throw
+    /// ObjectDisposedException.</summary>
+    [SkippableFact]
+    public async Task Dispose_WaitsForTheCallInProgress_ThenRejectsCalls()
+    {
+        SkipWithoutEmbeddingModel();
+        LiteRtEngine.SetMinLogLevel(3);
+        var engine = LoadEngine();
+        string[] texts = Enumerable.Range(0, 64).Select(i => $"{Document}Batch note {i} about mountains.").ToArray();
+        Task<float[][]> batch = engine.EmbedBatchAsync(texts);
+        await Task.Delay(20);
+        engine.Dispose();
+        float[][] vectors = await batch;
+        Assert.Equal(texts.Length, vectors.Length);
+        Assert.All(vectors, v => Assert.Equal(768, v.Length));
+        Assert.Throws<ObjectDisposedException>(() => engine.Embed(Document + "after dispose"));
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => engine.EmbedAsync(Document + "after dispose"));
+    }
+
+    [SkippableFact]
+    public void EmbedBatch_NullElement_IsRejected_WithItsIndex()
+    {
+        SkipWithoutEmbeddingModel();
+        LiteRtEngine.SetMinLogLevel(3);
+        using var engine = LoadEngine();
+        var ex = Assert.Throws<ArgumentException>(() => engine.EmbedBatch([Document + "ok", null!]));
+        Assert.Contains("texts[1]", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>The metadata reader opens a path with non-ASCII characters (on Windows the native side reads
+    /// paths in the ANSI code page). Uses the small LoRA test bundle next to LITERTLM_TEST_MODEL when present.</summary>
+    [SkippableFact]
+    public void ModelInfo_ReadsAPathWithNonAsciiCharacters()
+    {
+        Skip.If(string.IsNullOrEmpty(ChatModel) || !File.Exists(ChatModel), "Set LITERTLM_TEST_MODEL to run.");
+        string small = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(ChatModel!))!, "test_lm_lora.litertlm");
+        Skip.If(!File.Exists(small), "Place test_lm_lora.litertlm next to LITERTLM_TEST_MODEL to run.");
+        string dir = Path.Combine(Path.GetTempPath(), $"modelos-José-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string copy = Path.Combine(dir, "test_lm_lora.litertlm");
+            File.Copy(small, copy);
+            Assert.Equal(LiteRtModelType.LanguageModel, LiteRtModelInfo.Read(copy).ModelType);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
         }
     }
 }

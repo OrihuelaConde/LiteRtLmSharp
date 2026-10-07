@@ -39,7 +39,7 @@ public sealed class LiteRtEmbeddingEngine : IDisposable
     /// <summary>
     /// Gets the length of the vectors the model produces before any truncation by
     /// <see cref="LiteRtEmbeddingOptions.OutputDimensions"/>, or <c>null</c> when the model file does not
-    /// declare it.
+    /// declare it or its metadata could not be read (see <see cref="LiteRtModelInfo.Read"/>).
     /// </summary>
     public int? Dimension { get; }
 
@@ -59,6 +59,9 @@ public sealed class LiteRtEmbeddingEngine : IDisposable
         if (!File.Exists(options.ModelPath))
             throw new ArgumentException($"Model file not found: {options.ModelPath}", nameof(options));
         // The runtime rejects a missing cache directory too, but deep in a call trace; name it up front.
+        if (options is { MinInputLength: { } min, MaxInputLength: { } max } && min > max)
+            throw new ArgumentException(
+                $"MinInputLength ({min}) is greater than MaxInputLength ({max}).", nameof(options));
         if (options.Cache.NativeValue is { } dir && dir[0] != ':' && !System.IO.Directory.Exists(dir))
             throw new ArgumentException(
                 $"Cache directory not found: {dir}. The embedding engine does not create it: create it first, or " +
@@ -383,12 +386,13 @@ public sealed record LiteRtEmbeddingEngineOptions
     }
 
     /// <summary>
-    /// Gets the activation precision. Defaults to <see cref="LiteRtActivationDataType.Float32"/>, unlike
+    /// Gets the activation precision. Defaults to <see cref="LiteRtActivationDataType.Float32"/>, like
     /// <see cref="LiteRtEngineOptions.ActivationDataType"/>: EmbeddingGemma's activations exceed the float16
-    /// range, so its model card advises against float16, and on the GPU backend the runtime would otherwise
-    /// fall back to float16 (which measured no faster). The CPU backend runs float32 either way. Set
-    /// <see cref="LiteRtActivationDataType.Float16"/> to halve activation memory at some precision, or
-    /// <c>null</c> to let the runtime choose (the model's preferred type, else float16 on GPU).
+    /// range, so its model card advises against float16, which is the runtime's fallback on the GPU backend.
+    /// The CPU backend runs float32 either way. Float16 measured no faster on a desktop GPU but about twice
+    /// as fast per sentence on a phone GPU (Adreno 650), with vectors slightly further from the CPU ones. Set
+    /// <see cref="LiteRtActivationDataType.Float16"/> to make that trade, or <c>null</c> to let the runtime
+    /// choose (the model's preferred type, else float16 on GPU).
     /// </summary>
     public LiteRtActivationDataType? ActivationDataType { get; init; } = LiteRtActivationDataType.Float32;
 
@@ -398,9 +402,11 @@ public sealed record LiteRtEmbeddingEngineOptions
     /// Gets the longest input, in tokens, the engine prepares for, or <c>null</c> (default) for the limit the
     /// model declares (EmbeddingGemma 2: 1024). The engine loads the smallest of the model's input
     /// signatures that holds this many tokens, plus the shorter ones (see
-    /// <see cref="LiteRtModelInfo.EmbeddingInputLengths"/>; EmbeddingGemma 2 has 128 to 8192). A longer text
-    /// fails unless <see cref="LiteRtEmbeddingOptions.OverflowStrategy"/> truncates or chunks it. Longer
-    /// signatures need more memory.
+    /// <see cref="LiteRtModelInfo.EmbeddingInputLengths"/>; EmbeddingGemma 2 has 128 to 8192), so texts up to
+    /// that signature's length are accepted (1500 loads the 2,048 signature). A longer text fails unless
+    /// <see cref="LiteRtEmbeddingOptions.OverflowStrategy"/> truncates or chunks it. A value above the
+    /// longest signature makes <see cref="LiteRtEmbeddingEngine.Load"/> fail. Longer signatures need more
+    /// memory.
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">The value is zero or negative.</exception>
     public int? MaxInputLength
@@ -418,7 +424,9 @@ public sealed record LiteRtEmbeddingEngineOptions
 
     /// <summary>Gets the shortest input signature, in tokens, the engine loads, or <c>null</c> (default) for
     /// the model's own minimum. Signatures shorter than this are not loaded, which saves memory but pads
-    /// short texts to a longer signature.</summary>
+    /// short texts to a longer signature. It must not exceed the effective maximum:
+    /// <see cref="MaxInputLength"/> when set (checked by <see cref="LiteRtEmbeddingEngine.Load"/>), else the
+    /// limit the model declares (1024 for EmbeddingGemma 2; the runtime rejects a larger minimum).</summary>
     /// <exception cref="ArgumentOutOfRangeException">The value is negative.</exception>
     public int? MinInputLength
     {
