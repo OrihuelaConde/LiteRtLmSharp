@@ -12,27 +12,31 @@ the desktop WebGPU backend).
 
 ## Activation precision — `ActivationDataType`
 
-The precision of the activation tensors during inference. `null` (default) lets each executor pick its
-own default — the text executor uses **F16** on GPU; the vision and audio executors use F32.
+The precision of the activation tensors during inference. **The binding defaults to `Float32`** (since
+1.3.0). The runtime's own default for the text executor on GPU is F16, which corrupts output on the GPUs
+we measured (below) at no speed gain on a desktop GPU; the vision and audio executors use F32 either way.
 
 ```csharp
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 {
     ModelPath = "gemma-4-E2B-it.litertlm",
     Backend = LiteRtBackend.Gpu,
-    ActivationDataType = LiteRtActivationDataType.Float32,  // full precision on GPU
+    ActivationDataType = LiteRtActivationDataType.Float16,  // opt in to half precision (default: Float32)
 });
 ```
 
 - **Only the GPU backend honors this, and only as F32 vs F16.** `Float32` runs activations at full
-  precision — higher quality, more memory. `Float16` (the GPU default for text) uses half the
-  activation memory, with a precision loss that is NOT always small (below).
-- **On CPU it is a no-op** — the CPU/XNNPACK path does not read it.
+  precision. `Float16` uses half the activation memory, with a precision loss that is NOT always small
+  (below). `null` lets the runtime choose (F16 on GPU).
+- **On CPU it is a no-op**: the CPU/XNNPACK path does not read it (the executor only switches the GPU
+  delegate to FP16 when the setting is F16 and the backend is GPU).
 - **`Int16` / `Int8` are accepted but not distinctly implemented** by the shipped executors: on GPU they
   fold into F16, on CPU they are ignored. They exist only to mirror the native enum — do not expect
   8/16-bit activation quantization from them.
-- **When to set it:** choose `Float32` on GPU if you see quality/precision issues, or on a GPU whose
-  driver lacks reliable FP16. Otherwise leave it unset.
+- **What F32 costs.** gemma-4-E2B on an RTX 3080 (WebGPU, LiteRT-LM v0.18.0, medians of 3 runs): decode
+  113 tok/s with F16 and 117 with F32, prefill about 3,100 tok/s with either, and F32 commits about 0.3 to
+  0.6 GB more process memory at load. Mobile GPUs are not measured yet: F16 may be faster there, so on a
+  phone you can try `Float16`, after checking that your outputs stay correct.
 
 ### The F16 default corrupts structured output on desktop GPU — set `Float32` if you see it
 
@@ -57,11 +61,10 @@ unanswered — see google-ai-edge/LiteRT-LM#2637, #2727, #2202, and the export-g
   prompt.
 - CPU is immune (the knob is GPU-only, and the CPU path never showed the corruption).
 
-**Recommendation:** for any GPU workload where output fidelity matters more than activation memory —
-structured output, function calling, dates/numbers, JSON — set
-`ActivationDataType = LiteRtActivationDataType.Float32` and A/B it once on your target GPU. The cost
-is activation memory (roughly double) and possibly speed on GPUs with weak F32 throughput; on desktop
-discrete GPUs we measured the speed cost as nil.
+**This is why the binding defaults to `Float32` since 1.3.0.** Before that, the default followed the
+runtime (F16 on GPU) and the recommendation was to set `Float32` by hand. If you opt into `Float16`, A/B
+it once on your target GPU with your own outputs: the cost of F32 is activation memory and possibly
+speed on GPUs with weak F32 throughput; on desktop discrete GPUs we measured no speed cost.
 
 ## Prefill chunk size — `PrefillChunkSize`
 

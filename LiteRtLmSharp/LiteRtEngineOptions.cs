@@ -179,15 +179,21 @@ public sealed record LiteRtEngineOptions
     public bool? ParallelFileSectionLoading { get; init; }
 
     /// <summary>
-    /// Activation tensor precision. <c>null</c> (default) uses the engine default (F16 for the text
-    /// executor on GPU). <b>Only the GPU backend honors this, and only as F32 vs F16</b>:
-    /// <see cref="LiteRtActivationDataType.Float32"/> is higher precision at more memory and lower speed,
-    /// <see cref="LiteRtActivationDataType.Float16"/> is the faster default. On CPU it is a <b>no-op</b>,
-    /// and <see cref="LiteRtActivationDataType.Int16"/> / <see cref="LiteRtActivationDataType.Int8"/> are
-    /// accepted by the native API but not distinctly implemented by the shipped executors (folded to F16
-    /// on GPU). Maps to <c>engine_settings_set_activation_data_type</c>. See <c>docs/engine-tuning.md</c>.
+    /// Activation tensor precision. Defaults to <see cref="LiteRtActivationDataType.Float32"/>.
+    /// <b>Only the GPU backend honors this, and only as F32 vs F16</b>; on CPU it is a <b>no-op</b>.
     /// </summary>
-    public LiteRtActivationDataType? ActivationDataType { get; init; }
+    /// <remarks>
+    /// The runtime's own GPU default for the text executor is F16, which corrupts structured output
+    /// (digits, dates, JSON) on the GPUs we measured, with no speed gain on a desktop GPU: gemma-4-E2B on an
+    /// RTX 3080 decodes 113 tok/s with F16 and 117 with F32, and F32 commits about 0.3 to 0.6 GB more. So
+    /// the binding asks for F32. Set <see cref="LiteRtActivationDataType.Float16"/> to trade precision for
+    /// activation memory (for example on a mobile GPU, after checking your outputs), or <c>null</c> to let
+    /// the runtime choose. <see cref="LiteRtActivationDataType.Int16"/> and
+    /// <see cref="LiteRtActivationDataType.Int8"/> are accepted by the native API but not distinctly
+    /// implemented by the shipped executors (folded to F16 on GPU). Maps to
+    /// <c>engine_settings_set_activation_data_type</c>. See <c>docs/engine-tuning.md</c>.
+    /// </remarks>
+    public LiteRtActivationDataType? ActivationDataType { get; init; } = LiteRtActivationDataType.Float32;
 
     /// <summary>
     /// Maximum prompt tokens prefilled per step. 0 (default) = no chunking (the whole prompt is
@@ -441,10 +447,11 @@ public sealed record LiteRtEngineOptions
 /// </summary>
 public enum LiteRtActivationDataType
 {
-    /// <summary>32-bit float — higher precision, more memory, slower (GPU).</summary>
+    /// <summary>32-bit float: full precision, more activation memory on GPU. The binding's default.</summary>
     Float32 = 0,
 
-    /// <summary>16-bit float — the faster GPU default for the text executor.</summary>
+    /// <summary>16-bit float: half the activation memory on GPU at lower precision. The runtime's own GPU
+    /// default for the text executor; see <see cref="LiteRtEngineOptions.ActivationDataType"/>.</summary>
     Float16 = 1,
 
     /// <summary>16-bit integer — present for parity with the native enum, but not distinctly implemented

@@ -492,7 +492,10 @@ Options, task instructions and measurements are in the [Embeddings guide](embedd
   `LiteRtConversationOptions.SystemMessage` bug; it does not use that property.
 - **Engine options.** Any `LiteRtEngineOptions` you pass to `AddLiteRtChatClient` / `new LiteRtChatClient`
   flows straight through, including the ones added in v0.14.0 (`NumThreads` / `AudioNumThreads`, the LoRA
-  ranks); the connector surface is unchanged.
+  ranks); the connector surface is unchanged. Engine-level settings such as `ActivationDataType`
+  (`Float32` by default since 1.3.0, see [Engine tuning](engine-tuning.md)) are fixed when the engine
+  loads, so they go in those options, not in `ChatOptions`. The same holds for
+  `LiteRtEmbeddingEngineOptions` and `AddLiteRtEmbeddingGenerator`.
 - **Testing your app code.** `IChatClient` is the intended seam for unit tests: have your code depend on
   `IChatClient` and substitute a mock/stub in tests — no model file or native binaries needed. The core
   types (`LiteRtEngine` / `LiteRtConversation`) are sealed and bound to the native runtime; code that

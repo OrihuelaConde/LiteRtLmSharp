@@ -98,7 +98,7 @@ native benchmark API's `decode_tokens_per_sec` for the turn.
 | Platform / backend | spec OFF | spec ON | speedup | Notes |
 |---|---:|---:|---:|---|
 | win-x64 · CPU (dev box, LiteRT-LM v0.18.0, 2026-10-06) | 33.0 tok/s | 25.8 tok/s | **0.78×** | official prebuilt; same ratio as on v0.13.1 |
-| win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, v0.18.0, 2026-10-06) | 84.1 tok/s | 56.8 tok/s | **0.68×** | official prebuilt: default disk cache, GPU sampler embedded (no CPU-sampling fallback) |
+| win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, v0.18.0, 2026-10-06) | 84.1 tok/s | 56.8 tok/s | **0.68×** | official prebuilt: default disk cache, GPU sampler embedded (no CPU-sampling fallback); F16 activations (the default before 1.3.0) |
 | win-x64 · CPU (dev box, 2026-06-15) | 29.9 tok/s | 23.4 tok/s | **0.78×** | works, but slower — see below |
 | win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, 2026-06-15) | 41.8 tok/s | 35.5 tok/s | **0.85×** | A/B both with cache off; plain GPU *with* the disk cache ≈85 tok/s |
 | linux-x64 · CPU (CI ubuntu-latest, 2026-06-16) | 16.7 tok/s | 12.2 tok/s | **0.73×** | from `model-tests.yml` |

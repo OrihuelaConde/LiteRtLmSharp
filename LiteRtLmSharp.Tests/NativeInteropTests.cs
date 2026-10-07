@@ -162,6 +162,15 @@ public class ApiGuardsTests
         Assert.Equal(0, new LiteRtSendOptions().MaxOutputTokens);
         Assert.Equal(64, new LiteRtSendOptions { MaxOutputTokens = 64 }.MaxOutputTokens);
     }
+
+    [Fact]
+    public void EngineOptions_DefaultToFloat32Activations()
+    {
+        // The runtime's GPU default (F16) corrupts structured output; the binding asks for F32 unless the
+        // caller opts into F16 or hands the choice back to the runtime with null.
+        Assert.Equal(LiteRtActivationDataType.Float32, new LiteRtEngineOptions().ActivationDataType);
+        Assert.Null(new LiteRtEngineOptions { ActivationDataType = null }.ActivationDataType);
+    }
 }
 
 /// <summary>

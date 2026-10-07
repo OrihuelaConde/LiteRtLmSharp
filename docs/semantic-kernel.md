@@ -142,8 +142,9 @@ process; conversations are not thread-safe), and the engine lifecycle is handled
 [Extensions.AI registration](extensions-ai.md) the connector builds on. A `ChatHistory` system message is
 restored through that same History path, so this connector was **never** affected by the pre-v0.14.0
 `LiteRtConversationOptions.SystemMessage` bug. And any `LiteRtEngineOptions` you pass to
-`AddLiteRtChatCompletion`, including the v0.14.0 additions (`NumThreads`, LoRA ranks), flows straight
-through.
+`AddLiteRtChatCompletion`, including the v0.14.0 additions (`NumThreads`, LoRA ranks) and
+`ActivationDataType` (`Float32` by default since 1.3.0), flows straight through: engine-level settings are
+fixed when the engine loads, so they go in those options rather than in the execution settings.
 
 ## Function calling
 
