@@ -172,6 +172,10 @@ after a warm-up; texts carry the document instruction.
 - **Memory on GPU (Windows, WebGPU)**: the working set grew by about 0.4 GB at load, but the process's
   committed memory grew by about 3.6 GB at the default limit and 7.1 GB with `MaxInputLength = 2048`.
   On a machine with a small page file, keep `MaxInputLength` as low as your texts allow.
+- **On a phone** (Moto G100, Snapdragon 870 with an Adreno 650 GPU, Android 12): one sentence takes
+  504 ms on CPU, 188 ms on GPU with `Float32` and 103 ms with `Float16`; the GPU vectors have a cosine
+  similarity to the CPU ones of 0.9995 (`Float32`) and 0.9962 (`Float16`). Loading takes about 4 s on CPU
+  and about 22 s on GPU the first time, while the GPU kernels are compiled into the cache.
 
 ## Threads, lifetime and the chat engine
 

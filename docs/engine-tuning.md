@@ -33,10 +33,17 @@ using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 - **`Int16` / `Int8` are accepted but not distinctly implemented** by the shipped executors: on GPU they
   fold into F16, on CPU they are ignored. They exist only to mirror the native enum — do not expect
   8/16-bit activation quantization from them.
-- **What F32 costs.** gemma-4-E2B on an RTX 3080 (WebGPU, LiteRT-LM v0.18.0, medians of 3 runs): decode
-  113 tok/s with F16 and 117 with F32, prefill about 3,100 tok/s with either, and F32 commits about 0.3 to
-  0.6 GB more process memory at load. Mobile GPUs are not measured yet: F16 may be faster there, so on a
-  phone you can try `Float16`, after checking that your outputs stay correct.
+- **What F32 costs.** gemma-4-E2B, LiteRT-LM v0.18.0, medians of 3 runs:
+
+  | GPU | Decode F16 → F32 | Time to first token F16 → F32 | Memory |
+  |---|---|---|---|
+  | RTX 3080 (Windows, WebGPU) | 113 → 117 tok/s | about the same | F32 commits 0.3 to 0.6 GB more |
+  | Adreno 650 (Moto G100, Android 12, OpenCL) | 15.2 → 14.1 to 14.8 tok/s | 0.31 → 0.57 s | F32 uses about 150 MB more RAM |
+
+  On the phone F32 costs about 5% of decode speed and doubles the time to first token (prefill runs
+  slower). F16 did not corrupt our quick digit, date and counting checks there, but it did corrupt
+  structured extraction on desktop GPUs (below). If the phone's speed matters more, try `Float16` and
+  check your own outputs.
 
 ### The F16 default corrupts structured output on desktop GPU — set `Float32` if you see it
 

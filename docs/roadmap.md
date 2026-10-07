@@ -11,7 +11,7 @@ latest on nuget.org: 1.2.0, LiteRT-LM v0.16.0). Source of truth for "what's done
 | win-x64 | ✅ | ✅ | ✅ | ✅ | real hardware (+ CI, CPU) |
 | linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware with the self-built v0.13.1 set (CPU + GPU); official prebuilts: Docker + CI (CPU) |
 | linux-arm64 | ✅ | ⏳ 1.3.0 | ✅ | — | CI (ubuntu-24.04-arm, CPU); no arm64 GPU on hand |
-| android-arm64 | ✅ | ✅ | ✅ | ✅ | real device (Adreno 650; v0.16.0 libraries, v0.18.0 pending the device) |
+| android-arm64 | ✅ | ✅ | ✅ | ✅ | real device (Moto G100, Adreno 650; v0.18.0 from the packed 1.3.0 packages, 2026-10-06) |
 | android-x64 | ✅ | ⏳ 1.3.0 | ✅ | — | x86_64 emulator (API 35): chat and embeddings on CPU from the packed packages; emulators expose no GPU |
 | osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI only (macos-15; GPU via WebGPU) |
 | ios-arm64 | ✅ | ⏳ | — | — | CI build/link only (no device); on-device runtime + publish pending |
@@ -201,8 +201,10 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
      android-x64 (2026-10-06, x86_64 emulator, API 35, 8 cores, WHPX): an app built from the packed
      1.3.0 packages carries `lib/x86_64/libLiteRtLm.so` and runs model info, gemma-4-E2B on CPU ("Paris",
      14.8 tok/s decode) and EmbeddingGemma 2 (same vectors as on desktop: cosine 0.870 for the probe pair).
-     Pending: Moto G100 (arm64 GPU, now with float32 activations by default); Linux GPU has no hardware
-     on hand.
+     Moto G100 (2026-10-06, Adreno 650, Android 12, packed 1.3.0 packages): gemma-4-E2B on CPU 12.9 tok/s,
+     on GPU 14.1 to 14.8 tok/s with F32 (the new default) and 15.2 with F16 (TTFT 0.57 vs 0.31 s, F32 about
+     150 MB more RAM); every configuration passed the fidelity checks; embeddings 504 ms (CPU), 188 ms
+     (GPU F32), 103 ms (GPU F16) per sentence. Linux GPU has no hardware on hand.
    - **PR 2 `embeddings`** (implemented 2026-10-06, stacked on PR 1): `LiteRtEmbeddingEngine` (own
      handles, outside the one-engine gate; serialized and thread-safe, async variants), `LiteRtModelInfo`
      (metadata without loading), MEAI `LiteRtEmbeddingGenerator` + `AddLiteRtEmbeddingGenerator`, SK

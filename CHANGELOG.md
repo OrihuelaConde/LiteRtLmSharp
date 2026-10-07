@@ -28,8 +28,9 @@ are published together.
   F16 for the text executor on GPU). F16 corrupts structured output (digits, dates, JSON) on the GPUs we
   measured, and on a desktop GPU it is no faster: gemma-4-E2B on an RTX 3080 decodes 113 tok/s with F16
   and 117 with F32, and F32 commits about 0.3 to 0.6 GB more memory. The CPU backend ignores the setting.
-  Set `Float16` to opt back in (for example on a mobile GPU, where it may be faster, after checking your
-  outputs), or `null` for the runtime's choice.
+  On a Moto G100 (Adreno 650) F32 decodes about 5% slower, doubles the time to first token and uses about
+  150 MB more RAM. Set `Float16` to opt back in (after checking your outputs), or `null` for the runtime's
+  choice.
 - The documentation of `VisualTokenBudget` (conversation and per send) now describes what the runtime
   does: it is a **per-image** budget, and the runtime downscales each image to the smallest vision
   signature that fits. On gemma-4-E2B-it a budget of 70 brings an image from 260 tokens to 68.

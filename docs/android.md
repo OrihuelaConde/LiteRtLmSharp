@@ -77,15 +77,29 @@ storage on first run and pass its path to `LiteRtEngine.Load`.
    reported by the Unity binding. v0.14.0 was fine (4 exports sufficed) and the v0.16.0 prebuilt
    exports all 7; nothing self-built at v0.15.0 was ever published.
 
+7. ✅ **LiteRT-LM v0.18.0 validated on the same device (2026-10-06)** with an app built from the packed
+   1.3.0 packages (`LiteRtLmSharp.runtime.android-arm64`, both ABIs in one APK), gemma-4-E2B, medians of
+   3 runs:
+
+   | | Load | Decode | Time to first token | RAM (RSS) |
+   |---|---|---|---|---|
+   | CPU | 8.9 s | 12.9 tok/s | 1.03 s | peak 1.66 GB |
+   | GPU, F32 (the default) | 10.3 s (cache present) | 14.1 to 14.8 tok/s | 0.57 s | about 1.8 GB |
+   | GPU, F16 | 39 s (first load, cache built) | 15.2 tok/s | 0.31 s | about 1.65 GB |
+
+   Every configuration answered correctly and passed digit, date and counting fidelity checks. Model
+   metadata and EmbeddingGemma 2 work too: one sentence takes 504 ms on CPU, 188 ms on GPU with F32 and
+   103 ms with F16, with a cosine similarity to the CPU vector of 0.9995 (F32) and 0.9962 (F16).
+
 ## Risks
 - Vendor GPU drivers (see the diagnosis below): older Adreno Vulkan drivers break Dawn's shaders,
   and OpenCL must be reachable through the manifest declaration.
 - Model size/memory on low-RAM devices.
 - Activation precision on mobile GPUs. Since 1.3.0 the binding asks for F32 activations by default
   (`LiteRtEngineOptions.ActivationDataType`), because the runtime's F16 default corrupts structured
-  output on the GPUs we measured. The device measurements above used F16; the cost of F32 on a mobile GPU
-  (speed and memory) is not measured yet. If a phone runs too slowly or out of memory on GPU, try
-  `ActivationDataType = LiteRtActivationDataType.Float16` and check your outputs.
+  output on the desktop GPUs we measured. On the Moto G100 F32 costs about 5% of decode speed, doubles the
+  time to first token and uses about 150 MB more RAM (item 7). If a phone runs too slowly or out of memory
+  on GPU, try `ActivationDataType = LiteRtActivationDataType.Float16` and check your outputs.
 
 ## Android GPU — full diagnosis (validated on device, 2026-06-10)
 
