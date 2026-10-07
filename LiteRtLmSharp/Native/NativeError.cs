@@ -34,16 +34,44 @@ internal static class NativeError
         // The header freezes the canonical set but asks callers to read unrecognized values as Unknown, so a
         // binding built against this version stays correct with a newer native library.
         var status = Enum.IsDefined((LiteRtStatusCode)code) ? (LiteRtStatusCode)code : LiteRtStatusCode.Unknown;
-        message = message?.Trim() ?? "";
-        // The runtime stores the full absl status text ("INVALID_ARGUMENT: Invalid magic number…"); drop
-        // the leading code so the exception does not repeat it next to the code it prints itself.
-        string prefix = CanonicalName(status) + ": ";
-        if (message.StartsWith(prefix, StringComparison.Ordinal))
-            message = message[prefix.Length..].TrimStart();
+        return (status, Detail(status, message));
+    }
+
+    /// <summary>
+    /// Reads a status the runtime delivered as text, such as the error string of a stream chunk
+    /// (<c>"INVALID_ARGUMENT: reason"</c>): the status from its leading canonical name, and the detail
+    /// normalized like <see cref="Take"/>. <c>null</c> when the text starts with no canonical name.
+    /// </summary>
+    internal static (LiteRtStatusCode Code, string Message)? ParseStatusText(string text)
+    {
+        string trimmed = text.Trim();
+        foreach (LiteRtStatusCode candidate in Enum.GetValues<LiteRtStatusCode>())
+        {
+            if (StartsWithName(trimmed, CanonicalName(candidate)))
+                return (candidate, Detail(candidate, trimmed));
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// The runtime's reason without the leading code, as one line; empty when it gave none. The runtime
+    /// stores the full absl status text (<c>"INVALID_ARGUMENT: Invalid magic number…"</c>), so the code is
+    /// dropped to avoid printing it twice. With the native log silenced (a level above 5, such as 1000),
+    /// LiteRT's status macros record no reason at all and the text is the bare <c>"INVALID_ARGUMENT: "</c>.
+    /// </summary>
+    internal static string Detail(LiteRtStatusCode status, string? message)
+    {
+        string text = (message ?? "").Trim();
+        string name = CanonicalName(status);
+        if (StartsWithName(text, name))
+            text = text[name.Length..].TrimStart(':').Trim();
         // A dangling colon (a native message whose detail was empty) would read as "…read:." once the
         // sentence is closed.
-        return (status, Untrace(message).TrimEnd(':', ' '));
+        return Untrace(text).TrimEnd(':', ' ');
     }
+
+    private static bool StartsWithName(string text, string name) =>
+        text.StartsWith(name, StringComparison.Ordinal) && (text.Length == name.Length || text[name.Length] == ':');
 
     /// <summary>
     /// Rewrites a LiteRT status trace into one line: the reason first, then the innermost source location.
@@ -78,7 +106,7 @@ internal static class NativeError
             return message;
         // The file and line are enough for a bug report; the repository path is noise.
         string where = location[(location.LastIndexOf('/') + 1)..];
-        return reason.Length > 0 ? $"{reason.ToString().TrimEnd(':', ' ')} (at {where})" : $"no details, failed at {where}";
+        return reason.Length > 0 ? $"{reason.ToString().TrimEnd(':', '.', ' ')} (at {where})" : $"no details, failed at {where}";
     }
 
     /// <summary>
@@ -92,13 +120,31 @@ internal static class NativeError
 
     /// <summary>
     /// Builds the exception like <see cref="Exception(string, string?, string?)"/>, choosing the guidance
-    /// from the runtime's message (<c>null</c> when it reported nothing), for hints that only fit some causes.
+    /// from the runtime's report, for hints that only fit some causes. <paramref name="hintFor"/> receives
+    /// <c>null</c> when the runtime gave no reason (no report, or a status without detail).
     /// </summary>
-    internal static LiteRtException Exception(string failure, Func<string?, string?> hintFor)
+    internal static LiteRtException Exception(
+        string failure, Func<(LiteRtStatusCode Code, string Message)?, string?> hintFor, string? fallbackHint = null)
     {
         var report = Take();
-        return Build(failure, report, hintFor(report?.Message), fallbackHint: null);
+        return Build(failure, report, hintFor(HasReason(report) ? report : null), fallbackHint);
     }
+
+    /// <summary>
+    /// Builds the exception for a failure the runtime delivered as status text rather than through the
+    /// thread report, such as a stream chunk's error, so it carries the same status, one-line reason and
+    /// guidance as a failed blocking call.
+    /// </summary>
+    internal static LiteRtException FromStatusText(
+        string failure, string statusText, Func<(LiteRtStatusCode Code, string Message)?, string?> hintFor)
+    {
+        if (ParseStatusText(statusText) is { } report)
+            return Build(failure, report, hintFor(HasReason(report) ? report : null), fallbackHint: null);
+        string text = Untrace(statusText.Trim());
+        return Build(text.Length > 0 ? $"{failure.TrimEnd('.', ' ')}: {text}" : failure, null, hintFor(null), fallbackHint: null);
+    }
+
+    private static bool HasReason((LiteRtStatusCode Code, string Message)? report) => report is { Message.Length: > 0 };
 
     private static LiteRtException Build(
         string failure, (LiteRtStatusCode Code, string Message)? report, string? hint, string? fallbackHint)
@@ -111,7 +157,10 @@ internal static class NativeError
                 sb.Append(": ").Append(r.Message);
         }
         EndSentence(sb);
-        if (report is null && fallbackHint is not null)
+        if (report is { Message.Length: 0 })
+            sb.Append(" The runtime gave no reason: with the native log silenced (LiteRtEngine.SetMinLogLevel above 5), " +
+                      "LiteRT drops it; a level of 5 or lower keeps it.");
+        if (!HasReason(report) && fallbackHint is not null)
             sb.Append(' ').Append(fallbackHint);
         if (hint is not null)
         {

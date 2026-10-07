@@ -45,6 +45,10 @@ public sealed class LiteRtEngine : IDisposable
     internal int MaxNumTokens { get; }
 
     /// <summary>Sets the global minimum log level (0=VERBOSE … 5=FATAL, 1000=SILENT).</summary>
+    /// <remarks>Above 5 (SILENT included) LiteRT also stops recording the reason of the errors its status
+    /// macros raise, so a <see cref="LiteRtException"/> then names the status (for example
+    /// <c>INVALID_ARGUMENT</c>) without saying why. Use 3 (ERROR) to keep the console quiet and the
+    /// reasons.</remarks>
     /// <exception cref="DllNotFoundException">The native LiteRT-LM library could not be loaded; the
     /// message names the fix (the missing <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package, a runtime
     /// package for another architecture, or a missing system library).</exception>
@@ -139,7 +143,12 @@ public sealed class LiteRtEngine : IDisposable
             if (enginePtr == nint.Zero)
                 throw NativeError.Exception(
                     "litert_lm_engine_create returned null.",
-                    hint: options.EnableYnnpack == true ? YnnpackUnavailableHint : null,
+                    // The YNNPACK note fits only the failure it explains: UNIMPLEMENTED (or no reason) on a
+                    // library without the kernels, which is every official one but linux-arm64.
+                    report => options.EnableYnnpack == true
+                              && (report is null || report.Value.Code == LiteRtStatusCode.Unimplemented)
+                              && !(OperatingSystem.IsLinux() && RuntimeInformation.OSArchitecture == Architecture.Arm64)
+                        ? YnnpackUnavailableHint : null,
                     fallbackHint: "The runtime reported no reason (see the native stderr). Common causes: a " +
                     "corrupt or incomplete model file, or a backend the model does not support: some published " +
                     ".litertlm files carry a backend constraint (for example GPU-only) and refuse to load on CPU.");

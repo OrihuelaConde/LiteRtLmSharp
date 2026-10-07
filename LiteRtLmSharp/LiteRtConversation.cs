@@ -179,7 +179,7 @@ public sealed class LiteRtConversation : IDisposable
                         if (rc != 0)
                             throw NativeError.Exception(
                                 $"litert_lm_session_config_set_lora_path failed (returned {rc}) for '{loraPath}'.",
-                                hint: "The path must point to a readable LoRA weights file, and the model must be LoRA-enabled.");
+                                hint: "The path must point to a readable LoRA weights file.");
                     }
 
                     if (options?.AudioLoraPath is { } audioLoraPath)
@@ -189,7 +189,7 @@ public sealed class LiteRtConversation : IDisposable
                         if (rc != 0)
                             throw NativeError.Exception(
                                 $"litert_lm_session_config_set_audio_lora_path failed (returned {rc}) for '{audioLoraPath}'.",
-                                hint: "The path must point to a readable audio LoRA weights file, and the model must be LoRA-enabled.");
+                                hint: "The path must point to a readable audio LoRA weights file.");
                     }
 
                     // Per-conversation speculative decoding (v0.18.0): unset inherits the engine setting; true
@@ -700,14 +700,8 @@ public sealed class LiteRtConversation : IDisposable
             // (an undecodable image, a visual budget above the per-image cap) speaks for itself.
             bool hasMedia = MessageHasMedia(messageJson);
             bool smallContext = LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(_engineOwner.MaxNumTokens);
-            throw NativeError.Exception("litert_lm_conversation_send_message returned null.", nativeMessage =>
-            {
-                string? hint = hasMedia && (nativeMessage is null || IsMissingEncoderError(nativeMessage))
-                    ? MultimodalSendHint : null;
-                if (smallContext && IsSmallContextFailure(nativeMessage))
-                    hint = hint is null ? SmallContextSendHint : hint + " " + SmallContextSendHint;
-                return hint;
-            });
+            throw NativeError.Exception("litert_lm_conversation_send_message returned null.",
+                report => SendFailureHint(report?.Message, hasMedia, smallContext));
         }
 
         using var response = new JsonResponseHandle(responsePtr);
@@ -806,20 +800,37 @@ public sealed class LiteRtConversation : IDisposable
     /// group (an internal <c>DYNAMIC_UPDATE_SLICE</c> error). The C API cannot report the signatures, so
     /// this is guidance on failure rather than up-front validation.
     /// </summary>
-    /// <summary>Whether a send failure on an engine below 1024 tokens looks like the small-context
-    /// failure (v0.18.0 reports it as "Failed to invoke the compiled model Failed to allocate tensors"),
-    /// or the runtime reported nothing; any other reason, such as a bad LoRA adapter, speaks for
-    /// itself.</summary>
-    internal static bool IsSmallContextFailure(string? nativeMessage) =>
-        nativeMessage is null
-        || nativeMessage.Contains("allocate tensors", StringComparison.OrdinalIgnoreCase)
-        || nativeMessage.Contains("DYNAMIC_UPDATE_SLICE", StringComparison.OrdinalIgnoreCase);
-
     internal const string SmallContextSendHint =
         "The engine was loaded with LiteRtEngineOptions.MaxNumTokens below 1024. The native executor " +
         "accepts that, but a send whose prefill spans more than its smallest work group then fails inside " +
         "the native graph (the published gemma conversions' largest prefill signature is 1024). If this " +
         "message was longer than a short sentence, reload the engine with MaxNumTokens >= 1024.";
+
+    /// <summary>Whether a send failure on an engine below 1024 tokens looks like the small-context
+    /// failure (v0.18.0 reports it as "Failed to invoke the compiled model Failed to allocate tensors"),
+    /// or the runtime gave no reason; any other reason, such as a cancellation or a bad LoRA adapter,
+    /// speaks for itself.</summary>
+    internal static bool IsSmallContextFailure(string? nativeMessage) =>
+        nativeMessage is null
+        || nativeMessage.Contains("allocate tensors", StringComparison.OrdinalIgnoreCase)
+        || nativeMessage.Contains("DYNAMIC_UPDATE_SLICE", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The guidance for a failed send, shared by the blocking and the streaming paths: the multimodal setup
+    /// hint when media was attached and the runtime reported the missing-encoder failure (or no reason), and
+    /// the small-context hint when the engine is below 1024 tokens and the failure matches it.
+    /// </summary>
+    /// <param name="nativeMessage">The runtime's reason, or <c>null</c> when it gave none.</param>
+    /// <param name="mediaHintApplies">Whether the multimodal hint fits this failure.</param>
+    /// <param name="smallContext">Whether the engine was loaded below 1024 tokens.</param>
+    internal static string? SendFailureHint(string? nativeMessage, bool mediaHintApplies, bool smallContext)
+    {
+        string? hint = mediaHintApplies && (nativeMessage is null || IsMissingEncoderError(nativeMessage))
+            ? MultimodalSendHint : null;
+        if (smallContext && IsSmallContextFailure(nativeMessage))
+            hint = hint is null ? SmallContextSendHint : hint + " " + SmallContextSendHint;
+        return hint;
+    }
 
     /// <summary>
     /// Whether a user-message JSON carries an image/audio content part. Probed by the public
@@ -1044,7 +1055,7 @@ public sealed class LiteRtConversation : IDisposable
 
         var channel = Channel.CreateUnbounded<LiteRtStreamChunk>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
-        var state = new StreamState(channel, _toolCallStreamChannel, _engineOwner.MaxNumTokens);
+        var state = new StreamState(channel, _toolCallStreamChannel, _engineOwner.MaxNumTokens, attachments is { Count: > 0 });
         // The optional args (visual token budget) must stay alive for the whole stream: the native
         // decode thread reads them during prefill. Freed in the finally, after the channel completes.
         // Built before the GCHandle so that if native allocation fails we don't leak a pinned handle.
@@ -1062,9 +1073,13 @@ public sealed class LiteRtConversation : IDisposable
 
         if (rc != 0)
         {
+            // Read the report before any other native call (disposing the args is one).
+            LiteRtException failure = NativeError.Exception($"litert_lm_conversation_send_message_stream failed with code {rc}.",
+                report => SendFailureHint(report?.Message, attachments is { Count: > 0 },
+                    LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(_engineOwner.MaxNumTokens)));
             if (gcHandle.IsAllocated) gcHandle.Free();
             optionalArgs?.Dispose();
-            throw NativeError.Exception($"litert_lm_conversation_send_message_stream failed with code {rc}.");
+            throw failure;
         }
 
         try
@@ -1132,14 +1147,14 @@ public sealed class LiteRtConversation : IDisposable
 
             if (errorMsg != nint.Zero)
             {
-                string msg = Marshal.PtrToStringUTF8(errorMsg) ?? "unknown error";
-                // The streaming path carries the native string in the chunk; when it is the
-                // unconfigured-multimodal failure, append the same setup guidance as the blocking path.
-                if (IsMissingEncoderError(msg))
-                    msg += " " + MultimodalSendHint;
-                if (LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(state.MaxNumTokens))
-                    msg += " " + SmallContextSendHint;
-                state.Channel.Writer.TryComplete(new LiteRtException(msg));
+                // The streaming path carries the runtime's status text in the chunk ("CODE: reason"):
+                // build the same exception as the blocking path, with the status, the one-line reason
+                // and only the guidance that fits it.
+                string statusText = Marshal.PtrToStringUTF8(errorMsg) ?? "";
+                state.Channel.Writer.TryComplete(NativeError.FromStatusText(
+                    "litert_lm_conversation_send_message_stream failed.", statusText,
+                    report => SendFailureHint(report?.Message, state.HasMedia,
+                        LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(state.MaxNumTokens))));
             }
             else if (text != nint.Zero)
             {
@@ -1210,12 +1225,14 @@ public sealed class LiteRtConversation : IDisposable
         return chunks;
     }
 
-    private sealed class StreamState(Channel<LiteRtStreamChunk> channel, string? toolCallChannel, int maxNumTokens)
+    private sealed class StreamState(Channel<LiteRtStreamChunk> channel, string? toolCallChannel, int maxNumTokens, bool hasMedia)
     {
         public readonly Channel<LiteRtStreamChunk> Channel = channel;
         public readonly string? ToolCallChannel = toolCallChannel;
         /// <summary>The engine's <c>MaxNumTokens</c> (0 = unknown), for the small-context hint on a failed stream.</summary>
         public readonly int MaxNumTokens = maxNumTokens;
+        /// <summary>Whether the message carries an image or audio, for the multimodal hint on a failed stream.</summary>
+        public readonly bool HasMedia = hasMedia;
     }
 
     /// <summary>Disposes the conversation, freeing its native resources (and its config handles). Dispose

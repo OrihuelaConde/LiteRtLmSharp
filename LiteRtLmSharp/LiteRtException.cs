@@ -4,8 +4,10 @@ namespace LiteRtLmSharp;
 /// <remarks>
 /// When the native runtime reports why a call failed, the message carries that reason (for example
 /// <c>litert_lm_engine_create returned null: INVALID_ARGUMENT: …</c>) and <see cref="StatusCode"/> holds
-/// its status. Failures detected by the binding itself, and native failures that report no reason, leave
-/// <see cref="StatusCode"/> <c>null</c>.
+/// its status, for blocking calls and streamed replies alike. Failures detected by the binding itself, and
+/// native failures that report no status, leave <see cref="StatusCode"/> <c>null</c>. With the native log
+/// silenced (<see cref="LiteRtEngine.SetMinLogLevel"/> above 5) some failures keep their status but lose
+/// their reason.
 /// </remarks>
 public class LiteRtException : Exception
 {

@@ -75,10 +75,11 @@ public sealed record LiteRtEngineOptions
     /// (~128) are unusable outright: every send is rejected.</para>
     /// <para><b>Keep the value at or above the model's largest prefill signature</b> (1024 for the
     /// published gemma conversions). The native loader accepts a smaller limit, but a send whose prefill
-    /// spans more than the smallest work group then fails inside the native graph (an internal
-    /// <c>DYNAMIC_UPDATE_SLICE</c> error) instead of cleanly. The C API exposes no way to query the
-    /// signatures, so the binding cannot validate this up front; when a send fails on an engine loaded
-    /// with a limit below 1024, the exception names this as the likely cause.</para>
+    /// spans more than the smallest work group then fails inside the native graph (v0.18.0 reports
+    /// "Failed to invoke the compiled model Failed to allocate tensors") instead of cleanly. The C API
+    /// exposes no way to query the signatures, so the binding cannot validate this up front; when a send
+    /// fails that way on an engine loaded with a limit below 1024, the exception names this as the likely
+    /// cause.</para>
     /// </remarks>
     public int MaxNumTokens { get; init; }
 
