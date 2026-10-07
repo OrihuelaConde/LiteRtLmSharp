@@ -22,7 +22,7 @@ body:
       label: Proposed solution
       description: If you have an API shape in mind, sketch it here.
       placeholder: |
-        var embeddings = engine.Embed("some text");
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions { ModelPath = "model.litertlm", NewOption = true });
   - type: textarea
     id: alternatives
     attributes:

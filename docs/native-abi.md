@@ -11,11 +11,11 @@
 > official prebuilts (v0.18.0: 212 `litert_lm_*` exports across `c/engine.h`, `c/conversation.h`,
 > `c/embedding_engine.h`, `c/model_info.h`, `c/error_reporter.h` and `c/experimental.h`; the binding's
 > coverage is tracked in [`roadmap.md`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md)).
-> Today config/system-prompt/sampler, tools, streaming and token count work on every platform. Speculative decoding, the benchmark API, and the engine cache-dir setting were
+> Today config/system-prompt/sampler, tools, streaming and token count work on every validated platform. Speculative decoding, the benchmark API, and the engine cache-dir setting were
 > bound on 2026-06-15; multimodal image/audio messages on 2026-06-17; the tokenizer surface
 > (tokenize/detokenize + start/stop tokens) on 2026-06-19; and the v0.14.0 surface (LoRA, CPU thread
 > counts, per-send output cap, tool-call streaming, preface rendering, plus the internal sampler-builder
-> migration) on 2026-07-10 (see [`roadmap.md`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md) for the C-API coverage count, now 84/109, the
+> migration) on 2026-07-10 (see [`roadmap.md`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md) for the C-API coverage count, the
 > [v0.14.0 ABI changes](#v0140-abi-changes-sampler-struct--opaque-builder) section below, and the
 > [multimodal section](#multimodal-messages-image--audio--verified-wire-format) below). The notes
 > below are kept as a diagnostic record.
@@ -121,7 +121,9 @@ typedef void (*LiteRtLmStreamCallback)(void* callback_data, const char* chunk,
   (**pre-v0.14.0 shape**; v0.14.0 removed this by-value struct in favor of an opaque builder, see
   [v0.14.0 ABI changes](#v0140-abi-changes-sampler-struct--opaque-builder) below).
 - `LiteRtLmSamplerType`: 0 Unspecified, 1 TopK, 2 TopP, 3 Greedy. **v0.14.0 dropped the `Unspecified`
-  member** (see below); the public `LiteRtSamplerType.Unspecified` is retained at `0`.
+  member** (see below); the public `LiteRtSamplerType.Unspecified` is retained at `0`. The v0.18.0 header
+  declares `kLiteRtLmSamplerTypeUnspecified = 0` again; the binding still sends no sampler parameters
+  for it.
 - `LiteRtLmInputData { LiteRtLmInputDataType type; const void* data; size_t size; }` (multimodal; text=UTF-8).
 - `LiteRtLmInputDataType`: Text, Image, ImageEnd, Audio, AudioEnd.
 
@@ -301,7 +303,7 @@ It was not managed code (worked on `0.12.0-a`), not the WebGPU sampler (#2073), 
 (which used to segfault) passes. Test suite 4/4 on v0.13.1.
 
 > Lesson: pin to a **release tag**, never an arbitrary commit (more stable, and it is the sync
-> target with Google). `native-release.yml` defaults to the current pin (`v0.16.0`).
+> target with Google). `native-release.yml` defaults to the current pin (`v0.18.0`, with `source=auto`).
 
 ## Tokenizer (tokenize / detokenize / start-stop tokens) — verified
 

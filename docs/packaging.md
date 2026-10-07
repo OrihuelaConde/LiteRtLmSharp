@@ -5,8 +5,8 @@ LLamaSharp-style model: **one pure managed package + per-RID native runtime pack
 | Package | Contents | TFM |
 |---|---|---|
 | `LiteRtLmSharp` | Managed assembly only (`lib/net10.0/LiteRtLmSharp.dll`). No natives. | net10.0 |
-| `LiteRtLmSharp.Extensions.AI` | `IChatClient` connector (Microsoft.Extensions.AI). Depends on `LiteRtLmSharp` (same version). | net10.0 |
-| `LiteRtLmSharp.SemanticKernel` | `IChatCompletionService` connector, built on `LiteRtLmSharp.Extensions.AI` (same version). | net10.0 |
+| `LiteRtLmSharp.Extensions.AI` | `IChatClient` and `IEmbeddingGenerator` connectors (Microsoft.Extensions.AI). Depends on `LiteRtLmSharp` (same version). | net10.0 |
+| `LiteRtLmSharp.SemanticKernel` | `IChatCompletionService` connector and embedding generator registration, built on `LiteRtLmSharp.Extensions.AI` (same version). | net10.0 |
 | `LiteRtLmSharp.runtime.win-x64` | `runtimes/win-x64/native/`: the official `LiteRtLm.dll` (static CRT) + the DirectX Shader Compiler runtime (`dxcompiler.dll`, `dxil.dll`) the GPU backend needs. No lib. | (native-only) |
 | `LiteRtLmSharp.runtime.linux-x64` | `runtimes/linux-x64/native/libLiteRtLm.so` (one official library). No lib. | (native-only) |
 | `LiteRtLmSharp.runtime.linux-arm64` | `runtimes/linux-arm64/native/libLiteRtLm.so` (one official library). No lib. | (native-only) |

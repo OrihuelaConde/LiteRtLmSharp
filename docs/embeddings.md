@@ -72,14 +72,14 @@ Two official sources list different instructions:
 
 | Use | Model card ([google/embeddinggemma-2](https://huggingface.co/google/embeddinggemma-2)) | [LiteRT-LM guide](https://developers.google.com/edge/litert-lm/embedding_models) |
 |---|---|---|
-| Search query | `task: search result \| query: ` | `task: search query \| text: ` |
-| Document to search | `title: none \| text: ` (or `title: {title} \| text: `) | `task: search result \| text: ` |
-| Question answering query | `task: question answering \| query: ` | (not listed) |
-| Fact checking query | `task: fact checking \| query: ` | (not listed) |
-| Code search query | `task: code retrieval \| query: ` | (not listed) |
-| Classification | `task: classification \| query: ` | `task: classification \| text: ` |
-| Clustering | `task: clustering \| query: ` | `task: clustering \| text: ` |
-| Sentence similarity | `task: sentence similarity \| query: ` | `task: sentence similarity \| text: ` |
+| Search query | <code>task: search result &#124; query: </code> | <code>task: search query &#124; text: </code> |
+| Document to search | <code>title: none &#124; text: </code> (or <code>title: {title} &#124; text: </code>) | <code>task: search result &#124; text: </code> |
+| Question answering query | <code>task: question answering &#124; query: </code> | (not listed) |
+| Fact checking query | <code>task: fact checking &#124; query: </code> | (not listed) |
+| Code search query | <code>task: code retrieval &#124; query: </code> | (not listed) |
+| Classification | <code>task: classification &#124; query: </code> | <code>task: classification &#124; text: </code> |
+| Clustering | <code>task: clustering &#124; query: </code> | <code>task: clustering &#124; text: </code> |
+| Sentence similarity | <code>task: sentence similarity &#124; query: </code> | <code>task: sentence similarity &#124; text: </code> |
 
 The model card's set is also the one the model's Sentence Transformers configuration applies. On a small
 check of our own (24 questions against 32 passages, 8 of them distractors that share words with a
@@ -104,7 +104,7 @@ defaults.
 
 | Option | Default | What it does |
 |---|---|---|
-| `OutputDimensions` | Full length (768) | Truncates the vector to that length and normalizes it again. EmbeddingGemma 2 is trained for 768, 512, 256 and 128 (Matryoshka representation learning), so use one of those; 128 dimensions take 512 bytes per vector instead of 3 KB. A value above the model's length fails the call with `InvalidArgument`. |
+| `OutputDimensions` | Full length (768) | Truncates the vector to that length and, unless `Normalize` is `false`, normalizes it again. EmbeddingGemma 2 is trained for 768, 512, 256 and 128 (Matryoshka representation learning), so use one of those; 128 dimensions take 512 bytes per vector instead of 3 KB. A value above the model's length fails the call with `InvalidArgument`. |
 | `Normalize` | `true` | L2-normalizes the vector, which makes the dot product equal to the cosine similarity. |
 | `OverflowStrategy` | `Error` | What happens to a text longer than the loaded signatures (see [Input length](#input-length)): `Error` fails the call with `LiteRtStatusCode.InvalidArgument`, `Truncate` embeds the first part that fits, `ChunkAndAverage` embeds every chunk and averages the vectors. |
 | `InsertSpecialTokens` | `true` | Adds the model's begin and end tokens around the text. Leave it on. |
@@ -191,7 +191,11 @@ after a warm-up; texts carry the document instruction.
 - **Alongside a chat engine.** An embedding engine does not count toward the one-live-engine rule of
   `LiteRtEngine`, so an app can keep a chat model and an embedding model loaded at the same time, for
   example to retrieve passages and then answer with them. Validated on CPU and GPU (win-x64), including
-  embeddings computed while the chat engine streams a reply. On a phone the chat model dominates memory:
+  embeddings computed while the chat engine streams a reply. Known issue on win-x64 GPU: the full test
+  suite, which loads and disposes many engines in one process, has ended a few times with the process
+  exiting without an error, once inside the coexistence test; isolated runs and the last 21 full runs
+  were clean. The
+  [roadmap](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md) tracks it. On a phone the chat model dominates memory:
   on a Moto G100 (8 GB), gemma-4-E2B on GPU takes about 1.8 GB and the embedding engine adds about 120 MB
   on CPU or 260 MB on GPU, and the same retrieve-then-answer flow ran with about 0.4 to 0.5 GB of the
   device's memory still available.

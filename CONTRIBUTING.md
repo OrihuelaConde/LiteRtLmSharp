@@ -82,8 +82,9 @@ hang otherwise outlives the test run and keeps the model loaded.
 - **Keep the library AOT- and trim-compatible.** Interop uses source-generated P/Invoke
   (`[LibraryImport]`) and `[UnmanagedCallersOnly]` callbacks — no `[DllImport]` with runtime
   marshalling, no reflection-based code paths.
-- **Never commit native binaries or model files.** Natives are built in CI from pinned
-  LiteRT-LM tags ([docs/native-build.md](docs/native-build.md)).
+- **Never commit native binaries or model files.** The natives are Google's official LiteRT-LM
+  prebuilts for a pinned release, repackaged by `native-release.yml`
+  ([docs/native-build.md](docs/native-build.md)); `scripts/restore-natives.ps1` restores them locally.
 - **Don't bump package versions in PRs.** Versioning is handled at release time
   (policy in [docs/roadmap.md](docs/roadmap.md)).
 - **Match the existing code style** (file-scoped namespaces, nullable-aware code, naming as in

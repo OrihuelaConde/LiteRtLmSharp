@@ -67,7 +67,7 @@ dotnet build -f net10.0-windows10.0.19041.0 -t:Run
 
 ## Notes
 
-- **One engine alive at a time**: switching model or backend disposes every conversation and the
+- **One chat engine alive at a time**: switching model or backend disposes every conversation and the
   engine, then loads the new one (`EngineService.LoadAsync` → `UnloadAsync`). Pages release their
   conversations via the `EngineService.Unloading` event before the engine goes away.
 - Models are stored in the app's private data dir (`FileSystem.AppDataDirectory/models`); deleting

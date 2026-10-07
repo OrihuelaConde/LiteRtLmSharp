@@ -6,8 +6,8 @@ public enum LiteRtSamplerType
     /// <summary>Let the engine choose its default: the binding sends <b>no</b> sampler parameters at
     /// all, so the executor's internal default sampling applies and the other
     /// <see cref="LiteRtSamplerParams"/> fields are not forwarded. (Native v0.14.0 removed its
-    /// unspecified sampler type; not sending parameters preserves the pre-v0.14.0 behavior, where the
-    /// unspecified type also deferred to the executor.)</summary>
+    /// unspecified sampler type, and v0.18.0 declares it again; not sending parameters preserves the
+    /// pre-v0.14.0 behavior, where the unspecified type also deferred to the executor.)</summary>
     Unspecified = 0,
     /// <summary>Sample probabilistically among the top-k tokens.</summary>
     TopK = 1,

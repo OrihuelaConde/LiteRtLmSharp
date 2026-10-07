@@ -104,7 +104,8 @@ public sealed record LiteRtEngineOptions
 
     /// <summary>
     /// Upper bound on the vision tokens one image may expand to, which limits the vision encoder
-    /// signatures the engine selects. <c>null</c> (default) leaves every signature of the model available.
+    /// signatures the engine loads (up to the cap, rounded up to the next signature). <c>null</c> (default)
+    /// leaves every signature of the model available.
     /// </summary>
     /// <remarks>
     /// It caps the image size; it does not choose it. Images still expand to the model's default size
@@ -116,8 +117,9 @@ public sealed record LiteRtEngineOptions
     /// engine's max vision tokens per image (…)"). Left <c>null</c>, the engine checks the budget against the
     /// model's own maximum instead (<see cref="LiteRtModelInfo.MaxVisionTokenBudget"/>, 280 on the Gemma 4
     /// E-series). It applies only when <see cref="VisionBackend"/> is set and the model declares a per-image
-    /// token count. Maps to <c>engine_settings_set_max_vision_tokens_per_image</c> (native LiteRT-LM
-    /// v0.18.0+).
+    /// token count. A cap above the model's largest signature (280 on the Gemma 4 E-series) fails
+    /// <see cref="LiteRtEngine.Load"/> with <see cref="LiteRtStatusCode.InvalidArgument"/>. Maps to
+    /// <c>engine_settings_set_max_vision_tokens_per_image</c> (native LiteRT-LM v0.18.0+).
     /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">The value is zero or negative.</exception>
     public int? MaxVisionTokensPerImage
@@ -140,7 +142,9 @@ public sealed record LiteRtEngineOptions
     /// <remarks>
     /// The cache files are named after the model file (its name, modification time and size), not after
     /// the native runtime version. A newer runtime detects a GPU cache written by an older one and
-    /// rebuilds it on the first load, which makes that load slower once.
+    /// rebuilds it on the first load, which makes that load slower once. A <see cref="LiteRtCache.Directory"/>
+    /// must exist: the runtime does not create it, and since native v0.18.0 <see cref="LiteRtEngine.Load"/>
+    /// fails with <see cref="LiteRtStatusCode.InvalidArgument"/> when it is missing.
     /// </remarks>
     public LiteRtCache Cache { get; init; }
 
@@ -162,8 +166,8 @@ public sealed record LiteRtEngineOptions
     /// Measured with gemma-4-E2B on LiteRT-LM v0.18.0 (see <c>docs/speculative-decoding.md</c>): it
     /// slows decoding down on desktop <b>CPU</b> (0.78×) and on the desktop <b>WebGPU</b> GPU backend
     /// (0.52× on an RTX 3080 with the default float32 activations), with the default disk cache in both
-    /// cases. On an Adreno 650 phone GPU it made no difference (measured in June 2026 on an earlier
-    /// runtime).
+    /// cases. On an Adreno 650 phone GPU it made no difference (measured in June 2026 on LiteRT-LM
+    /// v0.13.1).
     /// </para>
     /// </remarks>
     public bool EnableSpeculativeDecoding { get; init; }

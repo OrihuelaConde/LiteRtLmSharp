@@ -65,7 +65,7 @@ storage on first run and pass its path to `LiteRtEngine.Load`.
    (Adreno 650, OpenCL, 2026-06-16): also neutral (~1.01×, 14.1 vs 13.9 tok/s). logcat confirms MTP
    runs correctly on GPU (drafter compiles on OpenCL, GPU sampler active, no fallback), but draft
    acceptance is only ~32% — too low to beat the drafter overhead on this older GPU. Same story on
-   desktop (CPU regresses; WebGPU needs the cache off and still doesn't speed up). A newer flagship
+   desktop (CPU regresses; WebGPU, which on v0.13.1 needed the cache off, does not speed up). A newer flagship
    GPU is the remaining thing to try. See [speculative-decoding.md](speculative-decoding.md).
 6. ✅ **Official v0.16.0 prebuilt validated on the same device (2026-09-05)**: the MAUI sample with
    the single official `libLiteRtLm.so` loads gemma-4 E2B on GPU (OpenCL picked; 15.7 tok/s decode

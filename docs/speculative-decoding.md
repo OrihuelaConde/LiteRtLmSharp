@@ -141,7 +141,7 @@ native benchmark API's `decode_tokens_per_sec` for the turn.
   Adreno 650, OpenCL): MTP runs **correctly** — logcat confirms `enable_speculative_decoding: true`,
   the drafter compiles on the **OpenCL delegate** (its `mtp_drafter` subgraph initializes on GPU
   alongside decode/prefill/verify), and the **GPU sampler loads** (measured with the self-built set and its Android `patchelf`; the official v0.16.0 library embeds the sampler, so
-  there's no CPU-sampling fallback here, unlike desktop WebGPU). Yet throughput is flat: 14.1 (on)
+  there's no CPU-sampling fallback here, unlike desktop WebGPU on v0.13.1). Yet throughput is flat: 14.1 (on)
   vs 13.9 (off) tok/s, ~1.01×. The drafter's **acceptance rate is ~32%** (399 drafted, 126 verified)
   — essentially identical to desktop (~0.317), so acceptance is **model/prompt-bound, not
   hardware-bound**. At ~32% acceptance the per-step drafter cost roughly cancels its benefit on this
@@ -186,11 +186,11 @@ reloads. The whole section above is kept as the v0.13.1 historical record.
   buried comment on [#2461](https://github.com/google-ai-edge/LiteRT-LM/issues/2461) reports the exact
   trace as a **regression from v0.12.0** (without MTP, so the collision is broader than MTP). A new
   upstream issue is warranted.
-- **CPU-sampling fallback**: this is [#2073](https://github.com/google-ai-edge/LiteRT-LM/issues/2073)
-  (WebGPU sampler exports 3/7 C-ABI functions on macOS/Windows → CPU fallback). OPEN, no upstream fix.
-  We **cannot** fix it our side (Google's prebuilt sampler, no public source; can't add exports to a
-  compiled binary) — it needs an upstream re-export. Per flutter_gemma #287 the steady-state cost is
-  small (~3%), but it weighs more on the speculative draft/verify loop.
+- **CPU-sampling fallback**: this was [#2073](https://github.com/google-ai-edge/LiteRT-LM/issues/2073)
+  (WebGPU sampler exports 3/7 C-ABI functions on macOS/Windows → CPU fallback), closed upstream on
+  2026-09-22. It no longer applies: the official prebuilts the binding ships since 1.2.0 embed the GPU
+  samplers in the library. Per flutter_gemma #287 the steady-state cost had been small (~3%), but it
+  weighed more on the speculative draft/verify loop.
 
 In short: the flag works on every backend we tested with the default cache (v0.13.1 needed
 `Cache = LiteRtCache.Disabled` on desktop WebGPU), but on desktop CPU and GPU it slows decoding down for

@@ -46,12 +46,15 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Tokenize/detokenize + start/stop tokens (exact token counting, no inference) | ✅ |
 | Render a message (`RenderMessage`) or the whole preface (`RenderPreface`) to its templated prompt for debugging / exact-cost budgeting | ✅ |
 | CPU thread counts, LoRA adapters (engine ranks + per-conversation paths; the runtime applies an adapter engine-wide, see [engine-tuning](engine-tuning.md#lora-adapters-engine-ranks-and-adapter-paths)), per-send output cap, tool-call streaming (v0.14.0 surface) | ✅ |
-| .NET AI integrations: `Microsoft.Extensions.AI` `IChatClient` (+ Agent Framework) and a Semantic Kernel connector (separate packages) | ✅ |
+| .NET AI integrations: `Microsoft.Extensions.AI` `IChatClient` (+ Agent Framework) and `IEmbeddingGenerator`, and a Semantic Kernel connector (separate packages) | ✅ (embedding generator: branch) |
+| Embeddings: `LiteRtEmbeddingEngine` (EmbeddingGemma 2; Matryoshka truncation, normalization, overflow strategies, thread-safe; coexists with a chat engine) | ✅ (branch) |
+| Model metadata without loading (`LiteRtModelInfo.Read`: type, context, inputs, backends, speculative support, embedding sizes) | ✅ (branch) |
 | Native error reporting (v0.18.0 `error_reporter.h`): every failed native call surfaces the runtime's own status and reason in `LiteRtException` (+ `StatusCode`, `LiteRtStatusCode`) instead of a bare "returned null" | ✅ (branch) |
 | v0.18.0 options: per-image vision token cap (`MaxVisionTokensPerImage`), Metal residency (`EnableMetalResidencySet`), per-conversation speculative decoding (`LiteRtConversationOptions.EnableSpeculativeDecoding`) | ✅ (branch) |
 | KV overflow guard (`LiteRtContextOverflowException`): sends clamp their reply to the remaining context and throw instead of overflowing the KV cache, which the native runtime does not police (heap corruption + deferred `0xC0000005`/`0xC0000374` crash — found by a downstream consumer app, 2026-07-13, in a stateful tool loop). Same-turn signal: `LiteRtConversation.IsContextFull` (true exactly when the next send would throw) → `ChatFinishReason.Length` in the MEAI client, overriding `ToolCalls` on a full conversation. Armed by an explicit `MaxNumTokens`; pure binding, no new native surface. **Done 2026-07-15** | ✅ |
 
-Known constraints (documented in the README): one engine ALIVE at a time (reloading after
+Known constraints (documented in the README): one chat engine ALIVE at a time (an embedding engine does
+not count; reloading after
 `Dispose` works — verified on win-x64 cpu→cpu and cpu→gpu; this is Edge Gallery's pattern for
 switching model/backend without restarting); conversations are not thread-safe (serialize sends per
 engine); `MaxNumTokens` is the total context window; Android GPU requires `<uses-native-library>` in
@@ -61,12 +64,14 @@ the app manifest. Gone with the official prebuilts: the VC++ Redistributable on 
 ## C API coverage (audit 2026-10-06, headers v0.18.0)
 
 **v0.18.0 declares 212 `litert_lm_*` functions across six headers, and every one is exported by the
-official libraries of all six non-Apple platforms** (checked on the PyPI wheels). Against v0.16.0's 144:
+official libraries of all six platforms except iOS** (checked on the PyPI wheels). Against v0.16.0's 144:
 **no removals, no signature changes, no enum value changes** (full declaration diff, not just names);
 `kLiteRtLmSamplerTypeUnspecified = 0` is back in the sampler enum (for model metadata that declares no
 sampler; our public `Unspecified` still sends no sampler params). New: `c/embedding_engine.h` (34,
 EmbeddingGemma 2 embeddings), `c/model_info.h` (21, `loaded_file_*` metadata read without loading the
-engine), `c/error_reporter.h` (3), `c/experimental.h` (6) and 4 in `engine.h`.
+engine), `c/error_reporter.h` (3), `c/experimental.h` (6) and 4 in `engine.h`. (The embedding and
+capabilities headers arrived in v0.17.0, which we skipped; v0.18.0 renamed capabilities to model info and
+added the error reporter.)
 
 **Bound: 166 of 212.** The `repin-v0.18.0` branch binds 122 (116 before + the error reporter (3) +
 `set_max_vision_tokens_per_image`, `set_gpu_enable_metal_residency_set` and the per-session
@@ -222,18 +227,19 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
      `ChatAndEmbeddingEngines_Coexist` (6 of 6 isolated runs clean): same class as the GPU churn
      crash in the watchlist. Maintainer decision (2026-10-06): the embedding engine defaults to
      `Float32` activations (float16, the runtime's GPU fallback, is what the model card advises
-     against; no speed cost measured).
+     against; no speed cost on the RTX 3080, while on the Moto G100 float32 takes 188 ms per sentence
+     against 103 ms with float16).
    - **LoRA re-checked 2026-10-06 (v0.18.0, CPU, upstream test bundle)**: the adapter changes generation
      but applies to the whole engine, not to its conversation (a later conversation without an adapter
      still generates with it; while an adapter conversation exists, a send without one fails with
      INTERNAL "No LoRA ID is set"); on gemma-4-E2B (no LoRA slots) an adapter is accepted and has no
      effect, with or without `LoraRank` (the 1.2.0 docs said it failed fast). The test bundle does not
-     load on GPU. Docs corrected and three tests pin the behavior; the daily upstream watch now follows
+     load on GPU. Docs corrected and three tests pin the behavior; the watchlist below follows
      LiteRT-LM#3173.
    - **Release 1.3.0** with the maintainer's GO.
 
 -3. **v0.16.0 CYCLE — evaluation of Google's official C API prebuilts DONE (2026-08-12 →
-   2026-09-02, branch `capi-prebuilts-probe`); the repin itself is PENDING the maintainer's go.**
+   2026-09-02, branch `capi-prebuilts-probe`); the repin shipped in 1.2.0 (2026-09-05).**
    Upstream v0.16.0 (2026-08-11; v0.16.1 is the same commit with a Kotlin/Windows build-flag fix
    and no new artifacts) ships the first versioned C API prebuilts: `litert_lm_c_api-0.1.0.zip`, one
    monolithic shared library per platform (win/linux/mac/android, plus linux-arm64 and
@@ -506,7 +512,7 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
    tool-call streaming and preface rendering, taking coverage to **84/109**. FD-based load
    (`engine_settings_create_from_raw_file_descriptor`, mainly Android `content://`) is the one
    deferred item left; the raw Session API and responses introspection stay out of scope.
-   `android-x64` for emulators; Desktop meta-package;
+   ~~`android-x64` for emulators~~ (1.3.0); Desktop meta-package;
    ✅ ~~CONTRIBUTING + issue templates~~ (2026-06-11: CONTRIBUTING.md, issue forms, PR template,
    SECURITY.md, Discussions enabled); scheduled smoke-test workflow that consumes the published
    packages from nuget.org; PR upstream to be listed among the language bindings (planned right
@@ -681,7 +687,8 @@ native tool name via a call-id↔name map). MEAI's `UseFunctionInvocation()` dri
 empirical probe proved the `AsChatCompletionService` adapter passes the kernel functions as tools but does NOT
 run the auto-invoke loop, so `AddLiteRtChatCompletion` wraps the client with `UseFunctionInvocation` (no-op
 when a request has no tools). Opt-in `EnableConstrainedDecoding` (off by default; blocked on linux-x64 per
-the core guard) makes small models emit valid tool-call arguments — used in the gated tests/sample off-Linux.
+the core guard until 1.2.0 removed it) makes small models emit valid tool-call arguments — used in the gated
+tests and the sample.
 Streaming surfaces tool-call chunks as `FunctionCallContent` updates; the post-tool continuation uses a
 blocking `SendToolResults` fallback (no native streaming tool-results call). `ChatOptions.ToolMode` /
 `FunctionChoiceBehavior` honored: `None` → no tools offered; `RequireAny`/`RequireSpecific` → best-effort
@@ -697,7 +704,8 @@ MEAI `DataContent` (inline bytes) / file-path `UriContent`, or Semantic Kernel `
 preserved). `conv.Send(text, attachments)` / streaming overload. Requires the engine loaded with
 `VisionBackend`/`AudioBackend`; only the triggering turn's media is sent (history restored as text); remote
 (non-file) URIs skipped. Gated tests pass on win-x64 (vision + audio, `LITERTLM_TEST_VISION=1`). No sample
-change (per the user). Remaining: embeddings blocked (no C-API embeddings at v0.13.1). **Neither companion is
+change (per the user). Embeddings, blocked then (no C-API embeddings at v0.13.1), arrive in 1.3.0 as an
+`IEmbeddingGenerator` (see the [embeddings guide](embeddings.md)). **Neither companion is
 AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AOT guarantee.
 
 ## Watchlist (re-check periodically)

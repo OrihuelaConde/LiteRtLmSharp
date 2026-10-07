@@ -141,7 +141,7 @@ static class Picker
     {
         Ui.WriteLine("\nSelect a backend:", ConsoleColor.White);
         Ui.WriteLine("  1) CPU  (most compatible)", ConsoleColor.Gray);
-        Ui.WriteLine("  2) GPU  (WebGPU → D3D12/Vulkan/Metal; sampling falls back to CPU)", ConsoleColor.Gray);
+        Ui.WriteLine("  2) GPU  (WebGPU → D3D12/Vulkan/Metal)", ConsoleColor.Gray);
         return Ui.Pick(1, 2) == 2 ? "gpu" : "cpu";
     }
 

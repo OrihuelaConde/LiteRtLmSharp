@@ -453,7 +453,8 @@ public sealed record LiteRtEmbeddingOptions
     /// Gets the length to truncate the vector to, or <c>null</c> (default) for the model's full length.
     /// Models trained with Matryoshka representation learning keep most of their quality when truncated
     /// to their trained sizes (EmbeddingGemma 2: 768, 512, 256 or 128); the runtime normalizes after
-    /// truncating. A value above the model's length fails the call with
+    /// truncating unless <see cref="Normalize"/> is <c>false</c>. A value above the model's length fails the
+    /// call with
     /// <see cref="LiteRtStatusCode.InvalidArgument"/>.
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">The value is zero or negative.</exception>

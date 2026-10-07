@@ -29,6 +29,10 @@ are published together.
     model's own: 280 on the Gemma 4 E-series) and fails the send with `LiteRtStatusCode.InvalidArgument`
     (v0.16.0 clamped it). The binding attaches the budget only to sends that carry an image, so text-only
     sends are unaffected.
+  - **A cache directory that does not exist fails engine creation.** v0.18.0 checks a
+    `LiteRtCache.Directory` path when the engine loads and fails with `LiteRtStatusCode.InvalidArgument`
+    ("Cache directory does not exist or is not writable"); v0.16.0 did not check it then. Create the
+    directory first, or use `LiteRtCache.Default`.
   - **Speculative decoding on a model without a drafter fails.** The 1.2.0 documentation said
     `EnableSpeculativeDecoding` did nothing on such a model; with v0.18.0, engine creation fails
     (Ministral 3: `NOT_FOUND: tf_lite_mtp_drafter not found in the model`) and the exception names the
@@ -77,8 +81,9 @@ are published together.
   the reason, then where the runtime raised it. With the native log silenced
   (`LiteRtEngine.SetMinLogLevel` above 5) LiteRT drops some reasons; the status remains.
 - `LiteRtEngineOptions.MaxVisionTokensPerImage` — an upper bound on the vision tokens one image may
-  expand to (the engine only selects vision signatures up to it). Pair a cap below the model's
-  default image size with a `VisualTokenBudget` at or below it.
+  expand to (the engine loads the vision signatures up to it, rounded up to the next signature). Pair a
+  cap below the model's default image size with a `VisualTokenBudget` at or below it. A cap above the
+  model's largest signature (280 on Gemma 4) fails engine creation.
 - `LiteRtEngineOptions.EnableMetalResidencySet` — keeps model weights and allocations resident in GPU
   memory through Apple's `MTLResidencySet` API (Apple GPU backend only; ignored elsewhere).
 - `LiteRtConversationOptions.EnableSpeculativeDecoding` — per-conversation speculative decoding that

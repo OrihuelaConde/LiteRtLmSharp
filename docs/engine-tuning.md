@@ -43,23 +43,27 @@ using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
   | RTX 3080 (Windows, WebGPU) | 113 → 117 tok/s | about the same | F32 commits 0.3 to 0.6 GB more |
   | Adreno 650 (Moto G100, Android 12, OpenCL) | 15.2 → 14.1 to 14.8 tok/s | 0.31 → 0.57 s | F32 uses about 150 MB more RAM |
 
+  Workload: one engine, a 60-token prompt, 256-token replies, the median of three runs after a warm-up.
+  The speculative-decoding page measures the first reply of a freshly loaded engine (128 tokens), which
+  reads lower (100 tok/s with F32 on the same GPU).
+
   On the phone F32 costs about 5% of decode speed and doubles the time to first token (prefill runs
   slower). F16 did not corrupt our quick digit, date and counting checks there, but it did corrupt
   structured extraction on desktop GPUs (below). If the phone's speed matters more, try `Float16` and
   check your own outputs.
 
-### The F16 default corrupts structured output on desktop GPU — set `Float32` if you see it
+### F16 corrupts structured output on desktop GPU — keep the `Float32` default
 
-If your GPU outputs show **corrupted digit sequences** (dates like `206-15-2023` or `195959-06-17`,
-truncated or looping numbers), **degraded reasoning** versus the same model on CPU, or results that
-**vary run-to-run at temperature 0**, the cause is very likely the default **F16 activations**, not
-your prompts and not the model. This failure mode is widely reported against LiteRT-LM but hard to
+If you set `ActivationDataType` to `Float16` (or to `null`, which lets the runtime pick F16 on GPU) and your
+GPU outputs show **corrupted digit sequences** (dates like `206-15-2023` or `195959-06-17`, truncated or
+looping numbers), **degraded reasoning** versus the same model on CPU, or results that **vary run-to-run
+at temperature 0**, the cause is very likely the **F16 activations**, not your prompts and not the model. This failure mode is widely reported against LiteRT-LM but hard to
 find the real knob for (upstream threads blame the sampler DLL, suggest repetition penalties, or go
 unanswered — see google-ai-edge/LiteRT-LM#2637, #2727, #2202, and the export-gap/sampler issues
 #2073/#2080), so it is documented here with what we measured:
 
 - On win-x64 WebGPU (RTX 3080, temp 0), a 16-check benchmark of structured extraction from free text
-  FAILS 13/16 with rotating errors on default F16 — digit sequences corrupted **at emission** (before
+  FAILS 13/16 with rotating errors on F16 (the default before 1.3.0) — digit sequences corrupted **at emission** (before
   any post-processing), dates resolved against the wrong reference, relations between extracted
   entities inverted or attached to the wrong entity — and passes **16/16 across 3 consecutive runs
   with `Float32`**, with clean digits in the raw output and **no measurable speed cost** on that GPU
@@ -74,7 +78,7 @@ unanswered — see google-ai-edge/LiteRT-LM#2637, #2727, #2202, and the export-g
 **This is why the binding defaults to `Float32` since 1.3.0.** Before that, the default followed the
 runtime (F16 on GPU) and the recommendation was to set `Float32` by hand. If you opt into `Float16`, A/B
 it once on your target GPU with your own outputs: the cost of F32 is activation memory and possibly
-speed on GPUs with weak F32 throughput; on desktop discrete GPUs we measured no speed cost.
+speed on GPUs with weak F32 throughput; on the desktop GPU we measured (RTX 3080) it cost no speed.
 
 ## Prefill chunk size — `PrefillChunkSize`
 
@@ -130,8 +134,9 @@ EnableYnnpack = true,   // CPU backend, linux-arm64 only
 
 ## Vision token cap — `MaxVisionTokensPerImage`
 
-An upper bound on the vision tokens one image may expand to: the engine only selects vision encoder
-signatures up to the cap (native v0.18.0+). It caps the size; the per-image budget chooses it.
+An upper bound on the vision tokens one image may expand to: the engine loads the vision encoder
+signatures up to the cap, rounded up to the next signature (native v0.18.0+). It caps the size; the
+per-image budget chooses it.
 
 ```csharp
 MaxVisionTokensPerImage = 140,   // engine-wide ceiling (Gemma 4 signatures: 70, 140, 280)
@@ -143,6 +148,10 @@ MaxVisionTokensPerImage = 140,   // engine-wide ceiling (Gemma 4 signatures: 70,
   `VisualTokenBudget` asks for less, so a cap below that default needs a budget at or below the cap on
   every image send. Without one the send fails with `INVALID_ARGUMENT` ("No signature found…"), and a
   budget above the cap fails the same way.
+- A cap above the model's largest signature (280 on Gemma 4) fails `LiteRtEngine.Load` with
+  `INVALID_ARGUMENT` ("Requested target capacity (300) exceeds maximum available signature length
+  (280)"). A cap between signature sizes loads the next larger one: with a cap of 100, budgets up to 100
+  work (an image costs 104 tokens with a budget of 100).
 - To make images cheaper, the budget alone is enough: `VisualTokenBudget = 70` brings an image from 260
   to 68 tokens on gemma-4-E2B-it, with or without a cap. See the
   [multimodal section](chat.md#multimodal-messages-image--audio).

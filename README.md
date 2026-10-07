@@ -30,7 +30,7 @@ NuGet packages (LLamaSharp-style). Status: **stable (1.x)**.
 | Platform | Native | NuGet | CPU | GPU | Validated on |
 |---|:---:|:---:|:---:|:---:|---|
 | win-x64 | ✅ | ✅ | ✅ | ✅ | real hardware |
-| linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware |
+| linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware (GPU last checked with the v0.13.1 libraries) |
 | linux-arm64 | ✅ | ⏳ | ⏳ | — | CI (first run pending) |
 | android-arm64 | ✅ | ✅ | ✅ | ✅ | real device |
 | android-x64 (emulator) | ✅ | ⏳ | ✅ | — | emulator |
@@ -151,8 +151,8 @@ conversations** (MEAI `ConversationId`) are supported — see the
   too small can make blocking generation return nothing.
 - **Conversations are not thread-safe** — serialize sends per engine (the Microsoft.Extensions.AI
   client does this for you).
-- **Linux needs no extra system package for the CPU backend.** The official library has no hard
-  dependency on the Vulkan loader. The GPU backend runs on Vulkan: install your GPU's Vulkan driver and
+- **Linux needs no extra system package for the CPU backend** since 1.3.0 (1.2.0's library needed
+  `libvulkan1`). The official library has no hard dependency on the Vulkan loader. The GPU backend runs on Vulkan: install your GPU's Vulkan driver and
   the Vulkan loader (`libvulkan1` on Debian/Ubuntu).
 - **win-x64 needs no Visual C++ Redistributable** since 1.2.0 (the official library links the CRT
   statically). The GPU backend's shader compiler (`dxcompiler.dll`, `dxil.dll`) ships in the runtime package.
@@ -184,7 +184,7 @@ The samples have their own solution (`samples/LiteRtLmSharp.Samples.slnx`; the M
 `dotnet workload install maui`). To run the model-backed tests, point `LITERTLM_TEST_MODEL` at a
 `.litertlm` file. CI: [`native-release.yml`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/.github/workflows/native-release.yml)
 repackages Google's official LiteRT-LM C API prebuilts for a pinned release (verified against the
-upstream release digests, each library inspected) into the `native-v*` release,
+sha256 digests GitHub or PyPI publish, each library inspected) into the `native-v*` release,
 [`pack-nuget.yml`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/.github/workflows/pack-nuget.yml)
 packs and publishes. Internals docs:
 [native ABI](https://orihuelaconde.github.io/LiteRtLmSharp/native-abi.html),
@@ -205,5 +205,5 @@ Apache-2.0 (see [LICENSE.txt](https://github.com/OrihuelaConde/LiteRtLmSharp/blo
 
 This is an unofficial, community-maintained project. It is **not affiliated with, sponsored,
 or endorsed by Google**. LiteRT, LiteRT-LM and Gemma are trademarks of Google LLC. The native
-binaries are built from [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) source
+binaries are Google's official [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) prebuilts
 (Apache-2.0) at pinned release tags.
