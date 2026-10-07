@@ -453,5 +453,8 @@ jobs:
           tag_name: native-${{ env.UPSTREAM_TAG }}
           name: Native binaries — LiteRT-LM ${{ env.UPSTREAM_TAG }} (official prebuilts)
           body_path: body.md
+          # The repo's "Latest" release is the library (v<version>, created by pack-nuget.yml); a native
+          # set published between library releases must not take that place.
+          make_latest: false
           files: release/*
           fail_on_unmatched_files: false
