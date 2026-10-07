@@ -107,10 +107,18 @@ public sealed class LiteRtConversation : IDisposable
             // executor should not be null". A BARE session config is enough and is neutral for text, so
             // attach one whenever the engine has an encoder enabled — even if the caller passed no
             // sampler/output cap — so a plain CreateConversation() can send attachments without setup.
+            // Speculative decoding: null means the engine setting. A drafter that an earlier conversation loaded
+            // lazily stays on the engine and the executor uses it for every session that leaves the flag unset,
+            // so once that has happened the engine setting is passed explicitly.
+            bool? speculative = options?.EnableSpeculativeDecoding
+                ?? (engine.DrafterLoadedByAConversation ? engine.EnableSpeculativeDecoding : null);
+            if (speculative == true && !engine.EnableSpeculativeDecoding)
+                engine.DrafterLoadedByAConversation = true;
+
             bool needsSessionConfig =
                 options?.Sampler is not null || options?.MaxOutputTokens > 0
                 || options?.LoraPath is not null || options?.AudioLoraPath is not null
-                || options?.EnableSpeculativeDecoding is not null
+                || speculative is not null
                 || engineIsMultimodal;
             bool needsConfig = needsSessionConfig ||
                 (options is not null &&
@@ -195,8 +203,8 @@ public sealed class LiteRtConversation : IDisposable
                     // Per-conversation speculative decoding (v0.18.0): unset inherits the engine setting; true
                     // on an engine loaded without it makes the executor load the MTP drafter lazily on this
                     // conversation's first send; false turns it off here even when the engine enables it.
-                    if (options?.EnableSpeculativeDecoding is { } speculative)
-                        LiteRtLmNative.litert_lm_session_config_set_enable_speculative_decoding(sessionPtr, speculative);
+                    if (speculative is { } enableSpeculative)
+                        LiteRtLmNative.litert_lm_session_config_set_enable_speculative_decoding(sessionPtr, enableSpeculative);
                     // Multimodal-only (no sampler/output cap/LoRA): the session config stays bare — its
                     // mere presence is what lets the encoder executor load.
 
@@ -684,7 +692,8 @@ public sealed class LiteRtConversation : IDisposable
         ArgumentNullException.ThrowIfNull(messageJson);
 
         options = GuardContextOverflow(messageJson, options, unmeasured);
-        using ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs(options);
+        bool hasMedia = MessageHasMedia(messageJson);
+        using ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs(options, hasMedia);
         NativeError.Clear();
         nint responsePtr = LiteRtLmNative.litert_lm_conversation_send_message(
             _conversation.Ptr, messageJson, extraContext, optionalArgs?.Ptr ?? nint.Zero);
@@ -698,7 +707,6 @@ public sealed class LiteRtConversation : IDisposable
             // The multimodal setup guidance goes next to it only for the unconfigured-encoder failure ("Vision
             // executor should not be null"), or when the runtime reported nothing; a specific native reason
             // (an undecodable image, a visual budget above the per-image cap) speaks for itself.
-            bool hasMedia = MessageHasMedia(messageJson);
             bool smallContext = LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(_engineOwner.MaxNumTokens);
             throw NativeError.Exception("litert_lm_conversation_send_message returned null.",
                 report => SendFailureHint(report?.Message, hasMedia, smallContext));
@@ -871,9 +879,11 @@ public sealed class LiteRtConversation : IDisposable
     /// returned handle: dispose it after the send completes (for streaming, only after the native
     /// decode thread is done — it reads the args during prefill).
     /// </summary>
-    private ConversationOptionalArgsHandle? BuildOptionalArgs(LiteRtSendOptions? options)
+    private ConversationOptionalArgsHandle? BuildOptionalArgs(LiteRtSendOptions? options, bool hasMedia)
     {
-        int budget = options is { VisualTokenBudget: > 0 } ? options.VisualTokenBudget : _visualTokenBudget;
+        // The budget only matters for images, and v0.18.0 validates it against the per-image cap on every send
+        // it is attached to: attached to a text-only turn, a budget above the cap would fail that turn too.
+        int budget = !hasMedia ? 0 : options is { VisualTokenBudget: > 0 } ? options.VisualTokenBudget : _visualTokenBudget;
         int maxOutputTokens = options is { MaxOutputTokens: > 0 } ? options.MaxOutputTokens : 0;
         bool hasDecodingOptions = options is not null &&
             (options.RepetitionPenalties is not null || options.NoRepeatNgram is not null ||
@@ -1059,7 +1069,7 @@ public sealed class LiteRtConversation : IDisposable
         // The optional args (visual token budget) must stay alive for the whole stream: the native
         // decode thread reads them during prefill. Freed in the finally, after the channel completes.
         // Built before the GCHandle so that if native allocation fails we don't leak a pinned handle.
-        ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs(options);
+        ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs(options, attachments is { Count: > 0 });
         var gcHandle = GCHandle.Alloc(state);
 
         int rc;

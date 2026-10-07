@@ -114,8 +114,9 @@ await foreach (var chunk in chat.SendStreamingAsync(
 Attachments follow the text in content-part order; pass several to interleave them.
 
 Each image expands to about 256 tokens by default on the Gemma 4 E-series. To spend less of the context
-window, set a per-image budget: the runtime downscales the image to the smallest vision signature that
-fits (the Gemma 4 bundles carry 70, 140 and 280).
+window, set a per-image budget: the runtime scales the image down to about the budget in tokens, never
+above its default size (measured on gemma-4-E2B-it: budgets of 70, 100 and 200 cost 68, 104 and 200
+tokens).
 
 ```csharp
 using var chat = engine.CreateConversation(new LiteRtConversationOptions
@@ -124,8 +125,11 @@ using var chat = engine.CreateConversation(new LiteRtConversationOptions
 });
 ```
 
-`LiteRtSendOptions.VisualTokenBudget` overrides it for one send. `LiteRtEngineOptions.MaxVisionTokensPerImage`
-caps the budget engine-wide; with a cap below the default size, every image send needs a budget at or
+`LiteRtSendOptions.VisualTokenBudget` overrides it for one send. The budget must not exceed the engine's
+per-image maximum: `LiteRtEngineOptions.MaxVisionTokensPerImage` when you set it, else the model's own
+(`LiteRtModelInfo.MaxVisionTokenBudget`, 280 on the Gemma 4 E-series). An image send over it fails with
+`LiteRtStatusCode.InvalidArgument`; the binding attaches the budget only to sends that carry an image, so
+text-only sends are unaffected. With a cap below the default size, every image send needs a budget at or
 below the cap. Vision runs on CPU or GPU; some models constrain their audio backend (Gemma 4's audio sub-model requires CPU, so
 `AudioBackend = LiteRtBackend.Gpu` fails engine creation for it on any platform) — keep audio on CPU when the main
 backend is GPU. A plain `CreateConversation()` can send attachments: the binding configures the
@@ -177,7 +181,9 @@ tokenize that: `engine.Tokenize(chat.RenderMessage(text)).Length`.
 
 `LiteRtModelInfo.Read` opens a `.litertlm` file, reads what it declares and closes it, without loading an
 engine. Use it before a load to reject a file that is not a chat model, to size `MaxNumTokens`, or to show
-which inputs and backends a model supports.
+which inputs and backends a model supports. On a multimodal bundle the reader copies the vision sections
+into memory while it runs (about 0.8 GB for a few hundred milliseconds on gemma-4-E2B-it), so on a phone
+call it before loading engines rather than next to them.
 
 ```csharp
 LiteRtModelInfo info = LiteRtModelInfo.Read("gemma-4-E2B-it.litertlm");

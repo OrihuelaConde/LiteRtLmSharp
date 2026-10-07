@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using LiteRtLmSharp.Extensions.AI;
 using Microsoft.Extensions.AI;
@@ -541,6 +542,45 @@ public class ExtensionsAiMappingTests
         Assert.True(conv.FilterThinkingFromKvCache);
         Assert.Equal("""{"user_name":"Alice"}""", conv.ExtraContext);
         Assert.Equal(256, conv.MaxOutputTokens);
+    }
+
+    /// <summary>Every conversation setting on the template reaches the conversation except the history, which
+    /// is per call. A setting the connector forgot would be ignored on every call without an error.</summary>
+    [Fact]
+    public void Template_EverySetting_FlowsThrough()
+    {
+        var template = new LiteRtConversationOptions
+        {
+            SystemMessage = "Be brief.",
+            Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 3 },
+            MaxOutputTokens = 77,
+            Tools = [new LiteRtTool("get_time", "Gets the time.", """{"type":"object","properties":{}}""")],
+            EnableConstrainedDecoding = true,
+            EnableThinking = true,
+            ThinkingTokenBudget = 99,
+            PromptTemplate = "{{ messages }}",
+            ConstraintProvider = LiteRtConstraintProvider.LlGuidance,
+            ExtraContext = """{"user_name":"Alice"}""",
+            FilterThinkingFromKvCache = true,
+            StreamToolCalls = true,
+            VisualTokenBudget = 70,
+            LoraPath = "text.lora",
+            AudioLoraPath = "audio.lora",
+            EnableSpeculativeDecoding = false,
+        };
+
+        LiteRtConversationOptions conv = LiteRtChatMapping.ToConversationOptions([], options: null, template)!;
+
+        foreach (PropertyInfo property in typeof(LiteRtConversationOptions).GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (property.Name is nameof(LiteRtConversationOptions.History) or nameof(LiteRtConversationOptions.HistoryJson))
+                continue;
+            object? expected = property.GetValue(template);
+            object? unset = property.PropertyType.IsValueType && Nullable.GetUnderlyingType(property.PropertyType) is null
+                ? Activator.CreateInstance(property.PropertyType) : null;
+            Assert.False(Equals(expected, unset), $"Set {property.Name} on the template so this test covers it.");
+            Assert.Equal(expected, property.GetValue(conv));
+        }
     }
 
     [Fact]

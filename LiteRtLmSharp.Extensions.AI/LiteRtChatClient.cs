@@ -95,6 +95,7 @@ public sealed class LiteRtChatClient : IChatClient
     /// <see cref="LiteRtConversationOptions.LoraPath"/> / <see cref="LiteRtConversationOptions.AudioLoraPath"/>,
     /// <see cref="LiteRtConversationOptions.StreamToolCalls"/>, <see cref="LiteRtConversationOptions.VisualTokenBudget"/>,
     /// <see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/>, <see cref="LiteRtConversationOptions.ExtraContext"/>,
+    /// <see cref="LiteRtConversationOptions.EnableSpeculativeDecoding"/>,
     /// and a session-default <see cref="LiteRtConversationOptions.MaxOutputTokens"/>) — apply to every call, while
     /// any value the per-call <see cref="ChatOptions"/> supplies (sampler, thinking, constrained decoding, tools,
     /// system message) wins. See <see cref="LiteRtChatMapping.ToConversationOptions"/> for the full merge rules.

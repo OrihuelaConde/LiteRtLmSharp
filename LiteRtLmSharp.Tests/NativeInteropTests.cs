@@ -1404,7 +1404,7 @@ public sealed class SpeculativeDecodingBenchmarkTests(ITestOutputHelper output)
     private const int MaxOutputTokens = 128;
 
     [SkippableFact]
-    public void SpeculativeDecoding_SpeedsUpDecode_AndProducesText()
+    public void SpeculativeDecoding_MeasuresDecode_AndProducesText()
     {
         string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
         Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model)
@@ -1445,12 +1445,11 @@ public sealed class SpeculativeDecodingBenchmarkTests(ITestOutputHelper output)
         AssertCoherent(baseline.Text, "speculative OFF");
         AssertCoherent(spec.Text, "speculative ON");
 
-        // Effectiveness is informational: a regression below 1x on an MTP model is suspicious but can
-        // be hardware noise, so warn rather than fail.
+        // Effectiveness is informational: on desktop CPU and GPU the drafter costs more than it saves for
+        // gemma-4-E2B (docs/speculative-decoding.md), so a ratio below 1x is expected there.
         if (ratio < 1.0)
             _output.WriteLine(
-                $"WARNING: speculative decoding did not speed up decode (ratio {ratio:F2}x). " +
-                "Expected >=1x on an MTP-capable model — verify the model ships a drafter.");
+                $"Speculative decoding slowed decode down (ratio {ratio:F2}x), as measured on desktop CPU and GPU.");
     }
 
     private static Result Measure(string model, string backend, bool speculative)
@@ -1463,11 +1462,8 @@ public sealed class SpeculativeDecodingBenchmarkTests(ITestOutputHelper output)
             MaxNumTokens = 2048,
             EnableBenchmark = true,
             EnableSpeculativeDecoding = speculative,
-            // On the WebGPU GPU backend the MTP drafter's shared weight-cache file fails to open on
-            // Windows ("Access denied") unless the disk cache is off; disable it for GPU so the A/B
-            // can run there too (an upstream issue — Google's own CLI needs --cache no, see
-            // docs/speculative-decoding.md). Both legs use the same setting for a fair comparison.
-            Cache = backend == "gpu" ? LiteRtCache.Disabled : LiteRtCache.Default,
+            // The default disk cache on both legs, as an app would run (the v0.13.1 drafter cache
+            // collision on WebGPU, upstream #2572, is fixed since v0.14.0).
         });
         using var conv = engine.CreateConversation(new LiteRtConversationOptions
         {
@@ -1744,33 +1740,39 @@ public sealed class MultimodalModelTests(ITestOutputHelper output)
 /// text with them applied. The effects (load speed, prefill memory, precision) are not deterministically
 /// assertable, so this is a smoke test that the bindings are correct and harmless. Loads its OWN engine
 /// (one engine alive at a time; the assembly disables parallelization). Skipped unless
-/// LITERTLM_TEST_MODEL is set.
+/// LITERTLM_TEST_MODEL is set; runs on LITERTLM_TEST_BACKEND (the CPU-only knobs only on CPU).
 /// </summary>
 public sealed class EngineTuningTests
 {
-    [SkippableFact]
-    public void TuningSettings_Apply_AndInferenceStillWorks()
+    /// <summary>The opt-outs from the Float32 default: Float16, and <c>null</c> (no native call, the runtime's
+    /// choice). The GPU backend reads the setting; the CPU backend ignores it.</summary>
+    [SkippableTheory]
+    [InlineData(LiteRtActivationDataType.Float16)]
+    [InlineData(null)]
+    public void TuningSettings_Apply_AndInferenceStillWorks(LiteRtActivationDataType? activation)
     {
         string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
         Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        LiteRtBackend backend = LiteRtBackend.Parse(Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu");
+        bool cpu = backend == LiteRtBackend.Cpu;
 
         LiteRtEngine.SetMinLogLevel(3);
         using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
         {
             ModelPath = model!,
-            Backend = LiteRtBackend.Cpu,
+            Backend = backend,
             MaxNumTokens = 2048,
             ParallelFileSectionLoading = false,                 // load sections sequentially
-            PrefillChunkSize = 128,                             // CPU prefill chunking
-            ActivationDataType = LiteRtActivationDataType.Float32,
-            NumThreads = 4,                                     // explicit CPU executor thread count (v0.14.0)
+            PrefillChunkSize = cpu ? 128 : 0,                   // CPU prefill chunking
+            ActivationDataType = activation,
+            NumThreads = cpu ? 4 : null,                        // explicit CPU executor thread count (v0.14.0)
         });
 
         using var conv = engine.CreateConversation();
         var reply = conv.Send("Reply with one short sentence: what is the capital of France?");
-        Assert.False(string.IsNullOrWhiteSpace(reply.Text),
-            $"Expected a non-empty reply with tuning settings applied. Raw: {reply.RawJson}");
+        Assert.True(reply.Text?.Contains("Paris", StringComparison.OrdinalIgnoreCase) == true,
+            $"Expected Paris with tuning settings applied. Raw: {reply.RawJson}");
     }
 
     /// <summary>
@@ -1867,89 +1869,87 @@ public sealed class UpstreamSuspendedStateSentinelTests
 /// model generates. Until LiteRT-LM v0.15.0 the runtime rejected every text adapter at the first generation
 /// ("Lora is not supported", b/462499294) and this class pinned that stub; v0.16.0 implements it, so the test
 /// now asserts the positive path. Complements <c>Lora_NonexistentAdapterPath_ThrowsCoherentException</c>
-/// (the bad-path failure). Requires the upstream artifacts <c>test_lm_lora.litertlm</c> and
-/// <c>test_lora_rank32_f16_all_ones.tflite</c> NEXT TO the LITERTLM_TEST_MODEL file (gitignored); skipped
-/// unless both exist. Loads its own engine.
+/// (the bad-path failure). Requires the upstream artifacts <c>test_lm_lora.litertlm</c>,
+/// <c>test_lora_rank32_f16_all_ones.tflite</c> and <c>test_lora_rank32_f16_all_twos.tflite</c> NEXT TO the
+/// LITERTLM_TEST_MODEL file (gitignored); skipped unless all three exist. Loads its own engines.
 /// </summary>
 public sealed class LoraTextAdapterTests
 {
-    /// <summary>The all-ones rank-32 adapter must change the deterministic (seed-0 default sampling)
-    /// continuation of the same prompt on the same engine, and creation must succeed (no stub rejection).
-    /// No explicit sampler: the CPU sampler factory implements only TopP and the default sampling is
-    /// deterministic (see <c>DecodingModelTests</c>).</summary>
-    [SkippableFact]
-    public void Lora_ValidTextAdapter_IsAppliedAndChangesGeneration()
-    {
-        string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
-        Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model),
-            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+    private const string Prompt = "Say hello in four words.";
+    private const string MissingArtifacts =
+        "Place test_lm_lora.litertlm, test_lora_rank32_f16_all_ones.tflite and test_lora_rank32_f16_all_twos.tflite " +
+        "(upstream runtime/testdata) next to LITERTLM_TEST_MODEL to run.";
 
-        // The upstream artifacts sit next to the configured test model (gitignored). Gate on their existence.
-        string dir = Path.GetDirectoryName(Path.GetFullPath(model!))!;
-        string loraModel = Path.Combine(dir, "test_lm_lora.litertlm");
-        string loraAdapter = Path.Combine(dir, "test_lora_rank32_f16_all_ones.tflite");
-        Skip.If(!File.Exists(loraModel) || !File.Exists(loraAdapter),
-            "Place test_lm_lora.litertlm and test_lora_rank32_f16_all_ones.tflite next to LITERTLM_TEST_MODEL to run.");
-
-        LiteRtEngine.SetMinLogLevel(3);
-        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
-        {
-            ModelPath = loraModel,
-            Backend = LiteRtBackend.Cpu,
-            MaxNumTokens = 512,
-            LoraRank = 32,
-        });
-
-        const string prompt = "Say hello in four words.";
-        string baseline;
-        using (var plain = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 }))
-            baseline = plain.Send(prompt).Text ?? "";
-
-        using var adapted = engine.CreateConversation(new LiteRtConversationOptions
-        {
-            LoraPath = loraAdapter,
-            MaxOutputTokens = 16,
-        });
-        string withLora = adapted.Send(prompt).Text ?? "";
-
-        Assert.NotEqual(baseline, withLora);
-    }
-
-    private static (string LoraModel, string Adapter, string ChatModel)? Artifacts()
+    /// <summary>Upstream's LoRA test artifacts next to the configured test model (gitignored; CI downloads them
+    /// from runtime/testdata at the pinned tag): a small LoRA-enabled bundle and two rank-32 adapters.</summary>
+    private static (string LoraModel, string Ones, string Twos, string ChatModel)? Artifacts()
     {
         string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
         if (string.IsNullOrEmpty(model) || !File.Exists(model))
             return null;
         string dir = Path.GetDirectoryName(Path.GetFullPath(model))!;
         string loraModel = Path.Combine(dir, "test_lm_lora.litertlm");
-        string adapter = Path.Combine(dir, "test_lora_rank32_f16_all_ones.tflite");
-        return File.Exists(loraModel) && File.Exists(adapter) ? (loraModel, adapter, model) : null;
+        string ones = Path.Combine(dir, "test_lora_rank32_f16_all_ones.tflite");
+        string twos = Path.Combine(dir, "test_lora_rank32_f16_all_twos.tflite");
+        return File.Exists(loraModel) && File.Exists(ones) && File.Exists(twos) ? (loraModel, ones, twos, model) : null;
     }
+
+    // The test bundle is a static 32-token model: MaxNumTokens stays unset so the engine sizes the context
+    // from the model.
+    private static LiteRtEngine LoadLoraEngine(string loraModel) => LiteRtEngine.Load(new LiteRtEngineOptions
+    {
+        ModelPath = loraModel, Backend = LiteRtBackend.Cpu, LoraRank = 32,
+    });
 
     private static string Generate(LiteRtEngine engine, string? adapter)
     {
         using var conversation = engine.CreateConversation(new LiteRtConversationOptions { LoraPath = adapter, MaxOutputTokens = 16 });
-        return conversation.Send("Say hello in four words.").Text ?? "";
+        return conversation.Send(Prompt).Text ?? "";
+    }
+
+    /// <summary>An adapter changes the deterministic (seed-0 default sampling) continuation of the same prompt,
+    /// and two different adapters change it differently. Each adapter gets an engine of its own, because the
+    /// runtime applies an adapter to the whole engine (pinned below). No explicit sampler: the CPU sampler
+    /// factory implements only TopP and the default sampling is deterministic (see <c>DecodingModelTests</c>).</summary>
+    [SkippableFact]
+    public void Lora_ValidTextAdapter_IsAppliedAndChangesGeneration()
+    {
+        Skip.If(Artifacts() is null, MissingArtifacts);
+        var (loraModel, ones, twos, _) = Artifacts()!.Value;
+        LiteRtEngine.SetMinLogLevel(3);
+
+        string baseline, withOnes, withTwos;
+        using (var engine = LoadLoraEngine(loraModel))
+        {
+            baseline = Generate(engine, adapter: null);
+            withOnes = Generate(engine, ones);
+        }
+        using (var engine = LoadLoraEngine(loraModel))
+            withTwos = Generate(engine, twos);
+
+        Assert.NotEqual(baseline, withOnes);
+        Assert.NotEqual(baseline, withTwos);
+        Assert.NotEqual(withOnes, withTwos);
     }
 
     /// <summary>
     /// PINS AN UPSTREAM LIMITATION (LiteRT-LM v0.18.0): the adapter applies to the engine, not to its
     /// conversation. After a conversation with the adapter has generated, a new conversation WITHOUT one
-    /// still generates the adapted text. If this starts failing, upstream made adapters per conversation:
+    /// still generates the adapted text. The control first shows that generation without an adapter repeats
+    /// across conversations on this bundle. If this starts failing, upstream made adapters per conversation:
     /// update the LoraRank / LoraPath docs and docs/engine-tuning.md.
     /// </summary>
     [SkippableFact]
     public void Lora_AdapterStaysOnTheEngine_AfterItsConversation()
     {
-        Skip.If(Artifacts() is null, "Place test_lm_lora.litertlm and test_lora_rank32_f16_all_ones.tflite next to LITERTLM_TEST_MODEL to run.");
-        var (loraModel, adapter, _) = Artifacts()!.Value;
+        Skip.If(Artifacts() is null, MissingArtifacts);
+        var (loraModel, ones, _, _) = Artifacts()!.Value;
         LiteRtEngine.SetMinLogLevel(3);
-        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
-        {
-            ModelPath = loraModel, Backend = LiteRtBackend.Cpu, MaxNumTokens = 1024, LoraRank = 32,
-        });
+        using var engine = LoadLoraEngine(loraModel);
+
         string baseline = Generate(engine, adapter: null);
-        string adapted = Generate(engine, adapter);
+        Assert.Equal(baseline, Generate(engine, adapter: null));
+        string adapted = Generate(engine, ones);
         string afterwards = Generate(engine, adapter: null);
 
         Assert.NotEqual(baseline, adapted);
@@ -1958,23 +1958,30 @@ public sealed class LoraTextAdapterTests
 
     /// <summary>
     /// PINS AN UPSTREAM LIMITATION (LiteRT-LM v0.18.0): while a conversation with an adapter exists, a send
-    /// on a conversation without one fails with INTERNAL ("No LoRA ID is set").
+    /// on a conversation without one fails with INTERNAL ("No LoRA ID is set"), blocking or streamed.
     /// </summary>
     [SkippableFact]
-    public void Lora_SendWithoutAdapter_FailsWhileAnAdapterConversationExists()
+    public async Task Lora_SendWithoutAdapter_FailsWhileAnAdapterConversationExists()
     {
-        Skip.If(Artifacts() is null, "Place test_lm_lora.litertlm and test_lora_rank32_f16_all_ones.tflite next to LITERTLM_TEST_MODEL to run.");
-        var (loraModel, adapter, _) = Artifacts()!.Value;
+        Skip.If(Artifacts() is null, MissingArtifacts);
+        var (loraModel, ones, _, _) = Artifacts()!.Value;
         LiteRtEngine.SetMinLogLevel(3);
-        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
-        {
-            ModelPath = loraModel, Backend = LiteRtBackend.Cpu, MaxNumTokens = 1024, LoraRank = 32,
-        });
+        using var engine = LoadLoraEngine(loraModel);
         using var plain = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
-        using var adapted = engine.CreateConversation(new LiteRtConversationOptions { LoraPath = adapter, MaxOutputTokens = 16 });
+        using var adapted = engine.CreateConversation(new LiteRtConversationOptions { LoraPath = ones, MaxOutputTokens = 16 });
 
-        var ex = Assert.Throws<LiteRtException>(() => plain.Send("Say hello in four words."));
+        var ex = Assert.Throws<LiteRtException>(() => plain.Send(Prompt));
         Assert.Equal(LiteRtStatusCode.Internal, ex.StatusCode);
+        Assert.Contains("LoRA", ex.Message, StringComparison.Ordinal);
+
+        // A fresh conversation: the one that just failed reports its failed task instead of the reason.
+        using var streamedPlain = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
+        var streamed = await Assert.ThrowsAsync<LiteRtException>(async () =>
+        {
+            await foreach (var _ in streamedPlain.SendStreamingAsync(Prompt)) { }
+        });
+        Assert.Equal(LiteRtStatusCode.Internal, streamed.StatusCode);
+        Assert.Contains("LoRA", streamed.Message, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -1984,14 +1991,14 @@ public sealed class LoraTextAdapterTests
     [SkippableFact]
     public void Lora_OnABundleWithoutLoraSlots_IsAcceptedAndHasNoEffect()
     {
-        Skip.If(Artifacts() is null, "Place test_lm_lora.litertlm and test_lora_rank32_f16_all_ones.tflite next to LITERTLM_TEST_MODEL to run.");
-        var (_, adapter, chatModel) = Artifacts()!.Value;
+        Skip.If(Artifacts() is null, MissingArtifacts);
+        var (_, ones, _, chatModel) = Artifacts()!.Value;
         LiteRtEngine.SetMinLogLevel(3);
         using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
         {
             ModelPath = chatModel, Backend = LiteRtBackend.Cpu, MaxNumTokens = 1024, LoraRank = 32,
         });
         string baseline = Generate(engine, adapter: null);
-        Assert.Equal(baseline, Generate(engine, adapter));
+        Assert.Equal(baseline, Generate(engine, ones));
     }
 }

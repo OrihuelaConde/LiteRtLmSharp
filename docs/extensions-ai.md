@@ -248,8 +248,8 @@ if (r.FinishReason == ChatFinishReason.Length && string.IsNullOrWhiteSpace(r.Tex
 
 `ChatOptions` covers the per-request knobs (sampler, `MaxOutputTokens`, tools, thinking), but a few
 conversation-level settings have no MEAI surface: `SystemMessage`, `LoraPath` / `AudioLoraPath`,
-`StreamToolCalls`, `VisualTokenBudget`, `FilterThinkingFromKvCache`, `ExtraContext`, and a session-default
-`MaxOutputTokens`. Supply them once as a **per-client template** (`LiteRtConversationOptions`) on the
+`StreamToolCalls`, `VisualTokenBudget`, `FilterThinkingFromKvCache`, `ExtraContext`,
+`EnableSpeculativeDecoding`, and a session-default `MaxOutputTokens`. Supply them once as a **per-client template** (`LiteRtConversationOptions`) on the
 constructor or the DI registration, and they apply to every call:
 
 ```csharp

@@ -3,19 +3,26 @@
 Speculative decoding speeds up token generation by letting a small **Multi-Token-Prediction (MTP)
 drafter** — shipped *inside* the `.litertlm` file — propose several tokens ahead, which the main
 model then verifies in a single forward pass. When the drafter is accurate, many tokens are accepted
-per main-model step, so decode throughput goes up without changing the output distribution.
+per main-model step, so decode throughput goes up without changing the output distribution. On the
+hardware we measured it has not paid off yet: it slowed gemma-4-E2B down on desktop CPU and GPU (see
+[Measured results](#measured-results)).
 
 LiteRtLmSharp exposes it as an engine-level flag with a per-conversation override, plus the native
 **benchmark API** to measure the effect.
 
 ## Requirements
 
-- A model that ships an MTP drafter. The **Gemma 4** builds (`gemma-4-E2B-it`, `E4B`, `12B`) do;
-  models without a drafter make the flag a no-op (no speedup, no error).
+- A model that ships an MTP drafter. The **Gemma 4** builds (`gemma-4-E2B-it`, `E4B`, `12B`) do, and
+  `LiteRtModelInfo.SupportsSpeculativeDecoding` tells before loading. On a model without a drafter the
+  flag fails: engine creation throws `LiteRtException` (Ministral 3 reports `NOT_FOUND:
+  tf_lite_mtp_drafter not found in the model`), and a per-conversation `true` fails the first send.
 - The engine flag is fixed at engine creation. Since native v0.18.0 a conversation can override it:
   `LiteRtConversationOptions.EnableSpeculativeDecoding = true` on an engine loaded without it makes the
   runtime load the drafter lazily on that conversation's first send, and `false` turns it off for one
-  conversation of a speculative engine.
+  conversation of a speculative engine. The runtime keeps a lazily loaded drafter on the engine and would
+  use it for every later conversation that leaves the setting unset (on CPU those decoded at 0.80× of
+  the plain speed); the binding passes the engine setting to them explicitly, so unset keeps meaning the
+  engine setting.
 - ~~On the WebGPU GPU backend (desktop), disable the disk cache~~ — **fixed in LiteRT-LM v0.14.0**.
   On v0.13.1 the drafter's shared weight-cache file failed to open ("Access denied") on Windows and
   engine creation failed unless `Cache = LiteRtCache.Disabled` (upstream
@@ -98,8 +105,10 @@ native benchmark API's `decode_tokens_per_sec` for the turn.
 | Platform / backend | spec OFF | spec ON | speedup | Notes |
 |---|---:|---:|---:|---|
 | win-x64 · CPU (dev box, LiteRT-LM v0.18.0, 2026-10-06) | 33.0 tok/s | 25.8 tok/s | **0.78×** | official prebuilt; same ratio as on v0.13.1 |
-| win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, v0.18.0, 2026-10-06, F32 activations, the default since 1.3.0) | 91.4 tok/s | 60.5 tok/s | **0.66×** | two runs (91.7/60.7 and 91.1/60.2) |
-| win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, v0.18.0, 2026-10-06) | 84.1 tok/s | 56.8 tok/s | **0.68×** | official prebuilt: default disk cache, GPU sampler embedded (no CPU-sampling fallback); F16 activations (the default before 1.3.0) |
+| win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, v0.18.0, 2026-10-07, F32 activations, the default since 1.3.0) | 100.3 tok/s | 51.8 tok/s | **0.52×** | official prebuilt, default disk cache, GPU sampler embedded (no CPU-sampling fallback); two runs (100.3/51.8 and 100.0/51.7) |
+| win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, v0.18.0, 2026-10-07, F16 activations, the default before 1.3.0) | 87.7 to 96.4 tok/s | 37.7 to 43.5 tok/s | **0.43× to 0.45×** | default disk cache; two runs (87.7/37.7 and 96.4/43.5) |
+| win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, v0.18.0, 2026-10-06, F32) | 91.4 tok/s | 60.5 tok/s | **0.66×** | disk cache disabled by the benchmark (a v0.13.1 workaround, obsolete since v0.14.0) |
+| win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, v0.18.0, 2026-10-06, F16) | 84.1 tok/s | 56.8 tok/s | **0.68×** | disk cache disabled by the benchmark, as above |
 | win-x64 · CPU (dev box, 2026-06-15) | 29.9 tok/s | 23.4 tok/s | **0.78×** | works, but slower — see below |
 | win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, 2026-06-15) | 41.8 tok/s | 35.5 tok/s | **0.85×** | A/B both with cache off; plain GPU *with* the disk cache ≈85 tok/s |
 | linux-x64 · CPU (CI ubuntu-latest, 2026-06-16) | 16.7 tok/s | 12.2 tok/s | **0.73×** | from `model-tests.yml` |
@@ -116,9 +125,10 @@ native benchmark API's `decode_tokens_per_sec` for the turn.
   produced alongside the model confirms the drafter was actually engaged.
 - **Desktop WebGPU GPU on the official prebuilts (v0.18.0): works, still slower.** With the default disk
   cache and the GPU sampler embedded in the library (so neither factor below applies any more), the
-  drafter costs a third of the decode throughput on an RTX 3080: 91.4 → 60.5 tok/s (0.66×) with the F32
-  activations the binding uses by default, 84.1 → 56.8 tok/s (0.68×) with F16. The drafter's overhead, not
-  the sampling path, dominates at this acceptance rate.
+  drafter halves the decode throughput on an RTX 3080: 100.3 → 51.8 tok/s (0.52×) with the F32
+  activations the binding uses by default, 0.43× to 0.45× with F16. With the disk cache disabled, as the
+  benchmark ran until October 2026, plain decoding is slower and the ratio less bad (0.66× with F32,
+  0.68× with F16). The drafter's overhead, not the sampling path, dominates at this acceptance rate.
 - **Desktop WebGPU GPU on v0.13.1 worked (with the cache off), but didn't help.** With
   `Cache = LiteRtCache.Disabled` the engine loads and the drafter speculates on the GPU (the CLI reports
   ~0.32 draft-acceptance on this prompt). In a fair A/B with the cache off on both legs, spec is a
@@ -184,6 +194,6 @@ reloads. The whole section above is kept as the v0.13.1 historical record.
 
 In short: the flag works on every backend we tested with the default cache (v0.13.1 needed
 `Cache = LiteRtCache.Disabled` on desktop WebGPU), but on desktop CPU and GPU it slows decoding down for
-gemma-4-E2B (0.78× and 0.68× on v0.18.0), and an older mobile GPU (Adreno 650) shows no win at ~32%
+gemma-4-E2B (0.78× and 0.52× on v0.18.0), and an older mobile GPU (Adreno 650) shows no win at ~32%
 acceptance. Measure it on your target accelerator and workload before turning it on, and use the
 per-conversation override to keep it where it pays off.

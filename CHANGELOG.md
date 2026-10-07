@@ -24,6 +24,15 @@ are published together.
     runtime's decoding reason (`INVALID_ARGUMENT: Failed to decode image…`) instead of a setup error.
   - **GPU caches written by an older runtime are rebuilt automatically** on the first load (one slower
     load); nothing to clean up by hand.
+  - **A visual token budget above the per-image maximum fails image sends.** The runtime checks
+    `VisualTokenBudget` against the engine's per-image maximum (`MaxVisionTokensPerImage`, or the
+    model's own: 280 on the Gemma 4 E-series) and fails the send with `LiteRtStatusCode.InvalidArgument`
+    (v0.16.0 clamped it). The binding attaches the budget only to sends that carry an image, so text-only
+    sends are unaffected.
+  - **Speculative decoding on a model without a drafter fails.** The 1.2.0 documentation said
+    `EnableSpeculativeDecoding` did nothing on such a model; with v0.18.0, engine creation fails
+    (Ministral 3: `NOT_FOUND: tf_lite_mtp_drafter not found in the model`) and the exception names the
+    setting. `LiteRtModelInfo.SupportsSpeculativeDecoding` tells before loading.
 - **`LiteRtEngineOptions.ActivationDataType` defaults to `Float32`** (it was `null`, the runtime's choice:
   F16 for the text executor on GPU). F16 corrupts structured output (digits, dates, JSON) on the GPUs we
   measured, and on a desktop GPU it is no faster: gemma-4-E2B on an RTX 3080 decodes 113 tok/s with F16
@@ -32,8 +41,8 @@ are published together.
   150 MB more RAM. Set `Float16` to opt back in (after checking your outputs), or `null` for the runtime's
   choice.
 - The documentation of `VisualTokenBudget` (conversation and per send) now describes what the runtime
-  does: it is a **per-image** budget, and the runtime downscales each image to the smallest vision
-  signature that fits. On gemma-4-E2B-it a budget of 70 brings an image from 260 tokens to 68.
+  does: it is a **per-image** budget, and the runtime scales each image down to about the budget in
+  tokens. On gemma-4-E2B-it a budget of 70 brings an image from 260 tokens to 68.
 
 ### Added
 
@@ -63,8 +72,10 @@ are published together.
   LiteRT-LM's thread-local error state: `litert_lm_engine_create returned null: INVALID_ARGUMENT:
   Invalid magic number or failed to read` instead of a bare "returned null" plus a list of guesses.
   `LiteRtException.StatusCode` exposes the status (`LiteRtStatusCode`, the canonical absl codes);
-  it is `null` when the runtime reported nothing or the binding detected the failure itself. A
-  multi-line native call trace reads as one line: the reason, then where the runtime raised it.
+  it is `null` when the runtime reported nothing or the binding detected the failure itself. Streamed
+  replies that fail carry the same status and reason. A multi-line native call trace reads as one line:
+  the reason, then where the runtime raised it. With the native log silenced
+  (`LiteRtEngine.SetMinLogLevel` above 5) LiteRT drops some reasons; the status remains.
 - `LiteRtEngineOptions.MaxVisionTokensPerImage` — an upper bound on the vision tokens one image may
   expand to (the engine only selects vision signatures up to it). Pair a cap below the model's
   default image size with a `VisualTokenBudget` at or below it.
@@ -72,7 +83,9 @@ are published together.
   memory through Apple's `MTLResidencySet` API (Apple GPU backend only; ignored elsewhere).
 - `LiteRtConversationOptions.EnableSpeculativeDecoding` — per-conversation speculative decoding that
   overrides the engine setting: `true` on an engine loaded without it loads the MTP drafter lazily on
-  the conversation's first send, `false` turns it off for one conversation.
+  the conversation's first send, `false` turns it off for one conversation. Unset keeps the engine
+  setting, also after another conversation loaded the drafter (the runtime would otherwise keep using
+  it). The `Microsoft.Extensions.AI` and Semantic Kernel conversation-options templates carry it too.
 
 ### Fixed
 

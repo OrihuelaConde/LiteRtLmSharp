@@ -92,7 +92,8 @@ prompt template's YAML) works equally well.
 
 `LiteRtPromptExecutionSettings` covers the per-request sampler/output knobs, but a few conversation-level
 settings have no execution-settings surface: `SystemMessage`, `LoraPath` / `AudioLoraPath`, `StreamToolCalls`,
-`VisualTokenBudget`, `FilterThinkingFromKvCache`, `ExtraContext`, and a session-default `MaxOutputTokens`.
+`VisualTokenBudget`, `FilterThinkingFromKvCache`, `ExtraContext`, `EnableSpeculativeDecoding`, and a
+session-default `MaxOutputTokens`.
 Pass them once as a `LiteRtConversationOptions` template on the registration and they apply to every call:
 
 ```csharp

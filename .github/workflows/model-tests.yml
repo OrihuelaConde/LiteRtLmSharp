@@ -209,6 +209,22 @@ jobs:
         shell: bash
         run: echo "$EMBEDDING_MODEL_SHA256  models/$EMBEDDING_MODEL_FILE" | sha256sum -c -
 
+      # Upstream's LoRA test bundle and two rank-32 adapters (about 50 MB, runtime/testdata at the pinned
+      # tag) for the LoraTextAdapterTests pins and the speculative-decoding test on a model without a
+      # drafter. Small enough to fetch on every run; the checksums change only with NATIVE_REF.
+      - name: Download LoRA test artifacts
+        shell: bash
+        run: |
+          base="https://raw.githubusercontent.com/google-ai-edge/LiteRT-LM/$NATIVE_REF/runtime/testdata"
+          for f in test_lm_lora.litertlm test_lora_rank32_f16_all_ones.tflite test_lora_rank32_f16_all_twos.tflite; do
+            curl -fL --retry 3 --retry-delay 15 -o "models/$f" "$base/$f"
+          done
+          sha256sum -c - <<'SUMS'
+          bcb401b7ca4926cb9aefec3c270d8b2f824fb4fa312eea9d7be83f0788df23c4  models/test_lm_lora.litertlm
+          34c65931a68ba714a0bceb0238454659dd2b9aa4e1aff738a6407c3cbe97a7e5  models/test_lora_rank32_f16_all_ones.tflite
+          68c1524af4c72dfded9a0043e37afdbad7cce881fc32d72d1a06a630b8cc6b7d  models/test_lora_rank32_f16_all_twos.tflite
+          SUMS
+
       - name: Build
         run: dotnet build LiteRtLmSharp.slnx -c Release
 

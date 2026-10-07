@@ -7,14 +7,13 @@ specific load-time, memory or throughput goal.
 
 This guide explains what each one does, when it helps, and what it costs. Two related performance
 features have their own pages: [speculative decoding](speculative-decoding.md) (the MTP drafter) and
-the compiled-artifact cache (`LiteRtEngineOptions.Cache`, also the fix for speculative decoding on
-the desktop WebGPU backend).
+the compiled-artifact cache (`LiteRtEngineOptions.Cache`).
 
 ## Activation precision — `ActivationDataType`
 
 The precision of the activation tensors during inference. **The binding defaults to `Float32`** (since
 1.3.0). The runtime's own default for the text executor on GPU is F16, which corrupts output on the GPUs
-we measured (below) at no speed gain on a desktop GPU; the vision and audio executors use F32 either way.
+we measured (below) at no speed gain on a desktop GPU.
 
 ```csharp
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
@@ -27,7 +26,11 @@ using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 
 - **Only the GPU backend honors this, and only as F32 vs F16.** `Float32` runs activations at full
   precision. `Float16` uses half the activation memory, with a precision loss that is NOT always small
-  (below). `null` lets the runtime choose (F16 on GPU).
+  (below). `null` lets the runtime choose: the precision the model file declares for its text model
+  (F16 for the Gemma 4 E-series), else F16 on GPU.
+- **It sets the text executor only.** The vision and audio encoders run at the precision the model file
+  declares for them, else F32, and no option changes that. The Gemma 4 E-series declares F16 for its
+  vision encoder, so on GPU its images are encoded in F16 whatever this setting says.
 - **On CPU it is a no-op**: the CPU/XNNPACK path does not read it (the executor only switches the GPU
   delegate to FP16 when the setting is F16 and the backend is GPU).
 - **`Int16` / `Int8` are accepted but not distinctly implemented** by the shipped executors: on GPU they

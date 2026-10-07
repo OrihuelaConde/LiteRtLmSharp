@@ -78,7 +78,7 @@ public sealed class EngineService
                 VisionBackend = visionBackend,
                 AudioBackend = audioBackend,
                 MaxNumTokens = ContextTokens,
-                EnableSpeculativeDecoding = enableSpeculativeDecoding, // MTP drafter → faster decode
+                EnableSpeculativeDecoding = enableSpeculativeDecoding, // MTP drafter; measured slower on desktop
                 EnableBenchmark = true,                                // gauge shows decode tok/s
                 // Default disk cache is safe with speculative decoding on GPU since LiteRT-LM
                 // v0.14.0 (the v0.13.1 shared weight-cache mmap failure, upstream #2572, is fixed

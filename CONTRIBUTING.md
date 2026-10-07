@@ -54,6 +54,13 @@ skipped:
 - `LITERTLM_TEST_VISION=1` — also run the image and audio tests (needs a multimodal model such as
   gemma-4-E2B-it).
 - `LITERTLM_TEST_BENCH=1` — also run the speculative-decoding A/B benchmark.
+- `LITERTLM_TEST_EMBEDDING_MODEL` — path to an embedding model (e.g.
+  `embeddinggemma-2-text-270m.litertlm`) for the embedding engine and `IEmbeddingGenerator` tests.
+
+The LoRA tests and the speculative-decoding test on a model without a drafter also need upstream's LoRA
+test artifacts next to the `LITERTLM_TEST_MODEL` file: `test_lm_lora.litertlm`,
+`test_lora_rank32_f16_all_ones.tflite` and `test_lora_rank32_f16_all_twos.tflite`, from
+`runtime/testdata` in the LiteRT-LM repository at the pinned tag (`model-tests.yml` downloads them).
 
 Run model-backed tests with `--blame-hang-timeout` (for example `--blame-hang-timeout 10m`): a native
 hang otherwise outlives the test run and keeps the model loaded.

@@ -69,7 +69,7 @@ while (true)
             ModelPath = modelPath,
             Backend = LiteRtBackend.Parse(backend),  // "cpu" or "gpu"
             MaxNumTokens = contextTokens, // total context window (prompt + replies, all turns)
-            EnableSpeculativeDecoding = speculative, // MTP drafter → faster decode (supported models)
+            EnableSpeculativeDecoding = speculative, // MTP drafter (models that ship one); measure it, it slowed desktop CPU and GPU
             EnableBenchmark = true,     // so the gauge can show decode tok/s and time-to-first-token
             Cache = cache,              // Default = disk cache next to the model
             NumThreads = cli.Threads,   // CPU text-executor thread count; null = engine default (CPU-only, no-op on GPU)

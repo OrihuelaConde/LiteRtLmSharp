@@ -16,8 +16,9 @@ public sealed record LiteRtSendOptions
     /// <summary>
     /// Tokens each <b>image</b> attachment in this send may expand to. 0 (default) = inherit
     /// <see cref="LiteRtConversationOptions.VisualTokenBudget"/> (whose own 0 means the model's default
-    /// size). Only meaningful when the send carries image attachments; see
-    /// <see cref="LiteRtConversationOptions.VisualTokenBudget"/> for the values and costs.
+    /// size). The binding attaches it only to sends that carry an image, so a text-only send ignores it;
+    /// see <see cref="LiteRtConversationOptions.VisualTokenBudget"/> for the values, the costs and the
+    /// per-image maximum.
     /// </summary>
     public int VisualTokenBudget { get; init; }
 
