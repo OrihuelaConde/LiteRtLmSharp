@@ -36,7 +36,8 @@ are published together.
   (`LiteRtEmbeddingOptions.OutputDimensions`), normalization and a choice of what happens to texts longer
   than the loaded input signatures (`OverflowStrategy`). An embedding engine does not count toward the
   one-live-engine rule, so a chat model and an embedding model can stay loaded together. Calls on one
-  embedding engine are serialized, so it is safe to share across threads. See the
+  embedding engine are serialized, so it is safe to share across threads. Activations default to
+  float32 (EmbeddingGemma's model card advises against float16, the runtime's GPU fallback). See the
   [Embeddings guide](https://orihuelaconde.github.io/LiteRtLmSharp/embeddings.html) for the task
   instructions EmbeddingGemma 2 expects and for measurements.
 - **`IEmbeddingGenerator<string, Embedding<float>>`** in `LiteRtLmSharp.Extensions.AI`:
@@ -68,9 +69,16 @@ are published together.
 
 ### Fixed
 
-- XML documentation that had gone stale: text LoRA is validated end to end (since 1.2.0), and the
-  disk-cache workaround for speculative decoding on the desktop GPU backend is gone (fixed upstream in
-  LiteRT-LM v0.14.0).
+- XML documentation that had gone stale: the disk-cache workaround for speculative decoding on the
+  desktop GPU backend is gone (fixed upstream in LiteRT-LM v0.14.0).
+- **The LoRA documentation now describes what the runtime does.** A text adapter applies to the whole
+  engine, not to the conversation that names it: after a conversation with `LoraPath` has generated,
+  conversations without an adapter on the same engine generate with it too, and while a conversation
+  with an adapter exists, a send on one without it fails with `LiteRtStatusCode.Internal`. Reload the
+  engine to switch adapters. On the published gemma-4 bundles, which have no LoRA slots, an adapter is
+  accepted and has no effect (1.2.0 said it failed fast). Tests pin these behaviors.
+- A failed send on an engine loaded with `MaxNumTokens` below 1024 no longer blames the small context
+  when the runtime reports an unrelated reason.
 
 ## [1.2.0] — 2026-09-05
 

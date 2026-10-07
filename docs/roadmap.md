@@ -45,7 +45,7 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Multimodal messages (image/audio attachments, vision/audio backend, visual token budget) | ✅ |
 | Tokenize/detokenize + start/stop tokens (exact token counting, no inference) | ✅ |
 | Render a message (`RenderMessage`) or the whole preface (`RenderPreface`) to its templated prompt for debugging / exact-cost budgeting | ✅ |
-| CPU thread counts, LoRA adapters (engine ranks + per-conversation paths), per-send output cap, tool-call streaming (v0.14.0 surface) | ✅ |
+| CPU thread counts, LoRA adapters (engine ranks + per-conversation paths; the runtime applies an adapter engine-wide, see [engine-tuning](engine-tuning.md#lora-adapters-engine-ranks-and-adapter-paths)), per-send output cap, tool-call streaming (v0.14.0 surface) | ✅ |
 | .NET AI integrations: `Microsoft.Extensions.AI` `IChatClient` (+ Agent Framework) and a Semantic Kernel connector (separate packages) | ✅ |
 | Native error reporting (v0.18.0 `error_reporter.h`): every failed native call surfaces the runtime's own status and reason in `LiteRtException` (+ `StatusCode`, `LiteRtStatusCode`) instead of a bare "returned null" | ✅ (branch) |
 | v0.18.0 options: per-image vision token cap (`MaxVisionTokensPerImage`), Metal residency (`EnableMetalResidencySet`), per-conversation speculative decoding (`LiteRtConversationOptions.EnableSpeculativeDecoding`) | ✅ (branch) |
@@ -214,7 +214,16 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
      Tests: 27 embedding and model-info tests pass on CPU and GPU (win-x64); the model-tests legs fetch
      the model (165 MB, cached). One silent GPU host crash in 8 runs, in
      `ChatAndEmbeddingEngines_Coexist` (6 of 6 isolated runs clean): same class as the GPU churn
-     crash in the watchlist.
+     crash in the watchlist. Maintainer decision (2026-10-06): the embedding engine defaults to
+     `Float32` activations (float16, the runtime's GPU fallback, is what the model card advises
+     against; no speed cost measured).
+   - **LoRA re-checked 2026-10-06 (v0.18.0, CPU, upstream test bundle)**: the adapter changes generation
+     but applies to the whole engine, not to its conversation (a later conversation without an adapter
+     still generates with it; while an adapter conversation exists, a send without one fails with
+     INTERNAL "No LoRA ID is set"); on gemma-4-E2B (no LoRA slots) an adapter is accepted and has no
+     effect, with or without `LoraRank` (the 1.2.0 docs said it failed fast). The test bundle does not
+     load on GPU. Docs corrected and three tests pin the behavior; the daily upstream watch now follows
+     LiteRT-LM#3173.
    - **Release 1.3.0** with the maintainer's GO.
 
 -3. **v0.16.0 CYCLE — evaluation of Google's official C API prebuilts DONE (2026-08-12 →

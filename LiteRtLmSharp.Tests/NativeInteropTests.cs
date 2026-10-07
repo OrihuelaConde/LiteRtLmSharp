@@ -1905,4 +1905,84 @@ public sealed class LoraTextAdapterTests
 
         Assert.NotEqual(baseline, withLora);
     }
+
+    private static (string LoraModel, string Adapter, string ChatModel)? Artifacts()
+    {
+        string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
+        if (string.IsNullOrEmpty(model) || !File.Exists(model))
+            return null;
+        string dir = Path.GetDirectoryName(Path.GetFullPath(model))!;
+        string loraModel = Path.Combine(dir, "test_lm_lora.litertlm");
+        string adapter = Path.Combine(dir, "test_lora_rank32_f16_all_ones.tflite");
+        return File.Exists(loraModel) && File.Exists(adapter) ? (loraModel, adapter, model) : null;
+    }
+
+    private static string Generate(LiteRtEngine engine, string? adapter)
+    {
+        using var conversation = engine.CreateConversation(new LiteRtConversationOptions { LoraPath = adapter, MaxOutputTokens = 16 });
+        return conversation.Send("Say hello in four words.").Text ?? "";
+    }
+
+    /// <summary>
+    /// PINS AN UPSTREAM LIMITATION (LiteRT-LM v0.18.0): the adapter applies to the engine, not to its
+    /// conversation. After a conversation with the adapter has generated, a new conversation WITHOUT one
+    /// still generates the adapted text. If this starts failing, upstream made adapters per conversation:
+    /// update the LoraRank / LoraPath docs and docs/engine-tuning.md.
+    /// </summary>
+    [SkippableFact]
+    public void Lora_AdapterStaysOnTheEngine_AfterItsConversation()
+    {
+        Skip.If(Artifacts() is null, "Place test_lm_lora.litertlm and test_lora_rank32_f16_all_ones.tflite next to LITERTLM_TEST_MODEL to run.");
+        var (loraModel, adapter, _) = Artifacts()!.Value;
+        LiteRtEngine.SetMinLogLevel(3);
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = loraModel, Backend = LiteRtBackend.Cpu, MaxNumTokens = 1024, LoraRank = 32,
+        });
+        string baseline = Generate(engine, adapter: null);
+        string adapted = Generate(engine, adapter);
+        string afterwards = Generate(engine, adapter: null);
+
+        Assert.NotEqual(baseline, adapted);
+        Assert.Equal(adapted, afterwards);
+    }
+
+    /// <summary>
+    /// PINS AN UPSTREAM LIMITATION (LiteRT-LM v0.18.0): while a conversation with an adapter exists, a send
+    /// on a conversation without one fails with INTERNAL ("No LoRA ID is set").
+    /// </summary>
+    [SkippableFact]
+    public void Lora_SendWithoutAdapter_FailsWhileAnAdapterConversationExists()
+    {
+        Skip.If(Artifacts() is null, "Place test_lm_lora.litertlm and test_lora_rank32_f16_all_ones.tflite next to LITERTLM_TEST_MODEL to run.");
+        var (loraModel, adapter, _) = Artifacts()!.Value;
+        LiteRtEngine.SetMinLogLevel(3);
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = loraModel, Backend = LiteRtBackend.Cpu, MaxNumTokens = 1024, LoraRank = 32,
+        });
+        using var plain = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
+        using var adapted = engine.CreateConversation(new LiteRtConversationOptions { LoraPath = adapter, MaxOutputTokens = 16 });
+
+        var ex = Assert.Throws<LiteRtException>(() => plain.Send("Say hello in four words."));
+        Assert.Equal(LiteRtStatusCode.Internal, ex.StatusCode);
+    }
+
+    /// <summary>
+    /// PINS AN UPSTREAM LIMITATION (LiteRT-LM v0.18.0, google-ai-edge/LiteRT-LM#3173): on a bundle without
+    /// LoRA slots (the published gemma-4 conversions) an adapter is accepted and has no effect.
+    /// </summary>
+    [SkippableFact]
+    public void Lora_OnABundleWithoutLoraSlots_IsAcceptedAndHasNoEffect()
+    {
+        Skip.If(Artifacts() is null, "Place test_lm_lora.litertlm and test_lora_rank32_f16_all_ones.tflite next to LITERTLM_TEST_MODEL to run.");
+        var (_, adapter, chatModel) = Artifacts()!.Value;
+        LiteRtEngine.SetMinLogLevel(3);
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = chatModel, Backend = LiteRtBackend.Cpu, MaxNumTokens = 1024, LoraRank = 32,
+        });
+        string baseline = Generate(engine, adapter: null);
+        Assert.Equal(baseline, Generate(engine, adapter));
+    }
 }

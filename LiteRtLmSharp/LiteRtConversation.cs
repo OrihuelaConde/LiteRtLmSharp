@@ -704,7 +704,7 @@ public sealed class LiteRtConversation : IDisposable
             {
                 string? hint = hasMedia && (nativeMessage is null || IsMissingEncoderError(nativeMessage))
                     ? MultimodalSendHint : null;
-                if (smallContext)
+                if (smallContext && IsSmallContextFailure(nativeMessage))
                     hint = hint is null ? SmallContextSendHint : hint + " " + SmallContextSendHint;
                 return hint;
             });
@@ -806,6 +806,15 @@ public sealed class LiteRtConversation : IDisposable
     /// group (an internal <c>DYNAMIC_UPDATE_SLICE</c> error). The C API cannot report the signatures, so
     /// this is guidance on failure rather than up-front validation.
     /// </summary>
+    /// <summary>Whether a send failure on an engine below 1024 tokens looks like the small-context
+    /// failure (v0.18.0 reports it as "Failed to invoke the compiled model Failed to allocate tensors"),
+    /// or the runtime reported nothing; any other reason, such as a bad LoRA adapter, speaks for
+    /// itself.</summary>
+    internal static bool IsSmallContextFailure(string? nativeMessage) =>
+        nativeMessage is null
+        || nativeMessage.Contains("allocate tensors", StringComparison.OrdinalIgnoreCase)
+        || nativeMessage.Contains("DYNAMIC_UPDATE_SLICE", StringComparison.OrdinalIgnoreCase);
+
     internal const string SmallContextSendHint =
         "The engine was loaded with LiteRtEngineOptions.MaxNumTokens below 1024. The native executor " +
         "accepts that, but a send whose prefill spans more than its smallest work group then fails inside " +

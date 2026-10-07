@@ -314,6 +314,16 @@ public class DecodingOptionsMappingTests
         Assert.False(LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(1024));
         Assert.Contains("MaxNumTokens >= 1024", LiteRtConversation.SmallContextSendHint);
     }
+
+    [Fact]
+    public void SmallContextHint_OnlyForTheMatchingFailure()
+    {
+        Assert.True(LiteRtConversation.IsSmallContextFailure(null));
+        Assert.True(LiteRtConversation.IsSmallContextFailure(
+            "Failed to invoke the compiled model Failed to allocate tensors (at llm_litert_compiled_model_executor.cc:846)"));
+        Assert.False(LiteRtConversation.IsSmallContextFailure(
+            "RET_CHECK failure (context_handler.h:77) HasRuntimeConfig() Runtime config not found"));
+    }
 }
 
 /// <summary>

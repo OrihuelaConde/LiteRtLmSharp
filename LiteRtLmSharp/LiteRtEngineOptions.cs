@@ -270,10 +270,21 @@ public sealed record LiteRtEngineOptions
     /// disabled). Requires a LoRA-enabled model and a matching adapter passed per conversation via
     /// <see cref="LiteRtConversationOptions.LoraPath"/>. Maps to <c>engine_settings_set_lora_rank</c>.
     /// </summary>
-    /// <remarks>Validated end to end against upstream's LoRA test bundle: with this rank and a matching
-    /// adapter in <see cref="LiteRtConversationOptions.LoraPath"/>, generation changes. The published
-    /// Gemma 4 bundles carry no LoRA slots (google-ai-edge/LiteRT-LM#3173), so an adapter fails fast on
-    /// them.</remarks>
+    /// <remarks>
+    /// <para>
+    /// The adapter applies to the whole engine, not to one conversation (LiteRT-LM v0.18.0, measured on
+    /// CPU with upstream's LoRA test bundle): after a conversation with
+    /// <see cref="LiteRtConversationOptions.LoraPath"/> has generated, conversations without an adapter on
+    /// the same engine generate with it too, and while a conversation with an adapter exists, a send on one
+    /// without it fails with <see cref="LiteRtStatusCode.Internal"/>. Use one adapter per engine, and reload
+    /// the engine to switch adapters or to return to the base model.
+    /// </para>
+    /// <para>
+    /// The published Gemma 4 bundles carry no LoRA slots (google-ai-edge/LiteRT-LM#3173): an adapter is
+    /// accepted and has no effect on them. The GPU backend is not validated (the test bundle does not load
+    /// on it).
+    /// </para>
+    /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">The value is zero or negative.</exception>
     public int? LoraRank
     {
@@ -635,9 +646,10 @@ public sealed record LiteRtConversationOptions
     /// <remarks>
     /// The native side opens the file when the conversation is created, so a missing or unreadable path
     /// fails fast with <see cref="LiteRtException"/> at <see cref="LiteRtEngine.CreateConversation"/>,
-    /// not silently at first send. Validated end to end against upstream's LoRA test bundle (the adapter
-    /// changes generation); the published Gemma 4 bundles carry no LoRA slots
-    /// (google-ai-edge/LiteRT-LM#3173). Maps to the C API <c>session_config_set_lora_path</c>.
+    /// not silently at first send. Despite the per-conversation setting, the runtime applies the adapter to
+    /// the whole engine: see <see cref="LiteRtEngineOptions.LoraRank"/> for what that means and for the
+    /// published Gemma 4 bundles, which accept an adapter without effect (google-ai-edge/LiteRT-LM#3173).
+    /// Maps to the C API <c>session_config_set_lora_path</c>.
     /// </remarks>
     public string? LoraPath { get; init; }
 

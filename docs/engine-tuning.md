@@ -170,11 +170,24 @@ Loading a low-rank adaptation on top of a LoRA-enabled base model has two layers
   which is opened when the conversation is created, so a bad path **fails fast** with `LiteRtException`
   at `CreateConversation`, not mid-generation.
 
-Requires a LoRA-enabled model. **Validated end-to-end on LiteRT-LM v0.16.0** with upstream's LoRA test
-bundle and its rank-32 adapter: the adapter is accepted at `CreateConversation` and changes generation (the
-v0.14.0 and v0.15.0 runtimes rejected every text adapter at the first generation with "Lora is not
-supported"). The published gemma-4 `.litertlm` bundles carry no LoRA slots
-([LiteRT-LM#3173](https://github.com/google-ai-edge/LiteRT-LM/issues/3173)), so an adapter fails fast on them.
+Requires a LoRA-enabled model. What the runtime does at v0.18.0, measured on CPU with upstream's LoRA test
+bundle and its rank-32 adapter:
+
+- **The adapter changes generation**, deterministically (the v0.14.0 and v0.15.0 runtimes rejected every
+  text adapter with "Lora is not supported").
+- **It applies to the whole engine, not to its conversation.** After a conversation with `LoraPath` has
+  generated, conversations without an adapter on the same engine generate with it too. While a
+  conversation with an adapter exists, a send on a conversation without one fails with
+  `LiteRtStatusCode.Internal` ("No LoRA ID is set").
+- **So use one adapter per engine.** To switch adapters or to return to the base model, dispose the
+  conversations and the engine and load it again.
+- **The published gemma-4 bundles carry no LoRA slots**
+  ([LiteRT-LM#3173](https://github.com/google-ai-edge/LiteRT-LM/issues/3173)): an adapter is accepted
+  and has no effect on them, with or without `LoraRank`.
+- **The GPU backend is not validated**: the test bundle does not load on it.
+
+Tests in `LoraTextAdapterTests` pin these behaviors, so a runtime that changes them shows up as a failing
+test.
 
 ## Benchmarking
 
