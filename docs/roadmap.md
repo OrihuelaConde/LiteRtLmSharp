@@ -193,8 +193,11 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
      behaviour changes, now fixed in the tests (invalid image bytes now fail at decoding; YNNPACK is
      rejected with UNIMPLEMENTED off linux-arm64); per-image `VisualTokenBudget = 70` → 68 tokens
      instead of 260; GPU caches written by v0.16.0 are rebuilt automatically (weight cache 2.3 GB →
-     778 MB); CPU speculative decoding 0.78× (unchanged). GPU suite: one host crash in
-     `ChatClient_MultiTurn_CarriesContext` on the first full run (under investigation, see watchlist).
+     778 MB); CPU speculative decoding 0.78× (unchanged). GPU suite: the silent host crash of the
+     watchlist in 2 of 4 full runs; the full run with PR 2 on top was clean (306 passed, 3 skipped).
+     linux-x64 (2026-10-06, Docker, Ubuntu 24.04 with no Vulkan loader installed; `ldd` lists only
+     libc, libm, libpthread, libdl and librt): full suite on CPU with PR 2 on top, 306 passed and 3
+     skipped (GPU-only, the LoRA bundle not mounted, the benchmark).
      Pending: Moto G100 (arm64 GPU) and an x86_64 emulator run; Linux GPU has no hardware on hand.
    - **PR 2 `embeddings`** (implemented 2026-10-06, stacked on PR 1): `LiteRtEmbeddingEngine` (own
      handles, outside the one-engine gate; serialized and thread-safe, async variants), `LiteRtModelInfo`
