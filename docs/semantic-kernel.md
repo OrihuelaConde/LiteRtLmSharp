@@ -17,9 +17,9 @@ Microsoft Agent Framework and plain MEAI from the same registration.
 | `LiteRtLmSharp.SemanticKernel` | `LiteRtLmSharp` + `LiteRtLmSharp.Extensions.AI` (same version) + `Microsoft.SemanticKernel.Abstractions` 1.77.0 + `Microsoft.Extensions.AI` 10.7.0 | `net10.0` |
 
 ```xml
-<PackageReference Include="LiteRtLmSharp" Version="1.2.0" />
-<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.2.0" />
-<PackageReference Include="LiteRtLmSharp.SemanticKernel" Version="1.2.0" />
+<PackageReference Include="LiteRtLmSharp" Version="1.3.0" />
+<PackageReference Include="LiteRtLmSharp.runtime.win-x64" Version="1.3.0" />
+<PackageReference Include="LiteRtLmSharp.SemanticKernel" Version="1.3.0" />
 ```
 
 ## Quick start
