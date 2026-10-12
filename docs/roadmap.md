@@ -737,8 +737,12 @@ AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AO
   follow-up pending (2026-10-06).
 - **#2807** (multi-conversation state, ours): no maintainer activity since 2026-08-13 (a third party
   confirmed the interleaved fix on iOS and Android).
-- **#2572** (our GPU cache bug, fixed in v0.14.0): still no comments; the close-request with our
-  verification is pending (draft with the maintainer).
+- **#2572** (our GPU cache bug, fixed in v0.14.0): closed by us on 2026-10-12 with the verification on
+  v0.14.0 and v0.18.0.
+- **#3932** (filed 2026-10-12): the C API exposes the Greedy and TopK sampler types, but the CPU backend
+  only builds TopP and returns `UNIMPLEMENTED` at the first send, undocumented (deliberate upstream: their
+  own bindings always switch to TopP). The order dependence we also saw (the error disappears after a TopP
+  session) is **#2080**: the sampler is built once per engine and reused.
 - **#3173** (LoRA slots in the gemma-4 bundles) and **#2149** (our data posted 2026-09-05): no response.
 - **#3929** (filed 2026-10-12): the EmbeddingGemma 2 task prefixes in the LiteRT-LM guide differ from the
   model card's, and upstream's own `js/apps/embedding_search` demo uses the model card's pair. Asked
