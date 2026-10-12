@@ -488,6 +488,15 @@ public sealed record LiteRtConversationOptions
     public string? SystemMessage { get; init; }
 
     /// <summary>Optional sampler parameters. Null = engine default.</summary>
+    /// <remarks>
+    /// The CPU backend of LiteRT-LM v0.14.0–v0.18.0 implements <b>only</b>
+    /// <see cref="LiteRtSamplerType.TopP"/>: an explicit <see cref="LiteRtSamplerType.Greedy"/> or
+    /// <see cref="LiteRtSamplerType.TopK"/> fails the conversation's first send with
+    /// <see cref="LiteRtSamplerNotSupportedException"/> (<c>UNIMPLEMENTED: Sampler type: N</c>) and leaves that
+    /// conversation unusable; once a send has completed on the engine, the runtime has established its sampler
+    /// and later parameters are accepted but ignored. On those backends use
+    /// <see cref="LiteRtSamplerParams.NearGreedy"/> rather than Greedy/TopK.
+    /// </remarks>
     public LiteRtSamplerParams? Sampler { get; init; }
 
     /// <summary>Maximum output tokens per response. 0 = engine default.</summary>

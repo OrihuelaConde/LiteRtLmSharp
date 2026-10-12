@@ -63,6 +63,18 @@ version number**. Which LiteRT-LM native build each release wraps:
 | 0.1.0-preview.2 | v0.13.1 |
 | 0.1.0-preview.1 | v0.13.1 |
 
+> **Native v0.13.x/v0.14.x are unsafe for more than one conversation.** LiteRT-LM v0.14.0 loses state
+> when two conversations of one engine are interleaved (upstream #2807 → garbage replies) and hangs
+> forever on the first send after a cancellation. Both are fixed from v0.16.0. The binding cannot detect
+> the native version at runtime, so the requirement is on you: pin `LiteRtLmSharp` **1.2.0 or newer**
+> (or the same-version runtime packages), and if you must stay on 1.1.x, keep one conversation alive at a
+> time. Also note that on every v0.14.0–v0.18.0 CPU backend only the **TopP** sampler is implemented —
+> a conversation asking for `Greedy`/`TopK` is created and then fails its first send with
+> `UNIMPLEMENTED: Sampler type: 3`, which this binding reports as `LiteRtSamplerNotSupportedException`
+> (the conversation is consumed by that failure; once any send has completed on the engine, the runtime
+> ignores later sampler parameters instead, so the requested strategy is silently not applied). Use
+> `LiteRtSamplerParams.NearGreedy` for argmax-like output.
+
 ```csharp
 using LiteRtLmSharp;
 
@@ -143,10 +155,20 @@ conversations** (MEAI `ConversationId`) are supported — see the
 
 ## Important notes
 
-- **One chat engine alive at a time.** Loading a second `LiteRtEngine` while one is alive throws (it
-  would hang in the native layer). To switch model or backend, dispose the conversations and the
-  engine, then `LiteRtEngine.Load` again — same pattern as Google's Edge Gallery. An embedding engine
-  (`LiteRtEmbeddingEngine`) does not count, so a chat model and an embedding model can stay loaded together.
+- **One chat engine alive at a time — by default.** Loading a second `LiteRtEngine` while one is alive
+  throws (the guard exists because creating a second engine was once observed to hang in the native layer —
+  an unreproduced report, and the reason is still unknown). To switch model or backend, dispose the
+  conversations and the engine, then `LiteRtEngine.Load` again — same pattern as Google's Edge Gallery. An
+  embedding engine (`LiteRtEmbeddingEngine`) does not count, so a chat model and an embedding model can stay
+  loaded together. Set `LiteRtEngine.AllowMultipleEngines = true` before the first load to run several chat
+  engines at once: two or three simultaneously live engines have been measured to load, generate in parallel
+  and dispose independently on win-x64 (natives v0.13.1–v0.18.0, CPU and GPU) and linux-x64 (v0.16.0). Not
+  validated on Android/macOS/iOS, with two different models, or with vision/audio and speculative decoding —
+  each additional engine costs its own KV cache and activation memory, so gate it on free RAM.
+- **Cancelled conversations are consumed.** After `CancelProcess()` the runtime answers every later send
+  with `CANCELLED` (v0.16.0/v0.18.0; v0.14.0 hangs). Keep the finished turns plus the partial reply with
+  `LiteRtConversation.Snapshot()` and continue on `LiteRtConversation.Resume(snapshot)` — see the
+  [conversation-state guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html).
 - **`MaxNumTokens`** is the total context window (prompt + response, across turns). Use >= 1024;
   too small can make blocking generation return nothing.
 - **Conversations are not thread-safe** — serialize sends per engine (the Microsoft.Extensions.AI

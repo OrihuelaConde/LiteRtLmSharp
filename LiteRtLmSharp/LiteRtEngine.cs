@@ -23,7 +23,8 @@ public sealed class LiteRtEngine : IDisposable
     // works — Google's Edge Gallery switches model/backend exactly this way (engine.close() +
     // new Engine). The process-wide gate (EngineLiveness) is acquired here and released when the
     // native engine is destroyed (EngineHandle.ReleaseHandle), so a forgotten/GC'd engine also frees
-    // the slot — callers get a clear exception instead of a hang. NOTE: every conversation holds a
+    // the slot — callers get a clear exception instead of a hang. AllowMultipleEngines lifts the rule
+    // (opt-in, measured on win-x64/linux-x64 only; see its remarks). NOTE: every conversation holds a
     // strong reference to its engine (it needs the tokenizer and context limit for the KV overflow
     // guard — and finalizing an engine whose native conversations are still alive would be a
     // use-after-free anyway), so the GC recovery only applies once no conversation objects remain
@@ -55,6 +56,48 @@ public sealed class LiteRtEngine : IDisposable
     /// guard is only active when this is known.</summary>
     internal int MaxNumTokens { get; }
 
+    /// <summary>Whether the engine was loaded with a vision/audio encoder enabled (a conversation then
+    /// carries a session config automatically, so a plain <c>CreateConversation()</c> can send media).</summary>
+    internal bool IsMultimodal => _isMultimodal;
+
+    /// <summary>Whether <see cref="Dispose"/> already ran (conversation creation must not reach native code
+    /// through a freed engine handle).</summary>
+    internal bool IsDisposed => _disposed;
+
+    /// <summary>
+    /// Opt-in: allow more than one live engine per process. Off by default, which keeps the historical rule
+    /// — a second <see cref="Load"/> while an engine is alive throws <see cref="InvalidOperationException"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Set this <b>before</b> the first <see cref="Load"/>. Each engine costs its own KV cache and activation
+    /// memory (about a second engine's worth of RAM for the same model), and generation on two engines runs
+    /// in parallel — unlike conversations of one engine, which the native runtime serializes.
+    /// </para>
+    /// <para>
+    /// Measured with two and three simultaneously live engines on win-x64 (natives v0.13.1, v0.14.0, v0.16.0
+    /// and v0.18.0; CPU and GPU) and on linux-x64 (v0.16.0, CPU + WebGPU→Vulkan): they load, generate in
+    /// parallel and dispose independently in any order, with no hang, no crash and no heap corruption. Not
+    /// validated on Android, macOS or iOS, with two different models, or with vision/audio and speculative
+    /// decoding — the historical rule was introduced after an unreproduced hang in the native layer, and its
+    /// original cause is still unknown, so treat the flag as a desktop/validated-platform feature and gate it
+    /// on free memory (a second gemma-4 E2B engine needs roughly another 2.4 GB).
+    /// </para>
+    /// <para>
+    /// The single-engine rule is restored by setting the property back to <c>false</c>; engines that are
+    /// already alive keep working and are still released correctly (the gate counts live engines either way).
+    /// </para>
+    /// </remarks>
+    public static bool AllowMultipleEngines
+    {
+        get => EngineLiveness.AllowMultiple;
+        set => EngineLiveness.AllowMultiple = value;
+    }
+
+    /// <summary>How many engines are alive in this process right now (0 or 1 unless
+    /// <see cref="AllowMultipleEngines"/> is on).</summary>
+    public static int LiveEngineCount => EngineLiveness.LiveCount;
+
     /// <summary>Sets the global minimum log level (0=VERBOSE … 5=FATAL, 1000=SILENT).</summary>
     /// <remarks>Above 5 (SILENT included) LiteRT also stops recording the reason of the errors its status
     /// macros raise, so a <see cref="LiteRtException"/> then names the status (for example
@@ -69,7 +112,8 @@ public sealed class LiteRtEngine : IDisposable
     /// Loads a model and creates the engine. Only ONE engine may be alive at a time
     /// (a second concurrent engine hangs in the native layer); a <see cref="LiteRtEmbeddingEngine"/>
     /// does not count. To switch model or backend, dispose every conversation and the engine first,
-    /// then call <see cref="Load"/> again.
+    /// then call <see cref="Load"/> again. Set <see cref="AllowMultipleEngines"/> before the first load to
+    /// lift the rule instead (see its remarks for what has been measured).
     /// </summary>
     /// <exception cref="ArgumentException">The model file does not exist.</exception>
     /// <exception cref="InvalidOperationException">Another engine is still alive in this process.</exception>
@@ -91,7 +135,9 @@ public sealed class LiteRtEngine : IDisposable
             throw new InvalidOperationException(
                 "Another LiteRtEngine is still alive in this process; a second concurrent engine " +
                 "hangs in the native layer. Dispose the existing engine (and its conversations) " +
-                "first, then load the new model.");
+                "first, then load the new model — or set LiteRtEngine.AllowMultipleEngines = true " +
+                "before the first load to run several engines at once (validated on win-x64 and " +
+                "linux-x64; the rule stays in force on the platforms that were never measured).");
 
         try
         {
@@ -225,6 +271,14 @@ public sealed class LiteRtEngine : IDisposable
     }
 
     /// <summary>Creates a new stateful conversation from this engine.</summary>
+    /// <remarks>
+    /// <b>This call is subject to the engine's serializer.</b> The native conversation is created through
+    /// the engine, so it waits for a generation that is in flight on any conversation of this engine to
+    /// finish first — measured at 46 s (gemma-4 E2B, CPU) behind a 1000-token reply, with no way to cancel
+    /// the wait. Create the conversations you need before starting a long generation, or accept the wait.
+    /// (The same applies to <see cref="LiteRtConversation.TokenCount"/>; <see cref="LiteRtEngine.Tokenize"/>
+    /// and disposing an idle conversation are unaffected.)
+    /// </remarks>
     public LiteRtConversation CreateConversation(LiteRtConversationOptions? options = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

@@ -9,11 +9,16 @@ public enum LiteRtSamplerType
     /// unspecified sampler type, and v0.18.0 declares it again; not sending parameters preserves the
     /// pre-v0.14.0 behavior, where the unspecified type also deferred to the executor.)</summary>
     Unspecified = 0,
-    /// <summary>Sample probabilistically among the top-k tokens.</summary>
+    /// <summary>Sample probabilistically among the top-k tokens. <b>Not implemented by the CPU backend of
+    /// LiteRT-LM v0.14.0–v0.18.0</b> (see <see cref="LiteRtSamplerNotSupportedException"/>): the first send
+    /// that uses an explicit sampler on a fresh engine fails with <c>UNIMPLEMENTED: Sampler type: 1</c>.</summary>
     TopK = 1,
-    /// <summary>Nucleus (top-p) sampling after a top-k cut.</summary>
+    /// <summary>Nucleus (top-p) sampling after a top-k cut. The only strategy the CPU backend implements —
+    /// prefer <see cref="LiteRtSamplerParams.NearGreedy"/> when argmax-like output is wanted.</summary>
     TopP = 2,
-    /// <summary>Always pick the highest-probability token (argmax).</summary>
+    /// <summary>Always pick the highest-probability token (argmax). <b>Not implemented by the CPU backend of
+    /// LiteRT-LM v0.14.0–v0.18.0</b> (see <see cref="LiteRtSamplerNotSupportedException"/>): the first send
+    /// that uses an explicit sampler on a fresh engine fails with <c>UNIMPLEMENTED: Sampler type: 3</c>.</summary>
     Greedy = 3,
 }
 
@@ -25,6 +30,16 @@ public enum LiteRtSamplerType
 /// 40, 0.95, 1.0, seed 0) are the same values Google's official bindings fill in for unset fields, so a
 /// partial configuration behaves identically across the LiteRT-LM ecosystem.
 /// </summary>
+/// <remarks>
+/// <b>Which strategies actually run.</b> The CPU backend of LiteRT-LM v0.14.0–v0.18.0 implements only
+/// <see cref="LiteRtSamplerType.TopP"/>. An explicit <see cref="LiteRtSamplerType.Greedy"/> or
+/// <see cref="LiteRtSamplerType.TopK"/> fails the first send that uses an explicit sampler on a fresh
+/// engine with <see cref="LiteRtSamplerNotSupportedException"/> — and that conversation stays unusable
+/// afterwards. Once any send has completed on the engine, the runtime has established its own sampler and
+/// a later request for the same strategy is accepted and silently ignored, so the requested sampler is
+/// simply not applied. Prefer <see cref="NearGreedy"/> (an honoured TopP profile), or leave the strategy
+/// <see cref="LiteRtSamplerType.Unspecified"/> and let the model's declared sampler apply.
+/// </remarks>
 public sealed record LiteRtSamplerParams
 {
     /// <summary>The sampling strategy. Default <see cref="LiteRtSamplerType.TopP"/> (the value the
@@ -85,4 +100,27 @@ public sealed record LiteRtSamplerParams
     /// output that varies between runs.
     /// </summary>
     public int Seed { get; init; }
+
+    /// <summary>
+    /// The "almost greedy" profile: <see cref="LiteRtSamplerType.TopP"/> with <c>TopK = 40</c>,
+    /// <c>TopP = 0.5</c>, <c>Temperature = 0.1</c>, deterministic seed. Use it wherever a
+    /// transcription/translation-style task wants argmax-like output.
+    /// </summary>
+    /// <remarks>
+    /// <b>Why not <see cref="LiteRtSamplerType.Greedy"/>:</b> the CPU backend of LiteRT-LM v0.14.0–v0.18.0
+    /// does not implement it (nor TopK): the request fails the conversation's first send with
+    /// <c>UNIMPLEMENTED: Sampler type: 3</c> (surfaced as
+    /// <see cref="LiteRtSamplerNotSupportedException"/>), and once any send has completed on the engine the
+    /// runtime ignores further sampler parameters instead — so the strategy is either rejected or silently
+    /// not applied. TopP is the one strategy that is implemented and honoured there, and this profile is the
+    /// closest thing to an argmax over it: a deliberately narrow top-p distribution with a low temperature.
+    /// </remarks>
+    public static LiteRtSamplerParams NearGreedy { get; } = new()
+    {
+        Strategy = LiteRtSamplerType.TopP,
+        TopK = 40,
+        TopP = 0.5f,
+        Temperature = 0.1f,
+        Seed = 0,
+    };
 }

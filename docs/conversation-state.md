@@ -45,7 +45,7 @@ IReadOnlyList<LiteRtMessage> restored = LiteRtMessage.Deserialize(File.ReadAllTe
 
 using var chat2 = engine.CreateConversation(new LiteRtConversationOptions
 {
-    History = restored,                 // re-prefilled into the KV cache on create
+    History = restored,                 // prefilled by the FIRST send, not by this call
 });
 
 Console.WriteLine(chat2.Send("What is my name and what do I like?").Text);
@@ -55,11 +55,14 @@ Console.WriteLine(chat2.Send("What is my name and what do I like?").Text);
 ### What "restore" actually does
 
 Restoring is a **replay through prefill**, not a zero-cost snapshot of the KV cache. The prior turns
-become the conversation's preface and are prefilled when the conversation is created, so:
+become the conversation's preface and are prefilled on the conversation's **first send** (not when it is
+created: right after `CreateConversation` the history is queued but not in the cache, so
+`TokenCount` still reads 0 and the prefill cost is paid by the first `Send`/`SendStreamingAsync`), so:
 
-- It costs a prefill of the whole history (the same work as if those turns had just been sent).
+- It costs a prefill of the whole history (the same work as if those turns had just been sent), and that
+  cost lands on the first reply's time-to-first-token.
 - The restored tokens count against the engine's `MaxNumTokens` context window. Watch
-  `LiteRtConversation.TokenCount` and trim old turns before you run out of room.
+  `LiteRtConversation.TokenCountCached` and trim old turns before you run out of room.
 - There is no on-disk KV-cache format to load; `Serialize` produces messages, not tensors.
 
 ### Tool calls and reasoning
@@ -139,6 +142,40 @@ using var chat = engine.CreateConversation(new LiteRtConversationOptions
 `History` wins when it is non-empty (an empty list falls through to `HistoryJson`). `HistoryJson` is
 validated as a JSON array when the conversation is created and throws `ArgumentException` otherwise.
 
+## Continue after a cancellation
+
+A cancelled conversation is **consumed**: after `CancelProcess()` (or a cancelled `SendAsync`, or an
+abandoned stream) the runtime answers the next send with `CANCELLED` forever on LiteRT-LM v0.16.0/v0.18.0
+(and hangs on v0.14.0). Continuing therefore means a new conversation seeded with
+`History = completed turns + the partial reply`. `Snapshot()`/`Resume()` do exactly that:
+
+```csharp
+using var chat = engine.CreateConversation();
+chat.Send("Compose a 10-line poem about trains.");
+
+// Something urgent arrives (a live translation, a higher-priority job): cut this conversation short.
+chat.CancelProcess();                      // a blocking send on another thread, or a stream, is cut here
+
+// Keep what was received so the model can continue instead of starting over:
+LiteRtConversationSnapshot snapshot = chat.Snapshot();   // captures turns + partial streamed text
+chat.Dispose();
+
+using var resumed = LiteRtConversation.Resume(snapshot);
+Console.WriteLine(resumed.Send("Continue from where you stopped.").Text);
+```
+
+- **Streaming captures the partial text for you** — `Snapshot()` uses the answer text the abandoned
+  stream produced. A **blocking** send that was cut short returns no text to the binding at all, so pass
+  it yourself: `chat.Snapshot(textReceivedSoFar)`, or set it on the record afterwards
+  (`snapshot with { PartialResponse = text }`).
+- **Cost:** one prefill of the whole history when the resumed conversation sends its first message
+  (0.2–1.8 s on desktop CPU for a few hundred to ~1 200 tokens; minutes on a phone for thousands).
+- **The turn log is automatic** for `Send`/`SendAsync`/`SendStreamingAsync`/`SendToolResults`, and it
+  includes the `History` the conversation was created with. A raw `SendRaw` payload in a shape that is not
+  a single message object makes `Snapshot()` throw rather than hand back a lossy history — keep your own
+  turn log and use `History` in that case.
+- The engine must still be alive when you resume; the snapshot reuses it as-is.
+
 ## Clone a conversation
 
 `LiteRtConversation.Clone()` duplicates a conversation's prefilled (KV-cache) state into a new,
@@ -188,10 +225,12 @@ A/B two sampler settings or two phrasings from the same context.
 |---|---|---|
 | Resume a chat after the app restarts | `History` / `HistoryJson` | Re-prefills the history |
 | Seed a conversation with few-shot examples | `History` / `HistoryJson` | Re-prefills the examples |
+| Continue a chat you had to cancel or evict | `Snapshot()` → `Resume()` | Re-prefills the history (once) |
 | Branch a live conversation into variants | `Clone()` | Copies state, no re-prefill |
 | Checkpoint before a risky turn, then retry | `Clone()` | Copies state, no re-prefill |
 
-The two compose: clone is the cheap same-process fork of live state; restore is the durable
+The three compose: clone is the cheap same-process fork of live state; snapshot/resume is how you keep a
+conversation that was cut short (the only option once the runtime has cancelled it); restore is the durable
 cross-session reload.
 
 ## Cap a single send: per-send `MaxOutputTokens`

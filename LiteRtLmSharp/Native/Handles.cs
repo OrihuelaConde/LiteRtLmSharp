@@ -32,15 +32,50 @@ internal sealed class EngineSettingsHandle(nint handle) : LiteRtLmHandle(handle)
 /// <see cref="EngineHandle.ReleaseHandle"/> — which runs on Dispose AND on finalization, so a
 /// GC'd-but-undisposed engine still frees the slot (and only after the native engine is gone).
 /// </summary>
+/// <remarks>
+/// <see cref="AllowMultiple"/> lifts the rule (opt-in, see <see cref="LiteRtEngine.AllowMultipleEngines"/>):
+/// the counter then tracks how many engines are alive instead of being a 0/1 slot. Either way the counter
+/// never goes negative, so a double dispose or a finalizer/dispose race cannot corrupt it.
+/// </remarks>
 internal static class EngineLiveness
 {
     private static int s_live;
+    private static volatile bool s_allowMultiple;
 
-    /// <summary>Tries to take the single engine slot; returns false if one is already live.</summary>
-    public static bool TryAcquire() => Interlocked.CompareExchange(ref s_live, 1, 0) == 0;
+    /// <summary>Whether any number of engines may be alive at once (off by default).</summary>
+    public static bool AllowMultiple
+    {
+        get => s_allowMultiple;
+        set => s_allowMultiple = value;
+    }
 
-    /// <summary>Frees the engine slot.</summary>
-    public static void Release() => Interlocked.Exchange(ref s_live, 0);
+    /// <summary>How many engines are currently alive (0 with the single-engine rule in force).</summary>
+    public static int LiveCount => Volatile.Read(ref s_live);
+
+    /// <summary>Takes an engine slot: always succeeds in multi-engine mode, otherwise only when no engine
+    /// is live.</summary>
+    public static bool TryAcquire()
+    {
+        if (s_allowMultiple)
+        {
+            Interlocked.Increment(ref s_live);
+            return true;
+        }
+        return Interlocked.CompareExchange(ref s_live, 1, 0) == 0;
+    }
+
+    /// <summary>Frees an engine slot (never below zero).</summary>
+    public static void Release()
+    {
+        int current;
+        do
+        {
+            current = Volatile.Read(ref s_live);
+            if (current <= 0)
+                return;
+        }
+        while (Interlocked.CompareExchange(ref s_live, current - 1, current) != current);
+    }
 }
 
 internal sealed class EngineHandle(nint handle) : LiteRtLmHandle(handle)
@@ -48,7 +83,7 @@ internal sealed class EngineHandle(nint handle) : LiteRtLmHandle(handle)
     protected override bool ReleaseHandle()
     {
         LiteRtLmNative.litert_lm_engine_delete(handle);
-        // Free the one-engine slot only after the native engine is destroyed (ordering matters: a new
+        // Free this engine's slot only after the native engine is destroyed (ordering matters: a new
         // engine must not be created while this one's native object still exists). This runs on Dispose
         // and on finalization, so even a forgotten/GC'd engine releases the slot — but note that every
         // LiteRtConversation strongly references its engine (for the KV overflow guard), so finalization
