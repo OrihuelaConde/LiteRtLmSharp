@@ -1,0 +1,17 @@
+:root{--bar:#7c66dc;--lav:#b1a0eb;--gray:#bebec8;--white:#fff;--panel:#13111b;}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1600px;height:900px;overflow:hidden}
+body{font-family:'Segoe UI','Inter','Liberation Sans',sans-serif;color:var(--white);
+ background:linear-gradient(135deg,#18181e 0%,#1c1a26 45%,#2a1f42 100%);position:relative}
+.bar{position:absolute;left:0;top:0;width:1600px;height:10px;background:var(--bar)}
+.wrap{position:absolute;left:80px;top:64px;right:80px;bottom:64px;display:flex;flex-direction:column}
+.kicker{font-size:36px;font-weight:600;color:var(--lav);letter-spacing:.01em}
+h1{font-size:88px;line-height:1.08;font-weight:800;letter-spacing:-.015em;white-space:nowrap;margin-top:14px}
+.sub{font-size:38px;color:var(--gray);margin-top:14px;white-space:nowrap}
+.foot{margin-top:auto;display:flex;justify-content:space-between;align-items:baseline;font-size:30px}
+.foot .cmd{font-family:'Liberation Mono','DejaVu Sans Mono',monospace;color:var(--white);font-weight:700;font-size:30px}
+.foot .cmd b{color:var(--lav);font-weight:700}
+.foot .url{color:var(--lav);font-weight:600}
+.mono{font-family:'Liberation Mono','DejaVu Sans Mono',monospace}
+.disc{font-size:28px;color:#9a98ad;margin-top:auto;padding-bottom:22px}
+.foot{margin-top:0}

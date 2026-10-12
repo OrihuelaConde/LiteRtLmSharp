@@ -1,0 +1,33 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>LiteRtLmSharp 1.3.0 B</title>
+<link rel="stylesheet" href="base.css">
+<style>
+.cards{display:flex;gap:24px;margin-top:36px}
+.card{flex:1;background:var(--panel);border:3px solid var(--bar);border-radius:14px;padding:14px 36px 16px;display:flex;flex-direction:column;gap:2px;white-space:nowrap}
+.num{font-size:112px;font-weight:800;color:var(--lav);letter-spacing:-.02em;line-height:1.05}
+.num small{font-size:52px;font-weight:700;margin-left:6px}
+.big{font-size:66px;font-weight:800;color:var(--lav);letter-spacing:-.015em;line-height:1.1}.cap{font-size:34px;color:var(--white);font-weight:600;line-height:1.25}
+.note{font-size:28px;color:#9a98ad;margin-top:12px}
+ul{list-style:none;margin-top:24px;display:flex;flex-direction:column;gap:10px}
+li{font-size:33px;color:var(--gray);white-space:nowrap;display:flex;align-items:baseline;gap:18px}
+li::before{content:"";flex:none;width:14px;height:14px;border-radius:3px;background:var(--bar);transform:translateY(-3px)}
+li b{color:var(--white);font-weight:700}
+li .m{font-family:'Liberation Mono','DejaVu Sans Mono',monospace;color:var(--lav);font-weight:700;font-size:31px}
+.sub{font-size:36px}.kicker b{color:var(--white);font-weight:800}.sub b{color:var(--lav);font-weight:800}
+</style></head><body><div class="bar"></div>
+<div class="wrap">
+ <div class="kicker">LiteRtLmSharp 1.3.0</div>
+ <h1>Now with on-device embeddings</h1>
+ <div class="sub">Run LLMs on-device from any <b>.NET</b> app. Semantic search and RAG, fully offline.</div>
+ <div class="cards">
+  <div class="card"><div class="big">EmbeddingGemma 2</div><div class="cap">Now supported. A 165 MB model file.</div></div>
+  <div class="card"><div class="big">Offline</div><div class="cap">No server. No cloud.</div></div>
+ </div>
+ <ul>
+  <li><span><span class="m">IEmbeddingGenerator</span> for <b>Microsoft.Extensions.AI</b> and <b>Semantic Kernel</b></span></li>
+  <li><span>New runtimes: <b>linux-arm64</b> and the <b>Android x64</b> emulator</span></li>
+  <li><span>LiteRT-LM <b>v0.18.0</b> natives, Google's official prebuilts</span></li>
+  <li><span><span class="m">LiteRtModelInfo.Read(path)</span> reads model metadata without loading it</span></li>
+ </ul>
+ <div class="disc">Community project, not affiliated with Google.</div>
+ <div class="foot"><span class="cmd"><b>$</b> dotnet add package LiteRtLmSharp</span><span class="url">github.com/OrihuelaConde/LiteRtLmSharp</span></div>
+</div></body></html>

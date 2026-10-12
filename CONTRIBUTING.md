@@ -75,6 +75,7 @@ hang otherwise outlives the test run and keeps the model loaded.
 | `runtimes/` | Native binaries restored locally by `restore-natives.ps1` (never committed) |
 | `samples/` | Console and MAUI sample apps (separate solution) |
 | `scripts/` | Dev scripts |
+| `assets/` | Sources of the release announcement card |
 | `docs/` | [Roadmap](docs/roadmap.md) (status source of truth), [native ABI](docs/native-abi.md), [native build](docs/native-build.md), [packaging](docs/packaging.md), [Android notes](docs/android.md) |
 
 ## Guidelines
