@@ -45,11 +45,11 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Tokenize/detokenize + start/stop tokens (exact token counting, no inference) | ✅ |
 | Render a message (`RenderMessage`) or the whole preface (`RenderPreface`) to its templated prompt for debugging / exact-cost budgeting | ✅ |
 | CPU thread counts, LoRA adapters (engine ranks + per-conversation paths; the runtime applies an adapter engine-wide, see [engine-tuning](engine-tuning.md#lora-adapters-engine-ranks-and-adapter-paths)), per-send output cap, tool-call streaming (v0.14.0 surface) | ✅ |
-| .NET AI integrations: `Microsoft.Extensions.AI` `IChatClient` (+ Agent Framework) and `IEmbeddingGenerator`, and a Semantic Kernel connector (separate packages) | ✅ (embedding generator: branch) |
-| Embeddings: `LiteRtEmbeddingEngine` (EmbeddingGemma 2; Matryoshka truncation, normalization, overflow strategies, thread-safe; coexists with a chat engine) | ✅ (branch) |
-| Model metadata without loading (`LiteRtModelInfo.Read`: type, context, inputs, backends, speculative support, embedding sizes) | ✅ (branch) |
-| Native error reporting (v0.18.0 `error_reporter.h`): every failed native call surfaces the runtime's own status and reason in `LiteRtException` (+ `StatusCode`, `LiteRtStatusCode`) instead of a bare "returned null" | ✅ (branch) |
-| v0.18.0 options: per-image vision token cap (`MaxVisionTokensPerImage`), Metal residency (`EnableMetalResidencySet`), per-conversation speculative decoding (`LiteRtConversationOptions.EnableSpeculativeDecoding`) | ✅ (branch) |
+| .NET AI integrations: `Microsoft.Extensions.AI` `IChatClient` (+ Agent Framework) and `IEmbeddingGenerator`, and a Semantic Kernel connector (separate packages) | ✅ (embedding generator: 1.3.0) |
+| Embeddings: `LiteRtEmbeddingEngine` (EmbeddingGemma 2; Matryoshka truncation, normalization, overflow strategies, thread-safe; coexists with a chat engine) | ✅ (1.3.0) |
+| Model metadata without loading (`LiteRtModelInfo.Read`: type, context, inputs, backends, speculative support, embedding sizes) | ✅ (1.3.0) |
+| Native error reporting (v0.18.0 `error_reporter.h`): every failed native call surfaces the runtime's own status and reason in `LiteRtException` (+ `StatusCode`, `LiteRtStatusCode`) instead of a bare "returned null" | ✅ (1.3.0) |
+| v0.18.0 options: per-image vision token cap (`MaxVisionTokensPerImage`), Metal residency (`EnableMetalResidencySet`), per-conversation speculative decoding (`LiteRtConversationOptions.EnableSpeculativeDecoding`) | ✅ (1.3.0) |
 | KV overflow guard (`LiteRtContextOverflowException`): sends clamp their reply to the remaining context and throw instead of overflowing the KV cache, which the native runtime does not police (heap corruption + deferred `0xC0000005`/`0xC0000374` crash — found by a downstream consumer app, 2026-07-13, in a stateful tool loop). Same-turn signal: `LiteRtConversation.IsContextFull` (true exactly when the next send would throw) → `ChatFinishReason.Length` in the MEAI client, overriding `ToolCalls` on a full conversation. Armed by an explicit `MaxNumTokens`; pure binding, no new native surface. **Done 2026-07-15** | ✅ |
 
 Known constraints (documented in the README): one chat engine ALIVE at a time (an embedding engine does
@@ -178,6 +178,14 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
 > above). Multimodal embeddings (image and audio inputs) are the open part.
 
 ## Actionable next steps (suggested order)
+
+-5. **AFTER 1.3.0 (open as of 2026-10-12).** (a) Review pull request #15, the first external contribution
+   (opt-in second engine, non-blocking `TokenCount`, snapshot/resume, sampler diagnostics): it changes the
+   one-live-engine rule, so it needs a careful read and our own measurements. (b) Embeddings demo in the
+   MAUI sample. (c) Upstream answers to LiteRT-LM#3929 (EmbeddingGemma 2 prefixes) and #3932 (CPU sampler
+   types), see the watchlist. (d) Carried over: iOS on a device, osx-arm64 as a NuGet package, linux-x64 GPU
+   on real hardware with the official libraries. The 1.3.0 announcement went out on X with the card kept in
+   `assets/release-card/`.
 
 -4. **v0.18.0 CYCLE → 1.3.0 — CLOSED: 1.3.0 PUBLISHED 2026-10-12 (started 2026-10-06).** Upstream v0.18.0 (2026-10-06) ships
    EmbeddingGemma 2 (multimodal embeddings, Matryoshka truncation), a model-info API, a thread-local
@@ -721,7 +729,8 @@ AOT/trim-clean** (MEAI/SK aren't); the core `LiteRtLmSharp` package keeps its AO
 
 ## Watchlist (re-check periodically)
 
-**Last re-checked: 2026-10-06 (start of the v0.18.0 cycle).**
+**Last re-checked: 2026-10-12 (1.3.0 published).** Six days after its release, v0.18.0 still had no C API
+zip, and no newer release existed.
 
 - **Releases:** v0.16.1 (build-flag fix, no new artifacts), v0.17.0, v0.17.1 and v0.18.0 (2026-10-06).
   None after v0.16.0 carries the C API zip (LiteRT-LM#3569, closed with "the C API release will resume
