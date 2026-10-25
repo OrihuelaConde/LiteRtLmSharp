@@ -55,9 +55,6 @@ public sealed class LiteRtConversation : IDisposable
     // filling the unset field from these before building the per-send config. Inherited by Clone().
     private readonly bool? _thinkingEnable;
     private readonly int? _thinkingBudget;
-    // The sampler strategy an explicit LiteRtSamplerParams asked for (null = the conversation used the
-    // engine/model default), kept only so a rejected sampler can be named in the exception. Inherited by Clone().
-    private readonly LiteRtSamplerType? _samplerStrategy;
     // The options this conversation was created with, replayed by Resume() so a resumed conversation keeps
     // the system message, tools, sampler and caps of the interrupted one. Inherited by Clone().
     private readonly LiteRtConversationOptions? _options;
@@ -80,8 +77,7 @@ public sealed class LiteRtConversation : IDisposable
         ConversationHandle conversation, ConversationConfigHandle? config, SessionConfigHandle? sessionConfig,
         LiteRtEngine engineOwner, int visualTokenBudget = 0, int maxOutputTokens = 0,
         string? toolCallStreamChannel = null, bool hasConstraintProvider = false,
-        bool? thinkingEnable = null, int? thinkingBudget = null, LiteRtSamplerType? samplerStrategy = null,
-        LiteRtConversationOptions? options = null)
+        bool? thinkingEnable = null, int? thinkingBudget = null, LiteRtConversationOptions? options = null)
     {
         _conversation = conversation;
         _config = config;
@@ -93,7 +89,6 @@ public sealed class LiteRtConversation : IDisposable
         _hasConstraintProvider = hasConstraintProvider;
         _thinkingEnable = thinkingEnable;
         _thinkingBudget = thinkingBudget;
-        _samplerStrategy = samplerStrategy;
         _options = options;
     }
 
@@ -185,15 +180,17 @@ public sealed class LiteRtConversation : IDisposable
                     {
                         // v0.14.0: build the opaque sampler params, set ALL four fields (create() zeroes
                         // them — not the ecosystem defaults our record always carries), copy them into the
-                        // session config, then delete immediately (try/finally so it can't leak).
+                        // session config, then delete immediately (try/finally so it can't leak). Greedy and
+                        // TopK reach the runtime as TopP (see NativeSampler).
+                        (LiteRtSamplerType nativeType, int topK, float topP) = NativeSampler(s);
                         NativeError.Clear();
-                        nint samplerParams = LiteRtLmNative.litert_lm_sampler_params_create((LiteRtLmSamplerType)s.Strategy);
+                        nint samplerParams = LiteRtLmNative.litert_lm_sampler_params_create((LiteRtLmSamplerType)nativeType);
                         if (samplerParams == nint.Zero)
                             throw NativeError.Exception("litert_lm_sampler_params_create returned null.");
                         try
                         {
-                            LiteRtLmNative.litert_lm_sampler_params_set_top_k(samplerParams, s.TopK);
-                            LiteRtLmNative.litert_lm_sampler_params_set_top_p(samplerParams, s.TopP);
+                            LiteRtLmNative.litert_lm_sampler_params_set_top_k(samplerParams, topK);
+                            LiteRtLmNative.litert_lm_sampler_params_set_top_p(samplerParams, topP);
                             LiteRtLmNative.litert_lm_sampler_params_set_temperature(samplerParams, s.Temperature);
                             // Seed 0 (the default) = deterministic, matching the engine default and
                             // Google's official bindings (Kotlin defaults 0; python maps unset -> 0).
@@ -294,9 +291,8 @@ public sealed class LiteRtConversation : IDisposable
             NativeError.Clear();
             nint convPtr = LiteRtLmNative.litert_lm_conversation_create(engine.Handle.Ptr, configPtr);
             if (convPtr == nint.Zero)
-                throw TranslateSamplerFailure(
-                    NativeError.Exception("litert_lm_conversation_create returned null."),
-                    options?.Sampler?.Strategy);
+                throw NativeError.Exception("litert_lm_conversation_create returned null.",
+                    report => IsUnsupportedSamplerError(report?.Message) ? SamplerNotSupportedHint : null);
 
                 var conversation = new LiteRtConversation(
                 new ConversationHandle(convPtr), config, sessionConfig, engine,
@@ -304,7 +300,6 @@ public sealed class LiteRtConversation : IDisposable
                 options?.StreamToolCalls == true ? ToolCallStreamChannelName : null,
                 options?.ConstraintProvider is not null,
                 options?.EnableThinking, options?.ThinkingTokenBudget,
-                    options?.Sampler?.Strategy,
                     options);
                 // The turn log Snapshot()/Resume() work from starts with the history this conversation was
                 // created with, so a snapshot is the whole conversation and not just what happened after it.
@@ -471,8 +466,6 @@ public sealed class LiteRtConversation : IDisposable
     /// <exception cref="ArgumentException">The snapshot carries nothing to resume (no turns and no partial
     /// text).</exception>
     /// <exception cref="ObjectDisposedException">The engine in the snapshot is disposed.</exception>
-    /// <exception cref="LiteRtSamplerNotSupportedException">The snapshot's sampler is not implemented by the
-    /// engine's backend.</exception>
     public static LiteRtConversation Resume(LiteRtConversationSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -627,7 +620,7 @@ public sealed class LiteRtConversation : IDisposable
         var clone = new LiteRtConversation(
             new ConversationHandle(clonedPtr), config: null, sessionConfig: null, _engineOwner,
             _visualTokenBudget, _maxOutputTokens, _toolCallStreamChannel, _hasConstraintProvider,
-            _thinkingEnable, _thinkingBudget, _samplerStrategy, _options);
+            _thinkingEnable, _thinkingBudget, _options);
         // The branch starts from the same prefilled prefix, so it inherits the turn log: a Snapshot() taken
         // from the clone then describes the clone's whole conversation, not just its own turns.
         clone._turns.AddRange(_turns);
@@ -930,10 +923,8 @@ public sealed class LiteRtConversation : IDisposable
             // executor should not be null"), or when the runtime reported nothing; a specific native reason
             // (an undecodable image, a visual budget above the per-image cap) speaks for itself.
             bool smallContext = LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(_engineOwner.MaxNumTokens);
-            throw TranslateSamplerFailure(
-                NativeError.Exception("litert_lm_conversation_send_message returned null.",
-                    report => SendFailureHint(report?.Message, hasMedia, smallContext)),
-                _samplerStrategy);
+            throw NativeError.Exception("litert_lm_conversation_send_message returned null.",
+                report => SendFailureHint(report?.Message, hasMedia, smallContext));
         }
 
         using var response = new JsonResponseHandle(responsePtr);
@@ -1015,52 +1006,38 @@ public sealed class LiteRtConversation : IDisposable
         => nativeMessage.Contains("executor should not be null", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Whether a native failure is the unmatched-sampler failure of the CPU backend
-    /// (<c>UNIMPLEMENTED: Sampler type: 3</c> for Greedy/TopK — the message names the numeric type and never
-    /// the word "unsupported", so the numeric "Sampler type" marker is the signal). Tolerant of a null
-    /// message and of the status-less variant.
+    /// The sampler type and the TopK/TopP values sent to the runtime for <paramref name="sampler"/>. Greedy
+    /// and TopK are mapped onto TopP, the one type every LiteRT-LM backend builds (the CPU backend rejects the
+    /// others with UNIMPLEMENTED, and the GPU backend runs every type as TopP): Greedy becomes TopP with
+    /// TopK = 1, which is exact argmax, and TopK becomes TopP with TopP = 1, which is plain top-k sampling.
+    /// Only the field that defines the strategy changes; temperature and seed are sent as given.
+    /// </summary>
+    internal static (LiteRtSamplerType Type, int TopK, float TopP) NativeSampler(LiteRtSamplerParams sampler)
+        => sampler.Strategy switch
+        {
+            LiteRtSamplerType.Greedy => (LiteRtSamplerType.TopP, 1, sampler.TopP),
+            LiteRtSamplerType.TopK => (LiteRtSamplerType.TopP, sampler.TopK, 1.0f),
+            _ => (sampler.Strategy, sampler.TopK, sampler.TopP),
+        };
+
+    /// <summary>
+    /// Whether a native failure is the runtime's rejection of a sampler type its backend does not build
+    /// (<c>UNIMPLEMENTED: Sampler type: 1 not implemented yet.</c>; the message names the numeric type).
+    /// Since the binding maps Greedy and TopK onto TopP, this can only come from a sampler the model file
+    /// declares, used when <see cref="LiteRtConversationOptions.Sampler"/> is not set.
     /// </summary>
     internal static bool IsUnsupportedSamplerError(string? nativeReason)
-    {
-        if (string.IsNullOrEmpty(nativeReason))
-            return false;
-        if (nativeReason.Contains("Sampler type", StringComparison.OrdinalIgnoreCase))
-            return true;
-        // A newer runtime may phrase it differently; require BOTH the sampler word and an unimplemented
-        // marker so an unrelated "unimplemented setting" error is not rewritten into a sampler diagnosis.
-        return nativeReason.Contains("sampler", StringComparison.OrdinalIgnoreCase)
-            && (nativeReason.Contains("not implemented", StringComparison.OrdinalIgnoreCase)
-                || nativeReason.Contains("UNIMPLEMENTED", StringComparison.Ordinal));
-    }
+        => nativeReason is not null
+           && nativeReason.Contains("Sampler type:", StringComparison.OrdinalIgnoreCase)
+           && nativeReason.Contains("not implemented", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>
-    /// Guidance appended when a send fails because the backend does not implement the requested sampler.
-    /// Names the strategy when the caller asked for one, and what has been measured about the native
-    /// behavior around it (LiteRT-LM v0.18.0, CPU), so the caller knows what to do next.
-    /// </summary>
-    internal static string SamplerNotSupportedHint(LiteRtSamplerType? strategy) =>
-        "The engine's backend does not implement " +
-        (strategy is { } s ? $"the requested sampler ({s})" : "that sampler") +
-        ": the CPU backend of LiteRT-LM v0.14.0-v0.18.0 provides only TopP, and its rejection names the " +
-        "numeric sampler type instead of the problem. Measured on v0.18.0: the conversation is created and only " +
-        "its first send fails — that conversation then stays unusable (later sends fail with INTERNAL); once any " +
-        "send has completed on the engine, the runtime has established its own sampler and a later request for " +
-        "the same strategy is accepted and silently ignored. Use LiteRtSamplerParams.NearGreedy (TopP with " +
-        "TopP=0.5, Temperature=0.1 — the closest supported profile to greedy, and honoured on every backend), " +
-        "leave the sampler Unspecified so the model's own declared sampler applies, or run the model on a " +
-        "backend that implements the strategy. After this failure, continue on a fresh conversation (or on " +
-        "LiteRtConversation.Resume — the rejected conversation is consumed).";
-
-    /// <summary>
-    /// Rewrites the sampler failure into <see cref="LiteRtSamplerNotSupportedException"/> (keeping the
-    /// runtime's status and reason, adding the guidance); every other failure is returned unchanged.
-    /// </summary>
-    internal static LiteRtException TranslateSamplerFailure(LiteRtException failure, LiteRtSamplerType? strategy)
-        => IsUnsupportedSamplerError(failure.Message)
-            ? new LiteRtSamplerNotSupportedException(
-                failure.Message.TrimEnd('.', ' ') + ". " + SamplerNotSupportedHint(strategy),
-                strategy, failure.StatusCode)
-            : failure;
+    /// <summary>Guidance appended when a conversation fails because the backend does not build the
+    /// sampler type the model file declares.</summary>
+    internal const string SamplerNotSupportedHint =
+        "The engine's backend does not build the sampler type the model file declares (the LiteRT-LM CPU " +
+        "backend builds only TopP samplers; LiteRtModelInfo.DefaultSampler shows the model's own sampler). " +
+        "Set LiteRtConversationOptions.Sampler explicitly: the binding sends Greedy and TopK as TopP, which " +
+        "every backend builds. Continue on a fresh conversation, because the one that failed is consumed.";
 
     /// <summary>
     /// Guidance appended when a send carrying an image/audio attachment fails the way an unconfigured
@@ -1111,6 +1088,8 @@ public sealed class LiteRtConversation : IDisposable
             ? MultimodalSendHint : null;
         if (smallContext && IsSmallContextFailure(nativeMessage))
             hint = hint is null ? SmallContextSendHint : hint + " " + SmallContextSendHint;
+        if (IsUnsupportedSamplerError(nativeMessage))
+            hint = hint is null ? SamplerNotSupportedHint : hint + " " + SamplerNotSupportedHint;
         return hint;
     }
 
@@ -1339,9 +1318,7 @@ public sealed class LiteRtConversation : IDisposable
 
         var channel = Channel.CreateUnbounded<LiteRtStreamChunk>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
-        var state = new StreamState(
-            channel, _toolCallStreamChannel, _engineOwner.MaxNumTokens, attachments is { Count: > 0 },
-            _samplerStrategy);
+        var state = new StreamState(channel, _toolCallStreamChannel, _engineOwner.MaxNumTokens, attachments is { Count: > 0 });
         // The optional args (visual token budget) must stay alive for the whole stream: the native
         // decode thread reads them during prefill. Freed in the finally, after the channel completes.
         // Built before the GCHandle so that if native allocation fails we don't leak a pinned handle.
@@ -1360,11 +1337,9 @@ public sealed class LiteRtConversation : IDisposable
         if (rc != 0)
         {
             // Read the report before any other native call (disposing the args is one).
-            LiteRtException failure = TranslateSamplerFailure(
-                NativeError.Exception($"litert_lm_conversation_send_message_stream failed with code {rc}.",
-                    report => SendFailureHint(report?.Message, attachments is { Count: > 0 },
-                        LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(_engineOwner.MaxNumTokens))),
-                _samplerStrategy);
+            LiteRtException failure = NativeError.Exception($"litert_lm_conversation_send_message_stream failed with code {rc}.",
+                report => SendFailureHint(report?.Message, attachments is { Count: > 0 },
+                    LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(_engineOwner.MaxNumTokens)));
             if (gcHandle.IsAllocated) gcHandle.Free();
             optionalArgs?.Dispose();
             throw failure;
@@ -1472,11 +1447,10 @@ public sealed class LiteRtConversation : IDisposable
                 // build the same exception as the blocking path, with the status, the one-line reason
                 // and only the guidance that fits it.
                 string statusText = Marshal.PtrToStringUTF8(errorMsg) ?? "";
-                state.Channel.Writer.TryComplete(TranslateSamplerFailure(NativeError.FromStatusText(
+                state.Channel.Writer.TryComplete(NativeError.FromStatusText(
                     "litert_lm_conversation_send_message_stream failed.", statusText,
                     report => SendFailureHint(report?.Message, state.HasMedia,
-                        LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(state.MaxNumTokens))),
-                    state.SamplerStrategy));
+                        LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(state.MaxNumTokens))));
             }
             else if (text != nint.Zero)
             {
@@ -1547,9 +1521,7 @@ public sealed class LiteRtConversation : IDisposable
         return chunks;
     }
 
-    private sealed class StreamState(
-        Channel<LiteRtStreamChunk> channel, string? toolCallChannel, int maxNumTokens, bool hasMedia,
-        LiteRtSamplerType? samplerStrategy = null)
+    private sealed class StreamState(Channel<LiteRtStreamChunk> channel, string? toolCallChannel, int maxNumTokens, bool hasMedia)
     {
         public readonly Channel<LiteRtStreamChunk> Channel = channel;
         public readonly string? ToolCallChannel = toolCallChannel;
@@ -1557,9 +1529,6 @@ public sealed class LiteRtConversation : IDisposable
         public readonly int MaxNumTokens = maxNumTokens;
         /// <summary>Whether the message carries an image or audio, for the multimodal hint on a failed stream.</summary>
         public readonly bool HasMedia = hasMedia;
-        /// <summary>The sampler strategy this conversation asked for, for a sampler failure delivered as a
-        /// stream error chunk.</summary>
-        public readonly LiteRtSamplerType? SamplerStrategy = samplerStrategy;
     }
 
     /// <summary>Disposes the conversation, freeing its native resources (and its config handles). Dispose

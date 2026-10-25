@@ -68,12 +68,7 @@ version number**. Which LiteRT-LM native build each release wraps:
 > silently loses the suspended conversation's state (upstream #2807, fixed in v0.15.0), and a send on a
 > conversation after a cancellation does not return. The binding cannot detect the native version at
 > runtime, so on those versions keep one conversation alive at a time and dispose a cancelled
-> conversation instead of sending on it again. Also note that on every v0.14.0–v0.18.0 CPU backend only the **TopP** sampler is implemented —
-> a conversation asking for `Greedy`/`TopK` is created and then fails its first send with
-> `UNIMPLEMENTED: Sampler type: 3`, which this binding reports as `LiteRtSamplerNotSupportedException`
-> (the conversation is consumed by that failure; once any send has completed on the engine, the runtime
-> ignores later sampler parameters instead, so the requested strategy is silently not applied). Use
-> `LiteRtSamplerParams.NearGreedy` for argmax-like output.
+> conversation instead of sending on it again.
 
 ```csharp
 using LiteRtLmSharp;

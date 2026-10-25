@@ -30,9 +30,6 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         };
     }
 
-    private static bool IsCpu =>
-        LiteRtBackend.Parse(Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu") == LiteRtBackend.Cpu;
-
     /// <summary>Exact argmax over the TopP sampler (TopK = 1), so replies can be compared byte for byte.</summary>
     private static readonly LiteRtSamplerParams Argmax = new() { Strategy = LiteRtSamplerType.TopP, TopK = 1 };
 
@@ -146,53 +143,35 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// The sampler story the CPU backend forces callers to know (measured on native v0.18.0, gemma-4 E2B):
-    /// a conversation asking for Greedy is created without complaint and fails its FIRST send with the opaque
-    /// <c>UNIMPLEMENTED: Sampler type: 3</c> — which the binding turns into a
-    /// <see cref="LiteRtSamplerNotSupportedException"/> naming the strategy and the way out. TopP is
-    /// implemented and honoured, and the engine is unharmed by the rejection.
+    /// Greedy and TopK work on every backend because the binding sends them as TopP (measured on LiteRT-LM
+    /// v0.18.0: the CPU backend rejects the raw types with UNIMPLEMENTED on a fresh engine, and the GPU backend
+    /// runs them as TopP). On a fresh engine, Greedy must decode exact argmax: with a hot temperature and two
+    /// different seeds it still gives the argmax reply, which a sampled TopP reply would not.
     /// </summary>
-    /// <remarks>
-    /// Deliberately narrow: the retry/second-conversation behavior around the rejection is native state (the
-    /// runtime establishes its sampler once per engine), and pinning it here would make the suite fail on a
-    /// later native version that changes it without any regression in this binding. The two facts a caller
-    /// depends on are asserted instead.
-    /// </remarks>
     [SkippableFact]
-    public void UnsupportedSampler_ShouldFailTheFirstSendWithAReadableDiagnosis()
+    public void GreedyAndTopK_ShouldWorkOnAFreshEngine_AndGreedyShouldBeArgmax()
     {
         LiteRtEngineOptions? options = Options();
         Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
-        Skip.IfNot(IsCpu, "The Greedy/TopK gap is a CPU-backend limitation (the GPU backend implements them).");
 
         using var engine = LiteRtEngine.Load(options);
-
-        using var greedy = engine.CreateConversation(new LiteRtConversationOptions
+        string Reply(LiteRtSamplerParams sampler)
         {
-            Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.Greedy },
-            MaxOutputTokens = 8,
-        });
+            using var conv = engine.CreateConversation(new LiteRtConversationOptions { Sampler = sampler, MaxOutputTokens = 48 });
+            return conv.Send(StoryPrompt).Text ?? "";
+        }
 
-        // Creation succeeds; the failure only appears when generation starts.
-        var ex = Assert.Throws<LiteRtSamplerNotSupportedException>(() => greedy.Send("hi"));
-        Assert.Equal(LiteRtSamplerType.Greedy, ex.SamplerType);
-        Assert.Equal(LiteRtStatusCode.Unimplemented, ex.StatusCode);
-        // The runtime's own words survive (the numeric type is the only clue it gives), next to the
-        // explanation and the way out.
-        Assert.Contains("Sampler type: 3", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("NearGreedy", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("consumed", ex.Message, StringComparison.Ordinal);
+        // The first conversation on the fresh engine asks for Greedy: the case the CPU backend rejected.
+        var hotGreedy = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.Greedy, Temperature = 1.6f };
+        string greedy7 = Reply(hotGreedy with { Seed = 7 });
+        string greedy8 = Reply(hotGreedy with { Seed = 8 });
+        string argmax = Reply(Argmax);
+        Assert.Equal(argmax, greedy7);
+        Assert.Equal(argmax, greedy8);
 
-        // TopP is the strategy that works — and the engine is unharmed by the rejected conversation.
-        using var topP = engine.CreateConversation(new LiteRtConversationOptions
-        {
-            Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP },
-            MaxOutputTokens = 8,
-        });
-        Assert.False(string.IsNullOrWhiteSpace(topP.Send("Reply with one short word: hello").Text));
-
-        using var fine = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 8 });
-        Assert.False(string.IsNullOrWhiteSpace(fine.Send("Reply with one short word: hello").Text));
+        string topK = Reply(new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopK, TopK = 8 });
+        Assert.False(string.IsNullOrWhiteSpace(topK));
+        output.WriteLine($"Greedy/argmax reply: {argmax}");
     }
 
     /// <summary>

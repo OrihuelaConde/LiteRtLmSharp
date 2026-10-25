@@ -9,16 +9,16 @@ public enum LiteRtSamplerType
     /// unspecified sampler type, and v0.18.0 declares it again; not sending parameters preserves the
     /// pre-v0.14.0 behavior, where the unspecified type also deferred to the executor.)</summary>
     Unspecified = 0,
-    /// <summary>Sample probabilistically among the top-k tokens. <b>Not implemented by the CPU backend of
-    /// LiteRT-LM v0.14.0–v0.18.0</b> (see <see cref="LiteRtSamplerNotSupportedException"/>): the first send
-    /// that uses an explicit sampler on a fresh engine fails with <c>UNIMPLEMENTED: Sampler type: 1</c>.</summary>
+    /// <summary>Sample probabilistically among the top-k tokens. Sent to the runtime as
+    /// <see cref="TopP"/> with <see cref="LiteRtSamplerParams.TopP"/> = 1, which is the same sampling
+    /// (see <see cref="LiteRtSamplerParams"/>).</summary>
     TopK = 1,
-    /// <summary>Nucleus (top-p) sampling after a top-k cut. The only strategy the CPU backend implements —
-    /// prefer <see cref="LiteRtSamplerParams.NearGreedy"/> when argmax-like output is wanted.</summary>
+    /// <summary>Nucleus (top-p) sampling after a top-k cut. The one type every LiteRT-LM backend
+    /// builds.</summary>
     TopP = 2,
-    /// <summary>Always pick the highest-probability token (argmax). <b>Not implemented by the CPU backend of
-    /// LiteRT-LM v0.14.0–v0.18.0</b> (see <see cref="LiteRtSamplerNotSupportedException"/>): the first send
-    /// that uses an explicit sampler on a fresh engine fails with <c>UNIMPLEMENTED: Sampler type: 3</c>.</summary>
+    /// <summary>Always pick the highest-probability token (argmax). Sent to the runtime as
+    /// <see cref="TopP"/> with <see cref="LiteRtSamplerParams.TopK"/> = 1, which is exact argmax whatever the
+    /// temperature and seed (see <see cref="LiteRtSamplerParams"/>).</summary>
     Greedy = 3,
 }
 
@@ -31,14 +31,20 @@ public enum LiteRtSamplerType
 /// partial configuration behaves identically across the LiteRT-LM ecosystem.
 /// </summary>
 /// <remarks>
-/// <b>Which strategies actually run.</b> The CPU backend of LiteRT-LM v0.14.0–v0.18.0 implements only
-/// <see cref="LiteRtSamplerType.TopP"/>. An explicit <see cref="LiteRtSamplerType.Greedy"/> or
-/// <see cref="LiteRtSamplerType.TopK"/> fails the first send that uses an explicit sampler on a fresh
-/// engine with <see cref="LiteRtSamplerNotSupportedException"/> — and that conversation stays unusable
-/// afterwards. Once any send has completed on the engine, the runtime has established its own sampler and
-/// a later request for the same strategy is accepted and silently ignored, so the requested sampler is
-/// simply not applied. Prefer <see cref="NearGreedy"/> (an honoured TopP profile), or leave the strategy
-/// <see cref="LiteRtSamplerType.Unspecified"/> and let the model's declared sampler apply.
+/// <para>
+/// <b>How strategies reach the runtime.</b> The LiteRT-LM CPU backend builds only TopP samplers (a Greedy or
+/// TopK session fails its first send with <c>UNIMPLEMENTED</c>), and the GPU backend runs every type as TopP.
+/// The binding therefore sends <see cref="LiteRtSamplerType.Greedy"/> as TopP with <see cref="TopK"/> = 1 and
+/// <see cref="LiteRtSamplerType.TopK"/> as TopP with <see cref="TopP"/> = 1, changing only the field that
+/// defines the strategy, so each strategy behaves as named on every backend.
+/// </para>
+/// <para>
+/// <b>Per conversation and per engine.</b> Measured on LiteRT-LM v0.18.0: each conversation's parameters
+/// (TopK, TopP, temperature and seed) take effect, also on an engine where other conversations already
+/// generated, but the runtime fixes the sampler <i>type</i> per engine at its first decode. With the mapping
+/// above every explicit strategy is TopP, so this only matters next to a conversation that used the model's
+/// own sampler (<see cref="LiteRtSamplerType.Unspecified"/>).
+/// </para>
 /// </remarks>
 public sealed record LiteRtSamplerParams
 {
@@ -79,8 +85,9 @@ public sealed record LiteRtSamplerParams
 
     private readonly float _temperature = 1.0f;
 
-    /// <summary>Sampling temperature: higher is more random, 0 is greedy/argmax. Must be a
-    /// non-negative number. Default 1.0.</summary>
+    /// <summary>Sampling temperature: higher is more random, 0 is greedy/argmax (measured: with TopP,
+    /// temperature 0 gives the same replies as <see cref="LiteRtSamplerType.Greedy"/>, whatever the seed).
+    /// Must be a non-negative number. Default 1.0.</summary>
     /// <exception cref="System.ArgumentOutOfRangeException">The value is NaN or negative.</exception>
     public float Temperature
     {
@@ -100,27 +107,4 @@ public sealed record LiteRtSamplerParams
     /// output that varies between runs.
     /// </summary>
     public int Seed { get; init; }
-
-    /// <summary>
-    /// The "almost greedy" profile: <see cref="LiteRtSamplerType.TopP"/> with <c>TopK = 40</c>,
-    /// <c>TopP = 0.5</c>, <c>Temperature = 0.1</c>, deterministic seed. Use it wherever a
-    /// transcription/translation-style task wants argmax-like output.
-    /// </summary>
-    /// <remarks>
-    /// <b>Why not <see cref="LiteRtSamplerType.Greedy"/>:</b> the CPU backend of LiteRT-LM v0.14.0–v0.18.0
-    /// does not implement it (nor TopK): the request fails the conversation's first send with
-    /// <c>UNIMPLEMENTED: Sampler type: 3</c> (surfaced as
-    /// <see cref="LiteRtSamplerNotSupportedException"/>), and once any send has completed on the engine the
-    /// runtime ignores further sampler parameters instead — so the strategy is either rejected or silently
-    /// not applied. TopP is the one strategy that is implemented and honoured there, and this profile is the
-    /// closest thing to an argmax over it: a deliberately narrow top-p distribution with a low temperature.
-    /// </remarks>
-    public static LiteRtSamplerParams NearGreedy { get; } = new()
-    {
-        Strategy = LiteRtSamplerType.TopP,
-        TopK = 40,
-        TopP = 0.5f,
-        Temperature = 0.1f,
-        Seed = 0,
-    };
 }
