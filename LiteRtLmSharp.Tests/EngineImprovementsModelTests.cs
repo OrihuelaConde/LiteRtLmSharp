@@ -143,6 +143,48 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
     }
 
     /// <summary>
+    /// The cache is refreshed by every completed send, streaming included, and a clone starts with its
+    /// parent's count (it holds the same tokens), so its <see cref="LiteRtConversation.IsContextFull"/> agrees.
+    /// </summary>
+    [SkippableFact]
+    public async Task TokenCountCached_ShouldRefreshAfterAStream_AndCarryOverToAClone()
+    {
+        LiteRtEngineOptions? options = Options();
+        Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(options);
+        using var conv = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax, MaxOutputTokens = 24 });
+        await foreach (LiteRtStreamChunk _ in conv.SendStreamingAsync("Reply with one short word: hello")) { }
+
+        int afterStream = conv.TokenCountCached;
+        Assert.True(afterStream > 0, "A completed stream must refresh the cache.");
+        Assert.Equal(conv.TokenCount, afterStream);
+
+        using var clone = conv.Clone();
+        Assert.Equal(afterStream, clone.TokenCountCached);
+        Assert.Equal(clone.TokenCount, clone.TokenCountCached);
+        Assert.Equal(conv.IsContextFull, clone.IsContextFull);
+    }
+
+    /// <summary>
+    /// The cache does not depend on the overflow guard: on an engine loaded without
+    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> a completed send still refreshes it.
+    /// </summary>
+    [SkippableFact]
+    public void TokenCountCached_ShouldRefreshWithoutMaxNumTokens()
+    {
+        LiteRtEngineOptions? options = Options();
+        Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(options with { MaxNumTokens = 0 });
+        using var conv = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
+        conv.Send("Reply with one short word: hello");
+
+        Assert.True(conv.TokenCountCached > 0, "A completed send must refresh the cache without MaxNumTokens.");
+        Assert.False(conv.IsContextFull);   // no known limit: the guard is off
+    }
+
+    /// <summary>
     /// Greedy and TopK work on every backend because the binding sends them as TopP (measured on LiteRT-LM
     /// v0.18.0: the CPU backend rejects the raw types with UNIMPLEMENTED on a fresh engine, and the GPU backend
     /// runs them as TopP). On a fresh engine, Greedy must decode exact argmax: with a hot temperature and two

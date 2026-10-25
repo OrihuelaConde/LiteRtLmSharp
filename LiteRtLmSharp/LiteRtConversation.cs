@@ -327,7 +327,7 @@ public sealed class LiteRtConversation : IDisposable
     /// queues behind a generation that is in flight on <i>any</i> conversation of the engine — measured at
     /// up to ~12 s on gemma-4 E2B (CPU) when another conversation was decoding thousands of tokens. Use
     /// <see cref="TokenCountCached"/> for display/diagnostics while generation is running, and this property
-    /// when the exact current value matters and nothing is generating. Every successful send refreshes the
+    /// when the exact current value matters and nothing is generating. Every completed send refreshes the
     /// cache, so after a send the two agree.
     /// </remarks>
     public int TokenCount
@@ -340,15 +340,16 @@ public sealed class LiteRtConversation : IDisposable
     }
 
     /// <summary>
-    /// The token count as of the last completed send (or the last <see cref="TokenCount"/> read) —
-    /// <b>never blocks</b>, which is the point: the native <see cref="TokenCount"/> reader queues behind an
-    /// in-flight generation on any conversation of the engine.
+    /// The token count as of the last completed send (or the last <see cref="TokenCount"/> read). It
+    /// <b>never waits</b>, which is the point: the native <see cref="TokenCount"/> reader queues behind a
+    /// generation in flight on any conversation of the engine.
     /// </summary>
     /// <remarks>
-    /// <c>0</c> until the conversation has completed a send or the exact count was read once. Slightly stale
-    /// while a send is in flight (it does not include the turn being generated); refresh it by reading
-    /// <see cref="TokenCount"/> when nothing is generating, or simply after the send completes.
-    /// <see cref="IsContextFull"/> uses the same cache, so it is safe to poll during generation as well.
+    /// <c>0</c> until the conversation has completed a send or the exact count was read once. Every completed
+    /// send refreshes it (blocking, streaming and tool-result sends, each with one native read right after the
+    /// send), so after a send the two agree; while a send is in flight it does not include the turn being
+    /// generated. Unlike the rest of the conversation, this property and <see cref="IsContextFull"/> can be read
+    /// from another thread while a send is in flight, for example by a status line.
     /// </remarks>
     public int TokenCountCached => _cachedTokenCount;
 
@@ -507,9 +508,10 @@ public sealed class LiteRtConversation : IDisposable
     /// next call. Always <c>false</c> when the engine was loaded without an explicit <c>MaxNumTokens</c>
     /// (the limit is then internal to the engine and the guard is off).
     /// </summary>
-    /// <remarks>Reads only the cached token count, so unlike <see cref="TokenCount"/> it never queues behind
-    /// a generation running on another conversation of the same engine and is safe to poll for a status line.
-    /// It lags a send that is still in flight.</remarks>
+    /// <remarks>Reads only the cached token count, so unlike <see cref="TokenCount"/> it never waits behind a
+    /// generation running on another conversation of the same engine, and it can be read from another thread
+    /// while a send is in flight (see <see cref="TokenCountCached"/>). It lags a send that is still in
+    /// flight.</remarks>
     public bool IsContextFull
         => _sawCeiling || LiteRtContextGuard.IsContextFull(_cachedTokenCount, _engineOwner.MaxNumTokens);
 
@@ -621,6 +623,10 @@ public sealed class LiteRtConversation : IDisposable
             new ConversationHandle(clonedPtr), config: null, sessionConfig: null, _engineOwner,
             _visualTokenBudget, _maxOutputTokens, _toolCallStreamChannel, _hasConstraintProvider,
             _thinkingEnable, _thinkingBudget, _options);
+        // The branch holds the same tokens as the parent (the TokenCount check above just refreshed the
+        // parent's cache), and a full parent means a full branch.
+        clone._cachedTokenCount = _cachedTokenCount;
+        clone._sawCeiling = _sawCeiling;
         // The branch starts from the same prefilled prefix, so it inherits the turn log: a Snapshot() taken
         // from the clone then describes the clone's whole conversation, not just its own turns.
         clone._turns.AddRange(_turns);
@@ -680,7 +686,8 @@ public sealed class LiteRtConversation : IDisposable
     /// restore prior turns via <see cref="LiteRtConversationOptions.History"/> yourself. Sending again on a
     /// cancelled conversation returns <c>CANCELLED</c> for every later call (LiteRT-LM v0.16.0 and v0.18.0)
     /// or hangs (v0.14.0); the engine itself is unaffected. While the send is in flight, do not touch the
-    /// conversation from other threads — cancellation is the only supported concurrent operation.
+    /// conversation from other threads — cancellation, and reading <see cref="TokenCountCached"/> or
+    /// <see cref="IsContextFull"/>, are the only supported concurrent operations.
     /// </summary>
     public Task<LiteRtResponse> SendAsync(string text, CancellationToken cancellationToken = default)
         => SendAsync(text, attachments: null, options: null, cancellationToken);
@@ -715,9 +722,9 @@ public sealed class LiteRtConversation : IDisposable
     /// <summary>
     /// Cancels any in-flight generation on this conversation: a blocking <see cref="Send(string)"/>
     /// running on another thread, a <see cref="SendAsync(string, CancellationToken)"/>, or an active
-    /// <see cref="SendStreamingAsync(string, System.Threading.CancellationToken)"/> stream. This is the
-    /// one operation that is safe to call from any thread while a send is in flight; when nothing is in
-    /// flight it is a no-op. A cancelled blocking send fails with <see cref="LiteRtException"/> (the
+    /// <see cref="SendStreamingAsync(string, System.Threading.CancellationToken)"/> stream. Besides reading
+    /// <see cref="TokenCountCached"/> and <see cref="IsContextFull"/>, it is the only operation that is safe to
+    /// call from any thread while a send is in flight; when nothing is in flight it is a no-op. A cancelled blocking send fails with <see cref="LiteRtException"/> (the
     /// async variants translate that to <see cref="OperationCanceledException"/>). Afterwards, treat the
     /// conversation as consumed: dispose it and continue on a fresh one — <see cref="Snapshot"/> +
     /// <see cref="Resume(LiteRtConversationSnapshot)"/> carry the finished turns and the partial reply, or
@@ -770,8 +777,9 @@ public sealed class LiteRtConversation : IDisposable
 
     // The token count the native getter last reported (every internal read refreshes it) so callers can
     // poll the fullness of a conversation that shares its engine with an in-flight generation without
-    // queueing behind it. Conversations are not thread-safe (documented), so a plain field is fine.
-    private int _cachedTokenCount;
+    // queueing behind it. TokenCountCached and IsContextFull are documented as readable from another thread
+    // while a send is in flight, hence volatile.
+    private volatile int _cachedTokenCount;
 
     // Set by GuardContextOverflow on each measured, ceiling-clamped send (pre-send token count, measured
     // prefill, imposed decode budget) and consumed after the send completes to detect — exactly, not by
@@ -779,8 +787,9 @@ public sealed class LiteRtConversation : IDisposable
     // thread-safe (documented), so plain fields are safe here.
     private (int Used, int Input, int Budget)? _ceilingProbe;
     // Latched true once a send is detected to have filled the context (probe above, ± the guard's safety
-    // margin of measurement drift). A context never shrinks, so the latch never resets.
-    private bool _sawCeiling;
+    // margin of measurement drift). A context never shrinks, so the latch never resets. Volatile for the same
+    // reason as _cachedTokenCount (IsContextFull reads it).
+    private volatile bool _sawCeiling;
 
     /// <summary>
     /// The KV overflow guard (see <see cref="LiteRtContextOverflowException"/>), run before every send.
@@ -858,7 +867,8 @@ public sealed class LiteRtConversation : IDisposable
     private void CompleteCeilingProbe()
     {
         // Runs on every completed send, so this is also where the non-blocking cache is refreshed: the
-        // conversation is idle again (its own send just returned) and the read is immediate.
+        // conversation is idle again (its own send just returned), and the read is immediate as long as
+        // sends on the engine are serialized, as documented.
         int count;
         try
         {
@@ -1396,11 +1406,12 @@ public sealed class LiteRtConversation : IDisposable
                 }
                 catch { /* the cancel error is expected here; the consumer already gave up */ }
             }
-            else if (channel.Reader.Completion.IsCompletedSuccessfully && streamedToEnd)
+            else if (channel.Reader.Completion.IsCompletedSuccessfully)
             {
-                // The stream ran to its natural end: same ceiling detection as the blocking path, so a
-                // clamped stream (which just stops, with no error) still latches IsContextFull same-turn.
-                // Abandoned/faulted streams skip it — the conversation is consumed anyway.
+                // The stream ran to its natural end natively (even if the consumer stopped reading after the
+                // last chunk): same ceiling detection and cache refresh as the blocking path, so a clamped
+                // stream (which just stops, with no error) still latches IsContextFull same-turn. Faulted
+                // streams skip it — the conversation is consumed anyway.
                 CompleteCeilingProbe();
             }
 
