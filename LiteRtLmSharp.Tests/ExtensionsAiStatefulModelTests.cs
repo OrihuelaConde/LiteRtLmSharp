@@ -130,6 +130,68 @@ public sealed class ExtensionsAiStatefulModelTests
             "Expected the stateful response to carry a ConversationId.");
     }
 
+    private const string CountPrompt = "Count upward starting from 400, one number per line, and never stop.";
+
+    /// <summary>
+    /// A cancelled continuation keeps its <c>ConversationId</c>: the client rolls the conversation back to the
+    /// checkpoint it took before the send, so the next request on the same id continues from the turn before the
+    /// cut. This is what Agent Framework relies on, since it keeps the session's id after a failed run.
+    /// </summary>
+    [SkippableFact]
+    public async Task Stateful_CancelledContinuation_KeepsTheIdValid()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        var greedy = new ChatOptions { TopK = 1, MaxOutputTokens = 32 };
+
+        ChatResponse first = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is TANGERINE. Reply OK.")], greedy);
+        string id = first.ConversationId!;
+
+        // A blocking continuation cancelled mid-generation.
+        using (var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500)))
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.GetResponseAsync(
+                [new ChatMessage(ChatRole.User, CountPrompt)],
+                new ChatOptions { TopK = 1, MaxOutputTokens = 900, ConversationId = id }, cts.Token));
+
+        ChatResponse recall = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is my code word? One word.")], new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = id });
+        Assert.Equal(id, recall.ConversationId);
+        Assert.Contains("TANGERINE", recall.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The streaming counterpart: a continuation stream the consumer abandons rolls back too.</summary>
+    [SkippableFact]
+    public async Task Stateful_AbandonedContinuationStream_KeepsTheIdValid()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        var greedy = new ChatOptions { TopK = 1, MaxOutputTokens = 32 };
+
+        ChatResponse first = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is OBSIDIAN. Reply OK.")], greedy);
+        string id = first.ConversationId!;
+
+        int updates = 0;
+        await foreach (ChatResponseUpdate _ in client.GetStreamingResponseAsync(
+            [new ChatMessage(ChatRole.User, CountPrompt)],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 900, ConversationId = id }))
+        {
+            if (++updates == 10)
+                break;   // the consumer gives up: the client cancels the native stream
+        }
+
+        ChatResponse recall = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is my code word? One word.")], new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = id });
+        Assert.Contains("OBSIDIAN", recall.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>A request naming a ConversationId the client never issued throws (nothing to resume).</summary>
     [SkippableFact]
     public async Task Stateful_UnknownConversationId_Throws()

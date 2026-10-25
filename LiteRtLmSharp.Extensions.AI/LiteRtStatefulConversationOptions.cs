@@ -43,8 +43,11 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// <b>Lifetime and eviction.</b> Live conversations are held in an LRU cache bounded by
 /// <see cref="MaxLiveConversations"/>. Creating a new conversation beyond that cap evicts and disposes the
 /// least-recently-used one; a request whose <see cref="ChatOptions.ConversationId"/> was evicted (or was
-/// never issued by this client) throws <see cref="ArgumentException"/>. Disposing the client disposes all
-/// live conversations. There is no time-based expiry in this mode — size the cap for your concurrency.
+/// never issued by this client) throws <see cref="ArgumentException"/>. A cancelled or failed send on a
+/// continuation does not lose its id: the client takes a <see cref="LiteRtConversation.Clone"/> checkpoint
+/// before each continuation send and, if the send does not complete, puts the checkpoint back under the same
+/// id, discarding the cut turn (re-send it to get the answer). In a function-invocation loop, a cancellation
+/// rolls back only the round it interrupts. Disposing the client disposes all live conversations. There is no time-based expiry in this mode — size the cap for your concurrency.
 /// (Multiple live conversations require native LiteRT-LM v0.15.0+: earlier runtimes silently lost a
 /// suspended conversation's state when another advanced, and this mode was hard-limited to one live
 /// conversation until the fix shipped.)
@@ -65,7 +68,7 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// overriding <see cref="ChatFinishReason.ToolCalls"/> — a full conversation cannot be continued, so treat
 /// <c>Length</c> as "this thread is over"). A "message doesn't fit" rejection happens before any native
 /// work and <b>keeps the live conversation resumable</b> — retry the id with a shorter message; a "context
-/// is full" rejection is terminal and evicts it like a cancelled one — resuming its id then throws
+/// is full" rejection is terminal and evicts it — resuming its id then throws
 /// <see cref="ArgumentException"/>; start a new conversation, summarizing or trimming what must carry over.
 /// </para>
 /// </remarks>

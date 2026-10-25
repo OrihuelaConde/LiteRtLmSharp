@@ -83,6 +83,9 @@ public sealed class LiteRtChatClient : IChatClient
     // conversations to fork otherwise). Allocated once in the constructor so GetService needs no locking.
     private readonly LiteRtConversationBranching? _branching;
     private bool _disposed;
+    // Set after the first Clone() the backend reports as UNIMPLEMENTED, so stateful sends stop attempting a
+    // checkpoint (and pay no failing native call each time). Read and written under _gate.
+    private bool _checkpointUnsupported;
 
     /// <summary>Creates a chat client over an already-loaded <paramref name="engine"/>. The client does not
     /// own the engine: dispose the engine yourself (after the client). To have a container manage the
@@ -206,6 +209,8 @@ public sealed class LiteRtChatClient : IChatClient
             // stays resumable (the core would reject this too, but with a lower-level message — and
             // via the catch below, which would wrongly destroy a healthy conversation).
             ThrowIfConstraintWithoutProvider(sendOptions, entry);
+            // A continuation keeps a checkpoint, so a cancelled or failed send leaves its id valid.
+            LiteRtConversation? checkpoint = conversationId is null ? null : TakeCheckpoint(conv);
             LiteRtResponse response;
             try
             {
@@ -216,16 +221,17 @@ public sealed class LiteRtChatClient : IChatClient
                 // The overflow guard rejected the message BEFORE any native work ("message doesn't fit"):
                 // the live conversation is untouched and stays resumable — the caller can retry this id
                 // with a shorter message, exactly as the exception's own guidance suggests.
+                checkpoint?.Dispose();
                 throw;
             }
             catch
             {
                 // Any other failure (cancellation, native error, or the guard's context-FULL rejection)
-                // leaves the conversation consumed or terminal, so evict and dispose it — a later resume
-                // of this id then throws cleanly.
-                _store!.Remove(id);
+                // leaves the conversation consumed or terminal: roll it back to the checkpoint, or evict it.
+                RecoverFailedSend(id, conv, checkpoint);
                 throw;
             }
+            checkpoint?.Dispose();
             return BuildResponse(response, conv, id, entry.RecordToolCall);
         }
         finally
@@ -262,6 +268,51 @@ public sealed class LiteRtChatClient : IChatClient
         LiteRtConversationStore.Entry found = _store!.Get(conversationId) ?? throw UnknownConversation(conversationId);
         LiteRtChatMapping.SendTrigger contTrigger = LiteRtChatMapping.SplitContinuation(messages, found.CallIdToName);
         return (found.Conversation, found, contTrigger, conversationId);
+    }
+
+    /// <summary>
+    /// Takes the checkpoint a stateful continuation rolls back to if its send is cancelled or fails: a clone
+    /// of the live conversation, taken under the gate right before the send. Creating it costs no measurable
+    /// time or memory (measured on LiteRT-LM v0.18.0); it is a transient second conversation, outside
+    /// <see cref="LiteRtStatefulConversationOptions.MaxLiveConversations"/>, disposed when the send completes.
+    /// Returns <c>null</c> when no checkpoint can be taken; after the backend reports that it does not
+    /// implement cloning, no further clone is attempted, so the send then evicts on failure as before.
+    /// </summary>
+    private LiteRtConversation? TakeCheckpoint(LiteRtConversation conversation)
+    {
+        if (_checkpointUnsupported)
+            return null;
+        try
+        {
+            return conversation.Clone();
+        }
+        catch (LiteRtException ex)
+        {
+            if (ex.StatusCode == LiteRtStatusCode.Unimplemented)
+                _checkpointUnsupported = true;
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;   // nothing prefilled to copy, or the conversation is already consumed
+        }
+    }
+
+    /// <summary>
+    /// Handles a stateful send that did not complete. With a checkpoint, and a context that is not full, the
+    /// conversation is rolled back to it under the same id: the cancelled or failed turn is discarded and the
+    /// next request continues from the turn before it. Otherwise (no checkpoint, or the guard's context-full
+    /// rejection, where the checkpoint is just as full) the conversation is evicted, and resuming its id throws.
+    /// </summary>
+    private void RecoverFailedSend(string id, LiteRtConversation conversation, LiteRtConversation? checkpoint)
+    {
+        if (checkpoint is not null && !conversation.IsContextFull)
+        {
+            _store!.Replace(id, checkpoint);
+            return;
+        }
+        checkpoint?.Dispose();
+        _store!.Remove(id);
     }
 
     /// <summary>
@@ -418,6 +469,8 @@ public sealed class LiteRtChatClient : IChatClient
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         bool completed = false;
         string? storedId = null;
+        LiteRtConversation? streamed = null;
+        LiteRtConversation? checkpoint = null;
         try
         {
             (LiteRtConversation conv, LiteRtConversationStore.Entry entry, LiteRtChatMapping.SendTrigger trigger, string id) =
@@ -425,6 +478,7 @@ public sealed class LiteRtChatClient : IChatClient
             // Set only after the conversation is live in the store: if acquisition threw for a continuation
             // (unknown id, or a system message), the stored conversation was never sent and must be preserved.
             storedId = id;
+            streamed = conv;
 
             LiteRtSendOptions? sendOptions = LiteRtChatMapping.ToSendOptions(options);
             // Pre-native argument check: nothing was sent, so the conversation must stay resumable —
@@ -434,6 +488,8 @@ public sealed class LiteRtChatClient : IChatClient
                 completed = true;
                 ThrowIfConstraintWithoutProvider(sendOptions, entry);
             }
+            // A continuation keeps a checkpoint, so a cancelled or failed stream leaves its id valid.
+            checkpoint = conversationId is null ? null : TakeCheckpoint(conv);
             // Enumerated by hand (not await-foreach) because C# forbids `yield return` inside a try that
             // has a catch, and the MoveNext needs one: the overflow guard's pre-native "message doesn't
             // fit" rejection must NOT evict the untouched, still-resumable conversation.
@@ -470,11 +526,13 @@ public sealed class LiteRtChatClient : IChatClient
         finally
         {
             // A stream that did not complete cleanly (cancelled, the consumer broke out early, or a
-            // mid-stream failure) leaves the native conversation consumed — sending on it again would
-            // hang — so evict and dispose it. A clean completion, or the guard's pre-native rejection
-            // above, keeps it alive for the next turn.
+            // mid-stream failure) leaves the native conversation consumed (every later send on it fails with
+            // CANCELLED), so roll it back to the checkpoint, or evict it. A clean completion, or the guard's
+            // pre-native rejection above, keeps it alive for the next turn.
             if (!completed && storedId is not null)
-                _store!.Remove(storedId);
+                RecoverFailedSend(storedId, streamed!, checkpoint);
+            else
+                checkpoint?.Dispose();
             ReleaseGate();
         }
     }
@@ -723,15 +781,16 @@ public sealed class LiteRtChatClient : IChatClient
 
     /// <summary>The exception thrown when a request names a <c>ConversationId</c> the store does not hold —
     /// it was never issued by this client, or its conversation is gone: evicted by the LRU cap
-    /// (<see cref="LiteRtStatefulConversationOptions.MaxLiveConversations"/>), or evicted after a
-    /// cancelled/failed/context-full send left it unusable.</summary>
+    /// (<see cref="LiteRtStatefulConversationOptions.MaxLiveConversations"/>), or evicted after a send filled
+    /// its context (or was cancelled or failed when no checkpoint could be taken).</summary>
     private static ArgumentException UnknownConversation(string conversationId)
         => new(
             $"No live conversation with id '{conversationId}'. Either it was never started by this client, or " +
             "its conversation is no longer live: it was evicted by the LRU cap " +
             "(LiteRtStatefulConversationOptions.MaxLiveConversations, default 8) when newer conversations or " +
-            "forks were started, or it was evicted after a cancelled, failed or context-full send left it " +
-            "unusable. Start a new conversation by omitting ChatOptions.ConversationId; the response's " +
+            "forks were started, or it was evicted after a send filled its context (or was cancelled or failed " +
+            "on a backend that cannot clone, so no checkpoint was kept). Start a new conversation by omitting " +
+            "ChatOptions.ConversationId; the response's " +
             "ConversationId is the id to reuse for the next turn.",
             nameof(conversationId));
 

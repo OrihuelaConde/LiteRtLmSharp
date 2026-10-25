@@ -26,8 +26,9 @@ internal sealed class LiteRtConversationStore
 
         public Entry(LiteRtConversation conversation) => Conversation = conversation;
 
-        /// <summary>The live native conversation.</summary>
-        public LiteRtConversation Conversation { get; }
+        /// <summary>The live native conversation. Replaced (see <see cref="Replace"/>) when a send that was
+        /// cancelled or failed rolls the conversation back to the checkpoint taken before it.</summary>
+        public LiteRtConversation Conversation { get; set; }
 
         /// <summary>Whether the conversation was created with a custom constraint provider (LlGuidance),
         /// i.e. whether per-send constraints (a JSON-schema <c>ResponseFormat</c>) can be enforced on it.
@@ -100,9 +101,30 @@ internal sealed class LiteRtConversationStore
         return entry;
     }
 
+    /// <summary>
+    /// Puts <paramref name="conversation"/> in place of the live conversation stored under
+    /// <paramref name="id"/> and disposes the one it replaces. The entry (its tool-call map and flags) and its
+    /// LRU position stay, so the id keeps resolving. Used to roll a stateful conversation back to the checkpoint
+    /// taken before a send that was cancelled or failed. When the id is no longer stored,
+    /// <paramref name="conversation"/> is disposed instead.
+    /// </summary>
+    public void Replace(string id, LiteRtConversation conversation)
+    {
+        if (!_map.TryGetValue(id, out LinkedListNode<KeyValuePair<string, Entry>>? node))
+        {
+            conversation.Dispose();
+            return;
+        }
+        Entry entry = node.Value.Value;
+        LiteRtConversation consumed = entry.Conversation;
+        entry.Conversation = conversation;
+        consumed.Dispose();
+    }
+
     /// <summary>Removes and disposes the conversation with <paramref name="id"/> if present (a no-op
-    /// otherwise). Used to evict a conversation whose send was cancelled or abandoned — the native runtime
-    /// leaves such a conversation consumed, so it must not be resumed.</summary>
+    /// otherwise). Used to evict a conversation that cannot continue: a send that filled its context, or a
+    /// cancelled or failed send when no checkpoint could be taken (the native runtime leaves such a
+    /// conversation consumed, so it must not be resumed).</summary>
     public void Remove(string id)
     {
         if (!_map.TryGetValue(id, out LinkedListNode<KeyValuePair<string, Entry>>? node))

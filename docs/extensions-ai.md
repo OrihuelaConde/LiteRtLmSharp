@@ -347,6 +347,10 @@ Lifetime and eviction:
 - creating a new conversation beyond the cap evicts and disposes the least-recently-used one;
 - a request whose `ConversationId` was evicted, or was never issued by this client, throws
   `ArgumentException`;
+- a **cancelled or failed send keeps the id valid**: before each continuation send the client takes a
+  `Clone()` checkpoint and, if the send does not complete, puts it back under the same id. The cut turn is
+  discarded, so re-send it to get the answer; in a function-invocation loop, the cancellation rolls back only
+  the round it interrupts. The checkpoint costs no measurable time or memory until it is used;
 - disposing the client disposes every live conversation. There is no time-based expiry in this mode, so size
   the cap for your concurrency.
 
@@ -389,7 +393,8 @@ not measurable managed-side, so they get only the conversation-full check; leave
 attachments are in play). What happens to the live conversation depends on which rejection you got: a
 **"message doesn't fit"** rejection happens before any native work, so the conversation survives — retry
 the same `ConversationId` with a shorter message. A **"context is full"** rejection is terminal: the
-client evicts the live conversation (resuming its id throws `ArgumentException`, like any evicted id) —
+client evicts the live conversation (resuming its id throws `ArgumentException`, like any evicted id; the
+checkpoint is not used, because it is just as full) —
 start a new conversation, carrying over a summary or a trimmed history if the thread must continue.
 
 You do not have to wait for that exception to find out: **a reply that filled the context carries
