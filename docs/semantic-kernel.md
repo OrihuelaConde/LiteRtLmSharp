@@ -29,7 +29,7 @@ using LiteRtLmSharp;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 
-// One call is the whole integration: the container loads/owns/disposes a single shared engine and exposes
+// One call is the whole integration: the container loads/owns/disposes the engine and exposes
 // the model as an IChatCompletionService (and, underneath, as a Microsoft.Extensions.AI IChatClient).
 var builder = Kernel.CreateBuilder();
 builder.AddLiteRtChatCompletion(new LiteRtEngineOptions
@@ -48,7 +48,9 @@ Console.WriteLine(await kernel.InvokePromptAsync("Write one upbeat sentence abou
 on first use. To use an engine you already loaded (and will dispose yourself), pass it instead of options:
 `builder.AddLiteRtChatCompletion(engine, modelId: "gemma-4-E2B-it")`. Both overloads exist on `IKernelBuilder`
 and `IServiceCollection`, and take an optional `serviceId` for keyed registration (e.g. an on-device service
-alongside a cloud one).
+alongside a cloud one). With a `serviceId`, the chat client, and from options its engine, are registered under
+that key, so two on-device models can sit side by side; load both with `AllowMultipleEngines = true`. The first
+keyed client is also the unkeyed `IChatClient` when none is registered.
 
 ### Chat with history (streaming)
 
@@ -138,8 +140,9 @@ ChatHistory:  [System, User₁, Assistant₁, User₂]   (what SK hands the conn
 
 This keeps SK's history and the model's KV cache in lockstep (SK owns the history and can edit it). The cost
 is an `O(history)` prefill per turn — fine for typical chats; for very long conversations, drive the native
-[`LiteRtConversation`](conversation-state.md) API directly. Calls are **serialized** (one live chat engine per
-process; conversations are not thread-safe), and the engine lifecycle is handled by the
+[`LiteRtConversation`](conversation-state.md) API directly. Calls are **serialized per engine** (the native
+runtime does not support two generations in flight on one engine, and conversations are not thread-safe), and
+the engine lifecycle is handled by the
 [Extensions.AI registration](extensions-ai.md) the connector builds on. A `ChatHistory` system message is
 restored through that same History path, so this connector was **never** affected by the pre-v0.14.0
 `LiteRtConversationOptions.SystemMessage` bug. And any `LiteRtEngineOptions` you pass to

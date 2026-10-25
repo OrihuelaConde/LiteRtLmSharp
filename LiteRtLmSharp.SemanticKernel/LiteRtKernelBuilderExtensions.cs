@@ -36,7 +36,7 @@ public static class LiteRtKernelBuilderExtensions
     /// <see cref="LiteRtStatefulConversationOptions"/>). <c>null</c> (default) = stateless, today's behavior.
     /// After enabling, propagate <c>response.ConversationId</c> into <c>ChatOptions.ConversationId</c> and send
     /// only the new messages each turn (the <see cref="LiteRtChatClient"/> constructor docs show the loop);
-    /// function-invocation and agent-thread layers do this automatically.</param>
+    /// function-invocation and agent-session layers do this automatically.</param>
     public static IKernelBuilder AddLiteRtChatCompletion(this IKernelBuilder builder, LiteRtEngine engine, string? modelId = null, string? serviceId = null, LiteRtConversationOptions? optionsTemplate = null, LiteRtStatefulConversationOptions? statefulConversations = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
@@ -45,10 +45,10 @@ public static class LiteRtKernelBuilderExtensions
     }
 
     /// <summary>Adds a chat-completion service from <paramref name="options"/>; the container loads/owns/disposes
-    /// a single shared engine. <paramref name="eager"/> loads it at registration. The underlying
+    /// the engine (one per <paramref name="serviceId"/>). <paramref name="eager"/> loads it at registration. The underlying
     /// <c>IChatClient</c> is also registered, so the same model is available to Microsoft Agent Framework / MEAI.</summary>
     /// <param name="builder">The kernel builder to register into.</param>
-    /// <param name="options">Engine options the container uses to load the single shared engine.</param>
+    /// <param name="options">Engine options the container uses to load the engine.</param>
     /// <param name="modelId">Optional model id surfaced on the chat client's metadata.</param>
     /// <param name="serviceId">Optional Semantic Kernel service id; registers a keyed service when set.</param>
     /// <param name="eager">When <c>true</c>, load the engine now (a bad model path/backend throws here);
@@ -61,7 +61,7 @@ public static class LiteRtKernelBuilderExtensions
     /// <see cref="LiteRtStatefulConversationOptions"/>). <c>null</c> (default) = stateless, today's behavior.
     /// After enabling, propagate <c>response.ConversationId</c> into <c>ChatOptions.ConversationId</c> and send
     /// only the new messages each turn (the <see cref="LiteRtChatClient"/> constructor docs show the loop);
-    /// function-invocation and agent-thread layers do this automatically.</param>
+    /// function-invocation and agent-session layers do this automatically.</param>
     public static IKernelBuilder AddLiteRtChatCompletion(this IKernelBuilder builder, LiteRtEngineOptions options, string? modelId = null, string? serviceId = null, bool eager = false, LiteRtConversationOptions? optionsTemplate = null, LiteRtStatefulConversationOptions? statefulConversations = null)
     {
         ArgumentNullException.ThrowIfNull(builder);

@@ -122,8 +122,8 @@ public sealed class LiteRtChatClient : IChatClient
     /// <c>options.ConversationId</c> and send <b>only the new messages</b> each turn — that is what makes
     /// turns incremental. If the id is never propagated (or the full history keeps being resent) the answers
     /// stay correct, but every call pays the full stateless re-prefill <i>plus</i> live conversations pile up
-    /// in the LRU with no benefit. Higher-level consumers (<c>FunctionInvokingChatClient</c>, agent-framework
-    /// threads) propagate the id automatically.
+    /// in the LRU with no benefit. Higher-level consumers (<c>FunctionInvokingChatClient</c>, Agent Framework
+    /// sessions) propagate the id automatically.
     /// </para>
     /// <example>
     /// <code>

@@ -54,7 +54,7 @@ await foreach (ChatResponseUpdate update in client.GetStreamingResponseAsync("Te
 ### Dependency injection
 
 ```csharp
-// Container loads, owns and disposes a single shared engine (one chat engine per process):
+// Container loads, owns and disposes the engine:
 services.AddLiteRtChatClient(new LiteRtEngineOptions
 {
     ModelPath = "gemma-4-E2B-it.litertlm", Backend = LiteRtBackend.Cpu, MaxNumTokens = 4096,
@@ -70,6 +70,25 @@ IChatClient client = serviceProvider.GetRequiredService<IChatClient>();
 `eager: true` on the options overload loads the weights at registration (so a bad model path/backend throws
 there) instead of lazily on first use.
 
+To register several models side by side, for example one per agent, give each one a key. Each keyed client
+from options gets its own engine, so load every one of them with `AllowMultipleEngines`:
+
+```csharp
+services.AddKeyedLiteRtChatClient("fast", new LiteRtEngineOptions
+{
+    ModelPath = "gemma-4-E2B-it.litertlm", MaxNumTokens = 4096, AllowMultipleEngines = true,
+});
+services.AddKeyedLiteRtChatClient("smart", new LiteRtEngineOptions
+{
+    ModelPath = "gemma-4-E4B-it.litertlm", MaxNumTokens = 4096, AllowMultipleEngines = true,
+});
+
+IChatClient smart = serviceProvider.GetRequiredKeyedService<IChatClient>("smart");
+```
+
+Registering again under the same key, or without a key, with the same engine or equal options is a no-op;
+a different engine or different options throw `InvalidOperationException` instead of being ignored.
+
 ## Use with Microsoft Agent Framework
 
 MAF builds agents over any `IChatClient` — there is no separate "MAF connector" to write:
@@ -78,8 +97,14 @@ MAF builds agents over any `IChatClient` — there is no separate "MAF connector
 using Microsoft.Agents.AI;
 
 var agent = new ChatClientAgent(client, instructions: "You are a concise, helpful assistant.");
-AgentRunResponse reply = await agent.RunAsync("What can you do?");
+AgentResponse reply = await agent.RunAsync("What can you do?");
 ```
+
+With [stateful conversations](#stateful-conversations-opt-in) enabled, an agent session keeps the
+`ConversationId` the client returns. A cancelled run leaves that id valid (the client rolls the conversation
+back to the turn before the cut), but the conversation lives in memory, so the session does not survive a
+process restart; to persist sessions, use the default stateless mode, where Agent Framework keeps the
+messages.
 
 ## Use with the Microsoft.Extensions.AI pipeline
 
@@ -483,10 +508,11 @@ Options, task instructions and measurements are in the [Embeddings guide](embedd
   very long chats, opt into [stateful conversations](#stateful-conversations-opt-in) (keep the live native
   conversation alive between calls and re-prefill only the new turn) or drive the native
   [`LiteRtConversation`](conversation-state.md) API directly.
-- **Serialized.** LiteRtLmSharp allows one live chat engine per process and conversations are not thread-safe, so
-  the client serializes calls through an internal `SemaphoreSlim`.
+- **Serialized per engine.** Every client over one engine shares a gate, because the native runtime does not
+  support two generations in flight on one engine and conversations are not thread-safe. Clients over different
+  engines (loaded with `AllowMultipleEngines`) do not wait for each other.
 - **Engine ownership.** Pass a `LiteRtEngine` you own (you dispose it), or register from
-  `LiteRtEngineOptions` so the container loads/owns/disposes a single shared engine. The same
+  `LiteRtEngineOptions` so the container loads/owns/disposes the engine. The same
   `AddLiteRtChatClient(options)` registration makes the `IChatClient` available to MAF, Semantic Kernel and
   plain MEAI at once.
 - **Message roles.** `system` / `user` / `assistant` / `tool` are handled. The list must end with a user

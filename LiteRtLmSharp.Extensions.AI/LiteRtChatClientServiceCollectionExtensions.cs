@@ -34,7 +34,7 @@ public static class LiteRtChatClientServiceCollectionExtensions
     /// <see cref="LiteRtStatefulConversationOptions"/>). <c>null</c> (default) = stateless, today's behavior.
     /// After enabling, propagate <c>response.ConversationId</c> into <c>ChatOptions.ConversationId</c> and send
     /// only the new messages each turn (the <see cref="LiteRtChatClient"/> constructor docs show the loop);
-    /// function-invocation and agent-thread layers do this automatically.</param>
+    /// function-invocation and agent-session layers do this automatically.</param>
     /// <exception cref="ArgumentException">The template sets <c>History</c> or <c>HistoryJson</c>.</exception>
     /// <exception cref="InvalidOperationException">An unkeyed chat client is already registered over a different
     /// engine or from engine options.</exception>
@@ -49,9 +49,9 @@ public static class LiteRtChatClientServiceCollectionExtensions
     }
 
     /// <summary>Registers a <see cref="LiteRtChatClient"/> from <paramref name="options"/>; the container loads,
-    /// owns and disposes a single shared engine.</summary>
+    /// owns and disposes the engine.</summary>
     /// <param name="services">The DI service collection to register into.</param>
-    /// <param name="options">Engine options the container uses to load the single shared engine.</param>
+    /// <param name="options">Engine options the container uses to load the engine.</param>
     /// <param name="modelId">Optional model id surfaced on the chat client's metadata.</param>
     /// <param name="eager">When <c>true</c>, load the engine now (a bad model path/backend throws here);
     /// otherwise it is loaded lazily on first use.</param>
@@ -63,7 +63,7 @@ public static class LiteRtChatClientServiceCollectionExtensions
     /// <see cref="LiteRtStatefulConversationOptions"/>). <c>null</c> (default) = stateless, today's behavior.
     /// After enabling, propagate <c>response.ConversationId</c> into <c>ChatOptions.ConversationId</c> and send
     /// only the new messages each turn (the <see cref="LiteRtChatClient"/> constructor docs show the loop);
-    /// function-invocation and agent-thread layers do this automatically.</param>
+    /// function-invocation and agent-session layers do this automatically.</param>
     /// <exception cref="ArgumentException">The template sets <c>History</c> or <c>HistoryJson</c>.</exception>
     /// <exception cref="InvalidOperationException">An unkeyed chat client is already registered from different
     /// engine options or over an engine you own.</exception>
