@@ -20,8 +20,10 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// between calls and send only the new messages each turn.
 /// </para>
 /// <para>
-/// <b>Serialized.</b> Calls are serialized with an internal gate: LiteRtLmSharp allows only one live chat
-/// engine per process and conversations are not thread-safe.
+/// <b>Serialized per engine.</b> Calls are serialized with a gate shared by every
+/// <see cref="LiteRtChatClient"/> over the same engine: the native runtime does not support two generations in
+/// flight on one engine, and conversations are not thread-safe. Clients over different engines (see
+/// <see cref="LiteRtEngineOptions.AllowMultipleEngines"/>) do not wait for each other.
 /// </para>
 /// <para>
 /// <b>Reasoning.</b> Enable the model's reasoning ("thinking") mode with the <c>enable_thinking</c> key in
@@ -73,7 +75,10 @@ namespace LiteRtLmSharp.Extensions.AI;
 public sealed class LiteRtChatClient : IChatClient
 {
     private readonly LiteRtEngine _engine;
-    private readonly SemaphoreSlim _gate = new(1, 1);
+    // One gate per engine, shared by every client over it (see the class remarks). Weak keys, so a collected
+    // engine takes its gate with it; a SemaphoreSlim whose wait handle is never used needs no disposal.
+    private static readonly ConditionalWeakTable<LiteRtEngine, SemaphoreSlim> s_engineGates = new();
+    private readonly SemaphoreSlim _gate;
     private readonly ChatClientMetadata _metadata;
     private readonly LiteRtConversationOptions? _optionsTemplate;
     // Non-null only in the opt-in stateful mode; when null the client is stateless (the default): a fresh
@@ -137,6 +142,7 @@ public sealed class LiteRtChatClient : IChatClient
         ArgumentNullException.ThrowIfNull(engine);
         LiteRtChatMapping.ValidateTemplate(optionsTemplate);
         _engine = engine;
+        _gate = s_engineGates.GetValue(engine, static _ => new SemaphoreSlim(1, 1));
         _metadata = new ChatClientMetadata("litert-lm", null, modelId);
         _optionsTemplate = optionsTemplate;
         _store = statefulConversations is null
@@ -765,7 +771,7 @@ public sealed class LiteRtChatClient : IChatClient
         if (_disposed) return;
         _disposed = true;
         _store?.DisposeAll();
-        _gate.Dispose();
+        // The gate belongs to the engine and other clients may share it, so it is not disposed here.
     }
 
     /// <summary>Releases the gate, tolerating a disposal that raced an in-flight call (the contract is to

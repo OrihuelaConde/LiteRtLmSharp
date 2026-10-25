@@ -23,6 +23,32 @@ public sealed class ExtensionsAiModelTests
         MaxNumTokens = 2048,
     };
 
+    /// <summary>
+    /// Two clients over one engine share the engine's gate: requests made at the same time are serialized, so
+    /// each argmax reply matches the reply a single client gives (the runtime does not support two generations
+    /// in flight on one engine).
+    /// </summary>
+    [SkippableFact]
+    public async Task TwoClientsOverOneEngine_AreSerialized()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var first = new LiteRtChatClient(engine);
+        using var second = new LiteRtChatClient(engine);
+        var greedy = new ChatOptions { TopK = 1, MaxOutputTokens = 48 };
+        ChatMessage[] prompt = [new(ChatRole.User, "Write a short story about a lighthouse keeper who finds a message in a bottle.")];
+
+        string reference = (await first.GetResponseAsync(prompt, greedy)).Text;
+        ChatResponse[] replies = await Task.WhenAll(
+            Task.Run(() => first.GetResponseAsync(prompt, greedy)),
+            Task.Run(() => second.GetResponseAsync(prompt, greedy)));
+
+        Assert.Equal(reference, replies[0].Text);
+        Assert.Equal(reference, replies[1].Text);
+    }
+
     [SkippableFact]
     public async Task ChatClient_BlockingAndStreaming_ProduceText()
     {
