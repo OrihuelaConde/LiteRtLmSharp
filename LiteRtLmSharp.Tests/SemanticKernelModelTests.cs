@@ -1,6 +1,7 @@
 using System.Text;
 using LiteRtLmSharp.Extensions.AI;
 using LiteRtLmSharp.SemanticKernel;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Xunit;
@@ -75,6 +76,48 @@ public sealed class SemanticKernelModelTests
         // Stateless: turn two only knows "teal" if the prior turns flowed through the adapter into the
         // IChatClient's history mapping and were replayed.
         Assert.Contains("teal", second, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Two Semantic Kernel services with their own serviceId run on two engines (the keyed registrations), and
+    /// each answers through its own engine. Both engines opt in to coexisting.
+    /// </summary>
+    [SkippableFact]
+    public async Task ChatCompletion_TwoServiceIds_EachUsesItsOwnEngine()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        LiteRtEngineOptions options = Options() with { AllowMultipleEngines = true };
+        IKernelBuilder builder = Kernel.CreateBuilder();
+        builder.AddLiteRtChatCompletion(options, modelId: "fast", serviceId: "fast");
+        builder.AddLiteRtChatCompletion(options, modelId: "smart", serviceId: "smart");
+        Kernel kernel = builder.Build();
+
+        LiteRtEngine fastEngine = kernel.Services.GetRequiredKeyedService<LiteRtEngine>("fast");
+        LiteRtEngine smartEngine = kernel.Services.GetRequiredKeyedService<LiteRtEngine>("smart");
+        try
+        {
+            Assert.NotSame(fastEngine, smartEngine);
+            var fast = kernel.Services.GetRequiredKeyedService<IChatCompletionService>("fast");
+            var smart = kernel.Services.GetRequiredKeyedService<IChatCompletionService>("smart");
+
+            var settings = new LiteRtPromptExecutionSettings { MaxTokens = 16 };
+            var history = new ChatHistory();
+            history.AddUserMessage("What is the capital of France? Answer with one word.");
+            ChatMessageContent a = await fast.GetChatMessageContentAsync(history, settings);
+            ChatMessageContent b = await smart.GetChatMessageContentAsync(history, settings);
+            Assert.Contains("Paris", a.Content ?? "", StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Paris", b.Content ?? "", StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(2, LiteRtEngine.LiveEngineCount);
+        }
+        finally
+        {
+            // The engines must be gone before the next test loads one (the one-engine rule is the default).
+            (kernel.Services as IDisposable)?.Dispose();
+            fastEngine.Dispose();
+            smartEngine.Dispose();
+        }
     }
 
     [SkippableFact]

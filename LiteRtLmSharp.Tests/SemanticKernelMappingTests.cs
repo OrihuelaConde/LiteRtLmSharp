@@ -105,4 +105,21 @@ public class SemanticKernelMappingTests
         // Keyed registration (e.g. an on-device service alongside a cloud one).
         Assert.Contains(builder.Services, d => d.ServiceType == typeof(IChatCompletionService) && Equals(d.ServiceKey, "local"));
     }
+
+    [Fact]
+    public void AddChatCompletionWithTwoServiceIds_RegistersAClientAndEnginePerServiceId()
+    {
+        IKernelBuilder builder = Kernel.CreateBuilder();
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "e2b.litertlm", AllowMultipleEngines = true }, serviceId: "fast");
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "e4b.litertlm", AllowMultipleEngines = true }, serviceId: "smart");
+
+        foreach (string id in new[] { "fast", "smart" })
+        {
+            Assert.Contains(builder.Services, d => d.ServiceType == typeof(IChatCompletionService) && Equals(d.ServiceKey, id));
+            Assert.Contains(builder.Services, d => d.ServiceType == typeof(IChatClient) && Equals(d.ServiceKey, id));
+            Assert.Contains(builder.Services, d => d.ServiceType == typeof(LiteRtEngine) && Equals(d.ServiceKey, id));
+        }
+        // The first keyed client is also the unkeyed IChatClient, as before keyed clients existed.
+        Assert.Single(builder.Services, d => d.ServiceType == typeof(IChatClient) && d.ServiceKey is null);
+    }
 }

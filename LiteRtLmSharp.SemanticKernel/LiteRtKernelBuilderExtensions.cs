@@ -2,6 +2,7 @@ using LiteRtLmSharp;
 using LiteRtLmSharp.Extensions.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.SemanticKernel.ChatCompletion;
 
 // Placed in the Microsoft.SemanticKernel namespace (the convention the official connectors follow) so
@@ -16,7 +17,9 @@ namespace Microsoft.SemanticKernel;
 /// through that single chat client (function calling is auto-invoked via MEAI's function-invocation
 /// middleware, since Semantic Kernel's adapter does not run the invoke loop for an <c>IChatClient</c>).
 /// Register over an engine you own, or from a <see cref="LiteRtEngineOptions"/> (the container
-/// loads/owns/disposes a single shared engine).
+/// loads/owns/disposes the engine). With a <c>serviceId</c>, the chat client (and, from options, its engine) is
+/// registered under that key, so several on-device models can be registered side by side; set
+/// <see cref="LiteRtEngineOptions.AllowMultipleEngines"/> on each of them.
 /// </summary>
 public static class LiteRtKernelBuilderExtensions
 {
@@ -71,7 +74,15 @@ public static class LiteRtKernelBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(engine);
-        services.AddLiteRtChatClient(engine, modelId, optionsTemplate, statefulConversations);
+        if (serviceId is null)
+        {
+            services.AddLiteRtChatClient(engine, modelId, optionsTemplate, statefulConversations);
+        }
+        else
+        {
+            services.AddKeyedLiteRtChatClient(serviceId, engine, modelId, optionsTemplate, statefulConversations);
+            AliasUnkeyedClient(services, serviceId);
+        }
         return RegisterChatCompletion(services, serviceId);
     }
 
@@ -80,9 +91,23 @@ public static class LiteRtKernelBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
-        services.AddLiteRtChatClient(options, modelId, eager, optionsTemplate, statefulConversations);
+        if (serviceId is null)
+        {
+            services.AddLiteRtChatClient(options, modelId, eager, optionsTemplate, statefulConversations);
+        }
+        else
+        {
+            services.AddKeyedLiteRtChatClient(serviceId, options, modelId, eager, optionsTemplate, statefulConversations);
+            AliasUnkeyedClient(services, serviceId);
+            services.TryAddSingleton<LiteRtEngine>(sp => sp.GetRequiredKeyedService<LiteRtEngine>(serviceId));
+        }
         return RegisterChatCompletion(services, serviceId);
     }
+
+    // A keyed registration also makes its client the unkeyed IChatClient when none is registered, so the same
+    // model stays available to Microsoft Agent Framework / MEAI without a key, as before keyed clients existed.
+    private static void AliasUnkeyedClient(IServiceCollection services, string serviceId)
+        => services.TryAddSingleton<IChatClient>(sp => sp.GetRequiredKeyedService<IChatClient>(serviceId));
 
     private static IServiceCollection RegisterChatCompletion(IServiceCollection services, string? serviceId)
     {
@@ -91,8 +116,9 @@ public static class LiteRtKernelBuilderExtensions
         // the kernel's functions to the client as tools but does NOT run the auto-invoke loop itself, so
         // UseFunctionInvocation is what makes FunctionChoiceBehavior actually invoke the functions. It is a
         // no-op when a request carries no tools, so it is safe to apply unconditionally.
-        static IChatCompletionService Factory(IServiceProvider sp, object? _) =>
-            sp.GetRequiredService<IChatClient>()
+        // A keyed service wraps the chat client registered under the same key.
+        static IChatCompletionService Factory(IServiceProvider sp, object? serviceKey) =>
+            (serviceKey is null ? sp.GetRequiredService<IChatClient>() : sp.GetRequiredKeyedService<IChatClient>(serviceKey))
               .AsBuilder()
               .UseFunctionInvocation()
               .Build(sp)

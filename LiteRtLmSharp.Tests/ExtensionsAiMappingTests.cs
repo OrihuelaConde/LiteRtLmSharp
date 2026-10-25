@@ -127,6 +127,49 @@ public class ExtensionsAiMappingTests
     }
 
     [Fact]
+    public void AddLiteRtChatClient_FromEqualOptions_IsANoOp_EvenWithDistinctListInstances()
+    {
+        // Records compare list members by reference; the registration compares the LoRA ranks by value.
+        var first = new LiteRtEngineOptions { ModelPath = "does-not-exist.litertlm", SupportedLoraRanks = [8, 16] };
+        var second = new LiteRtEngineOptions { ModelPath = "does-not-exist.litertlm", SupportedLoraRanks = [8, 16] };
+
+        var services = new ServiceCollection();
+        services.AddLiteRtChatClient(first);
+        services.AddLiteRtChatClient(second);
+
+        Assert.Single(services, d => d.ServiceType == typeof(LiteRtEngine));
+        Assert.Single(services, d => d.ServiceType == typeof(IChatClient));
+    }
+
+    [Fact]
+    public void AddLiteRtChatClient_FromDifferentOptions_Throws_InsteadOfIgnoringTheSecond()
+    {
+        var services = new ServiceCollection();
+        services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "a.litertlm" });
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "b.litertlm" }));
+        Assert.Contains("AddKeyedLiteRtChatClient", ex.Message, StringComparison.Ordinal);
+        Assert.Single(services, d => d.ServiceType == typeof(IChatClient));
+    }
+
+    [Fact]
+    public void AddKeyedLiteRtChatClient_RegistersOneEngineAndClientPerKey()
+    {
+        var services = new ServiceCollection();
+        services.AddKeyedLiteRtChatClient("fast", new LiteRtEngineOptions { ModelPath = "e2b.litertlm", AllowMultipleEngines = true });
+        services.AddKeyedLiteRtChatClient("smart", new LiteRtEngineOptions { ModelPath = "e4b.litertlm", AllowMultipleEngines = true });
+        services.AddKeyedLiteRtChatClient("fast", new LiteRtEngineOptions { ModelPath = "e2b.litertlm", AllowMultipleEngines = true });   // repeat: no-op
+
+        Assert.Equal(2, services.Count(d => d.ServiceType == typeof(IChatClient) && d.ServiceKey is not null));
+        Assert.Equal(2, services.Count(d => d.ServiceType == typeof(LiteRtEngine) && d.ServiceKey is not null));
+        Assert.DoesNotContain(services, d => d.ServiceType == typeof(IChatClient) && d.ServiceKey is null);
+
+        Assert.Throws<InvalidOperationException>(
+            () => services.AddKeyedLiteRtChatClient("fast", new LiteRtEngineOptions { ModelPath = "other.litertlm" }));
+    }
+
+    [Fact]
     public void LiteRtChatOptions_EnableThinking_BacksAdditionalProperty_AndFlowsThroughMapping()
     {
         var options = new LiteRtChatOptions { MaxOutputTokens = 10, EnableThinking = true };
