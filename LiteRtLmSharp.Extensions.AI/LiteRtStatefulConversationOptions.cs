@@ -80,10 +80,12 @@ public sealed record LiteRtStatefulConversationOptions
     /// to 8.
     /// </summary>
     /// <remarks>
-    /// <b>Each live conversation holds its own native KV cache</b>, sized against the engine's
-    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> — the cap is a memory ceiling, not just a count. On
-    /// memory-constrained (mobile) devices size it deliberately: 8 conversations on a 4096-token context
-    /// hold up to 8 full KV caches resident. Lower it (e.g. 1-2) where memory is tighter than concurrency.
+    /// <b>Each live conversation keeps its own native KV state</b>, which grows with the tokens the
+    /// conversation has used, up to the engine's <see cref="LiteRtEngineOptions.MaxNumTokens"/> — the cap is
+    /// a memory ceiling, not just a count. Measured on LiteRT-LM v0.18.0 with gemma-4 E2B, a conversation of
+    /// 2,300 tokens holds about 36 MB on a desktop CPU and 60 to 100 MB on a desktop GPU. On
+    /// memory-constrained (mobile) devices size the cap deliberately, and lower it (e.g. 1-2) where memory is
+    /// tighter than concurrency.
     /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">The value is less than 1.</exception>
     public int MaxLiveConversations

@@ -19,8 +19,8 @@ public enum LiteRtMessageRole
 
 /// <summary>
 /// One message in a conversation history, used to <b>restore</b> a conversation: pass a list of these
-/// as <see cref="LiteRtConversationOptions.History"/> and the engine re-prefills them when the
-/// conversation is created. Build them with the factory methods (<see cref="User(string)"/>, <see cref="Model"/>,
+/// as <see cref="LiteRtConversationOptions.History"/> and the conversation prefills them with its first
+/// send. Build them with the factory methods (<see cref="User(string)"/>, <see cref="Model"/>,
 /// <see cref="Tool(System.Collections.Generic.IEnumerable{LiteRtToolResult})"/>, <see cref="System"/>);
 /// capture an assistant turn from a live reply with <see cref="LiteRtResponse.ToMessage"/>.
 /// <para>

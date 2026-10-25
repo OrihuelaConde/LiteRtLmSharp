@@ -63,12 +63,12 @@ version number**. Which LiteRT-LM native build each release wraps:
 | 0.1.0-preview.2 | v0.13.1 |
 | 0.1.0-preview.1 | v0.13.1 |
 
-> **Native v0.13.x/v0.14.x are unsafe for more than one conversation.** LiteRT-LM v0.14.0 loses state
-> when two conversations of one engine are interleaved (upstream #2807 → garbage replies) and hangs
-> forever on the first send after a cancellation. Both are fixed from v0.16.0. The binding cannot detect
-> the native version at runtime, so the requirement is on you: pin `LiteRtLmSharp` **1.2.0 or newer**
-> (or the same-version runtime packages), and if you must stay on 1.1.x, keep one conversation alive at a
-> time. Also note that on every v0.14.0–v0.18.0 CPU backend only the **TopP** sampler is implemented —
+> **Use 1.2.0 or newer for more than one conversation per engine.** With the LiteRT-LM v0.13.x and
+> v0.14.0 libraries (LiteRtLmSharp 1.1.x and older), interleaving two conversations of one engine
+> silently loses the suspended conversation's state (upstream #2807, fixed in v0.15.0), and a send on a
+> conversation after a cancellation does not return. The binding cannot detect the native version at
+> runtime, so on those versions keep one conversation alive at a time and dispose a cancelled
+> conversation instead of sending on it again. Also note that on every v0.14.0–v0.18.0 CPU backend only the **TopP** sampler is implemented —
 > a conversation asking for `Greedy`/`TopK` is created and then fails its first send with
 > `UNIMPLEMENTED: Sampler type: 3`, which this binding reports as `LiteRtSamplerNotSupportedException`
 > (the conversation is consumed by that failure; once any send has completed on the engine, the runtime

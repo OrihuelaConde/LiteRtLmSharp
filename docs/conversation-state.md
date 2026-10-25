@@ -62,7 +62,9 @@ created: right after `CreateConversation` the history is queued but not in the c
 - It costs a prefill of the whole history (the same work as if those turns had just been sent), and that
   cost lands on the first reply's time-to-first-token.
 - The restored tokens count against the engine's `MaxNumTokens` context window. Watch
-  `LiteRtConversation.TokenCountCached` and trim old turns before you run out of room.
+  `LiteRtConversation.TokenCount` (or `TokenCountCached`, which never waits) and trim old turns before
+  you run out of room. To measure a restored history before its first send, count the tokens of
+  `RenderPreface()` with `LiteRtEngine.Tokenize`.
 - There is no on-disk KV-cache format to load; `Serialize` produces messages, not tensors.
 
 ### Tool calls and reasoning

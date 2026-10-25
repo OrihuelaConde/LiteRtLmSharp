@@ -16,13 +16,14 @@ namespace LiteRtLmSharp;
 /// </summary>
 /// <remarks>
 /// <b>Interleaving vs. concurrency.</b> Switching between several live conversations of one engine turn by
-/// turn is supported and verified from LiteRT-LM v0.16.0 (no state loss, replies stay correct, measured on
-/// CPU and GPU); on v0.14.0 it corrupts state. What is <i>not</i> supported is having two generations in
-/// flight at the same time — the native runtime serializes them into one another's queue in arrival order,
-/// with no priorities, so a second send simply waits (and a request behind a 1000-token generation waits
-/// 40 s or more). Do the scheduling at the application level: keep one send in flight per engine, and cut
-/// the running one with <see cref="CancelProcess"/> when something more urgent arrives (see
-/// <see cref="Snapshot"/> for continuing the evicted conversation).
+/// turn is supported and verified from LiteRT-LM v0.15.0 (no state loss, replies stay correct, measured on
+/// CPU and GPU); on v0.14.0 the suspended conversation silently loses its state. What is <i>not</i>
+/// supported is two generations in flight on one engine at the same time: upstream reports
+/// non-deterministic output and GPU-backend errors (LiteRT-LM#2807). Native calls that go through the
+/// engine, such as <see cref="TokenCount"/> and creating a conversation, also wait for a generation in
+/// flight on any conversation of the engine. Do the scheduling at the application level: keep one send in
+/// flight per engine, and cut the running one with <see cref="CancelProcess"/> when something more urgent
+/// arrives (see <see cref="Snapshot"/> for continuing the evicted conversation).
 /// </remarks>
 public sealed class LiteRtConversation : IDisposable
 {

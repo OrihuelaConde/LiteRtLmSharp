@@ -506,9 +506,9 @@ public sealed record LiteRtConversationOptions
     public IReadOnlyList<LiteRtTool>? Tools { get; init; }
 
     /// <summary>
-    /// Conversation history to restore (or a few-shot preface) — the prior turns are re-prefilled into
-    /// the KV cache when the conversation is created, so the model continues as if they had just
-    /// happened. Build the list with <see cref="LiteRtMessage"/> factories and capture assistant turns
+    /// Conversation history to restore (or a few-shot preface) — the prior turns are prefilled into the
+    /// KV cache by the conversation's first send (creating the conversation prefills nothing), so the model
+    /// continues as if they had just happened. Build the list with <see cref="LiteRtMessage"/> factories and capture assistant turns
     /// with <see cref="LiteRtResponse.ToMessage"/>; persist and reload via
     /// <see cref="LiteRtMessage.Serialize"/> / <see cref="LiteRtMessage.Deserialize"/>.
     /// </summary>
