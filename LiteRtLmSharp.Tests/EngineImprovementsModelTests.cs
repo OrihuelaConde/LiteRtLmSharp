@@ -33,49 +33,85 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
     private static bool IsCpu =>
         LiteRtBackend.Parse(Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu") == LiteRtBackend.Cpu;
 
+    /// <summary>Exact argmax over the TopP sampler (TopK = 1), so replies can be compared byte for byte.</summary>
+    private static readonly LiteRtSamplerParams Argmax = new() { Strategy = LiteRtSamplerType.TopP, TopK = 1 };
+
+    private const string StoryPrompt = "Write a short story about a lighthouse keeper who finds a message in a bottle.";
+
+    private static string Story(LiteRtEngine engine)
+    {
+        using var conv = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax, MaxOutputTokens = 48 });
+        return conv.Send(StoryPrompt).Text ?? "";
+    }
+
     /// <summary>
-    /// Two engines, alive at the same time, each generating on its own and disposed independently — the
-    /// behaviour <see cref="LiteRtEngine.AllowMultipleEngines"/> unlocks, and the guard that keeps it from
-    /// costing anything to the default path. Both engines stay below 1024 tokens of context, so the test
-    /// fits in a machine with ~6 GB free.
+    /// Two engines loaded with <see cref="LiteRtEngineOptions.AllowMultipleEngines"/>, created from two threads
+    /// at once, generating at the same time and disposed independently: every reply must be byte-identical to
+    /// the reply of a single engine (argmax), which is what shows the engines do not share state. Both engines
+    /// stay at 1024 tokens of context, so the test fits in a machine with ~6 GB free.
     /// </summary>
     [SkippableFact]
-    public void MultipleEngines_ShouldGenerateIndependently_AndSurviveTheOthersDisposal()
+    public void MultipleEngines_ShouldMatchASingleEngine_WhenGeneratingAtTheSameTime()
     {
         LiteRtEngineOptions? options = Options();
         Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        options = options with { AllowMultipleEngines = true };
 
-        Assert.False(LiteRtEngine.AllowMultipleEngines);   // the shipped default, checked before opting in
+        string reference;
+        using (var alone = LiteRtEngine.Load(options))
+            reference = Story(alone);
+        Assert.False(string.IsNullOrWhiteSpace(reference));
+
+        var engines = new LiteRtEngine?[2];
         try
         {
-            LiteRtEngine.AllowMultipleEngines = true;
-            using var first = LiteRtEngine.Load(options);
-            using var second = LiteRtEngine.Load(options);
-
+            Parallel.For(0, 2, i => engines[i] = LiteRtEngine.Load(options));
             Assert.Equal(2, LiteRtEngine.LiveEngineCount);
 
-            using (var conv1 = first.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 24 }))
-            using (var conv2 = second.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 24 }))
-            {
-                // Interleaved on purpose: turns of one engine between turns of the other.
-                Assert.False(string.IsNullOrWhiteSpace(conv1.Send("Reply with one short word: alpha").Text));
-                Assert.False(string.IsNullOrWhiteSpace(conv2.Send("Reply with one short word: beta").Text));
-                Assert.False(string.IsNullOrWhiteSpace(conv1.Send("Reply with one short word: gamma").Text));
-            }
+            var replies = new string[2];
+            Parallel.For(0, 2, i => replies[i] = Story(engines[i]!));
+            Assert.Equal(reference, replies[0]);
+            Assert.Equal(reference, replies[1]);
 
-            // Disposing one engine must leave the other fully usable.
-            second.Dispose();
+            // Disposing one engine must leave the other fully usable, with the same output.
+            engines[1]!.Dispose();
             Assert.Equal(1, LiteRtEngine.LiveEngineCount);
-
-            using var survivor = first.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 24 });
-            LiteRtResponse reply = survivor.Send("Reply with one short word: delta");
-            Assert.False(string.IsNullOrWhiteSpace(reply.Text));
-            output.WriteLine($"Surviving engine replied: {reply.Text}");
+            Assert.Equal(reference, Story(engines[0]!));
+            output.WriteLine($"Reply on every engine: {reference}");
         }
         finally
         {
-            LiteRtEngine.AllowMultipleEngines = false;
+            foreach (var e in engines)
+                e?.Dispose();
         }
+        Assert.Equal(0, LiteRtEngine.LiveEngineCount);
+    }
+
+    /// <summary>
+    /// The opt-in is per engine: an engine loaded without it stays alone, and an engine without it cannot join
+    /// engines that opted in. Each refusal says which side did not opt in.
+    /// </summary>
+    [SkippableFact]
+    public void MultipleEngines_ShouldRefuseToMixWithAnEngineThatDidNotOptIn()
+    {
+        LiteRtEngineOptions? options = Options();
+        Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        LiteRtEngineOptions optedIn = options with { AllowMultipleEngines = true };
+
+        using (var alone = LiteRtEngine.Load(options))
+        {
+            var ex = Assert.Throws<InvalidOperationException>(() => LiteRtEngine.Load(optedIn));
+            Assert.Contains("loaded without LiteRtEngineOptions.AllowMultipleEngines is still alive", ex.Message, StringComparison.Ordinal);
+            Assert.Equal(1, LiteRtEngine.LiveEngineCount);
+        }
+
+        using (var shared = LiteRtEngine.Load(optedIn))
+        {
+            var ex = Assert.Throws<InvalidOperationException>(() => LiteRtEngine.Load(options));
+            Assert.Contains("this engine was loaded without", ex.Message, StringComparison.Ordinal);
+            Assert.Equal(1, LiteRtEngine.LiveEngineCount);
+        }
+        Assert.Equal(0, LiteRtEngine.LiveEngineCount);
     }
 
     /// <summary>

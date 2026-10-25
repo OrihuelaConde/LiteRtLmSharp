@@ -26,59 +26,82 @@ internal sealed class EngineSettingsHandle(nint handle) : LiteRtLmHandle(handle)
     }
 }
 
+/// <summary>The outcome of <see cref="EngineLiveness.TryAcquire"/>.</summary>
+internal enum EngineAdmission
+{
+    /// <summary>The engine took a slot.</summary>
+    Admitted,
+    /// <summary>Refused: engines are alive and the engine being loaded did not opt in.</summary>
+    NewEngineNotOptedIn,
+    /// <summary>Refused: a live engine did not opt in, so nothing may load next to it.</summary>
+    LiveEngineNotOptedIn,
+}
+
 /// <summary>
-/// Process-wide gate for the "only one live engine at a time" rule. The slot is acquired in
-/// <see cref="LiteRtEngine.Load"/> and released when the native engine is actually destroyed, in
-/// <see cref="EngineHandle.ReleaseHandle"/> — which runs on Dispose AND on finalization, so a
-/// GC'd-but-undisposed engine still frees the slot (and only after the native engine is gone).
+/// The process-wide gate for live chat engines. A slot is acquired in <see cref="LiteRtEngine.Load"/> and
+/// released when the native engine is actually destroyed, in <see cref="EngineHandle.ReleaseHandle"/> —
+/// which runs on Dispose AND on finalization, so a GC'd-but-undisposed engine still frees its slot (and
+/// only after the native engine is gone).
 /// </summary>
 /// <remarks>
-/// <see cref="AllowMultiple"/> lifts the rule (opt-in, see <see cref="LiteRtEngine.AllowMultipleEngines"/>):
-/// the counter then tracks how many engines are alive instead of being a 0/1 slot. Either way the counter
-/// never goes negative, so a double dispose or a finalizer/dispose race cannot corrupt it.
+/// By default one engine may be alive at a time. Engines loaded with
+/// <see cref="LiteRtEngineOptions.AllowMultipleEngines"/> may coexist with each other, but never with an
+/// engine that did not opt in, in either order. The live count and the count of engines that did not opt in
+/// change together under one lock (two counters cannot be checked and updated atomically with CAS), and
+/// neither goes below zero. <see cref="Default"/> is the gate <see cref="LiteRtEngine.Load"/> uses; tests
+/// create their own instances instead of draining process-global state.
 /// </remarks>
-internal static class EngineLiveness
+internal sealed class EngineLiveness
 {
-    private static int s_live;
-    private static volatile bool s_allowMultiple;
+    /// <summary>The process-wide gate.</summary>
+    public static EngineLiveness Default { get; } = new();
 
-    /// <summary>Whether any number of engines may be alive at once (off by default).</summary>
-    public static bool AllowMultiple
+    private readonly object _lock = new();
+    private int _live;
+    private int _exclusive;
+
+    /// <summary>How many chat engines are currently alive.</summary>
+    public int LiveCount
     {
-        get => s_allowMultiple;
-        set => s_allowMultiple = value;
+        get { lock (_lock) return _live; }
     }
 
-    /// <summary>How many engines are currently alive (0 with the single-engine rule in force).</summary>
-    public static int LiveCount => Volatile.Read(ref s_live);
-
-    /// <summary>Takes an engine slot: always succeeds in multi-engine mode, otherwise only when no engine
-    /// is live.</summary>
-    public static bool TryAcquire()
+    /// <summary>Takes an engine slot when the rule allows it.</summary>
+    /// <param name="allowMultiple">Whether the engine being loaded opted in to coexisting.</param>
+    public EngineAdmission TryAcquire(bool allowMultiple)
     {
-        if (s_allowMultiple)
+        lock (_lock)
         {
-            Interlocked.Increment(ref s_live);
-            return true;
+            if (_live > 0)
+            {
+                if (!allowMultiple)
+                    return EngineAdmission.NewEngineNotOptedIn;
+                if (_exclusive > 0)
+                    return EngineAdmission.LiveEngineNotOptedIn;
+            }
+            _live++;
+            if (!allowMultiple)
+                _exclusive++;
+            return EngineAdmission.Admitted;
         }
-        return Interlocked.CompareExchange(ref s_live, 1, 0) == 0;
     }
 
-    /// <summary>Frees an engine slot (never below zero).</summary>
-    public static void Release()
+    /// <summary>Frees the slot of an engine that was admitted with the same <paramref name="allowMultiple"/>
+    /// value (never below zero).</summary>
+    public void Release(bool allowMultiple)
     {
-        int current;
-        do
+        lock (_lock)
         {
-            current = Volatile.Read(ref s_live);
-            if (current <= 0)
+            if (_live <= 0)
                 return;
+            _live--;
+            if (!allowMultiple && _exclusive > 0)
+                _exclusive--;
         }
-        while (Interlocked.CompareExchange(ref s_live, current - 1, current) != current);
     }
 }
 
-internal sealed class EngineHandle(nint handle) : LiteRtLmHandle(handle)
+internal sealed class EngineHandle(nint handle, bool allowMultiple) : LiteRtLmHandle(handle)
 {
     protected override bool ReleaseHandle()
     {
@@ -87,8 +110,9 @@ internal sealed class EngineHandle(nint handle) : LiteRtLmHandle(handle)
         // engine must not be created while this one's native object still exists). This runs on Dispose
         // and on finalization, so even a forgotten/GC'd engine releases the slot — but note that every
         // LiteRtConversation strongly references its engine (for the KV overflow guard), so finalization
-        // can only happen once no conversation objects remain reachable either.
-        EngineLiveness.Release();
+        // can only happen once no conversation objects remain reachable either. The handle carries the
+        // engine's opt-in because a finalizer must not depend on other managed objects.
+        EngineLiveness.Default.Release(allowMultiple);
         return true;
     }
 }

@@ -149,6 +149,40 @@ public sealed record LiteRtEngineOptions
     public LiteRtCache Cache { get; init; }
 
     /// <summary>
+    /// Allow this engine to stay alive next to other chat engines in the process. Default <c>false</c>:
+    /// <see cref="LiteRtEngine.Load"/> throws <see cref="System.InvalidOperationException"/> while another chat
+    /// engine is alive. A <see cref="LiteRtEmbeddingEngine"/> never counts.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Set it on every engine that should coexist: a load next to live engines succeeds only when the engine
+    /// being loaded and every live engine opted in. A component that loads an engine without this setting
+    /// therefore keeps the one-engine guarantee it was written for. <see cref="LiteRtEngine.LiveEngineCount"/>
+    /// reports how many chat engines are alive.
+    /// </para>
+    /// <para>
+    /// Measured on LiteRT-LM v0.18.0 with gemma-4 E2B and E4B: two to four engines load, generate at the same
+    /// time and dispose in any order, with replies byte-identical to a single engine, on win-x64 (CPU, and GPU
+    /// with up to three engines), linux-x64 (CPU) and the android-x64 emulator (CPU); that includes engines
+    /// loaded concurrently from two threads, mixed CPU and GPU engines, a vision engine next to a text engine,
+    /// and speculative decoding. A two-engine test also passes on osx-arm64 (CPU and GPU). Physical Android
+    /// devices and iOS were not measured.
+    /// </para>
+    /// <para>
+    /// Engines run in parallel only on a desktop CPU. On a GPU, and on the Android emulator, a second engine
+    /// adds no throughput: two replies generated at the same time take longer than one after the other. Each
+    /// engine holds its own memory, about 2.3 GB of private memory per gemma-4 E2B engine on CPU and 3.6 GB on
+    /// GPU on Windows, so check free memory before loading another one.
+    /// </para>
+    /// <para>
+    /// The one-engine rule comes from an earlier release built on self-built LiteRT-LM v0.13.1 libraries, where
+    /// a second live engine hung in the native layer. It does not reproduce with the official libraries this
+    /// package ships, which is why the rule can be lifted per engine.
+    /// </para>
+    /// </remarks>
+    public bool AllowMultipleEngines { get; init; }
+
+    /// <summary>
     /// Enable speculative decoding: the model drafts several tokens ahead with a small
     /// Multi-Token-Prediction (MTP) drafter and the main model verifies them in one step. It pays off
     /// only where verification is cheap relative to the drafter (memory-bound accelerators, high

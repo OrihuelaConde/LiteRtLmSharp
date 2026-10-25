@@ -156,15 +156,13 @@ conversations** (MEAI `ConversationId`) are supported — see the
 ## Important notes
 
 - **One chat engine alive at a time — by default.** Loading a second `LiteRtEngine` while one is alive
-  throws (the guard exists because creating a second engine was once observed to hang in the native layer —
-  an unreproduced report, and the reason is still unknown). To switch model or backend, dispose the
-  conversations and the engine, then `LiteRtEngine.Load` again — same pattern as Google's Edge Gallery. An
-  embedding engine (`LiteRtEmbeddingEngine`) does not count, so a chat model and an embedding model can stay
-  loaded together. Set `LiteRtEngine.AllowMultipleEngines = true` before the first load to run several chat
-  engines at once: two or three simultaneously live engines have been measured to load, generate in parallel
-  and dispose independently on win-x64 (natives v0.13.1–v0.18.0, CPU and GPU) and linux-x64 (v0.16.0). Not
-  validated on Android/macOS/iOS, with two different models, or with vision/audio and speculative decoding —
-  each additional engine costs its own KV cache and activation memory, so gate it on free RAM.
+  throws. To switch model or backend, dispose the conversations and the engine, then `LiteRtEngine.Load`
+  again — same pattern as Google's Edge Gallery. An embedding engine (`LiteRtEmbeddingEngine`) does not
+  count, so a chat model and an embedding model can stay loaded together. To keep several chat engines
+  alive, load each of them with `AllowMultipleEngines = true` in `LiteRtEngineOptions`; an engine loaded
+  without it stays alone. Several engines were measured on win-x64 (CPU and GPU), linux-x64, osx-arm64 and
+  the Android emulator, but they only run in parallel on a desktop CPU, and each one holds its own memory
+  (about 2.3 GB per gemma-4 E2B engine on CPU), so check free memory before loading another one.
 - **Cancelled conversations are consumed.** After `CancelProcess()` the runtime answers every later send
   with `CANCELLED` (v0.16.0/v0.18.0; v0.14.0 hangs). Keep the finished turns plus the partial reply with
   `LiteRtConversation.Snapshot()` and continue on `LiteRtConversation.Resume(snapshot)` — see the
