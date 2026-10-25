@@ -147,36 +147,45 @@ validated as a JSON array when the conversation is created and throws `ArgumentE
 ## Continue after a cancellation
 
 A cancelled conversation is **consumed**: after `CancelProcess()` (or a cancelled `SendAsync`, or an
-abandoned stream) the runtime answers the next send with `CANCELLED` forever on LiteRT-LM v0.16.0/v0.18.0
-(and hangs on v0.14.0). Continuing therefore means a new conversation seeded with
-`History = completed turns + the partial reply`. `Snapshot()`/`Resume()` do exactly that:
+abandoned stream) the runtime answers every later send on it with `CANCELLED` (LiteRT-LM v0.16.0 and
+later; on v0.14.0 the send does not return). To continue, take a checkpoint with `Clone()` **before** the
+send that might be cut, and continue on the checkpoint if it is:
 
 ```csharp
-using var chat = engine.CreateConversation();
-chat.Send("Compose a 10-line poem about trains.");
+LiteRtConversation chat = engine.CreateConversation();
+chat.Send("My name is Ada. Remember it.");
 
-// Something urgent arrives (a live translation, a higher-priority job): cut this conversation short.
-chat.CancelProcess();                      // a blocking send on another thread, or a stream, is cut here
+// Before a send that something more urgent might interrupt:
+LiteRtConversation checkpoint = chat.Clone();
+using var cts = new CancellationTokenSource();   // something urgent calls cts.Cancel()
+try
+{
+    await foreach (LiteRtStreamChunk chunk in chat.SendStreamingAsync("Write a long poem about trains.", cts.Token))
+        if (chunk.Kind == LiteRtStreamChunkKind.Answer)
+            Console.Write(chunk.Text);
+    checkpoint.Dispose();   // the send completed: the checkpoint is not needed
+}
+catch (OperationCanceledException)
+{
+    chat.Dispose();         // consumed by the cancellation
+    chat = checkpoint;      // the conversation as it was before the cut turn
+}
 
-// Keep what was received so the model can continue instead of starting over:
-LiteRtConversationSnapshot snapshot = chat.Snapshot();   // captures turns + partial streamed text
+Console.WriteLine(chat.Send("What is my name?").Text);
 chat.Dispose();
-
-using var resumed = LiteRtConversation.Resume(snapshot);
-Console.WriteLine(resumed.Send("Continue from where you stopped.").Text);
 ```
 
-- **Streaming captures the partial text for you** — `Snapshot()` uses the answer text the abandoned
-  stream produced. A **blocking** send that was cut short returns no text to the binding at all, so pass
-  it yourself: `chat.Snapshot(textReceivedSoFar)`, or set it on the record afterwards
-  (`snapshot with { PartialResponse = text }`).
-- **Cost:** one prefill of the whole history when the resumed conversation sends its first message
-  (0.2–1.8 s on desktop CPU for a few hundred to ~1 200 tokens; minutes on a phone for thousands).
-- **The turn log is automatic** for `Send`/`SendAsync`/`SendStreamingAsync`/`SendToolResults`, and it
-  includes the `History` the conversation was created with. A raw `SendRaw` payload in a shape that is not
-  a single message object makes `Snapshot()` throw rather than hand back a lossy history — keep your own
-  turn log and use `History` in that case.
-- The engine must still be alive when you resume; the snapshot reuses it as-is.
+- **Cost:** creating the clone takes no measurable time or memory; it only costs memory once it generates.
+  Measured on LiteRT-LM v0.18.0 with gemma-4 E2B, a clone of a 2,300-token conversation holds about 36 MB on
+  a desktop CPU once used, and continuing on it skips the replay a `History` restore pays: 0.3 s instead of
+  0.6 s on CPU, and 48 ms instead of 202 ms on GPU, for a 310-token conversation.
+- **The cut turn is not kept.** The checkpoint holds the conversation as it was before the send, so send the
+  question again to get the answer; the partial text the stream produced is yours to show or discard.
+- **Clone before, not after.** `Clone()` throws `InvalidOperationException` for a conversation whose send was
+  cancelled, because the runtime would return an empty clone that also answers `CANCELLED`. `Clone()` also
+  needs a conversation that has completed a send (see [Clone a conversation](#clone-a-conversation)).
+- **Same engine and process only.** To move a conversation to another engine, or across a restart, restore
+  its turns through `History` instead.
 
 ## Clone a conversation
 
@@ -227,13 +236,12 @@ A/B two sampler settings or two phrasings from the same context.
 |---|---|---|
 | Resume a chat after the app restarts | `History` / `HistoryJson` | Re-prefills the history |
 | Seed a conversation with few-shot examples | `History` / `HistoryJson` | Re-prefills the examples |
-| Continue a chat you had to cancel or evict | `Snapshot()` → `Resume()` | Re-prefills the history (once) |
+| Continue a chat after cancelling a send | `Clone()` before the send | Copies state, no re-prefill |
 | Branch a live conversation into variants | `Clone()` | Copies state, no re-prefill |
 | Checkpoint before a risky turn, then retry | `Clone()` | Copies state, no re-prefill |
 
-The three compose: clone is the cheap same-process fork of live state; snapshot/resume is how you keep a
-conversation that was cut short (the only option once the runtime has cancelled it); restore is the durable
-cross-session reload.
+The two compose: clone is the cheap same-process fork of live state, and the checkpoint that survives a
+cancellation; restore is the durable cross-session reload.
 
 ## Cap a single send: per-send `MaxOutputTokens`
 

@@ -56,14 +56,6 @@ public sealed class LiteRtEngine : IDisposable
     /// guard is only active when this is known.</summary>
     internal int MaxNumTokens { get; }
 
-    /// <summary>Whether the engine was loaded with a vision/audio encoder enabled (a conversation then
-    /// carries a session config automatically, so a plain <c>CreateConversation()</c> can send media).</summary>
-    internal bool IsMultimodal => _isMultimodal;
-
-    /// <summary>Whether <see cref="Dispose"/> already ran (conversation creation must not reach native code
-    /// through a freed engine handle).</summary>
-    internal bool IsDisposed => _disposed;
-
     /// <summary>
     /// Gets how many chat engines are alive in this process: 0 or 1 unless the live engines were loaded
     /// with <see cref="LiteRtEngineOptions.AllowMultipleEngines"/>. A <see cref="LiteRtEmbeddingEngine"/> is

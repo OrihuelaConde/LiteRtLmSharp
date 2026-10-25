@@ -23,7 +23,7 @@ namespace LiteRtLmSharp;
 /// engine, such as <see cref="TokenCount"/> and creating a conversation, also wait for a generation in
 /// flight on any conversation of the engine. Do the scheduling at the application level: keep one send in
 /// flight per engine, and cut the running one with <see cref="CancelProcess"/> when something more urgent
-/// arrives (see <see cref="Snapshot"/> for continuing the evicted conversation).
+/// arrives (see <see cref="Clone"/> for keeping a checkpoint to continue from).
 /// </remarks>
 public sealed class LiteRtConversation : IDisposable
 {
@@ -55,18 +55,11 @@ public sealed class LiteRtConversation : IDisposable
     // filling the unset field from these before building the per-send config. Inherited by Clone().
     private readonly bool? _thinkingEnable;
     private readonly int? _thinkingBudget;
-    // The options this conversation was created with, replayed by Resume() so a resumed conversation keeps
-    // the system message, tools, sampler and caps of the interrupted one. Inherited by Clone().
-    private readonly LiteRtConversationOptions? _options;
-    // The turn log behind Snapshot()/Resume(): every completed send (seeded with the initial History), and
-    // whether it is still a faithful account of the conversation. A raw send whose JSON cannot be re-encoded
-    // as a message clears the flag, which makes Snapshot() refuse rather than hand back a lossy history.
-    private readonly List<LiteRtMessage> _turns = [];
-    private bool _turnsComplete = true;
-    // Answer text of the last streaming send. Cleared when that stream completes; kept when it is abandoned
-    // or cancelled, which is the partial reply Snapshot() hands to Resume().
-    private string? _partialResponse;
     private bool _disposed;
+    // Set when a send on this conversation ended cancelled (the runtime then answers CANCELLED to every later
+    // send), decided by the outcome, not by the call: CancelProcess() on an idle conversation is a no-op and
+    // leaves it unset, and so does a cancelled token that lost the race to a send that completed.
+    private volatile bool _cancelled;
 
     /// <summary>Channel name passed to <c>set_stream_tool_calls</c>. Pinned explicitly (rather than
     /// relying on the native default, currently also "tool_call") so the split logic and the native
@@ -77,7 +70,7 @@ public sealed class LiteRtConversation : IDisposable
         ConversationHandle conversation, ConversationConfigHandle? config, SessionConfigHandle? sessionConfig,
         LiteRtEngine engineOwner, int visualTokenBudget = 0, int maxOutputTokens = 0,
         string? toolCallStreamChannel = null, bool hasConstraintProvider = false,
-        bool? thinkingEnable = null, int? thinkingBudget = null, LiteRtConversationOptions? options = null)
+        bool? thinkingEnable = null, int? thinkingBudget = null)
     {
         _conversation = conversation;
         _config = config;
@@ -89,7 +82,6 @@ public sealed class LiteRtConversation : IDisposable
         _hasConstraintProvider = hasConstraintProvider;
         _thinkingEnable = thinkingEnable;
         _thinkingBudget = thinkingBudget;
-        _options = options;
     }
 
     internal static LiteRtConversation Create(
@@ -294,17 +286,12 @@ public sealed class LiteRtConversation : IDisposable
                 throw NativeError.Exception("litert_lm_conversation_create returned null.",
                     report => IsUnsupportedSamplerError(report?.Message) ? SamplerNotSupportedHint : null);
 
-                var conversation = new LiteRtConversation(
+            return new LiteRtConversation(
                 new ConversationHandle(convPtr), config, sessionConfig, engine,
                 options?.VisualTokenBudget ?? 0, options?.MaxOutputTokens ?? 0,
                 options?.StreamToolCalls == true ? ToolCallStreamChannelName : null,
                 options?.ConstraintProvider is not null,
-                options?.EnableThinking, options?.ThinkingTokenBudget,
-                    options);
-                // The turn log Snapshot()/Resume() work from starts with the history this conversation was
-                // created with, so a snapshot is the whole conversation and not just what happened after it.
-                conversation.SeedTurns(historyJson);
-                return conversation;
+                options?.EnableThinking, options?.ThinkingTokenBudget);
         }
         catch
         {
@@ -360,137 +347,6 @@ public sealed class LiteRtConversation : IDisposable
         int count = LiteRtLmNative.litert_lm_conversation_get_token_count(_conversation.Ptr);
         _cachedTokenCount = count;
         return count;
-    }
-
-    /// <summary>Seeds the turn log with the history the conversation was created with. A <c>HistoryJson</c>
-    /// the binding cannot re-encode as messages (a foreign or exotic shape) leaves the log incomplete, and
-    /// <see cref="Snapshot"/> then refuses instead of returning a lossy history.</summary>
-    private void SeedTurns(string? historyJson)
-    {
-        if (historyJson is null)
-            return;
-        try
-        {
-            _turns.AddRange(LiteRtMessage.Deserialize(historyJson));
-        }
-        catch (ArgumentException)
-        {
-            _turnsComplete = false;
-        }
-    }
-
-    /// <summary>Appends a completed turn (what was sent, what came back) to the log behind
-    /// <see cref="Snapshot"/>. Anything the binding cannot re-encode as messages marks the log incomplete
-    /// rather than storing a half-truth.</summary>
-    private void RecordTurn(string messageJson, string responseJson)
-    {
-        try
-        {
-            _turns.AddRange(LiteRtMessage.Deserialize("[" + messageJson + "]"));
-            _turns.Add(LiteRtResponse.Parse(responseJson).ToMessage());
-        }
-        catch (Exception e) when (e is ArgumentException or JsonException or InvalidOperationException)
-        {
-            _turnsComplete = false;
-        }
-    }
-
-    /// <summary>Appends a completed streaming turn, whose reply arrived as chunks rather than as one
-    /// response JSON.</summary>
-    private void RecordStreamingTurn(
-        string messageJson, string? answerText, IReadOnlyList<LiteRtToolCall>? toolCalls)
-    {
-        try
-        {
-            _turns.AddRange(LiteRtMessage.Deserialize("[" + messageJson + "]"));
-            _turns.Add(LiteRtMessage.ModelTurn(
-                string.IsNullOrEmpty(answerText) ? null : answerText, toolCalls ?? []));
-        }
-        catch (ArgumentException)
-        {
-            _turnsComplete = false;
-        }
-    }
-
-    /// <summary>
-    /// Captures this conversation's state (its turns, any partial reply text, and the options it was created
-    /// with) so <see cref="Resume(LiteRtConversationSnapshot)"/> can continue it on a fresh conversation.
-    /// </summary>
-    /// <param name="partialResponse">The reply text received so far, for a conversation cut short by
-    /// <see cref="CancelProcess"/> during a <i>blocking</i> send — the binding never sees that text, so only
-    /// the caller can supply it. Leave <c>null</c> to use the text the binding captured itself (an abandoned
-    /// or cancelled <see cref="SendStreamingAsync(string, System.Threading.CancellationToken)"/> stream, or
-    /// nothing when the conversation was not cut short).</param>
-    /// <remarks>
-    /// Take the snapshot whenever the conversation is idle: before disposing it, or right after detecting that
-    /// a cancellation consumed it. The snapshot is a value — it stays valid after the conversation and even the
-    /// engine object are disposed, as long as the engine itself is alive when <see cref="Resume"/> is called.
-    /// </remarks>
-    /// <exception cref="InvalidOperationException">A send bypassed the typed API in a shape the binding cannot
-    /// re-encode as messages (a raw <see cref="SendRaw"/> JSON that is not a single message object), so the
-    /// recorded history would be incomplete. Build <see cref="LiteRtConversationOptions.History"/> from the
-    /// caller's own turn log instead.</exception>
-    public LiteRtConversationSnapshot Snapshot(string? partialResponse = null)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (!_turnsComplete)
-            throw new InvalidOperationException(
-                "This conversation received a send whose message JSON the binding cannot re-encode as a " +
-                "LiteRtMessage (a raw SendRaw payload, or a HistoryJson in a foreign shape), so the recorded " +
-                "history would silently lose turns. Keep the turns yourself and pass them as " +
-                "LiteRtConversationOptions.History when continuing on a fresh conversation.");
-
-        return new LiteRtConversationSnapshot
-        {
-            Engine = _engineOwner,
-            Turns = [.. _turns],
-            PartialResponse = partialResponse ?? _partialResponse,
-            TokenCount = _cachedTokenCount,
-            Options = _options,
-            EngineIsMultimodal = _engineOwner.IsMultimodal,
-        };
-    }
-
-    /// <summary>
-    /// Continues a captured conversation on a new one: creates a conversation on the snapshot's engine with
-    /// the snapshot's options, and with <see cref="LiteRtConversationOptions.History"/> = the recorded turns
-    /// plus the partial reply as a model turn — the recipe for continuing after a cancellation, where the
-    /// cancelled conversation itself is unusable (<c>CANCELLED</c> forever on LiteRT-LM v0.16.0/v0.18.0,
-    /// a hang on v0.14.0).
-    /// </summary>
-    /// <remarks>
-    /// The cost is one prefill of that history: about 0.2–1.8 s on desktop CPU for a few hundred to ~1.2 k
-    /// tokens (2 s per 1 k tokens roughly), but minutes on a phone for thousands of tokens — on mobile,
-    /// snapshot early rather than after a long conversation. The engine must still be alive; the snapshot's
-    /// engine is reused as-is, so nothing about the engine settings changes.
-    /// </remarks>
-    /// <exception cref="ArgumentException">The snapshot carries nothing to resume (no turns and no partial
-    /// text).</exception>
-    /// <exception cref="ObjectDisposedException">The engine in the snapshot is disposed.</exception>
-    public static LiteRtConversation Resume(LiteRtConversationSnapshot snapshot)
-    {
-        ArgumentNullException.ThrowIfNull(snapshot);
-        LiteRtEngine engine = snapshot.Engine;
-        ArgumentNullException.ThrowIfNull(engine, nameof(snapshot));
-        ObjectDisposedException.ThrowIf(engine.IsDisposed, engine);
-
-        var turns = new List<LiteRtMessage>(snapshot.Turns.Count + 1);
-        turns.AddRange(snapshot.Turns);
-        if (snapshot.PartialResponse is { Length: > 0 } partial)
-            turns.Add(LiteRtMessage.Model(partial));
-        if (turns.Count == 0)
-            throw new ArgumentException(
-                "The snapshot has no turns and no partial response, so there is nothing to resume.",
-                nameof(snapshot));
-
-        // History wins over HistoryJson in ResolveHistory, but clear the raw one anyway: a resumed
-        // conversation must replay the snapshot's turns, in one consistent shape.
-        LiteRtConversationOptions options = (snapshot.Options ?? new LiteRtConversationOptions()) with
-        {
-            History = turns,
-            HistoryJson = null,
-        };
-        return Create(engine, options, snapshot.EngineIsMultimodal);
     }
 
     /// <summary>
@@ -591,6 +447,14 @@ public sealed class LiteRtConversation : IDisposable
     public LiteRtConversation Clone()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        // A cancelled conversation clones into an empty conversation that also answers CANCELLED (measured
+        // on LiteRT-LM v0.18.0, CPU and GPU), so the checkpoint has to be taken before the send.
+        if (_cancelled)
+            throw new InvalidOperationException(
+                "Cannot clone a conversation whose send was cancelled: the runtime answers CANCELLED to every " +
+                "later send on it, and a clone of it does too. To continue after a cancellation, take the " +
+                "Clone() before the send that might be cut and continue on the clone, or restore the turns " +
+                "on a new conversation through LiteRtConversationOptions.History.");
         // Nothing prefilled yet: the native clone would copy an empty state and the branch silently drifts
         // onto whatever conversation ran last on the engine (see the doc above). Fail loudly instead.
         if (TokenCount <= 0)
@@ -622,15 +486,11 @@ public sealed class LiteRtConversation : IDisposable
         var clone = new LiteRtConversation(
             new ConversationHandle(clonedPtr), config: null, sessionConfig: null, _engineOwner,
             _visualTokenBudget, _maxOutputTokens, _toolCallStreamChannel, _hasConstraintProvider,
-            _thinkingEnable, _thinkingBudget, _options);
+            _thinkingEnable, _thinkingBudget);
         // The branch holds the same tokens as the parent (the TokenCount check above just refreshed the
         // parent's cache), and a full parent means a full branch.
         clone._cachedTokenCount = _cachedTokenCount;
         clone._sawCeiling = _sawCeiling;
-        // The branch starts from the same prefilled prefix, so it inherits the turn log: a Snapshot() taken
-        // from the clone then describes the clone's whole conversation, not just its own turns.
-        clone._turns.AddRange(_turns);
-        clone._turnsComplete = _turnsComplete;
         return clone;
     }
 
@@ -681,9 +541,9 @@ public sealed class LiteRtConversation : IDisposable
     /// Awaitable <see cref="Send(string)"/> with true mid-generation cancellation: cancelling
     /// <paramref name="cancellationToken"/> cancels the native inference (via <see cref="CancelProcess"/>)
     /// and the task faults with <see cref="OperationCanceledException"/>. Treat a cancelled conversation
-    /// as consumed: dispose it and continue on a fresh one — <see cref="Snapshot"/> +
-    /// <see cref="Resume(LiteRtConversationSnapshot)"/> carry the finished turns and the partial reply, or
-    /// restore prior turns via <see cref="LiteRtConversationOptions.History"/> yourself. Sending again on a
+    /// as consumed: dispose it and continue on a fresh one. To keep the earlier turns without replaying them,
+    /// take a <see cref="Clone"/> before the send and continue on the clone; otherwise restore prior turns via
+    /// <see cref="LiteRtConversationOptions.History"/>. Sending again on a
     /// cancelled conversation returns <c>CANCELLED</c> for every later call (LiteRT-LM v0.16.0 and v0.18.0)
     /// or hangs (v0.14.0); the engine itself is unaffected. While the send is in flight, do not touch the
     /// conversation from other threads — cancellation, and reading <see cref="TokenCountCached"/> or
@@ -726,9 +586,9 @@ public sealed class LiteRtConversation : IDisposable
     /// <see cref="TokenCountCached"/> and <see cref="IsContextFull"/>, it is the only operation that is safe to
     /// call from any thread while a send is in flight; when nothing is in flight it is a no-op. A cancelled blocking send fails with <see cref="LiteRtException"/> (the
     /// async variants translate that to <see cref="OperationCanceledException"/>). Afterwards, treat the
-    /// conversation as consumed: dispose it and continue on a fresh one — <see cref="Snapshot"/> +
-    /// <see cref="Resume(LiteRtConversationSnapshot)"/> carry the finished turns and the partial reply, or
-    /// restore prior turns via <see cref="LiteRtConversationOptions.History"/> yourself. Sending again on a
+    /// conversation as consumed: dispose it and continue on a fresh one. To keep the earlier turns without
+    /// replaying them, take a <see cref="Clone"/> before the send and continue on the clone; otherwise restore
+    /// prior turns via <see cref="LiteRtConversationOptions.History"/>. Sending again on a
     /// cancelled conversation returns <c>CANCELLED</c> for every later call (LiteRT-LM v0.16.0 and v0.18.0)
     /// or hangs (v0.14.0); the engine itself is unaffected. Mirrors the native <c>cancel_process</c> (the
     /// Kotlin binding's <c>cancelProcess</c> / the JS binding's <c>cancel</c>).
@@ -933,8 +793,11 @@ public sealed class LiteRtConversation : IDisposable
             // executor should not be null"), or when the runtime reported nothing; a specific native reason
             // (an undecodable image, a visual budget above the per-image cap) speaks for itself.
             bool smallContext = LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(_engineOwner.MaxNumTokens);
-            throw NativeError.Exception("litert_lm_conversation_send_message returned null.",
+            LiteRtException failure = NativeError.Exception("litert_lm_conversation_send_message returned null.",
                 report => SendFailureHint(report?.Message, hasMedia, smallContext));
+            if (failure.StatusCode == LiteRtStatusCode.Cancelled)
+                _cancelled = true;
+            throw failure;
         }
 
         using var response = new JsonResponseHandle(responsePtr);
@@ -943,8 +806,6 @@ public sealed class LiteRtConversation : IDisposable
         // The send completed: detect (from exact counts) whether the reply ran to the ceiling-derived
         // decode budget, latching the context-full state the same turn it happens.
         CompleteCeilingProbe();
-        // A completed turn is also what Snapshot()/Resume() replay when the conversation is cut short later.
-        RecordTurn(messageJson, result);
         return result;
     }
 
@@ -1355,34 +1216,10 @@ public sealed class LiteRtConversation : IDisposable
             throw failure;
         }
 
-        // Accumulated while the consumer reads the stream: the reply of an abandoned stream is the partial
-        // text Snapshot() carries into Resume(), and a stream that completes is recorded as a turn like a
-        // blocking send. Declared here (not inside the try) because the finally reports on it.
-        var answer = new System.Text.StringBuilder();
-        List<LiteRtToolCall>? toolCalls = null;
-        // Whether the consumer read the stream to its end. Only then is the turn complete: a break, a
-        // cancelled token or a faulted channel leaves the text it did receive as the partial reply.
-        bool streamedToEnd = false;
         try
         {
             await foreach (LiteRtStreamChunk chunk in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-            {
-                switch (chunk.Kind)
-                {
-                    case LiteRtStreamChunkKind.Answer:
-                        answer.Append(chunk.Text);
-                        break;
-                    case LiteRtStreamChunkKind.ToolCall:
-                        (toolCalls ??= []).AddRange(chunk.ToolCalls);
-                        break;
-                }
                 yield return chunk;
-            }
-
-            streamedToEnd = true;
-            // A completed stream leaves no partial reply behind (a previous abandoned stream may have set one).
-            _partialResponse = null;
-            RecordStreamingTurn(messageJson, answer.ToString(), toolCalls);
         }
         finally
         {
@@ -1396,6 +1233,8 @@ public sealed class LiteRtConversation : IDisposable
             // deadlocks exactly when there are leftovers.
             if (!channel.Reader.Completion.IsCompleted)
             {
+                // The binding itself cancels the native generation here, which consumes the conversation.
+                _cancelled = true;
                 LiteRtLmNative.litert_lm_conversation_cancel_process(_conversation.Ptr);
                 try
                 {
@@ -1414,14 +1253,10 @@ public sealed class LiteRtConversation : IDisposable
                 // streams skip it — the conversation is consumed anyway.
                 CompleteCeilingProbe();
             }
-
-            if (!streamedToEnd)
+            else if (channel.Reader.Completion.Exception?.InnerException is LiteRtException { StatusCode: LiteRtStatusCode.Cancelled })
             {
-                // The consumer gave up (break, cancelled token) or the stream faulted: the conversation is
-                // consumed, but the text it produced so far is exactly what Resume() needs, so keep it for
-                // Snapshot(). The chunks drained above are deliberately not appended — the partial reply is
-                // what the consumer actually received.
-                _partialResponse = answer.Length > 0 ? answer.ToString() : null;
+                // Cancelled from outside (CancelProcess on another thread): the conversation is consumed.
+                _cancelled = true;
             }
             if (gcHandle.IsAllocated)
                 gcHandle.Free();

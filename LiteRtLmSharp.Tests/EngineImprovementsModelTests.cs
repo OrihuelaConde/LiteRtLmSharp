@@ -6,8 +6,8 @@ namespace LiteRtLmSharp.Tests;
 
 /// <summary>
 /// Model-backed tests for the engine improvements: several live engines, the non-blocking token count, the
-/// sampler probe and continue-after-cancel via <see cref="LiteRtConversation.Snapshot(string?)"/> /
-/// <see cref="LiteRtConversation.Resume(LiteRtConversationSnapshot)"/>.
+/// sampler mapping, and continuing after a cancellation on a <see cref="LiteRtConversation.Clone"/>
+/// checkpoint.
 /// Set LITERTLM_TEST_MODEL to a .litertlm file to run (LITERTLM_TEST_BACKEND selects cpu/gpu).
 /// </summary>
 public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
@@ -216,92 +216,82 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         output.WriteLine($"Greedy/argmax reply: {argmax}");
     }
 
+    private const string Fact = "Remember this: my favourite colour is teal and my cat is called Miso. Reply OK.";
+    private const string Count = "Count upward starting from 400, one number per line, and never stop.";
+
     /// <summary>
-    /// Continue-after-cancel: the recipe the binding now carries. Cancelling mid-generation kills the
-    /// conversation, <see cref="LiteRtConversation.Snapshot(string?)"/> keeps the turns plus the partial
-    /// reply, and <see cref="LiteRtConversation.Resume(LiteRtConversationSnapshot)"/> rebuilds a usable
-    /// conversation that still remembers the earlier turn.
+    /// The checkpoint pattern: a clone taken before a send survives the cancellation of the original, keeps
+    /// its own token count (it never saw the cut turn) and still knows the earlier turns. The cancelled
+    /// conversation answers CANCELLED to every later send, and cloning it is refused (the runtime would
+    /// return an empty clone that also answers CANCELLED).
     /// </summary>
     [SkippableFact]
-    public async Task SnapshotResume_ShouldContinueAConversationThatWasCutShort()
+    public async Task Checkpoint_ShouldContinueAfterACancelledStream_AndTheCancelledConversationShouldRefuseToClone()
     {
         LiteRtEngineOptions? options = Options();
         Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
         using var engine = LiteRtEngine.Load(options);
-        using var chat = engine.CreateConversation(new LiteRtConversationOptions
-        {
-            MaxOutputTokens = 32,
-            SystemMessage = "You are a concise assistant.",
-        });
+        using var chat = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax, MaxOutputTokens = 256 });
+        chat.Send(Fact);
+        using var checkpoint = chat.Clone();
+        int before = checkpoint.TokenCount;
 
-        var state = new List<string>();
-        chat.Send("Remember this: my favourite colour is teal. Acknowledge in two words.");
-
-        using var streamCts = new CancellationTokenSource();
-        var partial = new System.Text.StringBuilder();
+        using var cts = new CancellationTokenSource();
+        int chunks = 0;
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
         {
-            await foreach (LiteRtStreamChunk chunk in chat.SendStreamingAsync(
-                "Now count upward from 1, one number per line, and do not stop.", streamCts.Token))
-            {
-                if (chunk.Kind == LiteRtStreamChunkKind.Answer)
-                {
-                    partial.Append(chunk.Text);
-                    // Cut the generation short as soon as it produced something: the eviction path a host
-                    // uses when a higher-priority job needs the engine.
-                    if (partial.Length > 8)
-                        streamCts.Cancel();
-                }
-            }
+            await foreach (LiteRtStreamChunk chunk in chat.SendStreamingAsync(Count, cts.Token))
+                if (chunk.Kind == LiteRtStreamChunkKind.Answer && ++chunks == 12)
+                    cts.Cancel();
         });
 
-        string received = partial.ToString();
-        output.WriteLine($"Partial reply captured by the binding: '{received}'");
-        Assert.False(string.IsNullOrEmpty(received), "The stream produced nothing before the cancel.");
+        var refused = Assert.Throws<InvalidOperationException>(() => chat.Clone());
+        Assert.Contains("before the send", refused.Message, StringComparison.Ordinal);
+        var cancelled = Assert.Throws<LiteRtException>(() => chat.Send("hi"));
+        Assert.Equal(LiteRtStatusCode.Cancelled, cancelled.StatusCode);
 
-        // The binding captured the partial text itself for a streaming send — no argument needed.
-        LiteRtConversationSnapshot snapshot = chat.Snapshot();
-        Assert.NotEmpty(snapshot.Turns);
-        Assert.Equal(received, snapshot.PartialResponse);
-        chat.Dispose();
-
-        // The cancelled conversation itself is unusable; the resume is a fresh one on the same engine.
-        using var resumed = LiteRtConversation.Resume(snapshot);
-        Assert.True(resumed.TokenCountCached >= 0);
-        LiteRtResponse answer = resumed.Send("What is my favourite colour? One word.");
-        output.WriteLine($"Resumed reply: {answer.Text}");
-        // The recalled fact proves the replayed history (including the system message) reached the model.
-        Assert.Contains("teal", answer.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, checkpoint.TokenCount);
+        string colour = checkpoint.Send("What is my favourite colour? One word.").Text ?? "";
+        Assert.Contains("teal", colour, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
-    /// A snapshot taken after plain, completed turns resumes into a conversation that replays them — the
-    /// "<c>History</c> = the turns I have" recipe, without the caller building the list.
+    /// A blocking send cancelled through its token consumes the conversation too, so a later Clone() is refused.
     /// </summary>
     [SkippableFact]
-    public void SnapshotResume_ShouldCarryCompletedTurns_AndRejectAnEmptySnapshot()
+    public async Task CancelledBlockingSend_ShouldMakeCloneRefuse()
     {
         LiteRtEngineOptions? options = Options();
         Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
         using var engine = LiteRtEngine.Load(options);
-        using var chat = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 24 });
-        chat.Send("Remember this: the passphrase is ORANGE-LANTERN. Acknowledge briefly.");
+        using var chat = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax, MaxOutputTokens = 900 });
+        chat.Send(Fact);
 
-        LiteRtConversationSnapshot snapshot = chat.Snapshot();
-        Assert.Equal(2, snapshot.Turns.Count);                 // the user turn and the model turn
-        Assert.Null(snapshot.PartialResponse);                 // nothing was cut short
-        Assert.Same(engine, snapshot.Engine);
-        Assert.True(snapshot.TokenCount > 0);                  // the non-blocking cache, refreshed by the send
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => chat.SendAsync(Count, cts.Token));
 
-        using var resumed = LiteRtConversation.Resume(snapshot);
-        LiteRtResponse answer = resumed.Send("What is the passphrase? Reply with just the passphrase.");
-        output.WriteLine($"Resumed reply: {answer.Text}");
-        Assert.Contains("ORANGE-LANTERN", answer.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Throws<InvalidOperationException>(() => chat.Clone());
+    }
 
-        // A snapshot with nothing in it is a caller bug, not an empty conversation to resume.
-        var empty = new LiteRtConversationSnapshot { Engine = engine };
-        Assert.Throws<ArgumentException>(() => LiteRtConversation.Resume(empty));
+    /// <summary>
+    /// CancelProcess() on an idle conversation is a documented no-op, so it must not mark the conversation as
+    /// cancelled: Clone() still works and the clone generates.
+    /// </summary>
+    [SkippableFact]
+    public void CancelProcess_OnAnIdleConversation_ShouldNotBlockClone()
+    {
+        LiteRtEngineOptions? options = Options();
+        Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(options);
+        using var chat = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax, MaxOutputTokens = 24 });
+        chat.Send(Fact);
+        chat.CancelProcess();
+
+        using var clone = chat.Clone();
+        string cat = clone.Send("What is my cat called? One word.").Text ?? "";
+        Assert.Contains("Miso", cat, StringComparison.OrdinalIgnoreCase);
     }
 }

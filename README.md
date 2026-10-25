@@ -159,9 +159,8 @@ conversations** (MEAI `ConversationId`) are supported — see the
   the Android emulator, but they only run in parallel on a desktop CPU, and each one holds its own memory
   (about 2.3 GB per gemma-4 E2B engine on CPU), so check free memory before loading another one.
 - **Cancelled conversations are consumed.** After `CancelProcess()` the runtime answers every later send
-  with `CANCELLED` (v0.16.0/v0.18.0; v0.14.0 hangs). Keep the finished turns plus the partial reply with
-  `LiteRtConversation.Snapshot()` and continue on `LiteRtConversation.Resume(snapshot)` — see the
-  [conversation-state guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html).
+  with `CANCELLED`. To continue, take a `Clone()` before the send that might be cut and continue on the
+  clone — see the [conversation-state guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html).
 - **`MaxNumTokens`** is the total context window (prompt + response, across turns). Use >= 1024;
   too small can make blocking generation return nothing.
 - **Conversations are not thread-safe** — serialize sends per engine (the Microsoft.Extensions.AI
