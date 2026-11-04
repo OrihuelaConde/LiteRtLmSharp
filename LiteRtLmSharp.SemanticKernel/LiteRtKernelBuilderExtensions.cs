@@ -115,10 +115,10 @@ public static class LiteRtKernelBuilderExtensions
             // Framework / MEAI, as before keyed clients existed.
             LiteRtChatClientServiceCollectionExtensions.AliasUnkeyed(services, serviceId);
         }
-        return RegisterChatCompletion(services, serviceId, eager);
+        return RegisterChatCompletion(services, serviceId);
     }
 
-    private static IServiceCollection RegisterChatCompletion(IServiceCollection services, string? serviceId, bool eager = false)
+    private static IServiceCollection RegisterChatCompletion(IServiceCollection services, string? serviceId)
     {
         // Expose the registered LiteRtLmSharp IChatClient as a Semantic Kernel IChatCompletionService, wrapped
         // with MEAI's function-invocation middleware. Semantic Kernel's AsChatCompletionService adapter passes
@@ -127,10 +127,9 @@ public static class LiteRtKernelBuilderExtensions
         // no-op when a request carries no tools, so it is safe to apply unconditionally.
         // A service wraps the chat client registered under the same key (or none). A client that would load an engine
         // is resolved on the first call: Semantic Kernel's default service selection resolves every registered
-        // service, and a prompt would otherwise load the model of every service. With eager, the engine is loaded
-        // already, and resolving the client now hands it to the container.
-        (bool loadsEngine, string? clientModelId) = LiteRtChatClientServiceCollectionExtensions.ClientSettings(services, serviceId);
-        bool defer = loadsEngine && !eager;
+        // service, and a prompt would otherwise load the model of every service. An engine loaded eagerly is resolved
+        // at once, which hands it to the container.
+        (bool defer, string? clientModelId) = LiteRtChatClientServiceCollectionExtensions.ClientSettings(services, serviceId);
 
         IChatCompletionService Factory(IServiceProvider sp, object? serviceKey)
         {

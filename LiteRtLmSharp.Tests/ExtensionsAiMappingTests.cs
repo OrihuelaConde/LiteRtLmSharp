@@ -219,7 +219,7 @@ public class ExtensionsAiMappingTests
     }
 
     [Fact]
-    public void ReplacingARegistration_WorksWithEqualOptions_UnderAnotherKey_AndWithoutACycle()
+    public async Task ReplacingARegistration_WorksWithEqualOptions_UnderAnotherKey_AndWithoutACycle()
     {
         // Equal options under another key, after everything was removed: a new registration, not an alias of the old.
         var services = new ServiceCollection();
@@ -240,9 +240,11 @@ public class ExtensionsAiMappingTests
             services.Remove(d);
         services.AddKeyedLiteRtChatClient("a", new LiteRtEngineOptions { ModelPath = "o-missing.litertlm" });
         using ServiceProvider replaced = services.BuildServiceProvider();
-        var resolving = Task.Run(() => Assert.Throws<ArgumentException>(() => replaced.GetRequiredKeyedService<IChatClient>("b")));
-        Assert.True(resolving.Wait(TimeSpan.FromSeconds(30)), "Resolving the sharing key did not return: the aliases form a cycle.");
-        Assert.Contains("o-missing.litertlm", resolving.Result.Message);
+        // WaitAsync throws TimeoutException if resolving the sharing key never returns.
+        ArgumentException missing = await Task.Run(
+                () => Assert.Throws<ArgumentException>(() => replaced.GetRequiredKeyedService<IChatClient>("b")))
+            .WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Contains("o-missing.litertlm", missing.Message);
     }
 
     [Fact]

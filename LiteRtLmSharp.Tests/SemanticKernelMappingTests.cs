@@ -2,6 +2,7 @@ using System.Text.Json;
 using LiteRtLmSharp.SemanticKernel;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Services;
@@ -172,6 +173,116 @@ public class SemanticKernelMappingTests
 
         Assert.Equal("the app's own engine",
             Assert.Throws<NotSupportedException>(() => provider.GetRequiredKeyedService<IChatClient>("local")).Message);
+    }
+
+    // A missing path names itself before any native work. The deadline is for the alias cycles these guard against:
+    // the container does not detect them, and the first resolve hangs.
+    private static async Task AssertLoadsAsync(Func<object> resolve, string path)
+    {
+        ArgumentException missing = await Task.Run(() => Assert.Throws<ArgumentException>(resolve)).WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Contains(path, missing.Message, StringComparison.Ordinal);
+    }
+
+    private static readonly LiteRtEngineOptions Shared = new() { ModelPath = "shared-missing.litertlm" };
+
+    [Fact]
+    public async Task ReplacingTheUnkeyedRegistration_ThroughAServiceId_DoesNotBuildACycle()
+    {
+        var services = new ServiceCollection();
+        services.AddLiteRtChatClient(Shared);
+        services.AddLiteRtChatCompletion(Shared, serviceId: "k");
+        services.RemoveAll<IChatClient>();
+        services.RemoveAll<LiteRtEngine>();
+        services.AddLiteRtChatCompletion(Shared, serviceId: "k");
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        await AssertLoadsAsync(() => provider.GetRequiredKeyedService<LiteRtEngine>("k"), "shared-missing.litertlm");
+    }
+
+    [Fact]
+    public async Task ReplacingAKey_WhoseEngineTheUnkeyedRegistrationShares_DoesNotBuildACycle()
+    {
+        var services = new ServiceCollection();
+        services.AddKeyedLiteRtChatClient("a", Shared);
+        services.AddLiteRtChatClient(Shared);
+        services.RemoveAllKeyed<IChatClient>("a");
+        services.RemoveAllKeyed<LiteRtEngine>("a");
+        services.AddLiteRtChatCompletion(Shared, serviceId: "a");
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        await AssertLoadsAsync(() => provider.GetRequiredKeyedService<IChatClient>("a"), "shared-missing.litertlm");
+    }
+
+    [Fact]
+    public async Task ReplacingAKey_NextToAnAppsClient_DoesNotBuildACycle()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IChatClient>(new StubChatClient());
+        services.AddLiteRtChatCompletion(Shared, serviceId: "a");
+        services.AddLiteRtChatClient(Shared);
+        services.RemoveAllKeyed<IChatClient>("a");
+        services.RemoveAllKeyed<LiteRtEngine>("a");
+        services.AddLiteRtChatCompletion(Shared, serviceId: "a");
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        await AssertLoadsAsync(() => provider.GetRequiredKeyedService<IChatClient>("a"), "shared-missing.litertlm");
+    }
+
+    private static async Task<string> PromptFailureAsync(Kernel kernel, string serviceId)
+        => (await Assert.ThrowsAnyAsync<Exception>(() => kernel.InvokePromptAsync(
+            "hi", new KernelArguments(new PromptExecutionSettings { ServiceId = serviceId })))).ToString();
+
+    [Fact]
+    public async Task AServiceId_AfterAnUnkeyedRegistrationThatSharesAKeysEngine_LoadsItsOwnModel()
+    {
+        IKernelBuilder builder = Kernel.CreateBuilder();
+        builder.Services.AddKeyedLiteRtChatClient("a", new LiteRtEngineOptions { ModelPath = "e2b-missing.litertlm" });
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "e2b-missing.litertlm" });
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "e4b-missing.litertlm", AllowMultipleEngines = true }, modelId: "e4b", serviceId: "smart");
+
+        string failure = await PromptFailureAsync(builder.Build(), "smart");
+
+        Assert.Contains("e4b-missing.litertlm", failure, StringComparison.Ordinal);
+        Assert.DoesNotContain("e2b-missing.litertlm", failure, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AServiceId_AfterAnUnkeyedServiceOnAnAppsClient_LoadsItsOwnModel()
+    {
+        IKernelBuilder builder = Kernel.CreateBuilder();
+        builder.Services.AddSingleton<IChatClient>(new StubChatClient());
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "e2b-missing.litertlm", AllowMultipleEngines = true }, serviceId: "fast");
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "e4b-missing.litertlm", AllowMultipleEngines = true });
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "e4b-missing.litertlm", AllowMultipleEngines = true }, serviceId: "smart");
+
+        string failure = await PromptFailureAsync(builder.Build(), "smart");
+
+        Assert.Contains("e4b-missing.litertlm", failure, StringComparison.Ordinal);
+        Assert.DoesNotContain("e2b-missing.litertlm", failure, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EagerOnASharedEngine_HasNoEffect_OnAPromptThatRunsElsewhere()
+    {
+        IKernelBuilder builder = Kernel.CreateBuilder();
+        builder.AddLiteRtChatCompletion(Shared, serviceId: "a");
+        builder.AddLiteRtChatCompletion(Shared, serviceId: "b", eager: true);   // shares a's engine: nothing loads
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "last-missing.litertlm", AllowMultipleEngines = true }, serviceId: "last");
+
+        Exception failure = await Assert.ThrowsAnyAsync<Exception>(() => builder.Build().InvokePromptAsync("hi"));
+
+        Assert.Contains("last-missing.litertlm", failure.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("shared-missing.litertlm", failure.ToString(), StringComparison.Ordinal);
+    }
+
+    private sealed class StubChatClient : IChatClient
+    {
+        public void Dispose() { }
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
     }
 
     [Fact]

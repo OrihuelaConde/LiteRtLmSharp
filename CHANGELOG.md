@@ -69,7 +69,7 @@ short for an application that shares one model between live translation, chat an
 - **Semantic Kernel registers a chat client per `serviceId`.** `AddLiteRtChatCompletion` with a `serviceId`
   registers its own chat client, and from options its engine, under that key; before, every `serviceId`
   wrapped the one unkeyed client and engine. Service ids from equal options still share one engine, and a
-  `LiteRtEngine` you registered without a key still serves them. Service ids from different options now load one
+  `LiteRtEngine` you registered without a key before the `serviceId` still serves them. Service ids from different options now load one
   engine each (before, they silently used the first engine), so set `AllowMultipleEngines` on each; without it,
   the first use of the second service throws. A service registered from options with a `serviceId` loads its
   engine on its first call, not when it is resolved, so a bad path fails at that call unless you set `eager`. So
