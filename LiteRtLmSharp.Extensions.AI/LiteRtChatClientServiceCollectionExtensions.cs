@@ -18,7 +18,7 @@ namespace Microsoft.Extensions.DependencyInjection;
 /// the same engine options is a no-op, and the first registration's template and stateful settings stay; a
 /// different engine or different options under that key throw <see cref="InvalidOperationException"/> instead
 /// of being ignored. An <see cref="IChatClient"/> or <see cref="LiteRtEngine"/> you registered yourself under the
-/// same key stays in charge. Registrations under different keys from equal engine options share one engine, so a
+/// same key is kept. Registrations under different keys from equal engine options share one engine, so a
 /// model loads once, and a LoRA adapter one of them sets in its template applies to that whole engine (see
 /// <see cref="LiteRtConversationOptions.LoraPath"/>); registrations from different options load one engine each,
 /// so set <see cref="LiteRtEngineOptions.AllowMultipleEngines"/> on each of them. Register an instance you own

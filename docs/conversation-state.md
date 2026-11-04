@@ -146,11 +146,12 @@ validated as a JSON array when the conversation is created and throws `ArgumentE
 
 ## Continue after a cancellation
 
-A send that is cut short **consumes** its conversation: after a cancelled `SendAsync`, a stream abandoned
-before its reply ended, or `CancelProcess()` during a send, the runtime answers every later send on it with
+A send that is cut short **consumes** its conversation, which can't generate again: after a cancelled `SendAsync`,
+a stream abandoned before its reply ended, or `CancelProcess()` during a send, the runtime answers every later send on it with
 `CANCELLED` (LiteRT-LM v0.16.0 and later; on v0.14.0 the send does not return), and
 `IsCancelled` turns `true`. `CancelProcess()` on an idle conversation changes nothing. To continue, take a
-checkpoint with `Clone()` **before** the send that might be cut, and continue on the checkpoint if it is:
+checkpoint with `Clone()` **before** the send that might be cut, and continue on the checkpoint if it is. In its
+stateful mode, `LiteRtChatClient` [does this for you](extensions-ai.md#cancelled-and-failed-sends).
 
 ```csharp
 LiteRtConversation chat = engine.CreateConversation();
@@ -189,6 +190,19 @@ chat.Dispose();
 
 A failure other than a cut leaves this block with the exception, so dispose `chat` in your own error path too.
 
+> **Warning:** On the GPU backend, don't repeat the cut message word for word. On LiteRT-LM v0.18.0 and v0.19.0, the
+> reply comes out wrong or empty, with no error, when all of these hold
+> ([LiteRT-LM #4394](https://github.com/google-ai-edge/LiteRT-LM/issues/4394)):
+>
+> - You continue on a clone, and this is the clone's first send.
+> - The send repeats a message that the original conversation, or another of its clones, already processed.
+> - Another conversation generated in between.
+>
+> The CPU backend was not affected in the same tests. To avoid the problem, reword the message or append zero-width
+> spaces (`"\u200B"`): one on the first retry, two on the second, and so on, so that the text differs from every earlier
+> attempt. Plain whitespace does not help, because the model's template trims it. The reply can differ from the one the
+> original message would have received.
+
 - **Cost:** on a text conversation, creating the clone takes no measurable time or memory; it only costs memory
   once it generates.
   Measured on LiteRT-LM v0.18.0 with gemma-4 E2B, a clone of a 2,300-token conversation holds about 36 MB on
@@ -201,17 +215,10 @@ A failure other than a cut leaves this block with the exception, so dispose `cha
   (gemma-4 E2B, win-x64).
 - **The cut turn is not kept.** The checkpoint holds the conversation as it was before the send, so send the
   question again to get the answer; the partial text the stream produced is yours to show or discard.
-- **Don't repeat the cut message word for word on the GPU backend.** A clone shares its native state with the
-  conversation it came from, and with that conversation's other clones, until it diverges. On LiteRT-LM v0.18.0
-  and v0.19.0, on the GPU backend, if the clone's first send repeats a message any of them already processed,
-  and another conversation generated in between, the reply comes out wrong or empty, with no error. The CPU
-  backend was not affected in the same tests. Any other token avoids it; whitespace does not, because the
-  model's template trims it. Reword the retried message, or append one more zero-width space (`"\u200B"`) than the
-  earlier attempts had. The reply can differ from the one the original message would have received.
 - **Clone before, not after.** `Clone()` throws `InvalidOperationException` for a conversation whose send was
   cut short, because the runtime would return an empty clone that also answers `CANCELLED`. It also throws after
-  a stream that failed during generation. It cannot tell that a blocking send failed, and the clone it returns
-  then fails too, so take the checkpoint before the send. `Clone()` also needs a conversation that has completed
+  a stream that failed during generation. After a blocking send that failed, it can't detect the failure and returns a
+  clone that fails too, so take the checkpoint before the send. `Clone()` also needs a conversation that has completed
   a send (see [Clone a conversation](#clone-a-conversation)).
 - **Inline attachments are copied.** The clone copies the message history, so an inline image or audio is copied
   once per clone. A file-path attachment avoids that. This cost was not measured.
@@ -263,8 +270,8 @@ sampler settings or two phrasings from the same context.
   exotic backend, be ready to catch it and fall back to restoring from `History`.
 - **In-memory only.** A clone lives in the same process. To carry a conversation across restarts use
   `History`, not `Clone()`.
-- **Lifetime.** Dispose clones like any conversation, and dispose all conversations (clones included)
-  before the engine.
+- **Lifetime.** Dispose clones like any conversation. A clone keeps the native engine loaded, so
+  `LiteRtEngine.Load` can refuse a new engine until the last clone is disposed.
 
 ## Which one do I want?
 

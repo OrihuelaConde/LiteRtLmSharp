@@ -19,7 +19,7 @@ namespace LiteRtLmSharp;
 /// engine with a larger <see cref="LiteRtEngineOptions.MaxNumTokens"/>. In the Extensions.AI stateful
 /// mode a "message doesn't fit" rejection keeps the live conversation, and a "context is full" rejection
 /// evicts it, so resuming its <c>ConversationId</c> fails with <see cref="ArgumentException"/> like any evicted
-/// id. The exception is a tool round whose turn has a checkpoint with room: the turn rolls back and the id
+/// id. The exception is a send of tool results whose turn has a checkpoint with room: the turn rolls back and the id
 /// stays valid.</para>
 /// </remarks>
 public sealed class LiteRtContextOverflowException : LiteRtException

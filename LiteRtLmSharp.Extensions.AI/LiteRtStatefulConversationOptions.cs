@@ -46,23 +46,31 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// never issued by this client) throws <see cref="ArgumentException"/>.
 /// </para>
 /// <para>
-/// <b>Cancelled and failed sends.</b> A cancelled or failed send on a continuation does not lose its id: the
-/// client takes a <see cref="LiteRtConversation.Clone"/> checkpoint before each turn and, if a send of that
-/// turn does not complete, puts the checkpoint back under the same id. The whole turn is discarded, its user
-/// message and any tool rounds of a function-invocation loop (re-send the message to get the answer), so
-/// the conversation matches what Agent Framework keeps after a failed run, and tool results sent for its calls
-/// throw <see cref="ArgumentException"/>. The rollback needs a send in flight: a run that ends between sends, for
-/// example cancelled while a tool runs, leaves its turn in the conversation, as it always did. A stream the consumer stops reading after the model has finished its reply, for example at its tool
-/// calls, keeps the turn. Some cases still evict the id, so resuming it throws
-/// <see cref="ArgumentException"/>: a cancelled or failed send of the turn that started the conversation, tool
-/// rounds included (it has nothing to roll back to, even when stream updates already carried its id); a turn
-/// started by tool results; a conversation with constrained decoding or a constraint provider (cloning one
-/// rebuilds its constraints, about a second on LiteRT-LM v0.18.0, so the client takes no checkpoint unless
-/// <see cref="CheckpointConstrainedConversations"/> is set); and a backend that cannot clone. A rolled-back conversation does not remove earlier reasoning from its KV cache
-/// (<see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/>). The checkpoint is a second native
-/// conversation outside <see cref="MaxLiveConversations"/>. Measured on text conversations, it costs no
-/// measurable time or memory until it is used; the runtime's clone also copies the message history, so inline
-/// attachments are copied once per checkpoint, which a file-path attachment avoids.
+/// <b>Cancelled and failed sends.</b> The client takes a <see cref="LiteRtConversation.Clone"/> checkpoint before
+/// each turn. A turn starts with a user message and ends with the first reply that has no tool calls, so with
+/// function invocation it spans several sends. If a send of the turn is cancelled or fails, the conversation goes
+/// back to the checkpoint under the same id, and the whole turn is discarded, so re-send the message to get the
+/// answer. This matches what Agent Framework keeps after a failed run. Tool results sent for the discarded calls
+/// throw <see cref="ArgumentException"/>.
+/// </para>
+/// <para>
+/// A turn is kept when no native send was cancelled or failed: a run that ends between sends, for example cancelled while a tool
+/// runs, or a stream the consumer stops reading after the reply ended, for example at its tool calls.
+/// </para>
+/// <para>
+/// A cancelled or failed send ends the conversation instead in these cases, and resuming its id throws
+/// <see cref="ArgumentException"/>: the turn that started the conversation, tool calls included (even when stream
+/// updates already carried its id); a turn started by tool results with no turn waiting for them, which includes results
+/// sent on a fork, because a fork doesn't inherit its parent's waiting turn; a conversation with constrained decoding,
+/// a constraint provider, or a JSON-schema <see cref="ChatOptions.ResponseFormat"/> on its first call, unless
+/// <see cref="CheckpointConstrainedConversations"/> is set, because cloning one rebuilds its constraints, about a second
+/// on LiteRT-LM v0.18.0; and a backend that cannot clone.
+/// </para>
+/// <para>
+/// The checkpoint is a second native conversation outside <see cref="MaxLiveConversations"/>. On text conversations
+/// it costs no measurable time or memory until it is used; inline attachments are copied once per checkpoint, which
+/// a file-path attachment avoids. A rollback does not remove earlier reasoning from the KV cache
+/// (<see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/>).
 /// </para>
 /// <para>
 /// <b>Re-sending the cut message.</b> The client appends a zero-width space (U+200B) to a message that repeats
@@ -97,8 +105,8 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// <c>Length</c> as "this thread is over"). A "message doesn't fit" rejection happens before any native
 /// work and <b>keeps the live conversation resumable</b> — retry the id with a shorter message; a "context
 /// is full" rejection evicts it, so resuming its id throws <see cref="ArgumentException"/> and you start a new
-/// conversation, summarizing or trimming what must carry over. The exception is a tool round whose turn has a
-/// checkpoint with room: the turn rolls back and the id stays valid.
+/// conversation, summarizing or trimming what must carry over. The exception is a send of tool results whose turn
+/// has a checkpoint with room: the turn rolls back and the id stays valid.
 /// </para>
 /// </remarks>
 public sealed record LiteRtStatefulConversationOptions

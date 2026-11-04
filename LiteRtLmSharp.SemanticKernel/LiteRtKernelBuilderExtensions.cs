@@ -23,7 +23,7 @@ namespace Microsoft.SemanticKernel;
 /// <see cref="LiteRtEngineOptions.AllowMultipleEngines"/> on each of them. Services from options load their engine
 /// when they first run, unless <c>eager</c> is set. A <see cref="LiteRtEngine"/> you registered without a key before
 /// these calls serves every serviceId from options, whatever the options say, and an <c>IChatClient</c> you
-/// registered under the serviceId stays in charge. Service ids that share an engine also share a LoRA adapter one of
+/// registered under the serviceId is kept. Service ids that share an engine also share a LoRA adapter one of
 /// them sets in its template.
 /// </summary>
 public static class LiteRtKernelBuilderExtensions

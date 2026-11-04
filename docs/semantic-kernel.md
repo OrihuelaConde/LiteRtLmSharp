@@ -44,23 +44,61 @@ Kernel kernel = builder.Build();
 Console.WriteLine(await kernel.InvokePromptAsync("Write one upbeat sentence about on-device AI."));
 ```
 
-`eager: true` loads the weights at registration (surfacing a bad model path/backend there) instead of lazily
-on first use. To use an engine you already loaded (and will dispose yourself), pass it instead of options:
+A service registered from options loads its engine on its first call, so a bad model path or backend fails at that
+call. `eager: true` loads the weights at registration and fails there instead. It has no effect when an engine from
+equal options, or one you registered, already serves the service. An eager engine that is never resolved lives until
+the process ends.
+
+To use an engine you already loaded and will dispose yourself, pass it instead of options:
 `builder.AddLiteRtChatCompletion(engine, modelId: "gemma-4-E2B-it")`. Both overloads exist on `IKernelBuilder`
-and `IServiceCollection`, and take an optional `serviceId` for keyed registration (e.g. an on-device service
-alongside a cloud one). With a `serviceId`, the chat client, and from options its engine, are registered under
-that key, so two on-device models can sit side by side. Service ids registered from equal options share one
-engine; different options load one engine each, so load each of them with `AllowMultipleEngines = true`. The
-first keyed client, and from options its engine, are also the unkeyed `IChatClient` and `LiteRtEngine` when
-none is registered, and a later unkeyed registration from different settings then throws
-`InvalidOperationException` instead of being ignored; register the unkeyed client first to avoid that. Services
-registered from options load their engine when they first run, also on a prompt with no `ServiceId`, which uses the
-last registered service, so a bad path fails at that call; `eager: true` loads ahead of time and has no effect when
-an engine from equal options, or one you registered, already serves the service. An eager engine that is never
-resolved lives until the process ends. A `LiteRtEngine` you registered without a key, before these calls, serves
-every `serviceId` from options, whatever the options say. An `IChatClient` you registered under the `serviceId`
-stays in charge. Service ids that share an engine also share a LoRA adapter one of them sets in its template,
-because an adapter applies to the whole engine.
+and `IServiceCollection`.
+
+### Register several models
+
+To register several on-device models, or an on-device service next to a cloud one, give each one a `serviceId`:
+
+```csharp
+using LiteRtLmSharp;
+using LiteRtLmSharp.SemanticKernel;
+using Microsoft.SemanticKernel;
+
+var builder = Kernel.CreateBuilder();
+builder.AddLiteRtChatCompletion(new LiteRtEngineOptions
+{
+    ModelPath = "gemma-4-E2B-it.litertlm", MaxNumTokens = 4096, AllowMultipleEngines = true,
+}, serviceId: "fast");
+builder.AddLiteRtChatCompletion(new LiteRtEngineOptions
+{
+    ModelPath = "gemma-4-E4B-it.litertlm", MaxNumTokens = 4096, AllowMultipleEngines = true,
+}, serviceId: "smart");
+Kernel kernel = builder.Build();
+
+// Pick the service per prompt. A prompt with no ServiceId uses the last service registered.
+var settings = new LiteRtPromptExecutionSettings { ServiceId = "smart" };
+Console.WriteLine(await kernel.InvokePromptAsync("Explain tides in one line.", new KernelArguments(settings)));
+```
+
+A `serviceId` works like a key in the Microsoft.Extensions.AI connector: the chat client, and from options its
+engine, are registered under it. Service ids with equal options share one engine, and different options load one
+engine each, so set `AllowMultipleEngines` on each of them.
+[Register several models](extensions-ai.md#register-several-models) compares the two cases and lists the rules for
+registering a key again.
+
+Semantic Kernel adds these rules:
+
+- **A service's engine loads when the service first runs.** That includes a prompt with no `ServiceId`, which runs the
+  last service registered. Building the kernel or looking up an `IChatCompletionService` loads nothing, but resolving
+  a service's `IChatClient` or `LiteRtEngine` does load its engine. To load one ahead of time, pass `eager: true`, as in
+  `builder.AddLiteRtChatCompletion(options, serviceId: "smart", eager: true)`.
+- **The first `serviceId` is also registered without a key.** When no client or engine is registered without a key,
+  the first `serviceId`'s client and, from options, its engine also answer `GetRequiredService<IChatClient>()` and
+  `GetRequiredService<LiteRtEngine>()`. A prompt with no `ServiceId` still runs the last service registered. A later
+  `AddLiteRtChatClient` or `AddLiteRtChatCompletion` without a key and with a different engine or different options
+  then throws `InvalidOperationException`, so register that one first. With equal options, the first `serviceId`'s
+  client stays, with its template and stateful settings.
+- **What you registered yourself is used.** A `LiteRtEngine` you registered without a key, before these calls, serves
+  every `serviceId` from options: the options load no other engine, whatever they say. An `IChatClient` you registered
+  under a `serviceId` isn't replaced.
 
 ### Chat with history (streaming)
 

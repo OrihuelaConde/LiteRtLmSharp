@@ -67,13 +67,14 @@ services.AddLiteRtChatClient(engine, modelId: "gemma-4-E2B-it");
 IChatClient client = serviceProvider.GetRequiredService<IChatClient>();
 ```
 
-`eager: true` on the options overload loads the weights at registration (so a bad model path/backend throws
-there) instead of lazily on first use. It has no effect when an earlier registration from equal options already
-provides the engine, and an eager engine that is never resolved lives until the process ends.
+`eager: true` on the options overload loads the weights at registration, so a bad model path or backend throws
+there instead of later. It has no effect when an earlier registration from equal options, or a `LiteRtEngine` you
+registered under the same key, already provides the engine: that engine loads when the earlier registration says.
+An eager engine that is never resolved lives until the process ends.
 
-To register several models side by side, for example one per agent, give each one a key. Keys registered
-from equal options share one engine; different options load one engine each, so load every one of them with
-`AllowMultipleEngines`:
+### Register several models
+
+To register several models side by side, for example one per agent, give each one a key:
 
 ```csharp
 services.AddKeyedLiteRtChatClient("fast", new LiteRtEngineOptions
@@ -88,12 +89,39 @@ services.AddKeyedLiteRtChatClient("smart", new LiteRtEngineOptions
 IChatClient smart = serviceProvider.GetRequiredKeyedService<IChatClient>("smart");
 ```
 
-Registering again under the same key, or without a key, with the same engine or equal options is a no-op;
-a different engine or different options under that key throw `InvalidOperationException` instead of being
-ignored. An `IChatClient` or `LiteRtEngine` you registered yourself under the same key stays in charge. A key
-registered from options has its engine under the same key, so resolve it with
-`GetRequiredKeyedService<LiteRtEngine>("smart")`, for example to call `Tokenize`. Keys that share an engine also
-share a LoRA adapter one of them sets in its template, because an adapter applies to the whole engine.
+This example loads two engines, because the options differ. Keys with equal options, where every
+`LiteRtEngineOptions` property matches, share one engine, so the model loads once. Use that to give one model
+several roles:
+
+```csharp
+var gemma = new LiteRtEngineOptions { ModelPath = "gemma-4-E2B-it.litertlm", MaxNumTokens = 4096 };
+
+services.AddKeyedLiteRtChatClient("translator", gemma,
+    optionsTemplate: new LiteRtConversationOptions { SystemMessage = "Translate the text to Spanish." });
+services.AddKeyedLiteRtChatClient("assistant", gemma,
+    optionsTemplate: new LiteRtConversationOptions { SystemMessage = "You are a concise assistant." });
+```
+
+| | Equal options | Different options |
+|---|---|---|
+| **Engines loaded** | One, shared by the keys | One per key |
+| **`AllowMultipleEngines`** | Not needed | Required on every one of them |
+| **Replies** | One at a time across the keys | Can run at the same time, but a second engine adds throughput only on a desktop CPU |
+| **Memory** | One model in memory | Each engine holds its own |
+| **`LoraPath` set in a key's template** | Applies to every key that shares the engine | Applies to that key |
+
+These rules apply to every registration under a key:
+
+- Each key's engine loads when its client or engine is first resolved, not at the first call, unless `eager: true`
+  loaded it at registration. If another engine is alive and any of them lacks `AllowMultipleEngines`, that load throws
+  `InvalidOperationException`.
+- Registering again, under a key or without one, with the same engine or equal options does nothing, and the settings
+  of the first registration stay.
+- Registering again with a different engine or different options throws `InvalidOperationException`.
+- An `IChatClient` or `LiteRtEngine` you registered yourself under the key isn't replaced. Register it before you
+  call `AddKeyedLiteRtChatClient`.
+- A key registered from options also has its engine under that key. To call `Tokenize`, for example, resolve it
+  with `GetRequiredKeyedService<LiteRtEngine>("smart")`.
 
 ## Use with Microsoft Agent Framework
 
@@ -107,14 +135,15 @@ AgentResponse reply = await agent.RunAsync("What can you do?");
 ```
 
 With [stateful conversations](#stateful-conversations-opt-in) enabled, an agent session keeps the
-`ConversationId` the client returns. A run cancelled or failed during a send leaves that id valid: the client
-rolls the conversation back to the turn before the run, tool rounds included, which is also what the session
-keeps. That doesn't hold in the cases listed under
-[Lifetime and eviction](#stateful-conversations-opt-in), which include the `EnableConstrainedDecoding` recommended
-for tools: there the id is evicted and the session must start over, unless you set
-`LiteRtStatefulConversationOptions.CheckpointConstrainedConversations`, which costs about a second per turn. A run
-that ends between sends, for example cancelled while a tool runs, leaves its turn in the conversation. The
-conversation lives in memory, so the session does not survive a process restart; to persist sessions,
+`ConversationId` the client returns. If a run is cancelled or fails while the model is generating, the client
+discards that run's turn, and the session continues from the turn before it. Some cases end the conversation
+instead, and [Cancelled and failed sends](#cancelled-and-failed-sends) lists them.
+
+> **Note:** One of those cases is `EnableConstrainedDecoding`, which is recommended for tools. A run cancelled while
+> the model is generating ends a session that uses it, unless you set `CheckpointConstrainedConversations`, which adds
+> about a second to every turn.
+
+A stateful conversation lives in memory, so the session does not survive a process restart. To persist sessions,
 use the default stateless mode, where Agent Framework keeps the messages.
 
 ## Use with the Microsoft.Extensions.AI pipeline
@@ -370,45 +399,117 @@ carries a `ConversationId`):
 
 - the sampler, thinking mode, tools, constrained decoding, the system message, and any template values;
 - options that map to native **per-send** settings still apply on a continuation: `MaxOutputTokens`,
-  `FrequencyPenalty`/`PresencePenalty`, and a JSON-schema `ResponseFormat` (see the structured-output note
-  below — the conversation must have carried a schema on its **first** call, or the client's options template
+  `FrequencyPenalty`/`PresencePenalty`, and a JSON-schema `ResponseFormat` (see
+  [Structured output](#structured-output-responseformat): the conversation must have carried a schema on its **first** call, or the client's options template
   must set `ConstraintProvider`; otherwise the continuation throws `ArgumentException` and the conversation
   stays resumable);
 - a **system message on a continuation throws** `InvalidOperationException` (the preface cannot be rewritten).
   To change any fixed setting, start a new conversation by omitting `ConversationId`.
 
-Lifetime and eviction:
+### Conversation lifetime
 
-- live conversations are held in an LRU cache bounded by `MaxLiveConversations` (default 8);
-- creating a new conversation beyond the cap evicts and disposes the least-recently-used one;
-- a request whose `ConversationId` was evicted, or was never issued by this client, throws
-  `ArgumentException`;
-- a **cancelled or failed send on a continuation keeps the id valid**: before each turn the client takes a
-  `Clone()` checkpoint and, if a send of that turn does not complete, puts it back under the same id. The
-  whole turn is discarded, its user message and the tool rounds of a function-invocation loop, so re-send the
-  message to get the answer; tool results sent for its calls throw `ArgumentException`. The client appends
-  a zero-width space to a message that repeats the discarded one, because on the GPU backend the runtime can
-  otherwise give a wrong or empty reply (see
-  [Continue after a cancellation](conversation-state.md#continue-after-a-cancellation)), so the reply can differ
-  from the one the model would otherwise give. A stream that you stop reading after the model finished its reply,
-  for example at its tool calls, keeps the turn. The checkpoint costs no measurable time or memory until it is
-  used, on text conversations: inline attachments are copied once per checkpoint, which a file-path attachment
-  avoids;
-- the rollback needs a send in flight: a run that ends between sends, for example cancelled while a tool runs,
-  leaves its turn in the conversation;
-- some cases still **evict** the id: a cancelled or failed send of the turn that **started the conversation**,
-  tool rounds included, which has nothing to roll back to (even when stream updates already carried its id); a turn
-  started by tool results; a conversation with constrained decoding or a constraint provider, where a clone
-  rebuilds the constraints (about a second on LiteRT-LM v0.18.0), so the client takes no checkpoint unless you set
-  `CheckpointConstrainedConversations = true` and accept that cost on every turn; and a backend that cannot clone;
-- a rolled-back conversation does not remove earlier reasoning from its KV cache, so on a reasoning
-  conversation that reasoning stays in its context;
-- disposing the client disposes every live conversation. There is no time-based expiry in this mode, so size
-  the cap for your concurrency.
+- The client keeps live conversations in an LRU cache of `MaxLiveConversations` entries (8 by default). Creating
+  one more disposes the least recently used one, and its id stops working.
+- A request with an id that stopped working, or that this client never issued, throws `ArgumentException`.
+- Disposing the client disposes every live conversation. Conversations don't expire with time, so size the cap
+  for your concurrency.
 
 > Multiple live conversations require **native LiteRT-LM v0.15.0+**. Earlier runtimes silently lost a
 > suspended conversation's state whenever another conversation advanced, so this mode was hard-limited to a
 > single live conversation (and forking was unavailable) until that fix shipped.
+
+### Cancelled and failed sends
+
+A send that is cut short [leaves its native conversation unusable](conversation-state.md#continue-after-a-cancellation).
+To protect you from that, the client takes a checkpoint, a `Clone()` of the conversation, before each turn. If a
+send of the turn is cancelled or fails, the conversation goes back to that checkpoint, and its `ConversationId` keeps
+working.
+
+A *turn* starts with a user message and ends with the first reply that has no tool calls. Without tools, a turn
+is one message and its reply. With tools, it spans several sends: the message, the model's tool call, your
+results, and the final reply.
+
+In this example, the second turn is cancelled and the conversation continues from the first one:
+
+```csharp
+var options = new ChatOptions();
+ChatResponse first = await client.GetResponseAsync("My name is Ada.", options);
+options.ConversationId = first.ConversationId;
+
+using var cts = new CancellationTokenSource();
+try
+{
+    // Something cancels this while the model is replying.
+    await client.GetResponseAsync("Write a long poem about trains.", options, cts.Token);
+}
+catch (OperationCanceledException)
+{
+    // The poem request and its partial reply are gone. Send the message again if you still want the poem.
+}
+
+// The id still works, and the conversation holds the first turn.
+ChatResponse next = await client.GetResponseAsync("What is my name?", options);   // "Ada"
+```
+
+With tools, the client discards the whole turn, not only the send that was cut. Suppose a user asks "What's the
+weather in Paris?":
+
+1. The client sends the message, and the model calls `get_weather`.
+2. Your tool runs, and the results go back to the client.
+3. The send of those results is cancelled while the model writes its answer.
+
+The question, the tool call and the results are all discarded. This matches what Agent Framework keeps after a
+failed run. Send the question again to get the answer, which runs the tool again. If your code still holds the
+tool calls of the discarded turn, sending their results throws `ArgumentException`, and the id keeps working.
+
+The result depends on when the send stops:
+
+| What happened | The turn | The id | What to do next |
+|---|---|---|---|
+| A send is cancelled or fails | Discarded | Keeps working | Send the message again |
+| You stop reading a stream before the reply ends | Discarded | Keeps working | Send the message again |
+| You stop reading a stream after the reply ends, for example once you have its tool calls | Kept | Keeps working | Continue as usual |
+| A tool loop or agent run ends while no send is running, for example cancelled while a tool executes | Kept, because there is no send to undo | Keeps working | Send the tool results or a new message |
+
+A send that the overflow guard rejects follows [Context limit](#context-limit) instead: a message or tool results that
+don't fit leave the turn as it was.
+
+Some turns can't go back to a checkpoint. If a send of one of these turns is cancelled or fails, the conversation
+ends: its id stops working, and using it throws `ArgumentException`, so start a new conversation.
+
+| Turn | Why |
+|---|---|
+| The first turn of a conversation, tool calls included | Nothing comes before it. This applies even when stream updates already carried the id |
+| Any turn of a conversation with constrained decoding or a constraint provider, by default | Cloning it is slow, as the next paragraph explains |
+| A turn that starts with tool results, when no earlier turn is waiting for them | A retry couldn't avoid the GPU problem under "Other things to know". A fork doesn't inherit its parent's waiting turn, so results sent on a branch count |
+| Any turn on a backend that cannot clone | The checkpoint is a clone |
+
+**Constrained conversations.** Cloning a conversation with `EnableConstrainedDecoding`, a `ConstraintProvider`, or a
+JSON-schema `ResponseFormat` on its first call rebuilds its constraints, which takes about a second on LiteRT-LM
+v0.18.0. The client would pay that on every turn,
+whether or not the turn is cancelled, so by default it takes no checkpoint on these conversations. To keep their id
+after a cancelled send, accept that cost and turn the checkpoint on:
+
+```csharp
+using IChatClient client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions
+{
+    CheckpointConstrainedConversations = true,
+});
+```
+
+**Other things to know:**
+
+- **Cost.** On a text conversation, the checkpoint costs no measurable time or memory until it is used. Inline
+  attachments are copied once per checkpoint, which a file-path attachment avoids.
+- **Sending the same message again.** On the GPU backend, if another conversation generated in between, the runtime
+  can give a wrong or empty reply when a checkpoint's first send repeats the discarded message
+  ([LiteRT-LM #4394](https://github.com/google-ai-edge/LiteRT-LM/issues/4394)). To avoid that, on every backend, the
+  client appends a zero-width space to a message that repeats it. The reply can differ from the one the model would
+  otherwise give.
+- **Tool calls in a stream.** In the stateful mode, a stream delivers a reply's tool calls together when the reply
+  ends, after any text in it. That is why stopping at them keeps the turn.
+- **Reasoning.** A rollback does not remove earlier reasoning from the KV cache, so on a reasoning conversation
+  that reasoning stays in the context.
 
 ### Forking a conversation
 
@@ -423,7 +524,7 @@ var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConv
 ChatResponse seeded = await client.GetResponseAsync(seedMessages, options);
 string branchId = await branching.ForkAsync(seeded.ConversationId!);
 
-// The branch id behaves like any other ConversationId: resume it, re-fork it, or let it be evicted.
+// The branch id behaves like any other ConversationId: resume it, fork it again, or let the cache drop it.
 options.ConversationId = branchId;
 ```
 
@@ -432,32 +533,38 @@ otherwise — there are no live conversations to fork). The fork counts toward `
 other live conversation, and it inherits the parent's synthesized-call-id map, so function-calling
 continuations keep resolving on the branch.
 
-`ChatResponse.Usage.TotalTokenCount` in this mode is the conversation's **cumulative** KV-cache size, so it
-grows across the thread (rather than resetting per call as in the stateless mode).
+### Context limit
 
-**The context limit is a hard wall — let the guard police it.** A long stateful thread (a multi-round tool
-loop especially) eventually approaches the engine's `MaxNumTokens`, and the native runtime does not check
+`ChatResponse.Usage.TotalTokenCount` in this mode counts every token the conversation holds in its KV cache, the
+model's working memory of the thread, so it grows across the thread rather than resetting per call as in the
+stateless mode.
+
+**The context limit is a hard wall, so let the guard police it.** A long stateful thread, a multi-round tool
+loop especially, eventually approaches the engine's `MaxNumTokens`, and the native runtime does not check
 it: an unguarded overflow corrupts native memory and crashes the process on a later call. Load the engine
-with an **explicit** `MaxNumTokens` (as the snippets above do) to arm the binding's KV overflow guard:
+with an **explicit** `MaxNumTokens`, as the snippets above do, to arm LiteRtLmSharp's overflow guard:
 replies are clamped to the remaining context, and a send that no longer fits throws
-`LiteRtContextOverflowException` instead (sends carrying media are the exception — their prefill cost is
-not measurable managed-side, so they get only the conversation-full check; leave headroom when
-attachments are in play). What happens to the live conversation depends on which rejection you got: a
-**"message doesn't fit"** rejection happens before any native work, so the conversation survives — retry
-the same `ConversationId` with a shorter message. A **"context is full"** rejection is terminal: the
-client evicts the live conversation (resuming its id throws `ArgumentException`, like any evicted id; a checkpoint
-that is just as full is not used, and a tool round rejected this way rolls back to the checkpoint from before its
-turn when that one has room) —
-start a new conversation, carrying over a summary or a trimmed history if the thread must continue.
+`LiteRtContextOverflowException` instead. Sends carrying media get only the conversation-full check, because
+LiteRtLmSharp can't measure their token cost ahead of time, so leave headroom when attachments are in play.
 
-You do not have to wait for that exception to find out: **a reply that filled the context carries
-`ChatFinishReason.Length` in the same turn** (on the blocking response, and on the final update of a
-clamped stream — whose only other symptom is that it just stops). Treat `Length` as "this conversation is
-over": even when the response carries tool calls, sending their results would throw, which is why `Length`
-deliberately wins over `ToolCalls` there. Note that `FunctionInvokingChatClient` loops on function-call
-content regardless of finish reason, so an unattended tool loop still terminates in the exception; the
-signal is for callers who look. To act *before* hitting the wall, track `Usage.TotalTokenCount` against
-`MaxNumTokens` and wind down early.
+The guard rejects a send for one of two reasons. Both throw `LiteRtContextOverflowException`, and the start of its
+message tells them apart:
+
+| Message starts with | The conversation | What to do next |
+|---|---|---|
+| `This message does not fit` | Untouched, because no native work happened | Retry the same `ConversationId` with a shorter message or shorter tool results |
+| `The conversation's context is full` | Disposed, and its id stops working | Start a new conversation, carrying over a summary or a trimmed history |
+
+The second rejection has one exception. On a send of tool results, when the checkpoint from before the turn has room,
+the conversation goes back to that checkpoint as in [Cancelled and failed sends](#cancelled-and-failed-sends), and its
+id keeps working.
+
+You don't have to wait for that exception to find out. A reply that filled the context carries
+`ChatFinishReason.Length` in the same turn, on the blocking response and on the final update of a clamped stream,
+which otherwise just stops. Treat `Length` as "this conversation is over". It takes priority over `ToolCalls` even
+when the response carries tool calls, because sending their results would throw. `FunctionInvokingChatClient` doesn't
+check the finish reason and keeps looping on tool calls, so an unattended tool loop still ends in the exception. To
+act before you hit the wall, track `Usage.TotalTokenCount` against `MaxNumTokens` and wind down early.
 
 ## Multimodal (image / audio)
 

@@ -17,13 +17,9 @@ short for an application that shares one model between live translation, chat an
 - **Several chat engines in one process.** `LiteRtEngineOptions.AllowMultipleEngines` lets an engine stay
   alive next to other chat engines. A load next to live engines succeeds only when the new engine and every
   live one opted in, so code that loads an engine without the setting keeps the one-engine guarantee.
-  `LiteRtEngine.LiveEngineCount` reports how many chat engines are alive. Measured on LiteRT-LM v0.18.0 with
-  gemma-4 E2B and E4B: up to four engines on CPU and three on GPU load, generate at the same time and dispose
-  in any order, with replies identical to a single engine, on win-x64 and linux-x64 (CPU); up to three load
-  and generate on the Android emulator. Engines only run in parallel on a desktop CPU; on a GPU, and on the
-  emulator, a second engine adds no throughput. Each engine holds its own memory: on Windows, about 2.3 GB of
-  committed memory per gemma-4 E2B engine on CPU, while right after loading the working set grows by about
-  0.35 GB.
+  `LiteRtEngine.LiveEngineCount` reports how many chat engines are alive. Engines only run in parallel on a desktop
+  CPU, and each one holds its own memory: on Windows, about 2.3 GB of committed memory per gemma-4 E2B engine on
+  CPU. The API reference for `AllowMultipleEngines` lists the measurements.
 - **`LiteRtConversation.TokenCountCached`**, a token count that never waits. The native `TokenCount` reader
   goes through the engine, so it waits behind a generation in flight on any conversation of that engine. The
   cache is refreshed after every completed send, and it and `IsContextFull` can be read from another thread
@@ -31,9 +27,9 @@ short for an application that shares one model between live translation, chat an
 - **`LiteRtConversation.IsCancelled`** tells whether a send on the conversation was cut short (a cancelled
   send, an abandoned stream, or `CancelProcess()` during a send), after which the runtime answers `CANCELLED`
   to every later send. A stream that failed during generation counts too.
-- **Keyed chat clients.** `AddKeyedLiteRtChatClient`, over an engine you own or from options with an engine
-  registered under the same key, registers several models side by side, for example one per agent. Keys
-  registered from equal options share one engine.
+- **Keyed chat clients.** `AddKeyedLiteRtChatClient` registers several models side by side, for example one per
+  agent. Keys with equal options share one engine. See
+  [Register several models](https://orihuelaconde.github.io/LiteRtLmSharp/extensions-ai.html#register-several-models).
 
 ### Changed
 
@@ -46,46 +42,40 @@ short for an application that shares one model between live translation, chat an
 - **`IsContextFull` reads the cached token count** (see `TokenCountCached`), so it never waits behind a
   generation on another conversation. It is exact after each completed send.
 - **`LiteRtConversation.Clone()` throws `InvalidOperationException` for a conversation whose send was cut
-  short** or whose stream failed: the runtime would return an empty clone that also answers `CANCELLED`. To continue after a
-  cancellation, take the clone before the send, as the
-  [conversation-state guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html) shows. The
-  guide also covers a runtime problem on the GPU backend: a clone's first send that repeats a message the
-  original already processed, after another conversation generated, gets a wrong or empty reply.
-- **A cancelled stateful turn keeps its `ConversationId`.** In the stateful mode of `LiteRtChatClient`, a
-  continuation whose send is cancelled or fails rolls back to a `Clone()` checkpoint taken before the turn, so
-  its id stays valid and the whole turn, tool rounds included, is discarded; before, the conversation was
-  evicted. Agent Framework relies on this, since it keeps a session's id after a failed run. A run that ends
-  between sends, for example cancelled while a tool runs, keeps its turn, as before. Tool results for a discarded
-  turn throw `ArgumentException`. A send rejected because the context is full
-  still evicts when the checkpoint is full too, and so do a cancelled or failed send of the turn that started the
-  conversation, a turn started by tool results, a conversation with constrained decoding or a constraint
-  provider (cloning one rebuilds its constraints, about a second per turn, so no checkpoint is taken unless you
-  set the new `LiteRtStatefulConversationOptions.CheckpointConstrainedConversations`), and a backend that cannot
-  clone. A message that repeats the discarded one gets a zero-width space appended, because on the GPU
-  backend the runtime can otherwise answer it with a wrong or empty reply.
-- **A stateful stream left after the reply ended keeps its turn.** Before, any stream not read to its end was
-  evicted. In the stateful mode, a reply's tool calls now reach the stream together when the reply ends, after
-  any text in it, so stopping at them keeps the turn.
-- **Semantic Kernel registers a chat client per `serviceId`.** `AddLiteRtChatCompletion` with a `serviceId`
-  registers its own chat client, and from options its engine, under that key; before, every `serviceId`
-  wrapped the one unkeyed client and engine. Service ids from equal options still share one engine, and a
-  `LiteRtEngine` you registered without a key before the `serviceId` still serves them. Service ids from different options now load one
-  engine each (before, they silently used the first engine), so set `AllowMultipleEngines` on each; without it,
-  the first use of the second service throws. A service registered from options with a `serviceId` loads its
-  engine on its first call, not when it is resolved, so a bad path fails at that call unless you set `eager`. So
-  does one without a `serviceId`. A `serviceId` no longer inherits the model id, template and stateful
-  settings of an earlier registration, and no longer goes through an `IChatClient` registered without a key; one
-  registered under the `serviceId` stays in charge instead. The first keyed client, and from options its engine,
-  are also registered without a key when nothing else is.
-- **A conflicting chat registration throws.** A second `AddLiteRtChatClient` or `AddLiteRtChatCompletion` under
-  the same key or `serviceId` (or without one) with a different engine or different options throws
-  `InvalidOperationException` instead of being ignored (the second engine was never loaded). That includes an
-  unkeyed registration after a `serviceId`, whose client took the unkeyed slot; register the unkeyed one first. The
-  same engine or equal options again is still a no-op.
-- **Chat clients over one engine share a gate.** Each `LiteRtChatClient` serialized only its own calls, so two
-  clients over one engine could put two generations in flight on it, which the runtime does not support. A
-  stream holds the gate until it is read to the end or disposed, so a call on another client over the same
-  engine from inside the loop that reads the stream waits forever.
+  short** or whose stream failed: the runtime would return an empty clone that also answers `CANCELLED`. To
+  continue after a cancellation, take the clone before the send. The
+  [conversation-state guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html#continue-after-a-cancellation) shows how, and covers a
+  runtime problem on the GPU backend when a clone's first send repeats a message
+  ([LiteRT-LM #4394](https://github.com/google-ai-edge/LiteRT-LM/issues/4394)).
+- **A cancelled or failed stateful send no longer ends the conversation.** Before, `LiteRtChatClient` disposed the
+  conversation and its `ConversationId` stopped working. Now it goes back to a checkpoint taken before the turn: the
+  id keeps working and the whole turn, tool calls included, is discarded, so send the message again. Agent Framework
+  relies on this, because it keeps a session's id after a failed run. Some cases still end the conversation,
+  including its first turn and conversations with constrained decoding. On conversations with constrained decoding,
+  the new `LiteRtStatefulConversationOptions.CheckpointConstrainedConversations` keeps the id after the first turn,
+  at a cost of about a second per turn. See [Cancelled and failed sends](https://orihuelaconde.github.io/LiteRtLmSharp/extensions-ai.html#cancelled-and-failed-sends).
+- **A stateful stream you stop reading after the reply ended keeps its turn.** Before, any stream not read to its
+  end ended the conversation. In the stateful mode, a reply's tool calls now reach the stream together when the
+  reply ends, after any text in it, so stopping at them keeps the turn.
+- **Each Semantic Kernel `serviceId` gets its own chat client and, from options, its own engine.** If your service
+  ids use different options, set `AllowMultipleEngines` on each of them, or the first use of the second service
+  throws `InvalidOperationException`. Before, every `serviceId` wrapped the one client and engine registered without
+  a key, so a second model silently ran on the first engine. Equal options still share one engine, and a
+  `LiteRtEngine` you registered without a key before the `serviceId` still serves them. A `serviceId` also
+  no longer inherits the model id, template and stateful settings of an earlier registration, or goes through an
+  `IChatClient` registered without a key. A service registered from options loads its engine on its first call, not
+  when it is resolved, so a bad path fails at that call unless you set `eager`. See
+  [Register several models](https://orihuelaconde.github.io/LiteRtLmSharp/semantic-kernel.html#register-several-models).
+- **A conflicting chat registration throws.** Registering a chat client again, with or without a Semantic Kernel
+  `serviceId`, with a different engine or different options throws `InvalidOperationException`. Before, the second
+  registration was silently ignored. The same applies to a key registered with the new `AddKeyedLiteRtChatClient`.
+  This includes a registration without a key after a `serviceId`, because the first `serviceId`
+  is also registered without a key, so register the one without a key first. The same engine or equal options again
+  still does nothing.
+- **Chat clients over one engine take turns.** Each `LiteRtChatClient` used to serialize only its own calls, so two
+  clients over one engine could put two generations in flight on it, which the runtime does not support. Now they wait
+  for each other. An open stream counts until you read it to the end or dispose it, so calling another client over
+  the same engine from inside the loop that reads the stream waits forever.
 
 ### Fixed
 
