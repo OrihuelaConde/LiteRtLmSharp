@@ -198,6 +198,13 @@ chat.Dispose();
   (gemma-4 E2B, win-x64).
 - **The cut turn is not kept.** The checkpoint holds the conversation as it was before the send, so send the
   question again to get the answer; the partial text the stream produced is yours to show or discard.
+- **Don't repeat the cut message word for word on the GPU backend.** A clone shares its native state with the
+  conversation it came from until one of them diverges. On LiteRT-LM v0.18.0 and v0.19.0, on the GPU backend, if
+  the clone's first send repeats a message the original already processed, and another conversation generated
+  in between, the reply comes out wrong or empty, with no error. The CPU backend is not affected. Any other
+  token avoids it; whitespace does not, because the model's template trims it. Append a zero-width space
+  (`"\u200B"`) to the retried message, or reword it. The reply can differ from the one the original message
+  would have received.
 - **Clone before, not after.** `Clone()` throws `InvalidOperationException` for a conversation whose send was
   cut short, because the runtime would return an empty clone that also answers `CANCELLED`. The same holds
   for a send that failed during generation, so take the checkpoint before the send. `Clone()` also needs a

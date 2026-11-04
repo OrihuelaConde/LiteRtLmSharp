@@ -378,7 +378,10 @@ Lifetime and eviction:
 - a **cancelled or failed send on a continuation keeps the id valid**: before each turn the client takes a
   `Clone()` checkpoint and, if a send of that turn does not complete, puts it back under the same id. The
   whole turn is discarded, its user message and the tool rounds of a function-invocation loop, so re-send the
-  message to get the answer. A stream that you stop reading after the model finished its reply, for example
+  message to get the answer. The client appends a zero-width space to a message that repeats the discarded
+  one, because on the GPU backend the runtime can otherwise give a wrong or empty reply (see
+  [Continue after a cancellation](conversation-state.md#continue-after-a-cancellation)), so the reply can differ
+  from the one the model would otherwise give. A stream that you stop reading after the model finished its reply, for example
   at its tool calls, keeps the turn. The checkpoint costs no measurable time or memory until it is used;
 - three cases still **evict** the id: a cancelled or failed **first** call, which has nothing to roll back
   to (even when stream updates already carried its id); a conversation with constrained decoding or a

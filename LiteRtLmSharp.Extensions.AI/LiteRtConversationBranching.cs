@@ -72,7 +72,8 @@ public sealed class LiteRtConversationBranching
     /// <remarks>
     /// Runs under the call gate every client over the same engine shares, so it cannot race an in-flight send
     /// or stream (the gate is held for the whole stream, so a fork called from inside the loop that reads a
-    /// stream over the same engine waits forever). The new branch
+    /// stream over the same engine waits forever). On the GPU backend, do not make a branch's first send repeat
+    /// word for word a message the parent sent after the fork (see <see cref="LiteRtConversation.Clone"/>). The new branch
     /// is stored in the same live-conversation cache as every other live conversation: it counts toward the
     /// cache's capacity and adding it may evict the least-recently-used conversation (potentially the
     /// parent). A parent reachable through this client has always advanced at least once (an id is only

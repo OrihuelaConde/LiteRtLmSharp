@@ -208,6 +208,42 @@ public sealed class ExtensionsAiStatefulModelTests
     }
 
     /// <summary>
+    /// Re-sending the cut message on the checkpoint, after another conversation generated, gets a real reply. On
+    /// the GPU backend the runtime answers a checkpoint's first send that repeats the message word for word with
+    /// a wrong or empty reply, so the client changes the repeated message, also when the retry is cut again.
+    /// </summary>
+    [SkippableFact]
+    public async Task Stateful_ResendingACutMessage_GetsARealReply_AfterAnotherConversationGenerated()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        var greedy = new ChatOptions { TopK = 1, MaxOutputTokens = 32 };
+
+        string a = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is TANGERINE. Reply OK.")], greedy)).ConversationId!;
+        string b = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is COBALT. Reply OK.")], greedy)).ConversationId!;
+
+        await CutTurnAsync(client, a);
+        await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is my code word? One word.")],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = b });
+        await CutTurnAsync(client, a);
+        await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Repeat my code word. One word.")],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = b });
+
+        ChatResponse retry = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, CountPrompt)],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = a });
+        Assert.Contains("400", retry.Text, StringComparison.Ordinal);
+        Assert.Contains("401", retry.Text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// A first call has nothing to roll back to: an abandoned first stream evicts the id its updates already
     /// carried, and resuming that id says so.
     /// </summary>

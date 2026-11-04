@@ -47,14 +47,18 @@ short for an application that shares one model between live translation, chat an
 - **`LiteRtConversation.Clone()` throws `InvalidOperationException` for a conversation whose send was cut
   short**: the runtime would return an empty clone that also answers `CANCELLED`. To continue after a
   cancellation, take the clone before the send, as the
-  [conversation-state guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html) shows.
+  [conversation-state guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html) shows. The
+  guide also covers a runtime problem on the GPU backend: a clone's first send that repeats a message the
+  original already processed, after another conversation generated, gets a wrong or empty reply.
 - **A cancelled stateful turn keeps its `ConversationId`.** In the stateful mode of `LiteRtChatClient`, a
   continuation whose send is cancelled or fails rolls back to a `Clone()` checkpoint taken before the turn, so
   its id stays valid and the whole turn, tool rounds included, is discarded; before, the conversation was
   evicted. Agent Framework relies on this, since it keeps a session's id after a failed run. A send rejected
   because the context is full still evicts, and so do a cancelled or failed first call, a conversation with
   constrained decoding or a constraint provider (cloning one rebuilds its constraints, about a second, so no
-  checkpoint is taken), and a backend that cannot clone.
+  checkpoint is taken), and a backend that cannot clone. A message that repeats the discarded one gets a
+  zero-width space appended, because on the GPU backend the runtime can otherwise answer it with a wrong or
+  empty reply.
 - **Semantic Kernel registers a chat client per `serviceId`.** `AddLiteRtChatCompletion` with a `serviceId`
   registers its own chat client, and from options its engine, under that key; before, every `serviceId`
   wrapped the one unkeyed client and engine. Service ids from equal options still share one engine. Service ids

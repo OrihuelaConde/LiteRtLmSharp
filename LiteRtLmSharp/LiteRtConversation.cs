@@ -460,6 +460,13 @@ public sealed class LiteRtConversation : IDisposable
     /// so clone before the send, not after it.
     /// </para>
     /// <para>
+    /// <b>Known issue on the GPU backend</b> (LiteRT-LM v0.18.0 and v0.19.0): a clone shares its native state with
+    /// its parent until one of them diverges. If the clone's first send repeats, word for word, a message the
+    /// parent already processed, and another conversation generated in between, the reply comes out wrong or
+    /// empty, with no error. Any other token avoids it, but whitespace does not, because the model's template
+    /// trims it: reword the message or append a zero-width space (U+200B).
+    /// </para>
+    /// <para>
     /// Creating the clone is lazy: it costs no measurable time or memory until the clone generates. A
     /// conversation with <see cref="LiteRtConversationOptions.EnableConstrainedDecoding"/> or a
     /// <see cref="LiteRtConversationOptions.ConstraintProvider"/> is the exception, because the runtime

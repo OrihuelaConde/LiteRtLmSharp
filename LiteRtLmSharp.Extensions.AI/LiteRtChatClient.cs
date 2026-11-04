@@ -227,6 +227,7 @@ public sealed class LiteRtChatClient : IChatClient
             ThrowIfConstraintWithoutProvider(sendOptions, entry);
             // The turn's rollback point, so a cancelled or failed send on a continuation leaves its id valid.
             TurnCheckpoint turn = BeginTurn(entry, conv, trigger, newConversation: conversationId is null, out bool startsTurn);
+            trigger = trigger with { UserText = entry.AvoidRepeatingACutMessage(trigger.UserText) };
             LiteRtResponse response;
             try
             {
@@ -312,7 +313,7 @@ public sealed class LiteRtChatClient : IChatClient
         }
         startsTurn = true;
         LiteRtConversation? checkpoint = newConversation || entry.CloneIsSlow ? null : TakeCheckpoint(conversation);
-        return new TurnCheckpoint(checkpoint, entry.SnapshotToolCalls());
+        return new TurnCheckpoint(checkpoint, entry.SnapshotToolCalls(), trigger.UserText);
     }
 
     /// <summary>Records the end of a stateful send that completed: a reply with tool calls keeps its turn
@@ -320,6 +321,7 @@ public sealed class LiteRtChatClient : IChatClient
     /// checkpoint.</summary>
     private static void EndSend(LiteRtConversationStore.Entry entry, TurnCheckpoint turn, bool endsWithToolCalls)
     {
+        entry.ClearCutMessages();
         if (endsWithToolCalls)
         {
             entry.PendingTurn = turn;
@@ -343,6 +345,7 @@ public sealed class LiteRtChatClient : IChatClient
         if (turn.Checkpoint is not null && !conversation.IsContextFull)
         {
             entry.RestoreToolCalls(turn.ToolCalls);
+            entry.RecordCutMessage(turn.UserText);
             _store!.Replace(id, turn.Checkpoint);
             return;
         }
@@ -553,6 +556,7 @@ public sealed class LiteRtChatClient : IChatClient
             ThrowIfConstraintWithoutProvider(sendOptions, entry);
             // The turn's rollback point, so a cancelled or failed stream on a continuation leaves its id valid.
             turn = BeginTurn(entry, conv, trigger, newConversation: conversationId is null, out startsTurn);
+            trigger = trigger with { UserText = entry.AvoidRepeatingACutMessage(trigger.UserText) };
             // Enumerated by hand (not await-foreach) because C# forbids `yield return` inside a try that
             // has a catch, and the MoveNext needs one: the overflow guard's pre-native "message doesn't
             // fit" rejection must NOT evict the untouched, still-resumable conversation.

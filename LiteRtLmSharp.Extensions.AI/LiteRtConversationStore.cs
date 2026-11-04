@@ -23,6 +23,7 @@ internal sealed class LiteRtConversationStore
     {
         private static readonly IReadOnlyDictionary<string, string> Empty = new Dictionary<string, string>(0);
         private Dictionary<string, string>? _callIdToName;
+        private Dictionary<string, int>? _cutMessages;
 
         public Entry(LiteRtConversation conversation) => Conversation = conversation;
 
@@ -76,6 +77,33 @@ internal sealed class LiteRtConversationStore
         public void RestoreToolCalls(IReadOnlyDictionary<string, string> snapshot)
             => _callIdToName = snapshot.Count == 0 ? null : new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
 
+        /// <summary>Records the user message of a turn that was rolled back. See <see cref="AvoidRepeatingACutMessage"/>.</summary>
+        public void RecordCutMessage(string? userText)
+        {
+            if (userText is null)
+                return;
+            _cutMessages ??= new Dictionary<string, int>(StringComparer.Ordinal);
+            string key = userText.Trim();
+            _cutMessages[key] = _cutMessages.GetValueOrDefault(key) + 1;
+        }
+
+        /// <summary>
+        /// Returns the text to send for a user message, changed if it repeats a message rolled back since the last
+        /// completed send. The checkpoint still shares its native state with the cut conversation, which already
+        /// processed that message, and when a first send matches that state completely the runtime skips its
+        /// prefill. On the GPU backend (LiteRT-LM v0.18.0 and v0.19.0), after another conversation generated, the
+        /// reply then comes out wrong or empty, with no error. Any other token avoids the match. The templates trim
+        /// whitespace, so this adds zero-width spaces, one more each time the same message was cut.
+        /// </summary>
+        public string? AvoidRepeatingACutMessage(string? userText)
+            => userText is not null && _cutMessages is not null && _cutMessages.TryGetValue(userText.Trim(), out int cuts)
+                ? userText + new string('\u200B', cuts)
+                : userText;
+
+        /// <summary>Forgets the rolled-back messages: a completed send separates the conversation's native state
+        /// from the cut conversation's.</summary>
+        public void ClearCutMessages() => _cutMessages = null;
+
         /// <summary>Disposes the live conversation and the checkpoint of a turn in progress.</summary>
         public void Dispose()
         {
@@ -86,10 +114,10 @@ internal sealed class LiteRtConversationStore
     }
 
     /// <summary>Where a stateful turn rolls back to if one of its sends is cancelled or fails: a clone of the
-    /// conversation taken before the turn's first send, and the tool-call map at that point. The clone is
-    /// <c>null</c> when the turn created the conversation or no checkpoint could be taken; a failure then evicts
-    /// the conversation.</summary>
-    internal sealed record TurnCheckpoint(LiteRtConversation? Checkpoint, IReadOnlyDictionary<string, string> ToolCalls);
+    /// conversation taken before the turn's first send, the tool-call map at that point, and the user message
+    /// that started the turn. The clone is <c>null</c> when the turn created the conversation or no checkpoint could
+    /// be taken; a failure then evicts the conversation.</summary>
+    internal sealed record TurnCheckpoint(LiteRtConversation? Checkpoint, IReadOnlyDictionary<string, string> ToolCalls, string? UserText);
 
     private readonly int _capacity;
     private readonly Dictionary<string, LinkedListNode<KeyValuePair<string, Entry>>> _map;
