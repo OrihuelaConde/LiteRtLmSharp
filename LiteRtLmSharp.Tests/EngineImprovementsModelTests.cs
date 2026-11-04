@@ -97,14 +97,15 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
 
         using (var alone = LiteRtEngine.Load(options))
         {
-            var ex = Assert.Throws<InvalidOperationException>(() => LiteRtEngine.Load(optedIn));
+            // The using disposes the engine if a regression lets the load succeed, so one failure does not cascade.
+            var ex = Assert.Throws<InvalidOperationException>(() => { using LiteRtEngine leaked = LiteRtEngine.Load(optedIn); });
             Assert.Contains("loaded without LiteRtEngineOptions.AllowMultipleEngines is still alive", ex.Message, StringComparison.Ordinal);
             Assert.Equal(1, LiteRtEngine.LiveEngineCount);
         }
 
         using (var shared = LiteRtEngine.Load(optedIn))
         {
-            var ex = Assert.Throws<InvalidOperationException>(() => LiteRtEngine.Load(options));
+            var ex = Assert.Throws<InvalidOperationException>(() => { using LiteRtEngine leaked = LiteRtEngine.Load(options); });
             Assert.Contains("this engine was loaded without", ex.Message, StringComparison.Ordinal);
             Assert.Equal(1, LiteRtEngine.LiveEngineCount);
         }
@@ -136,9 +137,9 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
 
         conv.Send("Reply with one short word: hello");
 
-        int exact = conv.TokenCount;               // one (explicit) native read, which also refreshes the cache
-        Assert.True(exact > 0, "A completed send must have left tokens in the KV cache.");
-        Assert.Equal(exact, conv.TokenCountCached);
+        int cached = conv.TokenCountCached;        // read first: the native read below also refreshes the cache
+        Assert.True(cached > 0, "A completed send must have left tokens in the KV cache.");
+        Assert.Equal(conv.TokenCount, cached);
         Assert.False(conv.IsContextFull);
     }
 
@@ -162,8 +163,7 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
 
         using var clone = conv.Clone();
         Assert.Equal(afterStream, clone.TokenCountCached);
-        Assert.Equal(clone.TokenCount, clone.TokenCountCached);
-        Assert.Equal(conv.IsContextFull, clone.IsContextFull);
+        Assert.Equal(afterStream, clone.TokenCount);
     }
 
     /// <summary>
@@ -185,10 +185,11 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// Greedy and TopK work on every backend because the binding sends them as TopP (measured on LiteRT-LM
-    /// v0.18.0: the CPU backend rejects the raw types with UNIMPLEMENTED on a fresh engine, and the GPU backend
-    /// runs them as TopP). On a fresh engine, Greedy must decode exact argmax: with a hot temperature and two
-    /// different seeds it still gives the argmax reply, which a sampled TopP reply would not.
+    /// Greedy and TopK work on the CPU and GPU backends because the binding sends them as TopP (measured on
+    /// LiteRT-LM v0.18.0: the CPU backend rejects the raw types with UNIMPLEMENTED on a fresh engine, and the GPU
+    /// backend runs them as TopP). On a fresh engine, Greedy must decode exact argmax: with a hot temperature and
+    /// two different seeds it still gives the argmax reply, which a sampled TopP reply would not. TopK must be
+    /// the first conversation on its own engine too, and sample exactly like TopP with <c>TopP = 1</c>.
     /// </summary>
     [SkippableFact]
     public void GreedyAndTopK_ShouldWorkOnAFreshEngine_AndGreedyShouldBeArgmax()
@@ -196,24 +197,60 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         LiteRtEngineOptions? options = Options();
         Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
-        using var engine = LiteRtEngine.Load(options);
-        string Reply(LiteRtSamplerParams sampler)
+        string argmax;
+        using (var engine = LiteRtEngine.Load(options))
         {
-            using var conv = engine.CreateConversation(new LiteRtConversationOptions { Sampler = sampler, MaxOutputTokens = 48 });
-            return conv.Send(StoryPrompt).Text ?? "";
+            // The first conversation on the fresh engine asks for Greedy: the case the CPU backend rejected.
+            var hotGreedy = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.Greedy, Temperature = 1.6f };
+            string greedy7 = Reply(engine, hotGreedy with { Seed = 7 });
+            string greedy8 = Reply(engine, hotGreedy with { Seed = 8 });
+            argmax = Reply(engine, Argmax);
+            Assert.Equal(argmax, greedy7);
+            Assert.Equal(argmax, greedy8);
         }
-
-        // The first conversation on the fresh engine asks for Greedy: the case the CPU backend rejected.
-        var hotGreedy = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.Greedy, Temperature = 1.6f };
-        string greedy7 = Reply(hotGreedy with { Seed = 7 });
-        string greedy8 = Reply(hotGreedy with { Seed = 8 });
-        string argmax = Reply(Argmax);
-        Assert.Equal(argmax, greedy7);
-        Assert.Equal(argmax, greedy8);
-
-        string topK = Reply(new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopK, TopK = 8 });
-        Assert.False(string.IsNullOrWhiteSpace(topK));
         output.WriteLine($"Greedy/argmax reply: {argmax}");
+
+        using (var engine = LiteRtEngine.Load(options))
+        {
+            var sampled = new LiteRtSamplerParams { TopK = 8, Temperature = 1.0f, Seed = 7 };
+            string topK = Reply(engine, sampled with { Strategy = LiteRtSamplerType.TopK });
+            string topP = Reply(engine, sampled with { Strategy = LiteRtSamplerType.TopP, TopP = 1.0f });
+            Assert.False(string.IsNullOrWhiteSpace(topK));
+            Assert.Equal(topP, topK);
+        }
+    }
+
+    private static string Reply(LiteRtEngine engine, LiteRtSamplerParams sampler)
+    {
+        using var conv = engine.CreateConversation(new LiteRtConversationOptions { Sampler = sampler, MaxOutputTokens = 48 });
+        return conv.Send(StoryPrompt).Text ?? "";
+    }
+
+    /// <summary>
+    /// Each conversation's parameters take effect on an engine where others already generated: a Greedy
+    /// conversation after a sampled one gives the reply of a separate engine that never sampled, and so does
+    /// one sent turn by turn next to a live sampled conversation.
+    /// </summary>
+    [SkippableFact]
+    public void Greedy_ShouldBeArgmax_AfterASampledConversation_AndNextToALiveOne()
+    {
+        LiteRtEngineOptions? options = Options();
+        Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        string argmax;
+        using (var alone = LiteRtEngine.Load(options))
+            argmax = Reply(alone, Argmax);
+
+        var hotTopP = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 64, TopP = 1.0f, Temperature = 1.6f, Seed = 7 };
+        var hotGreedy = hotTopP with { Strategy = LiteRtSamplerType.Greedy, Seed = 8 };
+        using var engine = LiteRtEngine.Load(options);
+        Assert.NotEqual(argmax, Reply(engine, hotTopP));
+        Assert.Equal(argmax, Reply(engine, hotGreedy));
+
+        using var sampled = engine.CreateConversation(new LiteRtConversationOptions { Sampler = hotTopP, MaxOutputTokens = 48 });
+        using var greedy = engine.CreateConversation(new LiteRtConversationOptions { Sampler = hotGreedy, MaxOutputTokens = 48 });
+        Assert.NotEqual(argmax, sampled.Send(StoryPrompt).Text);
+        Assert.Equal(argmax, greedy.Send(StoryPrompt).Text);
     }
 
     private const string Fact = "Remember this: my favourite colour is teal and my cat is called Miso. Reply OK.";
@@ -246,6 +283,7 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
                     cts.Cancel();
         });
 
+        Assert.True(chat.IsCancelled);
         var refused = Assert.Throws<InvalidOperationException>(() => chat.Clone());
         Assert.Contains("before the send", refused.Message, StringComparison.Ordinal);
         var cancelled = Assert.Throws<LiteRtException>(() => chat.Send("hi"));
@@ -269,10 +307,106 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         using var chat = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax, MaxOutputTokens = 900 });
         chat.Send(Fact);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => chat.SendAsync(Count, cts.Token));
 
+        var cancelled = Assert.Throws<LiteRtException>(() => chat.Send("hi"));
+        Assert.Equal(LiteRtStatusCode.Cancelled, cancelled.StatusCode);
+        Assert.True(chat.IsCancelled);
+        Assert.Contains("before the send", Assert.Throws<InvalidOperationException>(() => chat.Clone()).Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A stream cut with CancelProcess() fails with a LiteRtException, not OperationCanceledException (no token
+    /// was cancelled), and consumes the conversation. The guide's checkpoint example depends on both.
+    /// </summary>
+    [SkippableFact]
+    public async Task CancelProcess_DuringAStream_ShouldFailWithCancelled_AndConsumeTheConversation()
+    {
+        LiteRtEngineOptions? options = Options();
+        Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(options);
+        using var chat = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax, MaxOutputTokens = 256 });
+        chat.Send(Fact);
+
+        int chunks = 0;
+        var failure = await Assert.ThrowsAsync<LiteRtException>(async () =>
+        {
+            await foreach (LiteRtStreamChunk chunk in chat.SendStreamingAsync(Count))
+                if (chunk.Kind == LiteRtStreamChunkKind.Answer && ++chunks == 12)
+                    chat.CancelProcess();
+        });
+
+        Assert.Equal(LiteRtStatusCode.Cancelled, failure.StatusCode);
+        Assert.True(chat.IsCancelled);
         Assert.Throws<InvalidOperationException>(() => chat.Clone());
+    }
+
+    /// <summary>
+    /// A stream left before its reply ended consumes the conversation. One left after the native generation
+    /// ended does not, even with chunks still unread: the send completed, so the conversation stays usable and
+    /// its token count is refreshed.
+    /// </summary>
+    [SkippableFact]
+    public async Task LeavingAStream_ShouldConsumeTheConversation_OnlyIfTheReplyHadNotEnded()
+    {
+        LiteRtEngineOptions? options = Options();
+        Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(options);
+
+        using (var cut = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax, MaxOutputTokens = 256 }))
+        {
+            int chunks = 0;
+            await foreach (LiteRtStreamChunk chunk in cut.SendStreamingAsync(Count))
+                if (chunk.Kind == LiteRtStreamChunkKind.Answer && ++chunks == 12)
+                    break;
+            Assert.Equal(12, chunks);
+            Assert.True(cut.IsCancelled);
+        }
+
+        using var chat = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax, MaxOutputTokens = 48 });
+        chat.Send(Fact);
+        int before = chat.TokenCountCached;
+        await foreach (LiteRtStreamChunk _ in chat.SendStreamingAsync("Write one short sentence about the sea."))
+        {
+            // The native reader queues behind the generation in flight, so the reply has ended after this read.
+            Assert.True(chat.TokenCount > before);
+            break;
+        }
+
+        Assert.False(chat.IsCancelled);
+        Assert.True(chat.TokenCountCached > before, "The completed turn must refresh the cache.");
+        using var clone = chat.Clone();
+        string cat = clone.Send("What is my cat called? One word.").Text ?? "";
+        Assert.Contains("Miso", cat, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// A conversation keeps the native engine alive: disposing the engine first is safe, the engine counts until
+    /// its last conversation is disposed (a clone taken after that dispose included), and no new conversation can
+    /// be created from it.
+    /// </summary>
+    [SkippableFact]
+    public void Engine_DisposedBeforeItsConversations_ShouldBeReleasedByTheLastOne()
+    {
+        LiteRtEngineOptions? options = Options();
+        Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        var engine = LiteRtEngine.Load(options);
+        using var chat = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax, MaxOutputTokens = 16 });
+        chat.Send(Fact);
+
+        engine.Dispose();
+        Assert.Equal(1, LiteRtEngine.LiveEngineCount);
+        Assert.Throws<ObjectDisposedException>(() => engine.CreateConversation());
+
+        using var clone = chat.Clone();
+        chat.Dispose();
+        Assert.Equal(1, LiteRtEngine.LiveEngineCount);
+        clone.Dispose();
+        Assert.Equal(0, LiteRtEngine.LiveEngineCount);
     }
 
     /// <summary>
@@ -290,6 +424,7 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         chat.Send(Fact);
         chat.CancelProcess();
 
+        Assert.False(chat.IsCancelled);
         using var clone = chat.Clone();
         string cat = clone.Send("What is my cat called? One word.").Text ?? "";
         Assert.Contains("Miso", cat, StringComparison.OrdinalIgnoreCase);

@@ -1387,8 +1387,8 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
 /// </para>
 /// <para>
 /// This class loads its OWN engines (it does NOT take <see cref="EngineFixture"/>) and disposes each
-/// before loading the next, so only one engine is ever alive — required because two live engines hang
-/// the native layer. Safe to coexist with <see cref="ModelTests"/>: the assembly disables test
+/// before loading the next, so only one engine is ever alive — required because these engines do not
+/// opt in to coexisting (<see cref="LiteRtEngineOptions.AllowMultipleEngines"/>). Safe to coexist with <see cref="ModelTests"/>: the assembly disables test
 /// parallelization (see AssemblyInfo.cs), so classes run one at a time and the shared fixture engine
 /// is never alive while this runs.
 /// </para>

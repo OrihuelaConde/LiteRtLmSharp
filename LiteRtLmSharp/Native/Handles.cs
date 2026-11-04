@@ -107,11 +107,10 @@ internal sealed class EngineHandle(nint handle, bool allowMultiple) : LiteRtLmHa
     {
         LiteRtLmNative.litert_lm_engine_delete(handle);
         // Free this engine's slot only after the native engine is destroyed (ordering matters: a new
-        // engine must not be created while this one's native object still exists). This runs on Dispose
-        // and on finalization, so even a forgotten/GC'd engine releases the slot — but note that every
-        // LiteRtConversation strongly references its engine (for the KV overflow guard), so finalization
-        // can only happen once no conversation objects remain reachable either. The handle carries the
-        // engine's opt-in because a finalizer must not depend on other managed objects.
+        // engine must not be created while this one's native object still exists). This runs once the
+        // engine is disposed or finalized AND every ConversationHandle released its reference, so a
+        // forgotten/GC'd engine still frees its slot, and never while one of its sessions is alive. The
+        // handle carries the engine's opt-in because a finalizer must not depend on other managed objects.
         EngineLiveness.Default.Release(allowMultiple);
         return true;
     }
@@ -135,11 +134,16 @@ internal sealed class ConversationConfigHandle(nint handle) : LiteRtLmHandle(han
     }
 }
 
-internal sealed class ConversationHandle(nint handle) : LiteRtLmHandle(handle)
+/// <summary>A native conversation. It holds a reference on its engine's handle, taken by the caller with
+/// <see cref="SafeHandle.DangerousAddRef"/> before the native create or clone, and releases it after deleting
+/// the conversation: a native conversation uses its engine until it is deleted, so the engine is deleted only
+/// after its last conversation, whichever of them is disposed or finalized first.</summary>
+internal sealed class ConversationHandle(nint handle, EngineHandle engine) : LiteRtLmHandle(handle)
 {
     protected override bool ReleaseHandle()
     {
         LiteRtLmNative.litert_lm_conversation_delete(handle);
+        engine.DangerousRelease();
         return true;
     }
 }

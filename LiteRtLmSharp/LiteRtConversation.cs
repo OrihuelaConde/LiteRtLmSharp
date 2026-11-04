@@ -56,9 +56,7 @@ public sealed class LiteRtConversation : IDisposable
     private readonly bool? _thinkingEnable;
     private readonly int? _thinkingBudget;
     private bool _disposed;
-    // Set when a send on this conversation ended cancelled (the runtime then answers CANCELLED to every later
-    // send), decided by the outcome, not by the call: CancelProcess() on an idle conversation is a no-op and
-    // leaves it unset, and so does a cancelled token that lost the race to a send that completed.
+    // Backs IsCancelled (see its remarks for what sets it).
     private volatile bool _cancelled;
 
     /// <summary>Channel name passed to <c>set_stream_tool_calls</c>. Pinned explicitly (rather than
@@ -280,14 +278,20 @@ public sealed class LiteRtConversation : IDisposable
                 }
             }
 
+            // The conversation keeps the native engine alive until it is deleted (ConversationHandle releases
+            // this reference), so disposing the engine first can never free it under a live session.
+            bool engineReferenced = false;
+            engine.Handle.DangerousAddRef(ref engineReferenced);
             NativeError.Clear();
             nint convPtr = LiteRtLmNative.litert_lm_conversation_create(engine.Handle.Ptr, configPtr);
             if (convPtr == nint.Zero)
-                throw NativeError.Exception("litert_lm_conversation_create returned null.",
-                    report => IsUnsupportedSamplerError(report?.Message) ? SamplerNotSupportedHint : null);
+            {
+                engine.Handle.DangerousRelease();
+                throw NativeError.Exception("litert_lm_conversation_create returned null.");
+            }
 
             return new LiteRtConversation(
-                new ConversationHandle(convPtr), config, sessionConfig, engine,
+                new ConversationHandle(convPtr, engine.Handle), config, sessionConfig, engine,
                 options?.VisualTokenBudget ?? 0, options?.MaxOutputTokens ?? 0,
                 options?.StreamToolCalls == true ? ToolCallStreamChannelName : null,
                 options?.ConstraintProvider is not null,
@@ -332,7 +336,8 @@ public sealed class LiteRtConversation : IDisposable
     /// generation in flight on any conversation of the engine.
     /// </summary>
     /// <remarks>
-    /// <c>0</c> until the conversation has completed a send or the exact count was read once. Every completed
+    /// <c>0</c> until the conversation has completed a send or the exact count was read once (a
+    /// <see cref="Clone"/> starts with its parent's count). Every completed
     /// send refreshes it (blocking, streaming and tool-result sends, each with one native read right after the
     /// send), so after a send the two agree; while a send is in flight it does not include the turn being
     /// generated. Unlike the rest of the conversation, this property and <see cref="IsContextFull"/> can be read
@@ -348,6 +353,18 @@ public sealed class LiteRtConversation : IDisposable
         _cachedTokenCount = count;
         return count;
     }
+
+    /// <summary>
+    /// Whether a send on this conversation was cut short: a cancelled <c>SendAsync</c>, a stream abandoned
+    /// before its reply ended, or <see cref="CancelProcess"/> during a send. The runtime then answers
+    /// <c>CANCELLED</c> to every later send, and <see cref="Clone"/> refuses the conversation, so continue on a
+    /// checkpoint taken before the send, or on a new conversation.
+    /// </summary>
+    /// <remarks>Decided by the outcome, not by the call: <see cref="CancelProcess"/> on an idle conversation,
+    /// a cancelled token that lost the race to a completed send, and a stream left after its reply had already
+    /// ended keep it <c>false</c>. Like <see cref="TokenCountCached"/>, it can be read from another
+    /// thread.</remarks>
+    public bool IsCancelled => _cancelled;
 
     /// <summary>
     /// Whether this conversation's context is full: a completed send was detected to have run its reply
@@ -434,10 +451,28 @@ public sealed class LiteRtConversation : IDisposable
     /// and GPU). To keep a reusable "base" (system prompt + tools) to branch from, send one real turn on
     /// it first, then clone.
     /// </para>
+    /// <para>
+    /// <b>A clone is also a checkpoint.</b> A send that is cut short (a cancelled <c>SendAsync</c>, an
+    /// abandoned stream, or <see cref="CancelProcess"/> during a send) leaves the conversation answering
+    /// <c>CANCELLED</c> to every later send, and a clone taken after the cut does too, so this method refuses
+    /// it. Take the clone <i>before</i> a send that might be cut, and continue on the clone if it is. The same
+    /// applies to a send that failed during generation: the runtime keeps the failure for that conversation,
+    /// so clone before the send, not after it.
+    /// </para>
+    /// <para>
+    /// Creating the clone is lazy: it costs no measurable time or memory until the clone generates. A
+    /// conversation with <see cref="LiteRtConversationOptions.EnableConstrainedDecoding"/> or a
+    /// <see cref="LiteRtConversationOptions.ConstraintProvider"/> is the exception, because the runtime
+    /// rebuilds the constraint machinery for the clone: about 0.9 s and 1 s per clone on gemma-4 E2B
+    /// (LiteRT-LM v0.18.0, win-x64, CPU and GPU alike). A clone does not carry the native state that removes
+    /// earlier reasoning from the KV cache (<see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/>),
+    /// so on a reasoning conversation that reasoning stays in the clone's context.
+    /// </para>
     /// </remarks>
     /// <exception cref="InvalidOperationException">
     /// The conversation has not advanced yet (<see cref="TokenCount"/> is 0), so there is no prefilled
-    /// state to duplicate. Send a message on it first.
+    /// state to duplicate: send a message on it first. Or a send on this conversation was cut short, so
+    /// there is nothing left to duplicate: take the clone before a send that might be cut.
     /// </exception>
     /// <exception cref="LiteRtException">
     /// The native clone failed. The usual cause is an engine/backend whose executor does not implement
@@ -465,26 +500,31 @@ public sealed class LiteRtConversation : IDisposable
                 "another conversation's context once any other conversation runs on the engine. Send one " +
                 "message on this conversation first, then clone it.");
 
+        bool engineReferenced = false;
+        _engineOwner.Handle.DangerousAddRef(ref engineReferenced);   // released by the clone's handle
         NativeError.Clear();
         nint clonedPtr = LiteRtLmNative.litert_lm_conversation_clone(_conversation.Ptr);
         if (clonedPtr == nint.Zero)
+        {
+            _engineOwner.Handle.DangerousRelease();
             throw NativeError.Exception(
                 "litert_lm_conversation_clone returned null.",
                 hint: "Cloning duplicates the conversation's prefilled KV-cache state into a new conversation, " +
                 "and some engines or backends do not implement it (the native layer then reports " +
                 "UNIMPLEMENTED). To restore a conversation from persisted messages instead, create one with " +
                 "LiteRtConversationOptions.History.");
+        }
 
         // The clone is a fully independent native conversation; it does not share or need the parent's
         // config handles (those are only read at create time). Each conversation frees its own native
-        // object on Dispose, so the clone outlives a disposed parent as long as the engine is alive.
+        // object on Dispose, so the clone outlives a disposed parent (and keeps the native engine alive).
         // It inherits the parent's engine (context limit + tokenizer for the overflow guard), visual
         // token budget, output cap, tool-call stream channel, constraint-provider flag and thinking
         // settings, so attachments, the guard, streaming, per-send constraints and per-send thinking
         // overrides behave the same on the branch (the native clone copies the whole config —
         // including the constraint provider, conversation.cc CloneInternal recreates it).
         var clone = new LiteRtConversation(
-            new ConversationHandle(clonedPtr), config: null, sessionConfig: null, _engineOwner,
+            new ConversationHandle(clonedPtr, _engineOwner.Handle), config: null, sessionConfig: null, _engineOwner,
             _visualTokenBudget, _maxOutputTokens, _toolCallStreamChannel, _hasConstraintProvider,
             _thinkingEnable, _thinkingBudget);
         // The branch holds the same tokens as the parent (the TokenCount check above just refreshed the
@@ -584,9 +624,11 @@ public sealed class LiteRtConversation : IDisposable
     /// running on another thread, a <see cref="SendAsync(string, CancellationToken)"/>, or an active
     /// <see cref="SendStreamingAsync(string, System.Threading.CancellationToken)"/> stream. Besides reading
     /// <see cref="TokenCountCached"/> and <see cref="IsContextFull"/>, it is the only operation that is safe to
-    /// call from any thread while a send is in flight; when nothing is in flight it is a no-op. A cancelled blocking send fails with <see cref="LiteRtException"/> (the
-    /// async variants translate that to <see cref="OperationCanceledException"/>). Afterwards, treat the
-    /// conversation as consumed: dispose it and continue on a fresh one. To keep the earlier turns without
+    /// call from any thread while a send is in flight; when nothing is in flight it is a no-op. The send it
+    /// cuts fails with a <see cref="LiteRtException"/> whose <see cref="LiteRtException.StatusCode"/> is
+    /// <see cref="LiteRtStatusCode.Cancelled"/>, a stream included; the async variants throw
+    /// <see cref="OperationCanceledException"/> instead only when their own token was cancelled. Afterwards,
+    /// treat the conversation as consumed: dispose it and continue on a fresh one. To keep the earlier turns without
     /// replaying them, take a <see cref="Clone"/> before the send and continue on the clone; otherwise restore
     /// prior turns via <see cref="LiteRtConversationOptions.History"/>. Sending again on a
     /// cancelled conversation returns <c>CANCELLED</c> for every later call (LiteRT-LM v0.16.0 and v0.18.0)
@@ -728,16 +770,11 @@ public sealed class LiteRtConversation : IDisposable
     {
         // Runs on every completed send, so this is also where the non-blocking cache is refreshed: the
         // conversation is idle again (its own send just returned), and the read is immediate as long as
-        // sends on the engine are serialized, as documented.
-        int count;
-        try
-        {
-            count = ReadTokenCount();
-        }
-        catch (ObjectDisposedException)
-        {
+        // sends on the engine are serialized, as documented. A stream's teardown can run after the consumer
+        // disposed the conversation; the native object is gone then, so there is nothing to read.
+        if (_disposed)
             return;
-        }
+        int count = ReadTokenCount();
 
         if (_ceilingProbe is not { } probe)
             return;
@@ -895,7 +932,8 @@ public sealed class LiteRtConversation : IDisposable
     /// Whether a native failure is the runtime's rejection of a sampler type its backend does not build
     /// (<c>UNIMPLEMENTED: Sampler type: 1 not implemented yet.</c>; the message names the numeric type).
     /// Since the binding maps Greedy and TopK onto TopP, this can only come from a sampler the model file
-    /// declares, used when <see cref="LiteRtConversationOptions.Sampler"/> is not set.
+    /// declares, used when <see cref="LiteRtConversationOptions.Sampler"/> is not set or its strategy is
+    /// <see cref="LiteRtSamplerType.Unspecified"/>.
     /// </summary>
     internal static bool IsUnsupportedSamplerError(string? nativeReason)
         => nativeReason is not null
@@ -907,8 +945,9 @@ public sealed class LiteRtConversation : IDisposable
     internal const string SamplerNotSupportedHint =
         "The engine's backend does not build the sampler type the model file declares (the LiteRT-LM CPU " +
         "backend builds only TopP samplers; LiteRtModelInfo.DefaultSampler shows the model's own sampler). " +
-        "Set LiteRtConversationOptions.Sampler explicitly: the binding sends Greedy and TopK as TopP, which " +
-        "every backend builds. Continue on a fresh conversation, because the one that failed is consumed.";
+        "Set LiteRtConversationOptions.Sampler to an explicit strategy: the binding sends Greedy and TopK as " +
+        "TopP, which the CPU and GPU backends build. Continue on a fresh conversation, because the one that " +
+        "failed is consumed.";
 
     /// <summary>
     /// Guidance appended when a send carrying an image/audio attachment fails the way an unconfigured
@@ -1233,9 +1272,11 @@ public sealed class LiteRtConversation : IDisposable
             // deadlocks exactly when there are leftovers.
             if (!channel.Reader.Completion.IsCompleted)
             {
-                // The binding itself cancels the native generation here, which consumes the conversation.
-                _cancelled = true;
+                // Cancel the native generation. When it already ended (the consumer stopped with chunks still
+                // buffered), the cancel changes nothing natively, so the outcome of the drain decides whether
+                // the conversation was consumed.
                 LiteRtLmNative.litert_lm_conversation_cancel_process(_conversation.Ptr);
+                bool cut = false;
                 try
                 {
                     // Terminates once the writer completes: WaitToReadAsync returns false on a clean
@@ -1243,7 +1284,14 @@ public sealed class LiteRtConversation : IDisposable
                     while (await channel.Reader.WaitToReadAsync().ConfigureAwait(false))
                         while (channel.Reader.TryRead(out _)) { }
                 }
-                catch { /* the cancel error is expected here; the consumer already gave up */ }
+                catch
+                {
+                    cut = true;   // the cancel error is expected here; the consumer already gave up
+                }
+                if (cut)
+                    _cancelled = true;
+                else
+                    CompleteCeilingProbe();
             }
             else if (channel.Reader.Completion.IsCompletedSuccessfully)
             {

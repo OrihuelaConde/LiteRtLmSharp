@@ -19,7 +19,7 @@ public sealed class LiteRtEngine : IDisposable
     static LiteRtEngine() => NativeLibraryResolver.Initialize();
 
     // One live chat engine per process is the default rule (it dates from self-built v0.13.1
-    // libraries, where a second live engine hung in the native layer). Recreating an engine after
+    // libraries, where a second live engine was reported to hang in the native layer; never reproduced). Recreating an engine after
     // disposing the previous one works — Google's Edge Gallery switches model/backend exactly this way
     // (engine.close() + new Engine). Engines loaded with LiteRtEngineOptions.AllowMultipleEngines may
     // coexist with each other, never with one that did not opt in. The process-wide gate
@@ -112,6 +112,7 @@ public sealed class LiteRtEngine : IDisposable
                     "(and its conversations) first, or load it with AllowMultipleEngines = true as well.");
         }
 
+        EngineHandle? handle = null;
         try
         {
             // Passing null for vision/audio leaves that modality unconfigured (NULL = "not set" per
@@ -186,17 +187,21 @@ public sealed class LiteRtEngine : IDisposable
                     "corrupt or incomplete model file, or a backend the model does not support: some published " +
                     ".litertlm files carry a backend constraint (for example GPU-only) and refuse to load on CPU.");
 
+            handle = new EngineHandle(enginePtr, options.AllowMultipleEngines);
             return new LiteRtEngine(
-                new EngineHandle(enginePtr, options.AllowMultipleEngines),
+                handle,
                 isMultimodal: options.VisionBackend is not null || options.AudioBackend is not null,
                 maxNumTokens: options.MaxNumTokens,
                 enableSpeculativeDecoding: options.EnableSpeculativeDecoding);
         }
         catch
         {
-            // Creation failed before the engine handle took ownership of the slot — release it so a
-            // corrected retry can load.
-            EngineLiveness.Default.Release(options.AllowMultipleEngines);
+            // Once the handle exists it owns the slot: disposing it deletes the native engine, then frees the
+            // slot. Before that, release the slot here so a corrected retry can load.
+            if (handle is not null)
+                handle.Dispose();
+            else
+                EngineLiveness.Default.Release(options.AllowMultipleEngines);
             throw;
         }
     }
