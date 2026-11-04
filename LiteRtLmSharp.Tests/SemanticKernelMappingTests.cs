@@ -1,6 +1,7 @@
 using System.Text.Json;
 using LiteRtLmSharp.SemanticKernel;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Xunit;
@@ -121,5 +122,54 @@ public class SemanticKernelMappingTests
         }
         // The first keyed client is also the unkeyed IChatClient, as before keyed clients existed.
         Assert.Single(builder.Services, d => d.ServiceType == typeof(IChatClient) && d.ServiceKey is null);
+    }
+
+    [Fact]
+    public void AddChatCompletionWithTwoServiceIds_RoutesEachServiceToItsOwnEngine()
+    {
+        // Resolving a service loads its engine, and Load names a missing model path before any native work.
+        IKernelBuilder builder = Kernel.CreateBuilder();
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "e2b-missing.litertlm", AllowMultipleEngines = true }, serviceId: "fast");
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "e4b-missing.litertlm", AllowMultipleEngines = true }, serviceId: "smart");
+        using ServiceProvider provider = builder.Services.BuildServiceProvider();
+
+        Assert.Contains("e4b-missing.litertlm",
+            Assert.Throws<ArgumentException>(() => provider.GetRequiredKeyedService<IChatCompletionService>("smart")).Message);
+        Assert.Contains("e2b-missing.litertlm",
+            Assert.Throws<ArgumentException>(() => provider.GetRequiredKeyedService<IChatCompletionService>("fast")).Message);
+        // Without a key, the first serviceId's client and engine.
+        Assert.Contains("e2b-missing.litertlm",
+            Assert.Throws<ArgumentException>(() => provider.GetRequiredService<IChatClient>()).Message);
+    }
+
+    [Fact]
+    public void AnUnkeyedRegistrationAfterAServiceId_ThrowsForOtherOptions_AndIsANoOpForEqualOnes()
+    {
+        IKernelBuilder builder = Kernel.CreateBuilder();
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "e4b.litertlm" }, serviceId: "smart");
+
+        Assert.Throws<InvalidOperationException>(
+            () => builder.Services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "e2b.litertlm" }));
+        Assert.Throws<InvalidOperationException>(
+            () => builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "e2b.litertlm" }));
+        builder.Services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "e4b.litertlm" });
+
+        Assert.Single(builder.Services, d => d.ServiceType == typeof(IChatClient) && d.ServiceKey is null);
+        Assert.Single(builder.Services, d => d.ServiceType == typeof(LiteRtEngine) && d.ServiceKey is null);
+        Assert.DoesNotContain(builder.Services, d => d.ServiceType == typeof(IChatCompletionService) && d.ServiceKey is null);
+    }
+
+    [Fact]
+    public void AddChatCompletionWithTwoServiceIdsFromEqualOptions_LoadsOneEngine()
+    {
+        IKernelBuilder builder = Kernel.CreateBuilder();
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "shared.litertlm" }, serviceId: "chat");
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "shared.litertlm" }, serviceId: "summary");
+
+        var loads = builder.Services
+            .Where(d => d.ServiceType == typeof(LiteRtChatClientServiceCollectionExtensions.ChatClientRegistration) && d.IsKeyedService)
+            .ToDictionary(d => d.ServiceKey!, d => ((LiteRtChatClientServiceCollectionExtensions.ChatClientRegistration)d.KeyedImplementationInstance!).LoadsEngine);
+        Assert.True(loads["chat"]);
+        Assert.False(loads["summary"]);
     }
 }
