@@ -161,23 +161,32 @@ public sealed record LiteRtEngineOptions
     /// reports how many chat engines are alive.
     /// </para>
     /// <para>
-    /// Measured on LiteRT-LM v0.18.0 with gemma-4 E2B and E4B: two to four engines load, generate at the same
-    /// time and dispose in any order, with replies byte-identical to a single engine, on win-x64 (CPU, and GPU
-    /// with up to three engines), linux-x64 (CPU) and the android-x64 emulator (CPU); that includes engines
-    /// loaded concurrently from two threads, mixed CPU and GPU engines, a vision engine next to a text engine,
-    /// and speculative decoding. A two-engine test also passes on osx-arm64 (CPU and GPU). Physical Android
-    /// devices and iOS were not measured.
+    /// Measured on LiteRT-LM v0.18.0 with gemma-4 E2B and E4B on win-x64 (CPU with up to four engines, GPU
+    /// with up to three) and linux-x64 (CPU, up to four): the engines load, generate at the same time and
+    /// dispose in any order, with replies byte-identical to a single engine. That includes engines loaded
+    /// concurrently from two threads (with the compiled-model cache already warm), mixed CPU and GPU engines, a
+    /// vision engine next to a text engine, and speculative decoding. On the android-x64 emulator (CPU,
+    /// gemma-4 E2B) up to three engines load and generate. Physical Android devices, Apple platforms and
+    /// linux-arm64 were not measured.
     /// </para>
     /// <para>
     /// Engines run in parallel only on a desktop CPU. On a GPU, and on the Android emulator, a second engine
-    /// adds no throughput: two replies generated at the same time take longer than one after the other. Each
-    /// engine holds its own memory, about 2.3 GB of private memory per gemma-4 E2B engine on CPU and 3.6 GB on
-    /// GPU on Windows, so check free memory before loading another one.
+    /// adds no throughput: two replies generated at the same time take longer than one after the other.
     /// </para>
     /// <para>
-    /// The one-engine rule comes from an earlier release built on self-built LiteRT-LM v0.13.1 libraries, where
-    /// a second live engine hung in the native layer. It does not reproduce with the official libraries this
-    /// package ships, which is why the rule can be lifted per engine.
+    /// Each engine holds its own memory. On Windows a gemma-4 E2B engine commits about 2.3 GB of private memory
+    /// on CPU and 3.6 GB on GPU once loaded, while the working set of a CPU engine grows by about 0.35 GB,
+    /// because the weights are memory-mapped; on linux-x64 and the Android emulator each extra CPU engine took
+    /// 0.2 to 0.4 GB. Ten load and dispose cycles next to a live engine grew private memory by about 90 MB on
+    /// CPU and 135 MB on GPU (win-x64). Check free memory (on Windows, the commit limit) before loading another
+    /// engine. On win-x64 GPU, test runs that load and dispose many engines in one process have ended a few
+    /// times with the process exiting without an error; the project roadmap tracks it.
+    /// </para>
+    /// <para>
+    /// The one-engine rule was added in an earlier release built on self-built LiteRT-LM v0.13.1 libraries,
+    /// after a second live engine was reported to hang in the native layer. That hang was never reproduced, and
+    /// the official libraries this package ships showed none in the measurements above, which is why the rule
+    /// can be lifted per engine.
     /// </para>
     /// </remarks>
     public bool AllowMultipleEngines { get; init; }
@@ -202,6 +211,11 @@ public sealed record LiteRtEngineOptions
     /// (0.52× on an RTX 3080 with the default float32 activations), with the default disk cache in both
     /// cases. On an Adreno 650 phone GPU it made no difference (measured in June 2026 on LiteRT-LM
     /// v0.13.1).
+    /// </para>
+    /// <para>
+    /// In the LiteRT-LM v0.18.0 and v0.18.1 sources the main model verifies the drafted tokens greedily, so
+    /// with speculative decoding only the first token of each turn uses the conversation's sampler and the
+    /// rest of the reply is the argmax continuation (upstream changed this after v0.18.1).
     /// </para>
     /// </remarks>
     public bool EnableSpeculativeDecoding { get; init; }
@@ -523,10 +537,11 @@ public sealed record LiteRtConversationOptions
 
     /// <summary>Optional sampler parameters. Null = engine default.</summary>
     /// <remarks>
-    /// Every strategy works on every backend: the binding sends <see cref="LiteRtSamplerType.Greedy"/> and
-    /// <see cref="LiteRtSamplerType.TopK"/> as TopP, the one sampler type all LiteRT-LM backends build (see
-    /// <see cref="LiteRtSamplerParams"/>). Each conversation's parameters take effect, also on an engine where
-    /// other conversations already generated.
+    /// Each explicit strategy works on the CPU and GPU backends: the binding sends
+    /// <see cref="LiteRtSamplerType.Greedy"/> and <see cref="LiteRtSamplerType.TopK"/> as TopP, the one sampler
+    /// type both build. Each conversation's parameters take effect, also on an engine where other
+    /// conversations already generated. <see cref="LiteRtSamplerParams"/> lists what was measured and where
+    /// the runtime decodes greedily instead (speculative decoding and the NPU backend).
     /// </remarks>
     public LiteRtSamplerParams? Sampler { get; init; }
 
@@ -740,6 +755,8 @@ public sealed record LiteRtConversationOptions
     /// conversations explicitly. Requires a model that ships an MTP drafter (such as the Gemma 4 E-series):
     /// on a model without one, <c>true</c> makes the first send fail with <see cref="LiteRtException"/>.
     /// Maps to the C API <c>session_config_set_enable_speculative_decoding</c> (native LiteRT-LM v0.18.0+).
+    /// With speculative decoding on, only the first token of each turn uses the conversation's sampler (see
+    /// <see cref="LiteRtEngineOptions.EnableSpeculativeDecoding"/>).
     /// </remarks>
     public bool? EnableSpeculativeDecoding { get; init; }
 }

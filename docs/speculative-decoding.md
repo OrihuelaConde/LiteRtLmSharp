@@ -92,10 +92,11 @@ dotnet test LiteRtLmSharp.Tests/LiteRtLmSharp.Tests.csproj -c Release `
 In CI it runs on the CPU leg of `model-tests.yml` on each push via ci.yml (linux-x64 / linux-arm64 /
 win-x64 / osx-arm64); the printed row lands in that job's console log and step summary.
 
-> Sampler note: the CPU sampler factory only implements the **TopP** sampler (Greedy and TopK
-> return *"not implemented yet"*; verified on v0.14.0 and v0.15.0). Speculative decoding preserves the output *distribution*, not the
-> exact token sequence under sampling, so the A/B checks coherence + throughput rather than asserting
-> byte-identical output.
+> Sampler note: in the LiteRT-LM v0.18.0 and v0.18.1 sources, the main model verifies the drafted
+> tokens greedily, so with speculative decoding on, only the first token of each turn uses the
+> conversation's sampler and the rest of the reply is the argmax continuation (upstream changed this
+> after v0.18.1). The A/B therefore checks coherence and throughput rather than asserting byte-identical
+> output against a sampled run.
 
 ## Measured results
 
