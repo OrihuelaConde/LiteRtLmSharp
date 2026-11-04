@@ -27,8 +27,18 @@ internal sealed class LiteRtConversationStore
         public Entry(LiteRtConversation conversation) => Conversation = conversation;
 
         /// <summary>The live native conversation. Replaced (see <see cref="Replace"/>) when a send that was
-        /// cancelled or failed rolls the conversation back to the checkpoint taken before it.</summary>
+        /// cancelled or failed rolls the conversation back to the checkpoint taken before its turn.</summary>
         public LiteRtConversation Conversation { get; set; }
+
+        /// <summary>The rollback point of a turn in progress, or <c>null</c> between turns. A reply that ends in
+        /// tool calls continues with their results, so the checkpoint taken before the turn's first send stays
+        /// here until a reply without tool calls completes the turn.</summary>
+        public TurnCheckpoint? PendingTurn { get; set; }
+
+        /// <summary>Whether cloning this conversation rebuilds its constraint machinery (it was created with
+        /// constrained decoding or a constraint provider): about a second per clone on LiteRT-LM v0.18.0, so the
+        /// client takes no checkpoint for it and a cancelled or failed send evicts it instead. Copied to forks.</summary>
+        public bool CloneIsSlow { get; set; }
 
         /// <summary>Whether the conversation was created with a custom constraint provider (LlGuidance),
         /// i.e. whether per-send constraints (a JSON-schema <c>ResponseFormat</c>) can be enforced on it.
@@ -56,7 +66,30 @@ internal sealed class LiteRtConversationStore
 
         /// <summary>The accumulated synthesized-call-id → tool-name map (empty until the conversation emits a tool call).</summary>
         public IReadOnlyDictionary<string, string> CallIdToName => _callIdToName ?? Empty;
+
+        /// <summary>A copy of the tool-call map, for a <see cref="TurnCheckpoint"/>.</summary>
+        public IReadOnlyDictionary<string, string> SnapshotToolCalls()
+            => _callIdToName is null ? Empty : new Dictionary<string, string>(_callIdToName, StringComparer.Ordinal);
+
+        /// <summary>Puts back the tool-call map a <see cref="TurnCheckpoint"/> recorded, so the calls of a
+        /// rolled-back turn no longer resolve.</summary>
+        public void RestoreToolCalls(IReadOnlyDictionary<string, string> snapshot)
+            => _callIdToName = snapshot.Count == 0 ? null : new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+
+        /// <summary>Disposes the live conversation and the checkpoint of a turn in progress.</summary>
+        public void Dispose()
+        {
+            Conversation.Dispose();
+            PendingTurn?.Checkpoint?.Dispose();
+            PendingTurn = null;
+        }
     }
+
+    /// <summary>Where a stateful turn rolls back to if one of its sends is cancelled or fails: a clone of the
+    /// conversation taken before the turn's first send, and the tool-call map at that point. The clone is
+    /// <c>null</c> when the turn created the conversation or no checkpoint could be taken; a failure then evicts
+    /// the conversation.</summary>
+    internal sealed record TurnCheckpoint(LiteRtConversation? Checkpoint, IReadOnlyDictionary<string, string> ToolCalls);
 
     private readonly int _capacity;
     private readonly Dictionary<string, LinkedListNode<KeyValuePair<string, Entry>>> _map;
@@ -96,17 +129,17 @@ internal sealed class LiteRtConversationStore
         {
             _lru.RemoveLast();
             _map.Remove(lru.Value.Key);
-            lru.Value.Value.Conversation.Dispose();
+            lru.Value.Value.Dispose();
         }
         return entry;
     }
 
     /// <summary>
     /// Puts <paramref name="conversation"/> in place of the live conversation stored under
-    /// <paramref name="id"/> and disposes the one it replaces. The entry (its tool-call map and flags) and its
-    /// LRU position stay, so the id keeps resolving. Used to roll a stateful conversation back to the checkpoint
-    /// taken before a send that was cancelled or failed. When the id is no longer stored,
-    /// <paramref name="conversation"/> is disposed instead.
+    /// <paramref name="id"/> and disposes the one it replaces. The entry (its flags) and its LRU position stay,
+    /// so the id keeps resolving. Used to roll a stateful conversation back to the checkpoint taken before a
+    /// turn whose send was cancelled or failed. When the id is no longer stored, <paramref name="conversation"/>
+    /// is disposed instead.
     /// </summary>
     public void Replace(string id, LiteRtConversation conversation)
     {
@@ -122,8 +155,8 @@ internal sealed class LiteRtConversationStore
     }
 
     /// <summary>Removes and disposes the conversation with <paramref name="id"/> if present (a no-op
-    /// otherwise). Used to evict a conversation that cannot continue: a send that filled its context, or a
-    /// cancelled or failed send when no checkpoint could be taken (the native runtime leaves such a
+    /// otherwise). Used to evict a conversation that cannot continue: a send rejected because its context is
+    /// full, or a cancelled or failed send with no checkpoint to roll back to (the native runtime leaves such a
     /// conversation consumed, so it must not be resumed).</summary>
     public void Remove(string id)
     {
@@ -131,14 +164,14 @@ internal sealed class LiteRtConversationStore
             return;
         _lru.Remove(node);
         _map.Remove(id);
-        node.Value.Value.Conversation.Dispose();
+        node.Value.Value.Dispose();
     }
 
     /// <summary>Disposes every live conversation and clears the store. Called from the client's <c>Dispose</c>.</summary>
     public void DisposeAll()
     {
         foreach (LinkedListNode<KeyValuePair<string, Entry>> node in EnumerateNodes())
-            node.Value.Value.Conversation.Dispose();
+            node.Value.Value.Dispose();
         _lru.Clear();
         _map.Clear();
     }

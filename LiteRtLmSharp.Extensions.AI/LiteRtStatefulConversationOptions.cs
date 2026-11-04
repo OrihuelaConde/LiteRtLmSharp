@@ -43,11 +43,27 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// <b>Lifetime and eviction.</b> Live conversations are held in an LRU cache bounded by
 /// <see cref="MaxLiveConversations"/>. Creating a new conversation beyond that cap evicts and disposes the
 /// least-recently-used one; a request whose <see cref="ChatOptions.ConversationId"/> was evicted (or was
-/// never issued by this client) throws <see cref="ArgumentException"/>. A cancelled or failed send on a
-/// continuation does not lose its id: the client takes a <see cref="LiteRtConversation.Clone"/> checkpoint
-/// before each continuation send and, if the send does not complete, puts the checkpoint back under the same
-/// id, discarding the cut turn (re-send it to get the answer). In a function-invocation loop, a cancellation
-/// rolls back only the round it interrupts. Disposing the client disposes all live conversations. There is no time-based expiry in this mode — size the cap for your concurrency.
+/// never issued by this client) throws <see cref="ArgumentException"/>.
+/// </para>
+/// <para>
+/// <b>Cancelled and failed sends.</b> A cancelled or failed send on a continuation does not lose its id: the
+/// client takes a <see cref="LiteRtConversation.Clone"/> checkpoint before each turn and, if a send of that
+/// turn does not complete, puts the checkpoint back under the same id. The whole turn is discarded, its user
+/// message and any tool rounds of a function-invocation loop (re-send the message to get the answer), so
+/// the conversation matches what Agent Framework keeps after a failed run. A stream the consumer stops
+/// reading after the model has finished its reply, for example at its tool calls, keeps the turn. Three cases
+/// still evict the id, so resuming it throws <see cref="ArgumentException"/>: a cancelled or failed first
+/// call (it has nothing to roll back to, even when stream updates already carried its id), a conversation
+/// with constrained decoding or a constraint provider (cloning one rebuilds its constraints, about a second on
+/// LiteRT-LM v0.18.0, so the client takes no checkpoint), and a backend that cannot clone. A rolled-back
+/// conversation does not remove earlier reasoning from its KV cache
+/// (<see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/>). The checkpoint is a second native
+/// conversation outside <see cref="MaxLiveConversations"/>; it costs no measurable time or memory until it
+/// is used.
+/// </para>
+/// <para>
+/// Disposing the client disposes all live conversations. There is no time-based expiry in this mode — size
+/// the cap for your concurrency.
 /// (Multiple live conversations require native LiteRT-LM v0.15.0+: earlier runtimes silently lost a
 /// suspended conversation's state when another advanced, and this mode was hard-limited to one live
 /// conversation until the fix shipped.)
@@ -83,10 +99,11 @@ public sealed record LiteRtStatefulConversationOptions
     /// to 8.
     /// </summary>
     /// <remarks>
-    /// <b>Each live conversation keeps its own native KV state</b>, which grows with the tokens the
-    /// conversation has used, up to the engine's <see cref="LiteRtEngineOptions.MaxNumTokens"/> — the cap is
-    /// a memory ceiling, not just a count. Measured on LiteRT-LM v0.18.0 with gemma-4 E2B, a conversation of
-    /// 2,300 tokens holds about 36 MB on a desktop CPU and 60 to 100 MB on a desktop GPU. On
+    /// <b>Each live conversation keeps its own native KV state</b> — the cap is a memory ceiling, not just a
+    /// count. On a model with a dynamic context such as gemma-4 E2B, that state grows with the tokens the
+    /// conversation has used, up to the engine's <see cref="LiteRtEngineOptions.MaxNumTokens"/>: measured on
+    /// LiteRT-LM v0.18.0, a conversation of 2,300 tokens holds about 36 MB on a desktop CPU and 60 to 100 MB on
+    /// a desktop GPU. A model with a static context keeps a full-size cache for every live conversation. On
     /// memory-constrained (mobile) devices size the cap deliberately, and lower it (e.g. 1-2) where memory is
     /// tighter than concurrency.
     /// </remarks>
