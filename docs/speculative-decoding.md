@@ -3,7 +3,7 @@
 Speculative decoding speeds up token generation by letting a small **Multi-Token-Prediction (MTP)
 drafter** — shipped *inside* the `.litertlm` file — propose several tokens ahead, which the main
 model then verifies in a single forward pass. When the drafter is accurate, many tokens are accepted
-per main-model step, so decode throughput goes up without changing the output distribution. On the
+per main-model step, so decode throughput goes up, with the sampler caveat in the note below. On the
 hardware we measured it has not paid off yet: it slowed gemma-4-E2B down on desktop CPU and GPU (see
 [Measured results](#measured-results)).
 
@@ -94,9 +94,9 @@ win-x64 / osx-arm64); the printed row lands in that job's console log and step s
 
 > Sampler note: in the LiteRT-LM v0.18.0 and v0.18.1 sources, the main model verifies the drafted
 > tokens greedily, so with speculative decoding on, only the first token of each turn uses the
-> conversation's sampler and the rest of the reply is the argmax continuation (upstream changed this
-> after v0.18.1). The A/B therefore checks coherence and throughput rather than asserting byte-identical
-> output against a sampled run.
+> conversation's sampler and the rest of the reply is decoded greedily (upstream changed this after
+> v0.18.1). On the GPU backend the reply can still differ from a plain argmax reply (measured on v0.18.0,
+> win-x64). The A/B therefore checks coherence and throughput rather than asserting byte-identical output.
 
 ## Measured results
 

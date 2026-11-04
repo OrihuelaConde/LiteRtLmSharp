@@ -53,7 +53,10 @@ that key, so two on-device models can sit side by side. Service ids registered f
 engine; different options load one engine each, so load each of them with `AllowMultipleEngines = true`. The
 first keyed client, and from options its engine, are also the unkeyed `IChatClient` and `LiteRtEngine` when
 none is registered, and a later unkeyed registration from different settings then throws
-`InvalidOperationException` instead of being ignored.
+`InvalidOperationException` instead of being ignored; register the unkeyed client first to avoid that. Each engine
+loads when its service first runs, also on a prompt with no `ServiceId`, which uses the last registered service. A
+`LiteRtEngine` you registered without a key serves a `serviceId` from options, whatever the options say, and an
+`IChatClient` you registered under the `serviceId` stays in charge.
 
 ### Chat with history (streaming)
 

@@ -171,7 +171,7 @@ catch (Exception e) when (e is OperationCanceledException or LiteRtException { S
 }
 finally
 {
-    // Also true when a break leaves the stream before the reply ends.
+    // Also true when a break leaves the stream before the reply ends, or when the stream failed.
     if (chat.IsCancelled)
     {
         chat.Dispose();          // consumed by the cut
@@ -179,7 +179,7 @@ finally
     }
     else
     {
-        checkpoint.Dispose();    // the send completed: the checkpoint is not needed
+        checkpoint.Dispose();    // the conversation is intact: the checkpoint is not needed
     }
 }
 
@@ -199,19 +199,23 @@ chat.Dispose();
 - **The cut turn is not kept.** The checkpoint holds the conversation as it was before the send, so send the
   question again to get the answer; the partial text the stream produced is yours to show or discard.
 - **Don't repeat the cut message word for word on the GPU backend.** A clone shares its native state with the
-  conversation it came from until one of them diverges. On LiteRT-LM v0.18.0 and v0.19.0, on the GPU backend, if
-  the clone's first send repeats a message the original already processed, and another conversation generated
-  in between, the reply comes out wrong or empty, with no error. The CPU backend is not affected. Any other
-  token avoids it; whitespace does not, because the model's template trims it. Append a zero-width space
-  (`"\u200B"`) to the retried message, or reword it. The reply can differ from the one the original message
-  would have received.
+  conversation it came from, and with that conversation's other clones, until it diverges. On LiteRT-LM v0.18.0
+  and v0.19.0, on the GPU backend, if the clone's first send repeats a message any of them already processed,
+  and another conversation generated in between, the reply comes out wrong or empty, with no error. The CPU
+  backend was not affected in the same tests. Any other token avoids it; whitespace does not, because the
+  model's template trims it. Reword the retried message, or append one more zero-width space (`"\u200B"`) than the
+  earlier attempts had. The reply can differ from the one the original message would have received.
 - **Clone before, not after.** `Clone()` throws `InvalidOperationException` for a conversation whose send was
-  cut short, because the runtime would return an empty clone that also answers `CANCELLED`. The same holds
-  for a send that failed during generation, so take the checkpoint before the send. `Clone()` also needs a
-  conversation that has completed a send (see [Clone a conversation](#clone-a-conversation)).
+  cut short, because the runtime would return an empty clone that also answers `CANCELLED`. It also throws after
+  a stream that failed during generation. It cannot tell that a blocking send failed, and the clone it returns
+  then fails too, so take the checkpoint before the send. `Clone()` also needs a conversation that has completed
+  a send (see [Clone a conversation](#clone-a-conversation)).
+- **Inline attachments are copied.** The clone copies the message history, so an inline image or audio is copied
+  once per clone. A file-path attachment avoids that. This cost was not measured.
 - **Reasoning stays in a clone's context.** A clone does not carry the state that removes earlier
   reasoning from the KV cache (`FilterThinkingFromKvCache`), so on a reasoning conversation the earlier
-  reasoning stays in the clone's context.
+  reasoning stays in the clone's context. In the LiteRT-LM sources, with `UseRingbuffersLocalAttention` on the
+  next turns can also fail with `NOT_FOUND`; this was not measured.
 - **Same engine and process only.** To move a conversation to another engine, or across a restart, restore
   its turns through `History` instead.
 
@@ -234,8 +238,9 @@ Console.WriteLine(luxury.Send("Suggest a luxury itinerary.").Text);
 // baseChat is untouched; each clone advances on its own KV cache.
 ```
 
-Other good uses: checkpoint before a risky or expensive turn so you can retry from the checkpoint;
-A/B two sampler settings or two phrasings from the same context.
+Other good uses: checkpoint before a risky or expensive turn so you can retry from the checkpoint (reword
+the retry on the GPU backend, see [Continue after a cancellation](#continue-after-a-cancellation)); A/B two
+sampler settings or two phrasings from the same context.
 
 ### Caveats
 
@@ -266,7 +271,7 @@ A/B two sampler settings or two phrasings from the same context.
 | Seed a conversation with few-shot examples | `History` / `HistoryJson` | Re-prefills the examples |
 | Continue a chat after cancelling a send | `Clone()` before the send | Copies state, no re-prefill |
 | Branch a live conversation into variants | `Clone()` | Copies state, no re-prefill |
-| Checkpoint before a risky turn, then retry | `Clone()` | Copies state, no re-prefill |
+| Checkpoint before a risky turn, then retry | `Clone()` (reword the retry on the GPU backend) | Copies state, no re-prefill |
 
 The two compose: clone is the cheap same-process fork of live state, and the checkpoint that survives a
 cancellation; restore is the durable cross-session reload.

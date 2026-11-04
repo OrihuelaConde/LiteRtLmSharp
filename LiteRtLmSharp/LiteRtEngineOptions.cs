@@ -175,10 +175,12 @@ public sealed record LiteRtEngineOptions
     /// </para>
     /// <para>
     /// Each engine holds its own memory. On Windows a gemma-4 E2B engine commits about 2.3 GB of private memory
-    /// on CPU and 3.6 GB on GPU once loaded, while the working set of a CPU engine grows by about 0.35 GB,
-    /// because the weights are memory-mapped; on linux-x64 and the Android emulator each extra CPU engine took
-    /// 0.2 to 0.4 GB. Ten load and dispose cycles next to a live engine grew private memory by about 90 MB on
-    /// CPU and 135 MB on GPU (win-x64). Check free memory (on Windows, the commit limit) before loading another
+    /// on CPU and 3.6 GB on GPU once loaded, while right after loading the working set of a CPU engine grows by
+    /// about 0.35 GB, because the weights are memory-mapped; on linux-x64 and the Android emulator each extra CPU
+    /// engine took 0.2 to 0.4 GB. These figures are before generating: one engine alone reached 1.3 GB on win-x64
+    /// and 1.45 GB on the emulator after one short reply, and several generating engines were not measured. Over ten
+    /// load and dispose cycles next to a live engine, private memory ended about 90 MB higher on CPU and 135 MB on
+    /// GPU (win-x64), moving in both directions, so this does not show steady growth. Check free memory (on Windows, the commit limit) before loading another
     /// engine. On win-x64 GPU, test runs that load and dispose many engines in one process have ended a few
     /// times with the process exiting without an error; the project roadmap tracks it.
     /// </para>
@@ -214,8 +216,9 @@ public sealed record LiteRtEngineOptions
     /// </para>
     /// <para>
     /// In the LiteRT-LM v0.18.0 and v0.18.1 sources the main model verifies the drafted tokens greedily, so
-    /// with speculative decoding only the first token of each turn uses the conversation's sampler and the
-    /// rest of the reply is the argmax continuation (upstream changed this after v0.18.1).
+    /// with speculative decoding only the first token of each turn uses the conversation's sampler, and the
+    /// rest of the reply is decoded greedily (upstream changed this after v0.18.1). On the GPU backend the reply
+    /// can still differ from a plain argmax reply (measured on v0.18.0, win-x64).
     /// </para>
     /// </remarks>
     public bool EnableSpeculativeDecoding { get; init; }

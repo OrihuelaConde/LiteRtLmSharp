@@ -68,7 +68,8 @@ IChatClient client = serviceProvider.GetRequiredService<IChatClient>();
 ```
 
 `eager: true` on the options overload loads the weights at registration (so a bad model path/backend throws
-there) instead of lazily on first use.
+there) instead of lazily on first use. It has no effect when an earlier registration from equal options already
+provides the engine, and an eager engine that is never resolved lives until the process ends.
 
 To register several models side by side, for example one per agent, give each one a key. Keys registered
 from equal options share one engine; different options load one engine each, so load every one of them with
@@ -89,8 +90,10 @@ IChatClient smart = serviceProvider.GetRequiredKeyedService<IChatClient>("smart"
 
 Registering again under the same key, or without a key, with the same engine or equal options is a no-op;
 a different engine or different options under that key throw `InvalidOperationException` instead of being
-ignored. A key's engine is registered under the same key, so resolve it with
-`GetRequiredKeyedService<LiteRtEngine>("smart")`, for example to call `Tokenize`.
+ignored. An `IChatClient` or `LiteRtEngine` you registered yourself under the same key stays in charge. A key
+registered from options has its engine under the same key, so resolve it with
+`GetRequiredKeyedService<LiteRtEngine>("smart")`, for example to call `Tokenize`. Keys that share an engine also
+share a LoRA adapter one of them sets in its template, because an adapter applies to the whole engine.
 
 ## Use with Microsoft Agent Framework
 
@@ -104,9 +107,14 @@ AgentResponse reply = await agent.RunAsync("What can you do?");
 ```
 
 With [stateful conversations](#stateful-conversations-opt-in) enabled, an agent session keeps the
-`ConversationId` the client returns. A cancelled or failed run leaves that id valid: the client rolls the
-conversation back to the turn before the run, tool rounds included, which is also what the session keeps.
-The conversation lives in memory, so the session does not survive a process restart; to persist sessions,
+`ConversationId` the client returns. A run cancelled or failed during a send leaves that id valid: the client
+rolls the conversation back to the turn before the run, tool rounds included, which is also what the session
+keeps. That doesn't hold in the cases listed under
+[Lifetime and eviction](#stateful-conversations-opt-in), which include the `EnableConstrainedDecoding` recommended
+for tools: there the id is evicted and the session must start over, unless you set
+`LiteRtStatefulConversationOptions.CheckpointConstrainedConversations`, which costs about a second per turn. A run that ends between sends, for example
+cancelled while a tool runs, leaves its turn in the conversation until the same message is sent again. The
+conversation lives in memory, so the session does not survive a process restart; to persist sessions,
 use the default stateless mode, where Agent Framework keeps the messages.
 
 ## Use with the Microsoft.Extensions.AI pipeline
@@ -378,15 +386,21 @@ Lifetime and eviction:
 - a **cancelled or failed send on a continuation keeps the id valid**: before each turn the client takes a
   `Clone()` checkpoint and, if a send of that turn does not complete, puts it back under the same id. The
   whole turn is discarded, its user message and the tool rounds of a function-invocation loop, so re-send the
-  message to get the answer. The client appends a zero-width space to a message that repeats the discarded
-  one, because on the GPU backend the runtime can otherwise give a wrong or empty reply (see
+  message to get the answer; tool results sent for its calls throw `ArgumentException`. The client appends
+  a zero-width space to a message that repeats the discarded one, because on the GPU backend the runtime can
+  otherwise give a wrong or empty reply (see
   [Continue after a cancellation](conversation-state.md#continue-after-a-cancellation)), so the reply can differ
-  from the one the model would otherwise give. A stream that you stop reading after the model finished its reply, for example
-  at its tool calls, keeps the turn. The checkpoint costs no measurable time or memory until it is used;
-- three cases still **evict** the id: a cancelled or failed **first** call, which has nothing to roll back
-  to (even when stream updates already carried its id); a conversation with constrained decoding or a
-  constraint provider, where a clone rebuilds the constraints (about a second on LiteRT-LM v0.18.0), so the
-  client takes no checkpoint; and a backend that cannot clone;
+  from the one the model would otherwise give. A stream that you stop reading after the model finished its reply,
+  for example at its tool calls, keeps the turn. The checkpoint costs no measurable time or memory until it is
+  used, on text conversations: inline attachments are copied once per checkpoint, which a file-path attachment
+  avoids;
+- the rollback needs a send in flight: a run that ends between sends, for example cancelled while a tool runs,
+  leaves its turn in the conversation until the same message is sent again;
+- some cases still **evict** the id: a cancelled or failed send of the turn that **started the conversation**,
+  tool rounds included, which has nothing to roll back to (even when stream updates already carried its id); a turn
+  started by tool results; a conversation with constrained decoding or a constraint provider, where a clone
+  rebuilds the constraints (about a second on LiteRT-LM v0.18.0), so the client takes no checkpoint unless you set
+  `CheckpointConstrainedConversations = true` and accept that cost on every turn; and a backend that cannot clone;
 - a rolled-back conversation does not remove earlier reasoning from its KV cache, so on a reasoning
   conversation that reasoning stays in its context;
 - disposing the client disposes every live conversation. There is no time-based expiry in this mode, so size
@@ -431,8 +445,9 @@ not measurable managed-side, so they get only the conversation-full check; leave
 attachments are in play). What happens to the live conversation depends on which rejection you got: a
 **"message doesn't fit"** rejection happens before any native work, so the conversation survives — retry
 the same `ConversationId` with a shorter message. A **"context is full"** rejection is terminal: the
-client evicts the live conversation (resuming its id throws `ArgumentException`, like any evicted id; the
-checkpoint is not used, because it is just as full) —
+client evicts the live conversation (resuming its id throws `ArgumentException`, like any evicted id; a checkpoint
+that is just as full is not used, and a tool round rejected this way rolls back to the checkpoint from before its
+turn when that one has room) —
 start a new conversation, carrying over a summary or a trimmed history if the thread must continue.
 
 You do not have to wait for that exception to find out: **a reply that filled the context carries
