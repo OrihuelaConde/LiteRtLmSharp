@@ -50,24 +50,29 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// client takes a <see cref="LiteRtConversation.Clone"/> checkpoint before each turn and, if a send of that
 /// turn does not complete, puts the checkpoint back under the same id. The whole turn is discarded, its user
 /// message and any tool rounds of a function-invocation loop (re-send the message to get the answer), so
-/// the conversation matches what Agent Framework keeps after a failed run. A stream the consumer stops
-/// reading after the model has finished its reply, for example at its tool calls, keeps the turn. Three cases
-/// still evict the id, so resuming it throws <see cref="ArgumentException"/>: a cancelled or failed first
-/// call (it has nothing to roll back to, even when stream updates already carried its id), a conversation
-/// with constrained decoding or a constraint provider (cloning one rebuilds its constraints, about a second on
-/// LiteRT-LM v0.18.0, so the client takes no checkpoint), and a backend that cannot clone. A rolled-back
-/// conversation does not remove earlier reasoning from its KV cache
+/// the conversation matches what Agent Framework keeps after a failed run, and tool results sent for its calls
+/// throw <see cref="ArgumentException"/>. The rollback needs a send in flight: a run that ends between sends, for
+/// example cancelled while a tool runs, leaves its turn in the conversation until the same message is sent
+/// again. A stream the consumer stops reading after the model has finished its reply, for example at its tool
+/// calls, keeps the turn. Some cases still evict the id, so resuming it throws
+/// <see cref="ArgumentException"/>: a cancelled or failed send of the turn that started the conversation, tool
+/// rounds included (it has nothing to roll back to, even when stream updates already carried its id); a turn
+/// started by tool results; a conversation with constrained decoding or a constraint provider (cloning one
+/// rebuilds its constraints, about a second on LiteRT-LM v0.18.0, so the client takes no checkpoint unless
+/// <see cref="CheckpointConstrainedConversations"/> is set); and a backend that cannot clone. A rolled-back conversation does not remove earlier reasoning from its KV cache
 /// (<see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/>). The checkpoint is a second native
-/// conversation outside <see cref="MaxLiveConversations"/>; it costs no measurable time or memory until it
-/// is used.
+/// conversation outside <see cref="MaxLiveConversations"/>. Measured on text conversations, it costs no
+/// measurable time or memory until it is used; the runtime's clone also copies the message history, so inline
+/// attachments are copied once per checkpoint, which a file-path attachment avoids.
 /// </para>
 /// <para>
 /// <b>Re-sending the cut message.</b> The client appends a zero-width space (U+200B) to a message that repeats
-/// the one rolled back, so the reply can differ from the one the model would otherwise give. On the GPU backend
-/// (LiteRT-LM v0.18.0 and v0.19.0), a checkpoint's first send that repeats that message word for word, after
-/// another conversation generated, otherwise gets a wrong or empty reply with no error. A first send on a
-/// <see cref="LiteRtConversationBranching.ForkAsync"/> branch has the same problem when it repeats a message
-/// the parent sent after the fork; the client does not change those.
+/// the one rolled back, one more each time it is cut again, so the reply can differ from the one the model would
+/// otherwise give. On the GPU backend (LiteRT-LM v0.18.0 and v0.19.0), a checkpoint's first send that repeats that
+/// message word for word, after another conversation generated, otherwise gets a wrong or empty reply with no
+/// error. A fork inherits this. A first send on a <see cref="LiteRtConversationBranching.ForkAsync"/> branch has
+/// the same problem when it repeats a message the parent or a sibling branch sent after the fork; the client does
+/// not change those.
 /// </para>
 /// <para>
 /// Disposing the client disposes all live conversations. There is no time-based expiry in this mode — size
@@ -127,4 +132,19 @@ public sealed record LiteRtStatefulConversationOptions
             _maxLiveConversations = value;
         }
     }
+
+    /// <summary>
+    /// Takes the checkpoint behind the rollback on conversations with constrained decoding or a constraint provider
+    /// too. Default <c>false</c>: a cancelled or failed send on such a conversation evicts its id, so resuming it
+    /// throws <see cref="ArgumentException"/> and the caller starts a new conversation.
+    /// </summary>
+    /// <remarks>
+    /// Cloning such a conversation rebuilds its constraints, which costs about 0.9 s with constrained decoding and
+    /// 1 s with the LlGuidance provider per clone (gemma-4 E2B, LiteRT-LM v0.18.0, win-x64, CPU and GPU), so with this
+    /// on, every turn takes that much longer, whether or not it is cancelled. Turn it on when a cancelled send has
+    /// to keep the conversation, for example an Agent Framework session whose user can stop a reply: the session
+    /// keeps its id after a failed run, so without this every later run on it throws. A slower device takes longer;
+    /// that cost was not measured.
+    /// </remarks>
+    public bool CheckpointConstrainedConversations { get; init; }
 }

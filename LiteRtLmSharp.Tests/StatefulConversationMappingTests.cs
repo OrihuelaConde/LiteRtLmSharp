@@ -147,6 +147,44 @@ public class StatefulConversationMappingTests
     // ─────────────────────── DI registration (Extensions.AI) ───────────────────────
 
     [Fact]
+    public void CutMessages_AreChanged_OneMoreZeroWidthSpacePerCut_UntilTheTurnEnds()
+    {
+        // Model-free: the entry's conversation is not used by this logic. The runtime problem this avoids is on the
+        // GPU backend, which most CI legs do not run.
+        var entry = new LiteRtConversationStore.Entry(null!);
+        Assert.Equal("hello", entry.AvoidRepeatingACutMessage("hello"));
+
+        entry.RecordCutMessage("hello");
+        Assert.Equal("hello\u200B", entry.AvoidRepeatingACutMessage("hello"));
+        Assert.Equal("  hello \u200B", entry.AvoidRepeatingACutMessage("  hello "));   // the template trims whitespace
+        Assert.Equal("other", entry.AvoidRepeatingACutMessage("other"));
+        Assert.Null(entry.AvoidRepeatingACutMessage(null));
+
+        entry.RecordCutMessage("hello");
+        Assert.Equal("hello\u200B\u200B", entry.AvoidRepeatingACutMessage("hello"));
+
+        var fork = new LiteRtConversationStore.Entry(null!);
+        fork.CopyRollbackStateFrom(entry);
+        Assert.Equal("hello\u200B\u200B", fork.AvoidRepeatingACutMessage("hello"));
+
+        entry.ClearCutMessages();
+        Assert.Equal("hello", entry.AvoidRepeatingACutMessage("hello"));
+    }
+
+    [Fact]
+    public void DiscardedToolCalls_AreForgotten_WhenALaterTurnMakesACallWithTheSameId()
+    {
+        var entry = new LiteRtConversationStore.Entry(null!);
+        entry.DiscardToolCalls(["get_weather_0"]);
+        Assert.True(entry.IsDiscardedToolCall("get_weather_0"));
+        Assert.False(entry.IsDiscardedToolCall("get_time_0"));
+        Assert.False(entry.IsDiscardedToolCall(null));
+
+        entry.RecordToolCall("get_weather_0", "get_weather");
+        Assert.False(entry.IsDiscardedToolCall("get_weather_0"));
+    }
+
+    [Fact]
     public void AddLiteRtChatClient_FromOptions_WithStateful_RegistersOneEngineAndClient()
     {
         var options = new LiteRtEngineOptions { ModelPath = "does-not-exist.litertlm" };

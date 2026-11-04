@@ -24,6 +24,7 @@ internal sealed class LiteRtConversationStore
         private static readonly IReadOnlyDictionary<string, string> Empty = new Dictionary<string, string>(0);
         private Dictionary<string, string>? _callIdToName;
         private Dictionary<string, int>? _cutMessages;
+        private HashSet<string>? _discardedCalls;
 
         public Entry(LiteRtConversation conversation) => Conversation = conversation;
 
@@ -37,8 +38,9 @@ internal sealed class LiteRtConversationStore
         public TurnCheckpoint? PendingTurn { get; set; }
 
         /// <summary>Whether cloning this conversation rebuilds its constraint machinery (it was created with
-        /// constrained decoding or a constraint provider): about a second per clone on LiteRT-LM v0.18.0, so the
-        /// client takes no checkpoint for it and a cancelled or failed send evicts it instead. Copied to forks.</summary>
+        /// constrained decoding or a constraint provider): about a second per clone on LiteRT-LM v0.18.0, so unless
+        /// <see cref="LiteRtStatefulConversationOptions.CheckpointConstrainedConversations"/> is set the client takes
+        /// no checkpoint for it and a cancelled or failed send evicts it instead. Copied to forks.</summary>
         public bool CloneIsSlow { get; set; }
 
         /// <summary>Whether the conversation was created with a custom constraint provider (LlGuidance),
@@ -50,7 +52,30 @@ internal sealed class LiteRtConversationStore
 
         /// <summary>Records a synthesized call id and the tool name it stands for (idempotent; last write wins).</summary>
         public void RecordToolCall(string callId, string name)
-            => (_callIdToName ??= new Dictionary<string, string>(StringComparer.Ordinal))[callId] = name;
+        {
+            (_callIdToName ??= new Dictionary<string, string>(StringComparer.Ordinal))[callId] = name;
+            _discardedCalls?.Remove(callId);
+        }
+
+        /// <summary>Marks the tool calls of a rolled-back turn, so results sent for them can be rejected instead of
+        /// reaching a conversation that never saw the call. A later call with the same id clears the mark: call
+        /// ids repeat across turns.</summary>
+        public void DiscardToolCalls(IEnumerable<string> callIds)
+            => (_discardedCalls ??= new HashSet<string>(StringComparer.Ordinal)).UnionWith(callIds);
+
+        /// <summary>Whether <paramref name="callId"/> belongs to a turn that was rolled back.</summary>
+        public bool IsDiscardedToolCall(string? callId)
+            => callId is not null && _discardedCalls is not null && _discardedCalls.Contains(callId);
+
+        /// <summary>Copies what a rollback left behind to a fork, which shares this conversation's native state: the
+        /// discarded tool calls and the cut messages.</summary>
+        public void CopyRollbackStateFrom(Entry source)
+        {
+            if (source._discardedCalls is not null)
+                _discardedCalls = new HashSet<string>(source._discardedCalls, StringComparer.Ordinal);
+            if (source._cutMessages is not null)
+                _cutMessages = new Dictionary<string, int>(source._cutMessages, StringComparer.Ordinal);
+        }
 
         /// <summary>Copies <paramref name="source"/>'s accumulated call-id → tool-name entries into this one
         /// (used when a fork inherits its parent's map so tool continuations keep resolving on the branch).
@@ -100,8 +125,9 @@ internal sealed class LiteRtConversationStore
                 ? userText + new string('\u200B', cuts)
                 : userText;
 
-        /// <summary>Forgets the rolled-back messages: a completed send separates the conversation's native state
-        /// from the cut conversation's.</summary>
+        /// <summary>Forgets the rolled-back messages when a turn ends: a completed send separates the conversation's
+        /// native state from the cut conversation's. A reply with tool calls does not, because the checkpoint its
+        /// turn keeps still shares that state.</summary>
         public void ClearCutMessages() => _cutMessages = null;
 
         /// <summary>Disposes the live conversation and the checkpoint of a turn in progress.</summary>
@@ -115,9 +141,13 @@ internal sealed class LiteRtConversationStore
 
     /// <summary>Where a stateful turn rolls back to if one of its sends is cancelled or fails: a clone of the
     /// conversation taken before the turn's first send, the tool-call map at that point, and the user message
-    /// that started the turn. The clone is <c>null</c> when the turn created the conversation or no checkpoint could
-    /// be taken; a failure then evicts the conversation.</summary>
-    internal sealed record TurnCheckpoint(LiteRtConversation? Checkpoint, IReadOnlyDictionary<string, string> ToolCalls, string? UserText);
+    /// that started the turn (<c>null</c> for a turn started by tool results). The clone is <c>null</c> when the turn
+    /// created the conversation or no checkpoint could be taken; a failure then evicts the conversation.</summary>
+    internal sealed record TurnCheckpoint(LiteRtConversation? Checkpoint, IReadOnlyDictionary<string, string> ToolCalls, string? UserText)
+    {
+        /// <summary>The ids of the tool calls the model made in this turn.</summary>
+        public HashSet<string> CallIds { get; } = new(StringComparer.Ordinal);
+    }
 
     private readonly int _capacity;
     private readonly Dictionary<string, LinkedListNode<KeyValuePair<string, Entry>>> _map;
