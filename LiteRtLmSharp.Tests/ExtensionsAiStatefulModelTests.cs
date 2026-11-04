@@ -244,6 +244,39 @@ public sealed class ExtensionsAiStatefulModelTests
     }
 
     /// <summary>
+    /// A fork taken after a rollback inherits what the rollback left behind: re-sending the cut message on the
+    /// branch, after another conversation generated, gets a real reply on the GPU backend too.
+    /// </summary>
+    [SkippableFact]
+    public async Task Stateful_ForkAfterARollback_GetsARealReply_WhenItResendsTheCutMessage()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
+        var greedy = new ChatOptions { TopK = 1, MaxOutputTokens = 32 };
+
+        string a = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is TANGERINE. Reply OK.")], greedy)).ConversationId!;
+        string b = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is COBALT. Reply OK.")], greedy)).ConversationId!;
+
+        await CutTurnAsync(client, a);
+        string fork = await branching.ForkAsync(a);
+        await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is my code word? One word.")],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = b });
+
+        ChatResponse retry = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, CountPrompt)],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = fork });
+        Assert.Contains("400", retry.Text, StringComparison.Ordinal);
+        Assert.Contains("401", retry.Text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// A first call has nothing to roll back to: an abandoned first stream evicts the id its updates already
     /// carried, and resuming that id says so.
     /// </summary>
@@ -423,12 +456,11 @@ public sealed class ExtensionsAiStatefulModelTests
     }
 
     /// <summary>
-    /// A tool round that completes ends the turn and releases its checkpoint; a tool round of the call that
-    /// started the conversation has nothing to roll back to, so cutting it evicts the id, which the caller of a
-    /// failed run never received.
+    /// A tool round that completes ends the turn; a tool round of the turn that started the conversation has
+    /// nothing to roll back to, so cutting it evicts the id.
     /// </summary>
     [SkippableFact]
-    public async Task Stateful_ToolRounds_ReleaseTheCheckpointWhenTheTurnEnds_AndEvictAFirstCallsTurnWhenCut()
+    public async Task Stateful_ToolRounds_EndTheTurn_AndEvictAFirstCallsTurnWhenCut()
     {
         Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
@@ -512,41 +544,6 @@ public sealed class ExtensionsAiStatefulModelTests
         Assert.NotNull(entry.PendingTurn);
         ChatResponse answer = await client.GetResponseAsync([ToolResult(fcc)], round);
         Assert.Equal(id, answer.ConversationId);
-    }
-
-    /// <summary>
-    /// A run that ended between sends, for example cancelled while a tool ran, leaves its turn pending. Sending the
-    /// same message again discards that turn, so the question is not repeated after an unanswered tool call.
-    /// </summary>
-    [SkippableFact]
-    public async Task Stateful_RetryingAMessage_WhoseToolCallWentUnanswered_RollsBackItsTurn()
-    {
-        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
-            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
-        Skip.If(Environment.GetEnvironmentVariable("LITERTLM_TEST_TOOLS") != "1",
-            "Set LITERTLM_TEST_TOOLS=1 (with a version-matched native binary) to run tool tests.");
-
-        using var engine = LiteRtEngine.Load(Options());
-        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
-
-        string id = (await client.GetResponseAsync(
-            [new ChatMessage(ChatRole.User, "Remember: my code word is JUNIPER. Reply OK.")],
-            new ChatOptions { Tools = [WeatherTool()], TopK = 1, MaxOutputTokens = 32 })).ConversationId!;
-        LiteRtConversationStore.Entry entry = client.Store!.Get(id)!;
-        int beforeTurn = entry.Conversation.TokenCount;
-
-        const string question = "What is the weather in Paris? Use the get_weather tool.";
-        var round = new ChatOptions { TopK = 1, MaxOutputTokens = 256, ConversationId = id };
-        ChatResponse call = await client.GetResponseAsync([new ChatMessage(ChatRole.User, question)], round);
-        Skip.If(!call.Messages[^1].Contents.OfType<FunctionCallContent>().Any(), "The model answered without calling the tool on this platform.");
-
-        await client.GetResponseAsync([new ChatMessage(ChatRole.User, question)], new ChatOptions { TopK = 1, MaxOutputTokens = 1, ConversationId = id });
-
-        // The retry started from the state before the first attempt, so with a one-token reply the conversation
-        // holds less than the first attempt did, its tool call included. Without the rollback it would hold more.
-        int afterRetry = entry.Conversation.TokenCount;
-        Assert.True(afterRetry < call.Usage!.TotalTokenCount,
-            $"Expected the first attempt to be gone: {beforeTurn} before the turn, {call.Usage.TotalTokenCount} after it, {afterRetry} after the retry.");
     }
 
     /// <summary>The streaming counterpart: a continuation stream the consumer abandons rolls back too.</summary>

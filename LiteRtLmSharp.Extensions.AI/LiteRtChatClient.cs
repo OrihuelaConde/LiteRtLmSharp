@@ -288,35 +288,24 @@ public sealed class LiteRtChatClient : IChatClient
         // Continuation: resume the stored conversation; the incoming messages are only the new ones (the native
         // conversation already holds the prior turns), so map them without any history.
         LiteRtConversationStore.Entry found = _store!.Get(conversationId) ?? throw UnknownConversation(conversationId);
-        ThrowIfResultsOfADiscardedTurn(messages, found);
-        LiteRtChatMapping.SendTrigger contTrigger = LiteRtChatMapping.SplitContinuation(messages, found.CallIdToName);
-        RollBackARetriedTurn(conversationId, found, contTrigger);
+        IReadOnlyList<ChatMessage> list = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
+        ThrowIfResultsOfADiscardedTurn(list, found);
+        LiteRtChatMapping.SendTrigger contTrigger = LiteRtChatMapping.SplitContinuation(list, found.CallIdToName);
         return (found.Conversation, found, contTrigger, conversationId);
     }
 
     /// <summary>Rejects tool results for a call whose turn was rolled back: the conversation holds neither the
     /// question nor the call, so the model would answer without that context and nothing would report it.</summary>
-    private static void ThrowIfResultsOfADiscardedTurn(IEnumerable<ChatMessage> messages, LiteRtConversationStore.Entry entry)
+    internal static void ThrowIfResultsOfADiscardedTurn(IReadOnlyList<ChatMessage> messages, LiteRtConversationStore.Entry entry)
     {
-        foreach (ChatMessage message in messages)
-            foreach (FunctionResultContent result in message.Contents.OfType<FunctionResultContent>())
-                if (entry.IsDiscardedToolCall(result.CallId))
-                    throw new ArgumentException(
-                        $"The tool call '{result.CallId}' belongs to a turn that was cancelled or failed, and the client " +
-                        "discarded that turn, its question included. Send the user message again.", nameof(messages));
-    }
-
-    /// <summary>
-    /// Handles a run that ended between sends, for example cancelled while a tool ran, so that the client was never
-    /// told: its turn is still pending when the caller sends the same message again. That retry discards the
-    /// turn, as a cut during a send would, instead of repeating the question after an unanswered tool call.
-    /// </summary>
-    private void RollBackARetriedTurn(string id, LiteRtConversationStore.Entry entry, LiteRtChatMapping.SendTrigger trigger)
-    {
-        if (entry.PendingTurn is { Checkpoint.IsContextFull: false, UserText: not null } pending
-            && trigger.UserText is not null
-            && string.Equals(pending.UserText.Trim(), trigger.UserText.Trim(), StringComparison.Ordinal))
-            RecoverFailedTurn(id, entry, pending);
+        // Only the last message is sent; an earlier one is a resent history, which the mapping ignores.
+        if (messages.Count == 0 || messages[^1].Role != ChatRole.Tool)
+            return;
+        foreach (FunctionResultContent result in messages[^1].Contents.OfType<FunctionResultContent>())
+            if (entry.IsDiscardedToolCall(result.CallId))
+                throw new ArgumentException(
+                    $"The tool call '{result.CallId}' belongs to a turn that was cancelled or failed, and the client " +
+                    "discarded that turn, its question included. Send the user message again.", nameof(messages));
     }
 
     /// <summary>What a stateful send calls for each tool call in its reply.</summary>
@@ -701,10 +690,11 @@ public sealed class LiteRtChatClient : IChatClient
             : conv.SendStreamingAsync(trigger.UserText!, attachments: null, sendOptions, cancellationToken);
 
         int toolCallIndex = 0;   // monotonic across the whole stream so synthesized call ids stay unique
-        // Tool calls are yielded after the native stream ended. The runtime emits a call one decode step before the
-        // stop token, and a consumer that stops at the call (a manual tool loop, an approval flow) would otherwise
-        // cancel the generation and lose a turn it is about to answer.
-        List<ChatResponseUpdate>? toolCallUpdates = null;
+        // In the stateful mode, tool calls are yielded together after the native stream ended. The runtime emits a
+        // call before the stop token, and a consumer that stops at the call (a manual tool loop, an approval flow)
+        // would otherwise cancel the generation and lose a turn it is about to answer, or miss a later call.
+        List<AIContent>? heldToolCalls = null;
+        LiteRtStreamChunk? lastToolCallChunk = null;
         bool sawAnswer = false, sawReasoning = false, sawToolCall = false;
         await foreach (LiteRtStreamChunk chunk in stream.ConfigureAwait(false))
         {
@@ -721,14 +711,20 @@ public sealed class LiteRtChatClient : IChatClient
                     calls.Add(call);
                     onToolCall?.Invoke(call.CallId!, call.Name);
                 }
-                (toolCallUpdates ??= []).Add(new ChatResponseUpdate
+                if (onToolCall is not null)
+                {
+                    (heldToolCalls ??= []).AddRange(calls);
+                    lastToolCallChunk = chunk;
+                    continue;
+                }
+                yield return new ChatResponseUpdate
                 {
                     Role = ChatRole.Assistant,
                     Contents = calls,
                     ModelId = ModelId,
                     RawRepresentation = chunk,
                     FinishReason = ChatFinishReason.ToolCalls,
-                });
+                };
                 continue;
             }
 
@@ -761,9 +757,15 @@ public sealed class LiteRtChatClient : IChatClient
             }
         }
 
-        if (toolCallUpdates is not null)
-            foreach (ChatResponseUpdate update in toolCallUpdates)
-                yield return update;
+        if (heldToolCalls is not null)
+            yield return new ChatResponseUpdate
+            {
+                Role = ChatRole.Assistant,
+                Contents = heldToolCalls,
+                ModelId = ModelId,
+                RawRepresentation = lastToolCallChunk,
+                FinishReason = ChatFinishReason.ToolCalls,
+            };
 
         // Mirror GetResponseAsync: reasoning but no answer (and no tool call) means the reasoning consumed
         // the MaxOutputTokens budget before the answer began — emit a Length finish reason so an empty
@@ -922,7 +924,7 @@ public sealed class LiteRtChatClient : IChatClient
 
     /// <summary>The exception thrown when a request names a <c>ConversationId</c> the store does not hold —
     /// it was never issued by this client, or its conversation is gone: evicted by the LRU cap
-    /// (<see cref="LiteRtStatefulConversationOptions.MaxLiveConversations"/>), or evicted by a send rejected because
+    /// (<see cref="LiteRtStatefulConversationOptions.MaxLiveConversations"/>), or evicted by a send rejected because its context is full
     /// its context (or was cancelled or failed when no checkpoint could be taken).</summary>
     private static ArgumentException UnknownConversation(string conversationId)
         => new(

@@ -172,6 +172,21 @@ public class StatefulConversationMappingTests
     }
 
     [Fact]
+    public void DiscardedToolCalls_AreOnlyRejected_WhenTheyAreWhatTheSendWouldSend()
+    {
+        // The conversation is only reached after the check, and this client has no conversations to resume.
+        var results = new ChatMessage(ChatRole.Tool, (IList<AIContent>)[new FunctionResultContent("get_weather_0", "sunny")]);
+        var entry = new LiteRtConversationStore.Entry(null!);
+        entry.DiscardToolCalls(["get_weather_0"]);
+
+        var thrown = Assert.Throws<ArgumentException>(() => LiteRtChatClient.ThrowIfResultsOfADiscardedTurn([results], entry));
+        Assert.Contains("get_weather_0", thrown.Message, StringComparison.Ordinal);
+
+        // A resent history can still hold an old result with the same id; only the last message goes out.
+        LiteRtChatClient.ThrowIfResultsOfADiscardedTurn([results, new ChatMessage(ChatRole.User, "next")], entry);
+    }
+
+    [Fact]
     public void DiscardedToolCalls_AreForgotten_WhenALaterTurnMakesACallWithTheSameId()
     {
         var entry = new LiteRtConversationStore.Entry(null!);

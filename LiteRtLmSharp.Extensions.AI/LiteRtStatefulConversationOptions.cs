@@ -52,8 +52,7 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// message and any tool rounds of a function-invocation loop (re-send the message to get the answer), so
 /// the conversation matches what Agent Framework keeps after a failed run, and tool results sent for its calls
 /// throw <see cref="ArgumentException"/>. The rollback needs a send in flight: a run that ends between sends, for
-/// example cancelled while a tool runs, leaves its turn in the conversation until the same message is sent
-/// again. A stream the consumer stops reading after the model has finished its reply, for example at its tool
+/// example cancelled while a tool runs, leaves its turn in the conversation, as it always did. A stream the consumer stops reading after the model has finished its reply, for example at its tool
 /// calls, keeps the turn. Some cases still evict the id, so resuming it throws
 /// <see cref="ArgumentException"/>: a cancelled or failed send of the turn that started the conversation, tool
 /// rounds included (it has nothing to roll back to, even when stream updates already carried its id); a turn
@@ -97,8 +96,9 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// overriding <see cref="ChatFinishReason.ToolCalls"/> — a full conversation cannot be continued, so treat
 /// <c>Length</c> as "this thread is over"). A "message doesn't fit" rejection happens before any native
 /// work and <b>keeps the live conversation resumable</b> — retry the id with a shorter message; a "context
-/// is full" rejection is terminal and evicts it — resuming its id then throws
-/// <see cref="ArgumentException"/>; start a new conversation, summarizing or trimming what must carry over.
+/// is full" rejection evicts it, so resuming its id throws <see cref="ArgumentException"/> and you start a new
+/// conversation, summarizing or trimming what must carry over. The exception is a tool round whose turn has a
+/// checkpoint with room: the turn rolls back and the id stays valid.
 /// </para>
 /// </remarks>
 public sealed record LiteRtStatefulConversationOptions
