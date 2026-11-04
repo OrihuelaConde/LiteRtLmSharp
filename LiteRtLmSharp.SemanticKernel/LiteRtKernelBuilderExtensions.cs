@@ -1,5 +1,6 @@
 using LiteRtLmSharp;
 using LiteRtLmSharp.Extensions.AI;
+using LiteRtLmSharp.SemanticKernel;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.SemanticKernel.ChatCompletion;
@@ -19,7 +20,10 @@ namespace Microsoft.SemanticKernel;
 /// loads/owns/disposes the engine). With a <c>serviceId</c>, the chat client (and, from options, its engine) is
 /// registered under that key, so several on-device models can be registered side by side: serviceIds from equal
 /// engine options share one engine, and different options load one engine each, so set
-/// <see cref="LiteRtEngineOptions.AllowMultipleEngines"/> on each of them.
+/// <see cref="LiteRtEngineOptions.AllowMultipleEngines"/> on each of them. Each engine loads when its service
+/// first runs, unless <c>eager</c> is set. A <see cref="LiteRtEngine"/> you registered without a key serves a
+/// serviceId from options, whatever the options say, and an <c>IChatClient</c> you registered under the serviceId
+/// stays in charge.
 /// </summary>
 public static class LiteRtKernelBuilderExtensions
 {
@@ -89,7 +93,7 @@ public static class LiteRtKernelBuilderExtensions
             services.AddKeyedLiteRtChatClient(serviceId, engine, modelId, optionsTemplate, statefulConversations);
             LiteRtChatClientServiceCollectionExtensions.AliasUnkeyed(services, serviceId);
         }
-        return RegisterChatCompletion(services, serviceId);
+        return RegisterChatCompletion(services, serviceId, modelId);
     }
 
     /// <inheritdoc cref="AddLiteRtChatCompletion(IKernelBuilder, LiteRtEngineOptions, string, string, bool, LiteRtConversationOptions, LiteRtStatefulConversationOptions)"/>
@@ -103,33 +107,40 @@ public static class LiteRtKernelBuilderExtensions
         }
         else
         {
-            services.AddKeyedLiteRtChatClient(serviceId, options, modelId, eager, optionsTemplate, statefulConversations);
+            LiteRtChatClientServiceCollectionExtensions.AddKeyedFromOptions(services, serviceId, options, modelId, eager, optionsTemplate, statefulConversations, reuseUnkeyedEngine: true);
             // The first serviceId's client (and engine) also stays available without a key, to Microsoft Agent
             // Framework / MEAI, as before keyed clients existed.
             LiteRtChatClientServiceCollectionExtensions.AliasUnkeyed(services, serviceId);
         }
-        return RegisterChatCompletion(services, serviceId);
+        return RegisterChatCompletion(services, serviceId, modelId);
     }
 
-    private static IServiceCollection RegisterChatCompletion(IServiceCollection services, string? serviceId)
+    private static IServiceCollection RegisterChatCompletion(IServiceCollection services, string? serviceId, string? modelId)
     {
         // Expose the registered LiteRtLmSharp IChatClient as a Semantic Kernel IChatCompletionService, wrapped
         // with MEAI's function-invocation middleware. Semantic Kernel's AsChatCompletionService adapter passes
         // the kernel's functions to the client as tools but does NOT run the auto-invoke loop itself, so
         // UseFunctionInvocation is what makes FunctionChoiceBehavior actually invoke the functions. It is a
         // no-op when a request carries no tools, so it is safe to apply unconditionally.
-        // A keyed service wraps the chat client registered under the same key.
-        static IChatCompletionService Factory(IServiceProvider sp, object? serviceKey) =>
-            (serviceKey is null ? sp.GetRequiredService<IChatClient>() : sp.GetRequiredKeyedService<IChatClient>(serviceKey))
-              .AsBuilder()
-              .UseFunctionInvocation()
-              .Build(sp)
-              .AsChatCompletionService(sp);
+        // A keyed service wraps the chat client registered under the same key, resolved on its first call: Semantic
+        // Kernel's default service selection resolves every registered service, and resolving a client loads its
+        // engine, so a prompt without a ServiceId would otherwise load the model of every serviceId.
+        static IChatClient WithFunctionInvocation(IChatClient client, IServiceProvider sp) =>
+            client.AsBuilder().UseFunctionInvocation().Build(sp);
 
         if (serviceId is null)
-            services.AddSingleton<IChatCompletionService>(sp => Factory(sp, null));
+        {
+            services.AddSingleton<IChatCompletionService>(sp =>
+                WithFunctionInvocation(sp.GetRequiredService<IChatClient>(), sp).AsChatCompletionService(sp));
+        }
         else
-            services.AddKeyedSingleton<IChatCompletionService>(serviceId, Factory);
+        {
+            services.AddKeyedSingleton<IChatCompletionService>(serviceId, (sp, key) =>
+                new DeferredChatClient(
+                    () => WithFunctionInvocation(sp.GetRequiredKeyedService<IChatClient>(key), sp),
+                    new ChatClientMetadata("litert-lm", null, modelId))
+                .AsChatCompletionService(sp));
+        }
         return services;
     }
 

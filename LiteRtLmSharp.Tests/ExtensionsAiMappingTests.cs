@@ -3,6 +3,7 @@ using System.Text.Json;
 using LiteRtLmSharp.Extensions.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Xunit;
 
 namespace LiteRtLmSharp.Tests;
@@ -189,22 +190,64 @@ public class ExtensionsAiMappingTests
     [Fact]
     public void ChatClientsFromEqualOptions_ShareTheFirstRegistrationsEngine()
     {
+        // The first registration's engine is the app's, so a load through a later key would name the missing path.
         var services = new ServiceCollection();
-        services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "shared.litertlm" });
-        services.AddKeyedLiteRtChatClient("chat", new LiteRtEngineOptions { ModelPath = "shared.litertlm" });
-        services.AddKeyedLiteRtChatClient("translate", new LiteRtEngineOptions { ModelPath = "shared.litertlm" });
+        services.AddSingleton<LiteRtEngine>(_ => throw new NotSupportedException("the first registration's engine"));
+        services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "shared-missing.litertlm" });
+        services.AddKeyedLiteRtChatClient("chat", new LiteRtEngineOptions { ModelPath = "shared-missing.litertlm" });
+        services.AddKeyedLiteRtChatClient("translate", new LiteRtEngineOptions { ModelPath = "shared-missing.litertlm" });
+        using ServiceProvider provider = services.BuildServiceProvider();
 
-        // Every key can resolve its engine, but only the first registration loads one.
         Assert.Equal(3, services.Count(d => d.ServiceType == typeof(LiteRtEngine)));
-        var loads = services
-            .Where(d => d.ServiceType == typeof(LiteRtChatClientServiceCollectionExtensions.ChatClientRegistration))
-            .ToDictionary(
-                d => d.ServiceKey ?? "(unkeyed)",
-                d => ((LiteRtChatClientServiceCollectionExtensions.ChatClientRegistration)
-                    (d.IsKeyedService ? d.KeyedImplementationInstance! : d.ImplementationInstance!)).LoadsEngine);
-        Assert.True(loads["(unkeyed)"]);
-        Assert.False(loads["chat"]);
-        Assert.False(loads["translate"]);
+        foreach (string key in new[] { "chat", "translate" })
+            Assert.Equal("the first registration's engine",
+                Assert.Throws<NotSupportedException>(() => provider.GetRequiredKeyedService<IChatClient>(key)).Message);
+    }
+
+    [Fact]
+    public void ReplacingARegistration_RegistersAgain_AfterTheClientWasRemoved()
+    {
+        var services = new ServiceCollection();
+        services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "a.litertlm" });
+        services.RemoveAll<IChatClient>();
+        services.RemoveAll<LiteRtEngine>();
+
+        services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "b.litertlm" });
+
+        Assert.Single(services, d => d.ServiceType == typeof(IChatClient));
+        Assert.Single(services, d => d.ServiceType == typeof(LiteRtEngine));
+    }
+
+    [Fact]
+    public void AddKeyedLiteRtChatClient_FromOptions_RejectsAnyKey()
+        => Assert.Throws<ArgumentException>(() => new ServiceCollection().AddKeyedLiteRtChatClient(
+            KeyedService.AnyKey, new LiteRtEngineOptions { ModelPath = "a.litertlm" }));
+
+    [Fact]
+    public void AnAliasOfAnInstanceYouOwn_IsNotDisposedByTheContainer()
+    {
+        // The unkeyed alias of a key whose client is an instance stays an instance, which the container does not own.
+        var services = new ServiceCollection();
+        var mine = new CountingChatClient();
+        services.AddKeyedSingleton<IChatClient>("local", mine);
+        services.AddKeyedLiteRtChatClient("local", new LiteRtEngineOptions { ModelPath = "local.litertlm" });
+        LiteRtChatClientServiceCollectionExtensions.AliasUnkeyed(services, "local");
+
+        using (ServiceProvider provider = services.BuildServiceProvider())
+            Assert.Same(mine, provider.GetRequiredService<IChatClient>());
+
+        Assert.Equal(0, mine.Disposed);
+    }
+
+    private sealed class CountingChatClient : IChatClient
+    {
+        public int Disposed { get; private set; }
+        public void Dispose() => Disposed++;
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
     }
 
     [Fact]
