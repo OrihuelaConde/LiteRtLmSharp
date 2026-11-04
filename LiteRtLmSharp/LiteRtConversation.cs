@@ -32,8 +32,8 @@ public sealed class LiteRtConversation : IDisposable
     private readonly SessionConfigHandle? _sessionConfig;
     // The engine this conversation was spawned from: carries the configured context limit
     // (MaxNumTokens, 0 = unknown) and the tokenizer the overflow guard measures prefill with.
-    // Inherited by Clone(). Conversations are documented to be disposed before their engine, so the
-    // guard treats a disposed engine as "cannot measure" rather than an error.
+    // Inherited by Clone(). The conversation holds a reference on the native engine, so the guard can
+    // measure even after the engine object was disposed.
     private readonly LiteRtEngine _engineOwner;
     // Image prefill budget (from LiteRtConversationOptions.VisualTokenBudget); 0 = engine default.
     // Applied per send by building a native optional-args object. Inherited by Clone().
@@ -358,7 +358,8 @@ public sealed class LiteRtConversation : IDisposable
     /// Whether a send on this conversation was cut short: a cancelled <c>SendAsync</c>, a stream abandoned
     /// before its reply ended, or <see cref="CancelProcess"/> during a send. The runtime then answers
     /// <c>CANCELLED</c> to every later send, and <see cref="Clone"/> refuses the conversation, so continue on a
-    /// checkpoint taken before the send, or on a new conversation.
+    /// checkpoint taken before the send, or on a new conversation. A stream that failed during generation counts
+    /// too, because the conversation is consumed the same way (its later sends fail with another status).
     /// </summary>
     /// <remarks>Decided by the outcome, not by the call: <see cref="CancelProcess"/> on an idle conversation,
     /// a cancelled token that lost the race to a completed send, and a stream left after its reply had already
@@ -457,14 +458,15 @@ public sealed class LiteRtConversation : IDisposable
     /// <c>CANCELLED</c> to every later send, and a clone taken after the cut does too, so this method refuses
     /// it. Take the clone <i>before</i> a send that might be cut, and continue on the clone if it is. The same
     /// applies to a send that failed during generation: the runtime keeps the failure for that conversation,
-    /// so clone before the send, not after it.
+    /// so clone before the send, not after it. This method cannot tell that a blocking send failed, and the clone
+    /// it returns then fails too.
     /// </para>
     /// <para>
     /// <b>Known issue on the GPU backend</b> (LiteRT-LM v0.18.0 and v0.19.0): a clone shares its native state with
-    /// its parent until one of them diverges. If the clone's first send repeats, word for word, a message the
-    /// parent already processed, and another conversation generated in between, the reply comes out wrong or
-    /// empty, with no error. Any other token avoids it, but whitespace does not, because the model's template
-    /// trims it: reword the message or append a zero-width space (U+200B).
+    /// its parent and its sibling clones until it diverges. If its first send repeats, word for word, a message
+    /// any of them already processed, and another conversation generated in between, the reply comes out wrong
+    /// or empty, with no error. Any other token avoids it, but whitespace does not, because the model's template
+    /// trims it: reword the message, or append one more zero-width space (U+200B) than the earlier attempts had.
     /// </para>
     /// <para>
     /// Creating the clone is lazy: it costs no measurable time or memory until the clone generates. A
@@ -493,8 +495,8 @@ public sealed class LiteRtConversation : IDisposable
         // on LiteRT-LM v0.18.0, CPU and GPU), so the checkpoint has to be taken before the send.
         if (_cancelled)
             throw new InvalidOperationException(
-                "Cannot clone a conversation whose send was cancelled: the runtime answers CANCELLED to every " +
-                "later send on it, and a clone of it does too. To continue after a cancellation, take the " +
+                "Cannot clone a conversation whose send was cut short: the runtime fails every later send on it, " +
+                "and a clone of it fails too. To continue after a cancellation, take the " +
                 "Clone() before the send that might be cut and continue on the clone, or restore the turns " +
                 "on a new conversation through LiteRtConversationOptions.History.");
         // Nothing prefilled yet: the native clone would copy an empty state and the branch silently drifts
@@ -744,11 +746,10 @@ public sealed class LiteRtConversation : IDisposable
                 return options;
             inputTokens = _engineOwner.CountTokens(rendered);
         }
-        catch (Exception e) when (e is LiteRtException or EntryPointNotFoundException or ObjectDisposedException)
+        catch (Exception e) when (e is LiteRtException or EntryPointNotFoundException)
         {
-            // Older natives without the render/tokenize entry points, a message shape the template cannot
-            // render, or an engine disposed out of order: the guard cannot measure, the hard stop above
-            // still protects the known-fatal state.
+            // Older natives without the render/tokenize entry points, or a message shape the template cannot
+            // render: the guard cannot measure, the hard stop above still protects the known-fatal state.
             return options;
         }
 
@@ -1281,8 +1282,10 @@ public sealed class LiteRtConversation : IDisposable
             {
                 // Cancel the native generation. When it already ended (the consumer stopped with chunks still
                 // buffered), the cancel changes nothing natively, so the outcome of the drain decides whether
-                // the conversation was consumed.
-                LiteRtLmNative.litert_lm_conversation_cancel_process(_conversation.Ptr);
+                // the conversation was consumed. A consumer that disposed the conversation in its loop body
+                // needs no cancel: the native delete waited for the generation, and the pointer is gone.
+                if (!_disposed)
+                    LiteRtLmNative.litert_lm_conversation_cancel_process(_conversation.Ptr);
                 bool cut = false;
                 try
                 {
@@ -1308,9 +1311,10 @@ public sealed class LiteRtConversation : IDisposable
                 // streams skip it — the conversation is consumed anyway.
                 CompleteCeilingProbe();
             }
-            else if (channel.Reader.Completion.Exception?.InnerException is LiteRtException { StatusCode: LiteRtStatusCode.Cancelled })
+            else
             {
-                // Cancelled from outside (CancelProcess on another thread): the conversation is consumed.
+                // Cancelled from outside (CancelProcess on another thread), or failed during generation: the
+                // conversation is consumed either way, as in the drain above.
                 _cancelled = true;
             }
             if (gcHandle.IsAllocated)

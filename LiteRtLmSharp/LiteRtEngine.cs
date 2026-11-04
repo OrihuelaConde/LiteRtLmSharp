@@ -24,11 +24,11 @@ public sealed class LiteRtEngine : IDisposable
     // (engine.close() + new Engine). Engines loaded with LiteRtEngineOptions.AllowMultipleEngines may
     // coexist with each other, never with one that did not opt in. The process-wide gate
     // (EngineLiveness.Default) is acquired here and released when the native engine is destroyed
-    // (EngineHandle.ReleaseHandle), so a forgotten/GC'd engine also frees its slot. NOTE: every conversation holds a
+    // (EngineHandle.ReleaseHandle), so a forgotten/GC'd engine also frees its slot. Every conversation holds a
     // strong reference to its engine (it needs the tokenizer and context limit for the KV overflow
-    // guard — and finalizing an engine whose native conversations are still alive would be a
-    // use-after-free anyway), so the GC recovery only applies once no conversation objects remain
-    // reachable either. Disposing conversations and the engine remains the contract.
+    // guard), and its native handle holds a reference on the engine's handle, so the native engine is
+    // deleted, and the slot freed, only after its last conversation is gone, whichever is disposed or
+    // finalized first. Disposing conversations and the engine remains the contract.
 
     private LiteRtEngine(EngineHandle engine, bool isMultimodal, int maxNumTokens, bool enableSpeculativeDecoding)
     {
@@ -59,7 +59,8 @@ public sealed class LiteRtEngine : IDisposable
     /// <summary>
     /// Gets how many chat engines are alive in this process: 0 or 1 unless the live engines were loaded
     /// with <see cref="LiteRtEngineOptions.AllowMultipleEngines"/>. A <see cref="LiteRtEmbeddingEngine"/> is
-    /// not counted.
+    /// not counted. A disposed engine counts until its last conversation is disposed too, because the native
+    /// engine lives until then.
     /// </summary>
     public static int LiveEngineCount => EngineLiveness.Default.LiveCount;
 
@@ -82,7 +83,8 @@ public sealed class LiteRtEngine : IDisposable
     /// </summary>
     /// <exception cref="ArgumentException">The model file does not exist.</exception>
     /// <exception cref="InvalidOperationException">Another chat engine is alive in this process, and this
-    /// engine or a live one was loaded without <see cref="LiteRtEngineOptions.AllowMultipleEngines"/>.</exception>
+    /// engine or a live one was loaded without <see cref="LiteRtEngineOptions.AllowMultipleEngines"/>. An engine
+    /// already disposed is still alive while one of its conversations is.</exception>
     /// <exception cref="DllNotFoundException">The native LiteRT-LM library could not be loaded; the
     /// message names the fix (the missing <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package, a runtime
     /// package for another architecture, or a missing system library).</exception>
@@ -299,12 +301,12 @@ public sealed class LiteRtEngine : IDisposable
 
     /// <summary>Counts <paramref name="text"/>'s tokens without materializing the id array — the native
     /// result already carries the count, so this skips the managed copy <see cref="Tokenize"/> pays.
-    /// Used by the KV overflow guard on every measured send.</summary>
+    /// Used by the KV overflow guard on every measured send. It does not check that this object is disposed:
+    /// the calling conversation holds a reference on the native engine, so the guard keeps working on a
+    /// conversation that outlives <see cref="Dispose"/>.</summary>
     /// <exception cref="LiteRtException">The native tokenizer call failed.</exception>
     internal int CountTokens(string text)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-
         NativeError.Clear();
         nint resultPtr = LiteRtLmNative.litert_lm_engine_tokenize(_engine.Ptr, text);
         if (resultPtr == nint.Zero)
@@ -389,13 +391,16 @@ public sealed class LiteRtEngine : IDisposable
     }
 
     /// <summary>Disposes the engine, freeing the native model weights and releasing the process-wide
-    /// one-engine slot so another model can be loaded. Dispose every conversation first.</summary>
+    /// one-engine slot so another model can be loaded. Dispose every conversation first: while one of them is
+    /// alive, the weights and the slot stay in use, <see cref="Load"/> refuses another engine unless both opted
+    /// in, and the last conversation releases them when it is disposed.</summary>
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         // Disposing the handle deletes the native engine and frees the one-engine slot
-        // (EngineHandle.ReleaseHandle → EngineLiveness.Default.Release), so a new engine can be loaded.
+        // (EngineHandle.ReleaseHandle → EngineLiveness.Default.Release), so a new engine can be loaded. A
+        // conversation still alive holds a reference on the handle and defers both until it is disposed.
         _engine.Dispose();
     }
 }

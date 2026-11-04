@@ -847,7 +847,8 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     {
         Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
-        var conv = _fixture.Engine.CreateConversation(
+        // Under using so a failed assert below cannot leave a conversation holding the engine's slot.
+        using var conv = _fixture.Engine.CreateConversation(
             new LiteRtConversationOptions { MaxOutputTokens = 512 });
 
         // Idle cancel is a no-op — must not fault the conversation or the send that follows.
@@ -887,7 +888,7 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         // Token cancellation mid-stream.
-        var conv = _fixture.Engine.CreateConversation();
+        using var conv = _fixture.Engine.CreateConversation();
         using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
         {
             await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>

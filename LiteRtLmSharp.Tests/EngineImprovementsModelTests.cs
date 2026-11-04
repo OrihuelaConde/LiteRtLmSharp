@@ -145,7 +145,7 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
 
     /// <summary>
     /// The cache is refreshed by every completed send, streaming included, and a clone starts with its
-    /// parent's count (it holds the same tokens), so its <see cref="LiteRtConversation.IsContextFull"/> agrees.
+    /// parent's count (it holds the same tokens).
     /// </summary>
     [SkippableFact]
     public async Task TokenCountCached_ShouldRefreshAfterAStream_AndCarryOverToAClone()
@@ -371,8 +371,8 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         int before = chat.TokenCountCached;
         await foreach (LiteRtStreamChunk _ in chat.SendStreamingAsync("Write one short sentence about the sea."))
         {
-            // The native reader queues behind the generation in flight, so the reply has ended after this read.
-            Assert.True(chat.TokenCount > before);
+            // Creating a conversation waits for the generation in flight, so the reply has ended after this.
+            using LiteRtConversation waited = engine.CreateConversation();
             break;
         }
 
@@ -394,7 +394,7 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         LiteRtEngineOptions? options = Options();
         Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
-        var engine = LiteRtEngine.Load(options);
+        using var engine = LiteRtEngine.Load(options);
         using var chat = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax, MaxOutputTokens = 16 });
         chat.Send(Fact);
 
@@ -407,6 +407,50 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         Assert.Equal(1, LiteRtEngine.LiveEngineCount);
         clone.Dispose();
         Assert.Equal(0, LiteRtEngine.LiveEngineCount);
+    }
+
+    /// <summary>
+    /// The overflow guard keeps working on a conversation that outlives its engine object: the native engine is
+    /// still alive, so an oversized message is rejected up front and the conversation survives.
+    /// </summary>
+    [SkippableFact]
+    public void OverflowGuard_ShouldKeepMeasuring_AfterTheEngineObjectWasDisposed()
+    {
+        LiteRtEngineOptions? options = Options();
+        Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(options);
+        using var chat = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax, MaxOutputTokens = 16 });
+        chat.Send(Fact);
+        engine.Dispose();
+
+        string oversized = string.Join(" ", Enumerable.Repeat("many words that will not fit", 400));
+        Assert.Throws<LiteRtContextOverflowException>(() => chat.Send(oversized));
+        string cat = chat.Send("What is my cat called? One word.").Text ?? "";
+        Assert.Contains("Miso", cat, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// A consumer that disposes the conversation inside the read loop, then leaves the stream, must not make the
+    /// stream's teardown call into the deleted native conversation.
+    /// </summary>
+    [SkippableFact]
+    public async Task DisposingTheConversation_InsideTheReadLoop_ShouldNotCrashTheTeardown()
+    {
+        LiteRtEngineOptions? options = Options();
+        Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(options);
+        using var chat = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax, MaxOutputTokens = 64 });
+        await foreach (LiteRtStreamChunk _ in chat.SendStreamingAsync("Write one short sentence about the sea."))
+        {
+            chat.Dispose();
+            break;
+        }
+
+        // Reaching this point is most of the test: a call into the deleted conversation would take the process down.
+        using var fresh = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
+        Assert.False(string.IsNullOrWhiteSpace(fresh.Send("Reply with one short word: hello").Text));
     }
 
     /// <summary>
