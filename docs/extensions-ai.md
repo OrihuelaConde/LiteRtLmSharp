@@ -112,8 +112,8 @@ rolls the conversation back to the turn before the run, tool rounds included, wh
 keeps. That doesn't hold in the cases listed under
 [Lifetime and eviction](#stateful-conversations-opt-in), which include the `EnableConstrainedDecoding` recommended
 for tools: there the id is evicted and the session must start over, unless you set
-`LiteRtStatefulConversationOptions.CheckpointConstrainedConversations`, which costs about a second per turn. A run that ends between sends, for example
-cancelled while a tool runs, leaves its turn in the conversation until the same message is sent again. The
+`LiteRtStatefulConversationOptions.CheckpointConstrainedConversations`, which costs about a second per turn. A run
+that ends between sends, for example cancelled while a tool runs, leaves its turn in the conversation. The
 conversation lives in memory, so the session does not survive a process restart; to persist sessions,
 use the default stateless mode, where Agent Framework keeps the messages.
 
@@ -395,7 +395,7 @@ Lifetime and eviction:
   used, on text conversations: inline attachments are copied once per checkpoint, which a file-path attachment
   avoids;
 - the rollback needs a send in flight: a run that ends between sends, for example cancelled while a tool runs,
-  leaves its turn in the conversation until the same message is sent again;
+  leaves its turn in the conversation;
 - some cases still **evict** the id: a cancelled or failed send of the turn that **started the conversation**,
   tool rounds included, which has nothing to roll back to (even when stream updates already carried its id); a turn
   started by tool results; a conversation with constrained decoding or a constraint provider, where a clone

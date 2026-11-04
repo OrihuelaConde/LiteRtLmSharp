@@ -179,8 +179,8 @@ public sealed record LiteRtEngineOptions
     /// about 0.35 GB, because the weights are memory-mapped; on linux-x64 and the Android emulator each extra CPU
     /// engine took 0.2 to 0.4 GB. These figures are before generating: one engine alone reached 1.3 GB on win-x64
     /// and 1.45 GB on the emulator after one short reply, and several generating engines were not measured. Over ten
-    /// load and dispose cycles next to a live engine, private memory ended about 90 MB higher on CPU and 135 MB on
-    /// GPU (win-x64), moving in both directions, so this does not show steady growth. Check free memory (on Windows, the commit limit) before loading another
+    /// load and dispose cycles next to a live engine, private memory ended about 90 MB higher on CPU and 215 to 250 MB
+    /// on GPU (win-x64), moving in both directions, so this does not show steady growth. Check free memory (on Windows, the commit limit) before loading another
     /// engine. On win-x64 GPU, test runs that load and dispose many engines in one process have ended a few
     /// times with the process exiting without an error; the project roadmap tracks it.
     /// </para>

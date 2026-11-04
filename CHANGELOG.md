@@ -46,7 +46,7 @@ short for an application that shares one model between live translation, chat an
 - **`IsContextFull` reads the cached token count** (see `TokenCountCached`), so it never waits behind a
   generation on another conversation. It is exact after each completed send.
 - **`LiteRtConversation.Clone()` throws `InvalidOperationException` for a conversation whose send was cut
-  short**: the runtime would return an empty clone that also answers `CANCELLED`. To continue after a
+  short** or whose stream failed: the runtime would return an empty clone that also answers `CANCELLED`. To continue after a
   cancellation, take the clone before the send, as the
   [conversation-state guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html) shows. The
   guide also covers a runtime problem on the GPU backend: a clone's first send that repeats a message the
@@ -55,8 +55,8 @@ short for an application that shares one model between live translation, chat an
   continuation whose send is cancelled or fails rolls back to a `Clone()` checkpoint taken before the turn, so
   its id stays valid and the whole turn, tool rounds included, is discarded; before, the conversation was
   evicted. Agent Framework relies on this, since it keeps a session's id after a failed run. A run that ends
-  between sends, for example cancelled while a tool runs, keeps its turn until the same message is sent again.
-  Tool results for a discarded turn throw `ArgumentException`. A send rejected because the context is full
+  between sends, for example cancelled while a tool runs, keeps its turn, as before. Tool results for a discarded
+  turn throw `ArgumentException`. A send rejected because the context is full
   still evicts when the checkpoint is full too, and so do a cancelled or failed send of the turn that started the
   conversation, a turn started by tool results, a conversation with constrained decoding or a constraint
   provider (cloning one rebuilds its constraints, about a second per turn, so no checkpoint is taken unless you
@@ -64,14 +64,16 @@ short for an application that shares one model between live translation, chat an
   clone. A message that repeats the discarded one gets a zero-width space appended, because on the GPU
   backend the runtime can otherwise answer it with a wrong or empty reply.
 - **A stateful stream left after the reply ended keeps its turn.** Before, any stream not read to its end was
-  evicted. Tool calls now reach the stream after the native generation ended, one decode step later, so stopping
-  at a tool call keeps the turn.
+  evicted. In the stateful mode, a reply's tool calls now reach the stream together when the reply ends, after
+  any text in it, so stopping at them keeps the turn.
 - **Semantic Kernel registers a chat client per `serviceId`.** `AddLiteRtChatCompletion` with a `serviceId`
   registers its own chat client, and from options its engine, under that key; before, every `serviceId`
   wrapped the one unkeyed client and engine. Service ids from equal options still share one engine, and a
   `LiteRtEngine` you registered without a key still serves them. Service ids from different options now load one
   engine each (before, they silently used the first engine), so set `AllowMultipleEngines` on each; without it,
-  the first use of the second service throws. A `serviceId` no longer inherits the model id, template and stateful
+  the first use of the second service throws. A service registered from options with a `serviceId` loads its
+  engine on its first call, not when it is resolved, so a bad path fails at that call unless you set `eager`. So
+  does one without a `serviceId`. A `serviceId` no longer inherits the model id, template and stateful
   settings of an earlier registration, and no longer goes through an `IChatClient` registered without a key; one
   registered under the `serviceId` stays in charge instead. The first keyed client, and from options its engine,
   are also registered without a key when nothing else is.

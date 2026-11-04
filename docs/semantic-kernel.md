@@ -53,10 +53,14 @@ that key, so two on-device models can sit side by side. Service ids registered f
 engine; different options load one engine each, so load each of them with `AllowMultipleEngines = true`. The
 first keyed client, and from options its engine, are also the unkeyed `IChatClient` and `LiteRtEngine` when
 none is registered, and a later unkeyed registration from different settings then throws
-`InvalidOperationException` instead of being ignored; register the unkeyed client first to avoid that. Each engine
-loads when its service first runs, also on a prompt with no `ServiceId`, which uses the last registered service. A
-`LiteRtEngine` you registered without a key serves a `serviceId` from options, whatever the options say, and an
-`IChatClient` you registered under the `serviceId` stays in charge.
+`InvalidOperationException` instead of being ignored; register the unkeyed client first to avoid that. Services
+registered from options load their engine when they first run, also on a prompt with no `ServiceId`, which uses the
+last registered service, so a bad path fails at that call; `eager: true` loads ahead of time and has no effect when
+an engine from equal options, or one you registered, already serves the service. An eager engine that is never
+resolved lives until the process ends. A `LiteRtEngine` you registered without a key, before these calls, serves
+every `serviceId` from options, whatever the options say. An `IChatClient` you registered under the `serviceId`
+stays in charge. Service ids that share an engine also share a LoRA adapter one of them sets in its template,
+because an adapter applies to the whole engine.
 
 ### Chat with history (streaming)
 

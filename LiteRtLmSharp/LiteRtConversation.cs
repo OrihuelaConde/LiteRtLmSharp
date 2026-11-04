@@ -358,8 +358,9 @@ public sealed class LiteRtConversation : IDisposable
     /// Whether a send on this conversation was cut short: a cancelled <c>SendAsync</c>, a stream abandoned
     /// before its reply ended, or <see cref="CancelProcess"/> during a send. The runtime then answers
     /// <c>CANCELLED</c> to every later send, and <see cref="Clone"/> refuses the conversation, so continue on a
-    /// checkpoint taken before the send, or on a new conversation. A stream that failed during generation counts
-    /// too, because the conversation is consumed the same way (its later sends fail with another status).
+    /// checkpoint taken before the send, or on a new conversation. A stream that failed for any other reason
+    /// counts too, because a failure during generation consumes the conversation the same way (its later sends
+    /// fail with another status); this is the safe reading, and some failures may leave it usable.
     /// </summary>
     /// <remarks>Decided by the outcome, not by the call: <see cref="CancelProcess"/> on an idle conversation,
     /// a cancelled token that lost the race to a completed send, and a stream left after its reply had already
@@ -469,7 +470,8 @@ public sealed class LiteRtConversation : IDisposable
     /// trims it: reword the message, or append one more zero-width space (U+200B) than the earlier attempts had.
     /// </para>
     /// <para>
-    /// Creating the clone is lazy: it costs no measurable time or memory until the clone generates. A
+    /// Creating the clone is lazy: on text conversations it costs no measurable time or memory until the clone
+    /// generates. The runtime also copies the message history, so inline attachments are copied once per clone. A
     /// conversation with <see cref="LiteRtConversationOptions.EnableConstrainedDecoding"/> or a
     /// <see cref="LiteRtConversationOptions.ConstraintProvider"/> is the exception, because the runtime
     /// rebuilds the constraint machinery for the clone: about 0.9 s and 1 s per clone on gemma-4 E2B

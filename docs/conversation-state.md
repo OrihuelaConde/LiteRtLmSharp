@@ -187,7 +187,10 @@ Console.WriteLine(chat.Send("What is my name?").Text);
 chat.Dispose();
 ```
 
-- **Cost:** creating the clone takes no measurable time or memory; it only costs memory once it generates.
+A failure other than a cut leaves this block with the exception, so dispose `chat` in your own error path too.
+
+- **Cost:** on a text conversation, creating the clone takes no measurable time or memory; it only costs memory
+  once it generates.
   Measured on LiteRT-LM v0.18.0 with gemma-4 E2B, a clone of a 2,300-token conversation holds about 36 MB on
   a desktop CPU and 60 to 100 MB on a desktop GPU once used. Continuing on it skips the replay a `History`
   restore pays: for a 310-token conversation, 0.3 s instead of 0.6 s on CPU, and 48 ms instead of 202 ms on
