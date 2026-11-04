@@ -70,8 +70,9 @@ IChatClient client = serviceProvider.GetRequiredService<IChatClient>();
 `eager: true` on the options overload loads the weights at registration (so a bad model path/backend throws
 there) instead of lazily on first use.
 
-To register several models side by side, for example one per agent, give each one a key. Each keyed client
-from options gets its own engine, so load every one of them with `AllowMultipleEngines`:
+To register several models side by side, for example one per agent, give each one a key. Keys registered
+from equal options share one engine; different options load one engine each, so load every one of them with
+`AllowMultipleEngines`:
 
 ```csharp
 services.AddKeyedLiteRtChatClient("fast", new LiteRtEngineOptions
@@ -87,7 +88,9 @@ IChatClient smart = serviceProvider.GetRequiredKeyedService<IChatClient>("smart"
 ```
 
 Registering again under the same key, or without a key, with the same engine or equal options is a no-op;
-a different engine or different options throw `InvalidOperationException` instead of being ignored.
+a different engine or different options under that key throw `InvalidOperationException` instead of being
+ignored. A key's engine is registered under the same key, so resolve it with
+`GetRequiredKeyedService<LiteRtEngine>("smart")`, for example to call `Tokenize`.
 
 ## Use with Microsoft Agent Framework
 
@@ -101,10 +104,10 @@ AgentResponse reply = await agent.RunAsync("What can you do?");
 ```
 
 With [stateful conversations](#stateful-conversations-opt-in) enabled, an agent session keeps the
-`ConversationId` the client returns. A cancelled run leaves that id valid (the client rolls the conversation
-back to the turn before the cut), but the conversation lives in memory, so the session does not survive a
-process restart; to persist sessions, use the default stateless mode, where Agent Framework keeps the
-messages.
+`ConversationId` the client returns. A cancelled or failed run leaves that id valid: the client rolls the
+conversation back to the turn before the run, tool rounds included, which is also what the session keeps.
+The conversation lives in memory, so the session does not survive a process restart; to persist sessions,
+use the default stateless mode, where Agent Framework keeps the messages.
 
 ## Use with the Microsoft.Extensions.AI pipeline
 
@@ -372,10 +375,17 @@ Lifetime and eviction:
 - creating a new conversation beyond the cap evicts and disposes the least-recently-used one;
 - a request whose `ConversationId` was evicted, or was never issued by this client, throws
   `ArgumentException`;
-- a **cancelled or failed send keeps the id valid**: before each continuation send the client takes a
-  `Clone()` checkpoint and, if the send does not complete, puts it back under the same id. The cut turn is
-  discarded, so re-send it to get the answer; in a function-invocation loop, the cancellation rolls back only
-  the round it interrupts. The checkpoint costs no measurable time or memory until it is used;
+- a **cancelled or failed send on a continuation keeps the id valid**: before each turn the client takes a
+  `Clone()` checkpoint and, if a send of that turn does not complete, puts it back under the same id. The
+  whole turn is discarded, its user message and the tool rounds of a function-invocation loop, so re-send the
+  message to get the answer. A stream that you stop reading after the model finished its reply, for example
+  at its tool calls, keeps the turn. The checkpoint costs no measurable time or memory until it is used;
+- three cases still **evict** the id: a cancelled or failed **first** call, which has nothing to roll back
+  to (even when stream updates already carried its id); a conversation with constrained decoding or a
+  constraint provider, where a clone rebuilds the constraints (about a second on LiteRT-LM v0.18.0), so the
+  client takes no checkpoint; and a backend that cannot clone;
+- a rolled-back conversation does not remove earlier reasoning from its KV cache, so on a reasoning
+  conversation that reasoning stays in its context;
 - disposing the client disposes every live conversation. There is no time-based expiry in this mode, so size
   the cap for your concurrency.
 
@@ -510,11 +520,14 @@ Options, task instructions and measurements are in the [Embeddings guide](embedd
   [`LiteRtConversation`](conversation-state.md) API directly.
 - **Serialized per engine.** Every client over one engine shares a gate, because the native runtime does not
   support two generations in flight on one engine and conversations are not thread-safe. Clients over different
-  engines (loaded with `AllowMultipleEngines`) do not wait for each other.
+  engines (loaded with `AllowMultipleEngines`) do not wait for each other. A stream holds the gate until you
+  read it to the end or dispose it, so calling any client over the same engine (or `ForkAsync`) from inside
+  the loop that reads the stream waits forever: finish or dispose the stream first.
 - **Engine ownership.** Pass a `LiteRtEngine` you own (you dispose it), or register from
   `LiteRtEngineOptions` so the container loads/owns/disposes the engine. The same
   `AddLiteRtChatClient(options)` registration makes the `IChatClient` available to MAF, Semantic Kernel and
-  plain MEAI at once.
+  plain MEAI at once. Disposing an engine while one of its conversations is alive is safe: the native engine
+  stays loaded until the last of them is disposed.
 - **Message roles.** `system` / `user` / `assistant` / `tool` are handled. The list must end with a user
   message, or a tool message (the function-calling continuation, appended by `UseFunctionInvocation()` /
   Semantic Kernel); the assistant tool-call turn is restored as history and the tool results are returned.

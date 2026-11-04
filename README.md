@@ -155,12 +155,14 @@ conversations** (MEAI `ConversationId`) are supported — see the
   again — same pattern as Google's Edge Gallery. An embedding engine (`LiteRtEmbeddingEngine`) does not
   count, so a chat model and an embedding model can stay loaded together. To keep several chat engines
   alive, load each of them with `AllowMultipleEngines = true` in `LiteRtEngineOptions`; an engine loaded
-  without it stays alone. Several engines were measured on win-x64 (CPU and GPU), linux-x64, osx-arm64 and
-  the Android emulator, but they only run in parallel on a desktop CPU, and each one holds its own memory
-  (about 2.3 GB per gemma-4 E2B engine on CPU), so check free memory before loading another one.
-- **Cancelled conversations are consumed.** After `CancelProcess()` the runtime answers every later send
-  with `CANCELLED`. To continue, take a `Clone()` before the send that might be cut and continue on the
-  clone — see the [conversation-state guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html).
+  without it stays alone. Several engines were measured on win-x64 (CPU and GPU), linux-x64 and the Android
+  emulator, but they only run in parallel on a desktop CPU, and each one holds its own memory (on Windows,
+  about 2.3 GB of committed memory per gemma-4 E2B engine on CPU), so check free memory before loading
+  another one. The `AllowMultipleEngines` docs list the measurements.
+- **A send that is cut short consumes its conversation.** After a cancelled send, an abandoned stream or
+  `CancelProcess()` during a send, the runtime answers every later send with `CANCELLED`. To continue, take a
+  `Clone()` before the send that might be cut and continue on the clone — see the
+  [conversation-state guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html).
 - **`MaxNumTokens`** is the total context window (prompt + response, across turns). Use >= 1024;
   too small can make blocking generation return nothing.
 - **Conversations are not thread-safe** — serialize sends per engine (the Microsoft.Extensions.AI

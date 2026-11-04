@@ -49,8 +49,11 @@ on first use. To use an engine you already loaded (and will dispose yourself), p
 `builder.AddLiteRtChatCompletion(engine, modelId: "gemma-4-E2B-it")`. Both overloads exist on `IKernelBuilder`
 and `IServiceCollection`, and take an optional `serviceId` for keyed registration (e.g. an on-device service
 alongside a cloud one). With a `serviceId`, the chat client, and from options its engine, are registered under
-that key, so two on-device models can sit side by side; load both with `AllowMultipleEngines = true`. The first
-keyed client is also the unkeyed `IChatClient` when none is registered.
+that key, so two on-device models can sit side by side. Service ids registered from equal options share one
+engine; different options load one engine each, so load each of them with `AllowMultipleEngines = true`. The
+first keyed client, and from options its engine, are also the unkeyed `IChatClient` and `LiteRtEngine` when
+none is registered, and a later unkeyed registration from different settings then throws
+`InvalidOperationException` instead of being ignored.
 
 ### Chat with history (streaming)
 

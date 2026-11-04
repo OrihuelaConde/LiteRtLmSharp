@@ -146,29 +146,41 @@ validated as a JSON array when the conversation is created and throws `ArgumentE
 
 ## Continue after a cancellation
 
-A cancelled conversation is **consumed**: after `CancelProcess()` (or a cancelled `SendAsync`, or an
-abandoned stream) the runtime answers every later send on it with `CANCELLED` (LiteRT-LM v0.16.0 and
-later; on v0.14.0 the send does not return). To continue, take a checkpoint with `Clone()` **before** the
-send that might be cut, and continue on the checkpoint if it is:
+A send that is cut short **consumes** its conversation: after a cancelled `SendAsync`, a stream abandoned
+before its reply ended, or `CancelProcess()` during a send, the runtime answers every later send on it with
+`CANCELLED` (LiteRT-LM v0.16.0 and later; on v0.14.0 the send does not return), and
+`IsCancelled` turns `true`. `CancelProcess()` on an idle conversation changes nothing. To continue, take a
+checkpoint with `Clone()` **before** the send that might be cut, and continue on the checkpoint if it is:
 
 ```csharp
 LiteRtConversation chat = engine.CreateConversation();
 chat.Send("My name is Ada. Remember it.");
 
-// Before a send that something more urgent might interrupt:
+// Before a send that something more urgent might interrupt, with cts.Cancel() or chat.CancelProcess():
 LiteRtConversation checkpoint = chat.Clone();
-using var cts = new CancellationTokenSource();   // something urgent calls cts.Cancel()
+using var cts = new CancellationTokenSource();
 try
 {
     await foreach (LiteRtStreamChunk chunk in chat.SendStreamingAsync("Write a long poem about trains.", cts.Token))
         if (chunk.Kind == LiteRtStreamChunkKind.Answer)
             Console.Write(chunk.Text);
-    checkpoint.Dispose();   // the send completed: the checkpoint is not needed
 }
-catch (OperationCanceledException)
+catch (Exception e) when (e is OperationCanceledException or LiteRtException { StatusCode: LiteRtStatusCode.Cancelled })
 {
-    chat.Dispose();         // consumed by the cancellation
-    chat = checkpoint;      // the conversation as it was before the cut turn
+    // cts.Cancel() surfaces as OperationCanceledException, CancelProcess() as LiteRtException.
+}
+finally
+{
+    // Also true when a break leaves the stream before the reply ends.
+    if (chat.IsCancelled)
+    {
+        chat.Dispose();          // consumed by the cut
+        chat = checkpoint;       // the conversation as it was before the cut turn
+    }
+    else
+    {
+        checkpoint.Dispose();    // the send completed: the checkpoint is not needed
+    }
 }
 
 Console.WriteLine(chat.Send("What is my name?").Text);
@@ -177,13 +189,22 @@ chat.Dispose();
 
 - **Cost:** creating the clone takes no measurable time or memory; it only costs memory once it generates.
   Measured on LiteRT-LM v0.18.0 with gemma-4 E2B, a clone of a 2,300-token conversation holds about 36 MB on
-  a desktop CPU once used, and continuing on it skips the replay a `History` restore pays: 0.3 s instead of
-  0.6 s on CPU, and 48 ms instead of 202 ms on GPU, for a 310-token conversation.
+  a desktop CPU and 60 to 100 MB on a desktop GPU once used. Continuing on it skips the replay a `History`
+  restore pays: for a 310-token conversation, 0.3 s instead of 0.6 s on CPU, and 48 ms instead of 202 ms on
+  GPU when nothing else generated in between. On the GPU, continuing after the original generated (the
+  cut send) also pays a conversation switch: about 0.3 to 0.6 s at 2,300 tokens, still less than a replay.
+- **Constrained conversations cost more.** On a conversation with `EnableConstrainedDecoding` or a
+  `ConstraintProvider`, the runtime rebuilds the constraints for the clone: about 0.9 s and 1 s per clone
+  (gemma-4 E2B, win-x64).
 - **The cut turn is not kept.** The checkpoint holds the conversation as it was before the send, so send the
   question again to get the answer; the partial text the stream produced is yours to show or discard.
 - **Clone before, not after.** `Clone()` throws `InvalidOperationException` for a conversation whose send was
-  cancelled, because the runtime would return an empty clone that also answers `CANCELLED`. `Clone()` also
-  needs a conversation that has completed a send (see [Clone a conversation](#clone-a-conversation)).
+  cut short, because the runtime would return an empty clone that also answers `CANCELLED`. The same holds
+  for a send that failed during generation, so take the checkpoint before the send. `Clone()` also needs a
+  conversation that has completed a send (see [Clone a conversation](#clone-a-conversation)).
+- **Reasoning stays in a clone's context.** A clone does not carry the state that removes earlier
+  reasoning from the KV cache (`FilterThinkingFromKvCache`), so on a reasoning conversation the earlier
+  reasoning stays in the clone's context.
 - **Same engine and process only.** To move a conversation to another engine, or across a restart, restore
   its turns through `History` instead.
 
