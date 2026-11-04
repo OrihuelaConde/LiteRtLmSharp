@@ -219,6 +219,33 @@ public class ExtensionsAiMappingTests
     }
 
     [Fact]
+    public void ReplacingARegistration_WorksWithEqualOptions_UnderAnotherKey_AndWithoutACycle()
+    {
+        // Equal options under another key, after everything was removed: a new registration, not an alias of the old.
+        var services = new ServiceCollection();
+        services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "o-missing.litertlm" });
+        services.RemoveAll<IChatClient>();
+        services.RemoveAll<LiteRtEngine>();
+        services.AddKeyedLiteRtChatClient("x", new LiteRtEngineOptions { ModelPath = "o-missing.litertlm" });
+        using (ServiceProvider provider = services.BuildServiceProvider())
+            Assert.Contains("o-missing.litertlm",
+                Assert.Throws<ArgumentException>(() => provider.GetRequiredKeyedService<IChatClient>("x")).Message);
+
+        // The key that provided a shared engine is replaced: it loads again, and the sharing key follows it. An alias
+        // back to the sharing key would be a cycle, which the container does not detect: its first resolve hangs.
+        services = new ServiceCollection();
+        services.AddKeyedLiteRtChatClient("a", new LiteRtEngineOptions { ModelPath = "o-missing.litertlm" });
+        services.AddKeyedLiteRtChatClient("b", new LiteRtEngineOptions { ModelPath = "o-missing.litertlm" });
+        foreach (ServiceDescriptor d in services.Where(d => Equals(d.ServiceKey, "a") && d.ServiceType != typeof(LiteRtChatClientServiceCollectionExtensions.ChatClientRegistration)).ToList())
+            services.Remove(d);
+        services.AddKeyedLiteRtChatClient("a", new LiteRtEngineOptions { ModelPath = "o-missing.litertlm" });
+        using ServiceProvider replaced = services.BuildServiceProvider();
+        var resolving = Task.Run(() => Assert.Throws<ArgumentException>(() => replaced.GetRequiredKeyedService<IChatClient>("b")));
+        Assert.True(resolving.Wait(TimeSpan.FromSeconds(30)), "Resolving the sharing key did not return: the aliases form a cycle.");
+        Assert.Contains("o-missing.litertlm", resolving.Result.Message);
+    }
+
+    [Fact]
     public void AddKeyedLiteRtChatClient_FromOptions_RejectsAnyKey()
         => Assert.Throws<ArgumentException>(() => new ServiceCollection().AddKeyedLiteRtChatClient(
             KeyedService.AnyKey, new LiteRtEngineOptions { ModelPath = "a.litertlm" }));

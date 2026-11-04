@@ -21,7 +21,8 @@ namespace Microsoft.Extensions.DependencyInjection;
 /// same key stays in charge. Registrations under different keys from equal engine options share one engine, so a
 /// model loads once, and a LoRA adapter one of them sets in its template applies to that whole engine (see
 /// <see cref="LiteRtConversationOptions.LoraPath"/>); registrations from different options load one engine each,
-/// so set <see cref="LiteRtEngineOptions.AllowMultipleEngines"/> on each of them.
+/// so set <see cref="LiteRtEngineOptions.AllowMultipleEngines"/> on each of them. Register an instance you own
+/// before these calls: the container disposes what a registration resolves through a factory.
 /// </remarks>
 public static class LiteRtChatClientServiceCollectionExtensions
 {
@@ -48,8 +49,8 @@ public static class LiteRtChatClientServiceCollectionExtensions
         LiteRtChatMapping.ValidateTemplate(optionsTemplate);   // fail at registration, not first use
         if (IsRegistered(services, serviceKey: null, engine, options: null))
             return services;
-        Register(services, serviceKey: null, _ => engine, modelId, optionsTemplate, statefulConversations);
-        Claim(services, serviceKey: null, new ChatClientRegistration(engine, Options: null));
+        bool ownsClient = Register(services, serviceKey: null, _ => engine, modelId, optionsTemplate, statefulConversations);
+        Claim(services, serviceKey: null, new ChatClientRegistration(engine, Options: null, modelId, ownsClient));
         return services;
     }
 
@@ -81,9 +82,9 @@ public static class LiteRtChatClientServiceCollectionExtensions
         LiteRtChatMapping.ValidateTemplate(optionsTemplate);   // fail at registration, not first use
         if (IsRegistered(services, serviceKey: null, engine: null, options))
             return services;
-        Func<IServiceProvider, LiteRtEngine> resolve = RegisterEngine(services, serviceKey: null, options, eager);
-        Register(services, serviceKey: null, resolve, modelId, optionsTemplate, statefulConversations);
-        Claim(services, serviceKey: null, new ChatClientRegistration(Engine: null, options));
+        Func<IServiceProvider, LiteRtEngine> resolve = RegisterEngine(services, serviceKey: null, options, eager, out bool sharesEngine);
+        bool ownsClient = Register(services, serviceKey: null, resolve, modelId, optionsTemplate, statefulConversations);
+        Claim(services, serviceKey: null, new ChatClientRegistration(Engine: null, options, modelId, ownsClient, sharesEngine));
         return services;
     }
 
@@ -111,8 +112,8 @@ public static class LiteRtChatClientServiceCollectionExtensions
         LiteRtChatMapping.ValidateTemplate(optionsTemplate);
         if (IsRegistered(services, serviceKey, engine, options: null))
             return services;
-        Register(services, serviceKey, _ => engine, modelId, optionsTemplate, statefulConversations);
-        Claim(services, serviceKey, new ChatClientRegistration(engine, Options: null));
+        bool ownsClient = Register(services, serviceKey, _ => engine, modelId, optionsTemplate, statefulConversations);
+        Claim(services, serviceKey, new ChatClientRegistration(engine, Options: null, modelId, ownsClient));
         return services;
     }
 
@@ -154,9 +155,9 @@ public static class LiteRtChatClientServiceCollectionExtensions
         ThrowIfAnyKey(serviceKey);
         if (IsRegistered(services, serviceKey, engine: null, options))
             return services;
-        Func<IServiceProvider, LiteRtEngine> resolve = RegisterEngine(services, serviceKey, options, eager, reuseUnkeyedEngine);
-        Register(services, serviceKey, resolve, modelId, optionsTemplate, statefulConversations);
-        Claim(services, serviceKey, new ChatClientRegistration(Engine: null, options));
+        Func<IServiceProvider, LiteRtEngine> resolve = RegisterEngine(services, serviceKey, options, eager, out bool sharesEngine, reuseUnkeyedEngine);
+        bool ownsClient = Register(services, serviceKey, resolve, modelId, optionsTemplate, statefulConversations);
+        Claim(services, serviceKey, new ChatClientRegistration(Engine: null, options, modelId, ownsClient, sharesEngine));
         return services;
     }
 
@@ -173,24 +174,17 @@ public static class LiteRtChatClientServiceCollectionExtensions
     /// Whether <paramref name="serviceKey"/> (or the unkeyed slot) already holds a chat client from the same
     /// engine, or from engine options equal field by field (a repeat is a no-op). Throws when it holds one from
     /// something different. Checked before anything is registered; the claim is recorded only once the
-    /// registration succeeded (<see cref="Claim"/>), so a failed eager load leaves the key free for a retry. A claim
-    /// whose client was removed from the collection no longer counts, so a host can replace a registration.
+    /// registration succeeded (<see cref="Claim"/>), so a failed eager load leaves the key free for a retry.
     /// </summary>
     private static bool IsRegistered(IServiceCollection services, object? serviceKey, LiteRtEngine? engine, LiteRtEngineOptions? options)
     {
+        RemoveStaleClaims(services);
         ChatClientRegistration? existing = Claims(services)
             .Where(c => Equals(c.Key, serviceKey))
             .Select(c => c.Registration)
             .FirstOrDefault();
         if (existing is null)
             return false;
-
-        if (!services.Any(d => d.ServiceType == typeof(IChatClient) && Equals(d.ServiceKey, serviceKey)))
-        {
-            ServiceDescriptor stale = services.First(d => d.ServiceType == typeof(ChatClientRegistration) && Equals(d.ServiceKey, serviceKey));
-            services.Remove(stale);
-            return false;
-        }
 
         bool same = engine is not null
             ? ReferenceEquals(existing.Engine, engine)
@@ -207,6 +201,21 @@ public static class LiteRtChatClientServiceCollectionExtensions
             "A LiteRtLmSharp chat client is already registered " + (serviceKey is null ? "without a key " : $"under '{serviceKey}' ") +
             "over a different engine or from different LiteRtEngineOptions. Register one chat client per key: " +
             "use AddKeyedLiteRtChatClient (or a Semantic Kernel serviceId) to run several models side by side.");
+    }
+
+    // A claim counts only while what it registered is there, so a host can replace a registration: with
+    // RemoveAll<IChatClient>() and RemoveAll<LiteRtEngine>() the keys are free again.
+    private static void RemoveStaleClaims(IServiceCollection services)
+    {
+        foreach (ServiceDescriptor claim in services.Where(d => d.ServiceType == typeof(ChatClientRegistration)).ToList())
+        {
+            var registration = (ChatClientRegistration)(claim.IsKeyedService ? claim.KeyedImplementationInstance! : claim.ImplementationInstance!);
+            bool hasClient = services.Any(d => d.ServiceType == typeof(IChatClient) && Equals(d.ServiceKey, claim.ServiceKey));
+            bool hasEngine = registration.Options is null
+                || services.Any(d => d.ServiceType == typeof(LiteRtEngine) && Equals(d.ServiceKey, claim.ServiceKey));
+            if (!hasClient || !hasEngine)
+                services.Remove(claim);
+        }
     }
 
     private static void Claim(IServiceCollection services, object? serviceKey, ChatClientRegistration registration)
@@ -239,25 +248,27 @@ public static class LiteRtChatClientServiceCollectionExtensions
     // loaded once. With reuseUnkeyedEngine (a Semantic Kernel serviceId), a LiteRtEngine the app registered
     // without a key is used, as before keyed clients existed. Otherwise the container loads, owns and disposes a
     // new engine.
-    private static Func<IServiceProvider, LiteRtEngine> RegisterEngine(IServiceCollection services, object? serviceKey, LiteRtEngineOptions options, bool eager, bool reuseUnkeyedEngine = false)
+    private static Func<IServiceProvider, LiteRtEngine> RegisterEngine(IServiceCollection services, object? serviceKey, LiteRtEngineOptions options, bool eager, out bool sharesEngine, bool reuseUnkeyedEngine = false)
     {
+        sharesEngine = false;
         Func<IServiceProvider, LiteRtEngine> resolve = sp => ResolveEngine(sp, serviceKey);
         if (services.Any(d => d.ServiceType == typeof(LiteRtEngine) && Equals(d.ServiceKey, serviceKey)))
             return resolve;
 
         (object? Key, ChatClientRegistration Registration) owner = Claims(services)
-            .FirstOrDefault(c => c.Registration.Options is { } other && SameEngineOptions(other, options));
+            .FirstOrDefault(c => c.Registration is { Options: not null, SharesEngine: false, AliasOf: null }
+                                 && SameEngineOptions(c.Registration.Options, options));
         if (owner.Registration is not null)
         {
             AddAlias<LiteRtEngine>(services, serviceKey, owner.Key);
+            sharesEngine = true;
             return resolve;
         }
 
-        if (reuseUnkeyedEngine
-            && services.Any(d => d.ServiceType == typeof(LiteRtEngine) && d.ServiceKey is null)
-            && !Claims(services).Any(c => c.Key is null && c.Registration.Options is not null))
+        if (reuseUnkeyedEngine && HasAppUnkeyedEngine(services))
         {
             AddAlias<LiteRtEngine>(services, serviceKey, targetKey: null);
+            sharesEngine = true;
             return resolve;
         }
 
@@ -265,11 +276,26 @@ public static class LiteRtChatClientServiceCollectionExtensions
         // Factory registrations: the container creates (or adopts) and disposes the engine once resolved.
         Func<IServiceProvider, LiteRtEngine> create = _ => preloaded ?? LiteRtEngine.Load(options);
         if (serviceKey is null)
+        {
             services.AddSingleton(create);
+            MarkLibraryEngine(services);
+        }
         else
+        {
             services.AddKeyedSingleton(serviceKey, (sp, _) => create(sp));
+        }
         return resolve;
     }
+
+    private static bool HasAppUnkeyedEngine(IServiceCollection services)
+    {
+        ServiceDescriptor? engine = services.LastOrDefault(d => d.ServiceType == typeof(LiteRtEngine) && d.ServiceKey is null);
+        return engine is not null
+               && !services.Any(d => d.ServiceType == typeof(LibraryEngine) && ReferenceEquals(((LibraryEngine)d.ImplementationInstance!).Descriptor, engine));
+    }
+
+    private static void MarkLibraryEngine(IServiceCollection services)
+        => services.AddSingleton(new LibraryEngine(services.Last(d => d.ServiceType == typeof(LiteRtEngine) && d.ServiceKey is null)));
 
     private static LiteRtEngine ResolveEngine(IServiceProvider sp, object? serviceKey)
         => serviceKey is null ? sp.GetRequiredService<LiteRtEngine>() : sp.GetRequiredKeyedService<LiteRtEngine>(serviceKey);
@@ -299,13 +325,16 @@ public static class LiteRtChatClientServiceCollectionExtensions
             services.AddKeyedSingleton<T>(aliasKey, (sp, _) => resolve(sp));
     }
 
-    private static void Register(IServiceCollection services, object? serviceKey, Func<IServiceProvider, LiteRtEngine> engine, string? modelId, LiteRtConversationOptions? optionsTemplate, LiteRtStatefulConversationOptions? statefulConversations)
+    // Returns whether the client was added: one you registered yourself under the same key, or none, stays in charge.
+    private static bool Register(IServiceCollection services, object? serviceKey, Func<IServiceProvider, LiteRtEngine> engine, string? modelId, LiteRtConversationOptions? optionsTemplate, LiteRtStatefulConversationOptions? statefulConversations)
     {
-        // TryAdd keeps an IChatClient you registered yourself (under the same key, or none) in charge.
+        if (services.Any(d => d.ServiceType == typeof(IChatClient) && Equals(d.ServiceKey, serviceKey)))
+            return false;
         if (serviceKey is null)
             services.TryAddSingleton<IChatClient>(sp => new LiteRtChatClient(engine(sp), modelId, optionsTemplate, statefulConversations));
         else
             services.TryAddKeyedSingleton<IChatClient>(serviceKey, (sp, _) => new LiteRtChatClient(engine(sp), modelId, optionsTemplate, statefulConversations));
+        return true;
     }
 
     /// <summary>
@@ -321,8 +350,11 @@ public static class LiteRtChatClientServiceCollectionExtensions
             return;
 
         ChatClientRegistration keyed = Claims(services).First(c => Equals(c.Key, serviceKey)).Registration;
-        if (keyed.Options is not null)
+        if (keyed.Options is not null && !services.Any(d => d.ServiceType == typeof(LiteRtEngine) && d.ServiceKey is null))
+        {
             AddAlias<LiteRtEngine>(services, aliasKey: null, serviceKey);
+            MarkLibraryEngine(services);
+        }
 
         // An unkeyed IChatClient you registered yourself stays in charge, and nothing claims the slot.
         if (services.Any(d => d.ServiceType == typeof(IChatClient) && d.ServiceKey is null))
@@ -331,7 +363,23 @@ public static class LiteRtChatClientServiceCollectionExtensions
         Claim(services, serviceKey: null, keyed with { AliasOf = serviceKey });
     }
 
-    /// <summary>Marks which engine or engine options a chat client was registered from, per key. On the unkeyed
-    /// slot, <paramref name="AliasOf"/> is the key whose client took it.</summary>
-    internal sealed record ChatClientRegistration(LiteRtEngine? Engine, LiteRtEngineOptions? Options, object? AliasOf = null);
+    /// <summary>Marks which engine or engine options a chat client was registered from, per key.
+    /// <paramref name="ModelId"/> is the id the client was created with. <paramref name="OwnsClient"/> is false when an
+    /// <see cref="IChatClient"/> you registered yourself stayed in charge of the key. <paramref name="SharesEngine"/>
+    /// is true when the key's engine is an alias of another key's, so it cannot provide the engine to others: that
+    /// keeps the aliases free of cycles. On the unkeyed slot, <paramref name="AliasOf"/> is the key whose client took
+    /// it.</summary>
+    internal sealed record ChatClientRegistration(LiteRtEngine? Engine, LiteRtEngineOptions? Options, string? ModelId, bool OwnsClient, bool SharesEngine = false, object? AliasOf = null);
+
+    /// <summary>Marks an unkeyed <see cref="LiteRtEngine"/> descriptor this library added, to tell it from one the app
+    /// registered.</summary>
+    private sealed record LibraryEngine(ServiceDescriptor Descriptor);
+
+    /// <summary>The settings of the chat client registered under <paramref name="serviceKey"/>, for the Semantic
+    /// Kernel registrations: whether resolving it would load an engine, and its model id.</summary>
+    internal static (bool LoadsEngine, string? ModelId) ClientSettings(IServiceCollection services, object? serviceKey)
+    {
+        ChatClientRegistration? registration = Claims(services).Where(c => Equals(c.Key, serviceKey)).Select(c => c.Registration).FirstOrDefault();
+        return registration is { Options: not null, OwnsClient: true } ? (true, registration.ModelId) : (false, null);
+    }
 }

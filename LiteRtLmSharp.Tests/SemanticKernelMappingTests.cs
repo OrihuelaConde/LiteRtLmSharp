@@ -4,6 +4,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
+using Microsoft.SemanticKernel.Services;
 using Xunit;
 
 namespace LiteRtLmSharp.Tests;
@@ -127,13 +128,13 @@ public class SemanticKernelMappingTests
     [Fact]
     public async Task AddChatCompletionWithTwoServiceIds_RoutesEachServiceToItsOwnEngine()
     {
-        // Resolving a service loads its engine, and Load names a missing model path before any native work.
         IKernelBuilder builder = Kernel.CreateBuilder();
         builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "e2b-missing.litertlm", AllowMultipleEngines = true }, serviceId: "fast");
         builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "e4b-missing.litertlm", AllowMultipleEngines = true }, serviceId: "smart");
         using ServiceProvider provider = builder.Services.BuildServiceProvider();
 
-        // Resolving a service loads nothing: Semantic Kernel's default selection resolves every registered one.
+        // Resolving a service loads nothing, because Semantic Kernel's default selection resolves every registered
+        // one. Its first call does, and a missing path names itself before any native work.
         var fast = provider.GetRequiredKeyedService<IChatCompletionService>("fast");
         var smart = provider.GetRequiredKeyedService<IChatCompletionService>("smart");
         var history = new ChatHistory();
@@ -171,6 +172,57 @@ public class SemanticKernelMappingTests
 
         Assert.Equal("the app's own engine",
             Assert.Throws<NotSupportedException>(() => provider.GetRequiredKeyedService<IChatClient>("local")).Message);
+    }
+
+    [Fact]
+    public void TwoServiceIds_NextToAnAppsOwnClient_EachLoadTheirOwnEngine()
+    {
+        // The unkeyed alias of the first serviceId's engine must not pass for an engine the app registered.
+        IKernelBuilder builder = Kernel.CreateBuilder();
+        builder.Services.AddSingleton<IChatClient>(_ => throw new NotSupportedException("the app's own client"));
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "fast-missing.litertlm", AllowMultipleEngines = true }, serviceId: "fast");
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "smart-missing.litertlm", AllowMultipleEngines = true }, serviceId: "smart");
+        using ServiceProvider provider = builder.Services.BuildServiceProvider();
+
+        Assert.Contains("smart-missing.litertlm",
+            Assert.Throws<ArgumentException>(() => provider.GetRequiredKeyedService<IChatClient>("smart")).Message);
+    }
+
+    [Fact]
+    public void AnEngineYouRegisteredWithoutAKey_ServesEveryLaterServiceId()
+    {
+        IKernelBuilder builder = Kernel.CreateBuilder();
+        builder.Services.AddSingleton<LiteRtEngine>(_ => throw new NotSupportedException("the app's own engine"));
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "a-missing.litertlm" }, serviceId: "a");
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "b-missing.litertlm" }, serviceId: "b");
+        using ServiceProvider provider = builder.Services.BuildServiceProvider();
+
+        foreach (string id in new[] { "a", "b" })
+            Assert.Equal("the app's own engine",
+                Assert.Throws<NotSupportedException>(() => provider.GetRequiredKeyedService<IChatClient>(id)).Message);
+    }
+
+    [Fact]
+    public async Task AUnkeyedService_DoesNotLoadItsEngine_OnAPromptThatRunsOnAnother()
+    {
+        IKernelBuilder builder = Kernel.CreateBuilder();
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "unkeyed-missing.litertlm", AllowMultipleEngines = true });
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "smart-missing.litertlm", AllowMultipleEngines = true }, serviceId: "smart");
+        Kernel kernel = builder.Build();
+
+        Exception failure = await Assert.ThrowsAnyAsync<Exception>(() => kernel.InvokePromptAsync("hi"));
+        Assert.DoesNotContain("unkeyed-missing.litertlm", failure.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AKeyedService_ReportsTheModelIdOfTheClientItRunsOn()
+    {
+        IKernelBuilder builder = Kernel.CreateBuilder();
+        builder.Services.AddKeyedLiteRtChatClient("a", new LiteRtEngineOptions { ModelPath = "a-missing.litertlm" }, modelId: "first");
+        builder.AddLiteRtChatCompletion(new LiteRtEngineOptions { ModelPath = "a-missing.litertlm" }, modelId: "second", serviceId: "a");
+        using ServiceProvider provider = builder.Services.BuildServiceProvider();
+
+        Assert.Equal("first", provider.GetRequiredKeyedService<IChatCompletionService>("a").GetModelId());
     }
 
     [Fact]
