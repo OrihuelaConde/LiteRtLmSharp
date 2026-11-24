@@ -489,8 +489,9 @@ public sealed class DecodingConnectorModelTests
 
     /// <summary>The experimental YNNPACK toggle reaches the engine settings. Only the
     /// linux-arm64 library carries the YNNPACK kernels: there an engine loaded with it on the CPU backend
-    /// creates and generates (CI's arm64 leg). The other official v0.18.0 libraries reject the flag at engine
-    /// creation with UNIMPLEMENTED (v0.16.0 ignored it), and the exception names the setting.</summary>
+    /// creates and generates (CI's arm64 leg). The other official libraries reject the flag at engine creation
+    /// with UNIMPLEMENTED (v0.18.0, and v0.20.0 measured on win-x64; v0.16.0 ignored it), and the exception names
+    /// the setting.</summary>
     [SkippableFact]
     public void EngineLoad_WithYnnpack_GeneratesOnLinuxArm64_AndIsRejectedElsewhere()
     {

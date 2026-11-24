@@ -1969,8 +1969,9 @@ public sealed class LoraTextAdapterTests
     }
 
     /// <summary>An adapter changes the deterministic (seed-0 default sampling) continuation of the same prompt,
-    /// and two different adapters change it differently. Each adapter gets an engine of its own, because the
-    /// runtime applies an adapter to the whole engine (pinned below). No explicit sampler: the default
+    /// and two different adapters change it differently. Each adapter gets an engine of its own, as LiteRT-LM
+    /// v0.18.0 applied an adapter to the whole engine (v0.20.0 applies it to its conversation only, pinned below).
+    /// No explicit sampler: the default
     /// sampling is deterministic (see <c>DecodingModelTests</c>).</summary>
     [SkippableFact]
     public void Lora_ValidTextAdapter_IsAppliedAndChangesGeneration()

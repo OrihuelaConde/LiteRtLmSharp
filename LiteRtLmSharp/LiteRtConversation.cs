@@ -350,7 +350,8 @@ public sealed class LiteRtConversation : IDisposable
     /// context is full and further generation degrades — manage history before that point. When the
     /// engine was loaded with an explicit <c>MaxNumTokens</c>, the send methods guard the limit and
     /// throw <see cref="LiteRtContextOverflowException"/> rather than let the runtime reject a send at the
-    /// end of the cache (a rejected prefill leaves the conversation failing every later send).
+    /// end of the cache (a rejected prefill leaves the conversation failing every later send; LiteRT-LM v0.20.0,
+    /// CPU, gemma-4 E2B; GPU not measured).
     /// </summary>
     /// <remarks>
     /// <b>This read is a native call and can block.</b> The C API reads the count through the engine, so it
@@ -937,7 +938,7 @@ public sealed class LiteRtConversation : IDisposable
         catch (LiteRtException)
         {
             // A failed render or tokenize, such as a message shape the template cannot render: the guard cannot
-            // measure, the hard stop above still protects the known-fatal state.
+            // measure, and the hard stop above still rejects a send on a full context, which the runtime would reject.
             return options;
         }
 
@@ -1036,7 +1037,8 @@ public sealed class LiteRtConversation : IDisposable
     /// </summary>
     /// <exception cref="LiteRtContextOverflowException">Sending would overflow the KV cache sized by
     /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> — the conversation is full (or the message's
-    /// prefill leaves no room to reply); the runtime would reject the send. Only thrown when
+    /// prefill leaves no room to reply); the runtime would reject the send (LiteRT-LM v0.20.0, CPU, gemma-4 E2B;
+    /// GPU not measured). Only thrown when
     /// the engine was loaded with an explicit <c>MaxNumTokens</c>. A send carrying media or a non-null
     /// <paramref name="extraContext"/> gets only the conversation-full check (its prefill cost is not
     /// measurable managed-side) — leave headroom under the limit for those.</exception>

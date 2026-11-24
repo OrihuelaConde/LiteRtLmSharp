@@ -2,16 +2,19 @@ namespace LiteRtLmSharp;
 
 /// <summary>
 /// Raised instead of letting a send run into the end of the conversation's KV cache, which is sized by
-/// <see cref="LiteRtEngineOptions.MaxNumTokens"/>. Without the guard, the runtime stops a reply at the limit
-/// and rejects the next send (<c>RESOURCE_EXHAUSTED</c>), and it rejects a send whose prefill lands in the
-/// last free entries (<c>FAILED_PRECONDITION</c>), after which every later send on that conversation fails
-/// (<c>INTERNAL: Task failed with state: 7.</c>); measured on LiteRT-LM v0.20.0, CPU, gemma-4 E2B. The binding
-/// throws this instead, before the conversation is lost.
+/// <see cref="LiteRtEngineOptions.MaxNumTokens"/>. Without the guard, the runtime stops a reply at the limit.
+/// When the context then stays full, it rejects the next send (<c>RESOURCE_EXHAUSTED</c>); a reply with
+/// thinking leaves room, because the runtime removes the thinking from the KV cache. A send whose prefill does
+/// not fit, or lands in the last free entries, is rejected (<c>RESOURCE_EXHAUSTED</c> or
+/// <c>FAILED_PRECONDITION</c>), and every later send on that conversation fails; measured on LiteRT-LM v0.20.0,
+/// CPU, gemma-4 E2B. The binding throws this instead, before the conversation is lost.
 /// </summary>
 /// <remarks>
 /// <para>Thrown by the send methods of <see cref="LiteRtConversation"/> when the engine was loaded
 /// with an explicit <see cref="LiteRtEngineOptions.MaxNumTokens"/> and either (a) the conversation's
-/// context is full (<see cref="LiteRtConversation.IsContextFull"/>: fewer than 128 entries left), or (b) the
+/// context is full (<see cref="LiteRtConversation.IsContextFull"/>: fewer than 128 entries left, or an earlier
+/// reply was detected to have filled it), which includes every send on an engine whose
+/// <c>MaxNumTokens</c> is under 128, or (b) the
 /// message's measured prefill cost leaves no room to decode a reply. Without an explicit
 /// <c>MaxNumTokens</c> the limit is internal to the engine and the guard is off.</para>
 /// <para>A conversation that hit the limit cannot continue: dispose it and start a fresh one — with a

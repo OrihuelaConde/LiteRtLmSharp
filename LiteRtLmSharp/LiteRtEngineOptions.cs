@@ -59,8 +59,9 @@ public sealed record LiteRtEngineOptions
     /// <b>multimodal</b> input leave room for the media on top of the text — an image expands to roughly
     /// 256 vision tokens — for which 4096 is a comfortable starting point.
     /// <para><b>Setting this also arms the binding's KV overflow guard.</b> Without it, the runtime stops a
-    /// reply at the limit and rejects later sends, and a send whose prefill lands in the last free entries
-    /// leaves the conversation failing every later send (measured on LiteRT-LM v0.20.0, CPU). With an explicit
+    /// reply at the limit and, when the context stays full, rejects later sends; a send whose prefill does not
+    /// fit, or lands in the last free entries, leaves the conversation failing every later send (measured on
+    /// LiteRT-LM v0.20.0, CPU, gemma-4 E2B; GPU not measured). With an explicit
     /// value here, the send methods instead clamp each reply to the remaining context and throw
     /// <see cref="LiteRtContextOverflowException"/> when the conversation is full. <b>The clamp cannot
     /// cover sends whose prefill cost is unmeasurable managed-side</b> — media attachments and
@@ -343,12 +344,11 @@ public sealed record LiteRtEngineOptions
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The adapter applies to the whole engine, not to one conversation (LiteRT-LM v0.18.0, measured on
-    /// CPU with upstream's LoRA test bundle): after a conversation with
-    /// <see cref="LiteRtConversationOptions.LoraPath"/> has generated, conversations without an adapter on
-    /// the same engine generate with it too, and while a conversation with an adapter exists, a send on one
-    /// without it fails with <see cref="LiteRtStatusCode.Internal"/>. Use one adapter per engine, and reload
-    /// the engine to switch adapters or to return to the base model.
+    /// The adapter applies to the conversation that sets <see cref="LiteRtConversationOptions.LoraPath"/> only
+    /// (LiteRT-LM v0.20.0, measured on CPU with upstream's LoRA test bundle): after it has generated, a
+    /// conversation without an adapter on the same engine generates the base model's text, and while it exists, a
+    /// conversation without an adapter still answers, blocking or streamed. LiteRT-LM v0.18.0 applied the adapter
+    /// to the whole engine instead.
     /// </para>
     /// <para>
     /// The published Gemma 4 bundles carry no LoRA slots (google-ai-edge/LiteRT-LM#3173): an adapter is
@@ -464,7 +464,8 @@ public sealed record LiteRtEngineOptions
     /// <remarks>
     /// Maps to <c>engine_settings_set_enable_ynnpack</c>. Of the official libraries, only linux-arm64 carries
     /// the YNNPACK kernels. Elsewhere, <c>true</c> makes <see cref="LiteRtEngine.Load"/> fail with
-    /// <see cref="LiteRtStatusCode.Unimplemented"/> (native v0.18.0; v0.16.0 ignored the flag). Measure any
+    /// <see cref="LiteRtStatusCode.Unimplemented"/> (native v0.18.0, and v0.20.0 measured on win-x64; v0.16.0
+    /// ignored the flag). Measure any
     /// speed-up on the target device rather than assume one.
     /// </remarks>
     public bool? EnableYnnpack { get; init; }
@@ -584,8 +585,8 @@ public sealed record LiteRtConversationOptions
     /// <see cref="Tools"/> are set so tool-call arguments parse reliably.
     /// </summary>
     /// <remarks>
-    /// Supported on every platform with the official LiteRT-LM v0.16.0 prebuilts, whose constraint
-    /// provider is embedded in the native library. Releases before 1.2.0 threw
+    /// The official LiteRT-LM prebuilts embed the constraint provider in the native library (from v0.16.0;
+    /// tool calls with it measured on LiteRT-LM v0.20.0, win-x64, CPU and GPU). Releases before 1.2.0 threw
     /// <see cref="PlatformNotSupportedException"/> on linux-x64, where the separately shipped
     /// provider crashed the process (google-ai-edge/LiteRT-LM#2149); that guard is gone. Tools also
     /// work with this left <c>false</c>; arguments are then not grammar-constrained.
@@ -732,9 +733,9 @@ public sealed record LiteRtConversationOptions
     /// <remarks>
     /// The native side opens the file when the conversation is created, so a missing or unreadable path
     /// fails fast with <see cref="LiteRtException"/> at <see cref="LiteRtEngine.CreateConversation"/>,
-    /// not silently at first send. Despite the per-conversation setting, the runtime applies the adapter to
-    /// the whole engine: see <see cref="LiteRtEngineOptions.LoraRank"/> for what that means and for the
-    /// published Gemma 4 bundles, which accept an adapter without effect (google-ai-edge/LiteRT-LM#3173).
+    /// not silently at first send. The adapter applies to this conversation only: see
+    /// <see cref="LiteRtEngineOptions.LoraRank"/> for what was measured and for the published Gemma 4 bundles,
+    /// which accept an adapter without effect (google-ai-edge/LiteRT-LM#3173).
     /// Maps to the C API <c>session_config_set_lora_path</c>.
     /// </remarks>
     public string? LoraPath { get; init; }
