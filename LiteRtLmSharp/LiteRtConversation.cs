@@ -455,8 +455,8 @@ public sealed class LiteRtConversation : IDisposable
     /// <para>Unlike <see cref="IsContextFull"/>, it does not mean that the next send fails. After a reply with
     /// thinking, the runtime removes the thinking from the KV cache, so the context has room again: this property
     /// is <c>true</c> and <see cref="IsContextFull"/> is <c>false</c>.</para>
-    /// <para>Each send that reaches the runtime resets it, including one the runtime then fails. A send that the
-    /// binding rejects before calling the runtime, such as one that throws
+    /// <para>Each send that reaches the runtime resets it. A send that the binding rejects before calling the
+    /// runtime, such as one that throws
     /// <see cref="LiteRtContextOverflowException"/>, leaves it as it was, as it leaves
     /// <see cref="LiteRtBenchmarkInfo.LastSendPrefillTokenCount"/>. A <see cref="Clone"/> starts at <c>false</c>.
     /// It stays <c>false</c> when the reply ended on its own, when a

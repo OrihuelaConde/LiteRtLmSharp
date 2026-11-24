@@ -487,7 +487,8 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
     /// <c>true</c> and the next send threw <see cref="LiteRtContextOverflowException"/>), so the context has room
     /// again and the next send passes the guard. <see cref="LiteRtConversation.LastReplyReachedContextLimit"/>
     /// still reports the cut (here from the tokenized reply, as benchmarking is off); a clone does not inherit it,
-    /// and the next send, which ends on its own under the caller's cap, clears it.</summary>
+    /// a send the binding rejects while it builds the per-send options leaves it, and the next send, which ends on
+    /// its own under the caller's cap, clears it.</summary>
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
@@ -529,6 +530,18 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
 
         using (LiteRtConversation clone = chat.Clone())
             Assert.False(clone.LastReplyReachedContextLimit);
+
+        // A send the binding rejects after the guard, while it builds the per-send options (a constraint on a
+        // conversation without a constraint provider), leaves the flag as it was.
+        var noProvider = new LiteRtSendOptions { Constraint = LiteRtConstraint.FromRegex("[a-z]+") };
+        if (stream)
+            await Assert.ThrowsAsync<LiteRtException>(async () =>
+            {
+                await foreach (LiteRtStreamChunk _ in chat.SendStreamingAsync("Reply with one word: OK", null, noProvider)) { }
+            });
+        else
+            Assert.Throws<LiteRtException>(() => chat.Send("Reply with one word: OK", attachments: null, noProvider));
+        Assert.True(chat.LastReplyReachedContextLimit, "a send the binding rejected cleared the flag");
 
         // A caller cap under the guard's budget arms no truncation check, so only the reset at the start of the
         // send can clear the flag. The cap is above what this reply decodes (about 150 tokens, mostly thinking).
