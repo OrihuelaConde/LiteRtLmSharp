@@ -34,8 +34,8 @@ internal static unsafe partial class LiteRtLmNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial LiteRtStatusCode litert_lm_engine_create_session(nint engine, nint config, nint* out_session);
 
-    /// <summary>Deletes the session. It waits for the session's tasks to end, so a decode still in progress
-    /// keeps it blocked until that decode stops. Never call it from a stream callback.</summary>
+    /// <summary>Destroys the session. Call it before the engine is deleted, and never from a stream
+    /// callback.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_session_delete(nint session);
@@ -49,8 +49,8 @@ internal static unsafe partial class LiteRtLmNative
 
     // --- Checkpoints and rewind -------------------------------------------
 
-    /// <summary>Saves the session's current point under <paramref name="label"/>, a NUL-terminated string
-    /// lent for the call; a label that exists already is overwritten. Fails with <c>INVALID_ARGUMENT</c> for
+    /// <summary>Saves the session's current state under <paramref name="label"/>, a NUL-terminated string
+    /// lent for the call. Fails with <c>INVALID_ARGUMENT</c> for
     /// a null session or label, otherwise with the runtime's error.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]

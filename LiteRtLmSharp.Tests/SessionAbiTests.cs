@@ -39,11 +39,13 @@ public sealed unsafe class SessionAbiTests(ITestOutputHelper output)
 
     private static string? LastMessage() => Marshal.PtrToStringUTF8(LiteRtLmNative.litert_lm_get_last_error_message());
 
-    /// <summary>The loaded library exports every session import.</summary>
+    /// <summary>The library the binding's resolver loaded exports every session import.</summary>
     [Fact]
     public void SessionImports_AreExported()
     {
-        nint library = NativeLibrary.Load(LiteRtLmNative.Library, typeof(LiteRtEngine).Assembly, searchPath: null);
+        NativeLibraryResolver.EnsureCompatible();
+        nint library = NativeLibraryResolver.LoadedHandle;
+        Assert.NotEqual(nint.Zero, library);
         string[] missing = SessionImports.Where(name => !NativeLibrary.TryGetExport(library, name, out _)).ToArray();
         Assert.Empty(missing);
     }
