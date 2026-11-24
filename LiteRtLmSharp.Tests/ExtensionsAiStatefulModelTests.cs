@@ -132,8 +132,9 @@ public sealed class ExtensionsAiStatefulModelTests
 
     private const string CountPrompt = "Count upward starting from 400, one number per line, and never stop.";
 
-    // Under constrained decoding, LiteRT-LM v0.20.0 ends a text reply at its first line break, so the cut of a
-    // constrained conversation counts on one line to keep generating past the cancellation.
+    // Under constrained decoding, LiteRT-LM v0.20.0 can end a text reply at its first line break (it depends on
+    // the machine), so the cut of a constrained conversation counts on one line to keep generating past the
+    // cancellation.
     private const string SingleLineCountPrompt =
         "Count upward starting from 400, separated by commas on a single line, and never stop.";
 

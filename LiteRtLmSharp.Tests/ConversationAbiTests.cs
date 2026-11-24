@@ -522,11 +522,12 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
         Assert.False(string.IsNullOrWhiteSpace(none.Send("Reply with one word: hello").Text));
     }
 
-    /// <summary>Under constrained decoding without tools, the runtime ends a text reply at its first line break
-    /// (LiteRT-LM v0.18.0 continued to the output cap): a one-number-per-line count stops after its first line,
-    /// while the same count on one line keeps going.</summary>
+    /// <summary>Under constrained decoding without tools, a text reply is still plain text. Where a
+    /// one-number-per-line count stops depends on the machine with LiteRT-LM v0.20.0: on some it ends at its first
+    /// line break (v0.18.0 continued to the output cap), on others it runs to the cap, so the test logs both
+    /// replies and asserts only how they start. The same count on one line keeps going everywhere measured.</summary>
     [SkippableFact]
-    public void ConstrainedDecoding_EndsATextReplyAtItsFirstLineBreak()
+    public void ConstrainedDecoding_WithoutTools_AnswersInText()
     {
         using LiteRtEngine engine = LoadEngine(2048);
         using var chat = engine.CreateConversation(new LiteRtConversationOptions
@@ -539,8 +540,9 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
         string lines = perLine.Send("Count upward starting from 400, one number per line, and never stop.").Text ?? "";
         string commas = oneLine.Send("Count upward starting from 400, separated by commas on a single line, and never stop.").Text ?? "";
         output.WriteLine($"per line '{lines}', one line '{commas}'");
-        Assert.Equal("400", lines.Trim());
-        Assert.StartsWith("400, 401, 402", commas, StringComparison.Ordinal);
+        Assert.StartsWith("400", lines.TrimStart(), StringComparison.Ordinal);
+        Assert.StartsWith("400", commas.TrimStart(), StringComparison.Ordinal);
+        Assert.Contains("401", commas, StringComparison.Ordinal);
     }
 
     /// <summary>A message whose prefill does not fit what is left of the context fails natively with
