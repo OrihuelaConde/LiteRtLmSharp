@@ -174,30 +174,29 @@ public sealed class LiteRtConversation : IDisposable
                             nameof(LiteRtLmNative.litert_lm_session_config_set_max_output_tokens));
 
                     // Unspecified = "let the engine choose": no sampler params are sent at all, so the
-                    // executor's internal default sampling applies — the same effective behavior as
-                    // 1.0.0/v0.13.1, where the native unspecified type made the sampler factory return
-                    // null (sampler_factory.cc CreateCpuSampler) and the numeric fields went unused.
-                    // v0.14.0 removed the native unspecified member, so "don't set" is the only faithful
-                    // mapping; forcing TopP here would switch CPU decoding to an explicit top-p sampler.
+                    // engine's own default sampling applies and the record's numeric fields go unused.
+                    // The C API also declares an unspecified type (0), but sending it would carry those
+                    // fields along; sending nothing leaves the engine default untouched. Forcing TopP here
+                    // would switch decoding to an explicit top-p sampler.
                     if (options?.Sampler is { Strategy: not LiteRtSamplerType.Unspecified } s)
                     {
-                        // v0.14.0: build the opaque sampler params, set ALL four fields (create() zeroes
-                        // them — not the ecosystem defaults our record always carries), copy them into the
-                        // session config, then delete immediately (try/finally so it can't leak). Greedy and
-                        // TopK reach the runtime as TopP (see NativeSampler).
-                        (LiteRtSamplerType nativeType, int topK, float topP) = NativeSampler(s);
+                        // Build the opaque sampler params, set ALL four fields (create() zeroes them, not
+                        // the ecosystem defaults our record always carries), copy them into the session
+                        // config, then delete immediately (try/finally so it can't leak). The strategy goes
+                        // as given: on v0.20.0 the runtime decodes Greedy as argmax and TopK as top-k
+                        // sampling (measured on CPU and GPU).
                         nint samplerParams;
                         unsafe
                         {
                             NativeError.ThrowIfFailed(
-                                LiteRtLmNative.litert_lm_sampler_params_create((LiteRtLmSamplerType)nativeType, &samplerParams),
+                                LiteRtLmNative.litert_lm_sampler_params_create((LiteRtLmSamplerType)s.Strategy, &samplerParams),
                                 nameof(LiteRtLmNative.litert_lm_sampler_params_create));
                         }
                         try
                         {
-                            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_top_k(samplerParams, topK),
+                            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_top_k(samplerParams, s.TopK),
                                 nameof(LiteRtLmNative.litert_lm_sampler_params_set_top_k));
-                            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_top_p(samplerParams, topP),
+                            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_top_p(samplerParams, s.TopP),
                                 nameof(LiteRtLmNative.litert_lm_sampler_params_set_top_p));
                             NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_temperature(samplerParams, s.Temperature),
                                 nameof(LiteRtLmNative.litert_lm_sampler_params_set_temperature));
@@ -1069,40 +1068,25 @@ public sealed class LiteRtConversation : IDisposable
         => nativeMessage.Contains("executor should not be null", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// The sampler type and the TopK/TopP values sent to the runtime for <paramref name="sampler"/>. Greedy
-    /// and TopK are mapped onto TopP, the one type every LiteRT-LM backend builds (the CPU backend rejects the
-    /// others with UNIMPLEMENTED, and the GPU backend runs every type as TopP): Greedy becomes TopP with
-    /// TopK = 1, which is exact argmax, and TopK becomes TopP with TopP = 1, which is plain top-k sampling.
-    /// Only the field that defines the strategy changes; temperature and seed are sent as given.
-    /// </summary>
-    internal static (LiteRtSamplerType Type, int TopK, float TopP) NativeSampler(LiteRtSamplerParams sampler)
-        => sampler.Strategy switch
-        {
-            LiteRtSamplerType.Greedy => (LiteRtSamplerType.TopP, 1, sampler.TopP),
-            LiteRtSamplerType.TopK => (LiteRtSamplerType.TopP, sampler.TopK, 1.0f),
-            _ => (sampler.Strategy, sampler.TopK, sampler.TopP),
-        };
-
-    /// <summary>
-    /// Whether a native failure is the runtime's rejection of a sampler type its backend does not build
+    /// Whether a native failure is the runtime's rejection of a sampler type it does not implement
     /// (<c>UNIMPLEMENTED: Sampler type: 1 not implemented yet.</c>; the message names the numeric type).
-    /// Since the binding maps Greedy and TopK onto TopP, this can only come from a sampler the model file
-    /// declares, used when <see cref="LiteRtConversationOptions.Sampler"/> is not set or its strategy is
-    /// <see cref="LiteRtSamplerType.Unspecified"/>.
+    /// On v0.20.0 an explicit Greedy or TopK no longer fails (measured on CPU and GPU), and the C API rejects
+    /// a type outside the enum when the sampler is built. The case left is a sampler the model file declares,
+    /// used when <see cref="LiteRtConversationOptions.Sampler"/> is not set or its strategy is
+    /// <see cref="LiteRtSamplerType.Unspecified"/>; no model at hand declares one, so that case is unmeasured.
     /// </summary>
     internal static bool IsUnsupportedSamplerError(string? nativeReason)
         => nativeReason is not null
            && nativeReason.Contains("Sampler type:", StringComparison.OrdinalIgnoreCase)
            && nativeReason.Contains("not implemented", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Guidance appended when a conversation fails because the backend does not build the
-    /// sampler type the model file declares.</summary>
+    /// <summary>Guidance appended when a send fails because the runtime does not implement the sampler
+    /// type in use, which can be the one the model file declares.</summary>
     internal const string SamplerNotSupportedHint =
-        "The engine's backend does not build the sampler type the model file declares (the LiteRT-LM CPU " +
-        "backend builds only TopP samplers; LiteRtModelInfo.DefaultSampler shows the model's own sampler). " +
-        "Set LiteRtConversationOptions.Sampler to an explicit strategy: the binding sends Greedy and TopK as " +
-        "TopP, which the CPU and GPU backends build. Continue on a fresh conversation, because the one that " +
-        "failed is consumed.";
+        "The runtime does not implement the sampler type this conversation uses, which can be the one the " +
+        "model file declares (LiteRtModelInfo.DefaultSampler shows it). Set " +
+        "LiteRtConversationOptions.Sampler to an explicit strategy. Continue on a fresh conversation, " +
+        "because the one that failed is consumed.";
 
     /// <summary>
     /// Guidance appended when a send carrying an image/audio attachment fails the way an unconfigured

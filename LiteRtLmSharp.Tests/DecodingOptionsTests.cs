@@ -578,13 +578,8 @@ public sealed class DecodingModelTests(EngineFixture fixture) : IClassFixture<En
 {
     private readonly EngineFixture _fixture = fixture;
 
-    // No explicit sampler anywhere in these tests: the engine's internal default sampling is
-    // deterministic at its seed-0 default, and an explicit Greedy/TopK sampler CANNOT be used on the
-    // CPU backend — the native CPU sampler factory only implements TopP (both v0.14.0 and v0.15.0;
-    // sampler_factory.cc CreateCpuSampler), so a send that needs a fresh Greedy/TopK sampler fails
-    // with UNIMPLEMENTED "Sampler type: N not implemented yet" (and whether it needs one is
-    // order-dependent: an earlier TopP/default conversation leaves a sampler behind that later
-    // conversations silently reuse). Verified against both native eras on win-x64 CPU, 2026-08-09.
+    // No explicit sampler anywhere in these tests: they rely on the engine's internal default
+    // sampling, which is deterministic at its seed-0 default.
 
     /// <summary>Suppressing every token id of the expected answer word must keep that word out of the
     /// reply — the most directly observable of the new logit processors (the id's logit is forced to

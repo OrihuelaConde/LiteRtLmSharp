@@ -6,7 +6,7 @@ namespace LiteRtLmSharp.Tests;
 
 /// <summary>
 /// Model-backed tests for the engine improvements: several live engines, the non-blocking token count, the
-/// sampler mapping, and continuing after a cancellation on a <see cref="LiteRtConversation.Clone"/>
+/// sampler strategies, and continuing after a cancellation on a <see cref="LiteRtConversation.Clone"/>
 /// checkpoint.
 /// Set LITERTLM_TEST_MODEL to a .litertlm file to run (LITERTLM_TEST_BACKEND selects cpu/gpu).
 /// </summary>
@@ -185,11 +185,12 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// Greedy and TopK work on the CPU and GPU backends because the binding sends them as TopP (measured on
-    /// LiteRT-LM v0.18.0: the CPU backend rejects the raw types with UNIMPLEMENTED on a fresh engine, and the GPU
-    /// backend runs them as TopP). On a fresh engine, Greedy must decode exact argmax: with a hot temperature and
-    /// two different seeds it still gives the argmax reply, which a sampled TopP reply would not. TopK must be
-    /// the first conversation on its own engine too, and sample exactly like TopP with <c>TopP = 1</c>.
+    /// Greedy and TopK are sent to the runtime as given and work as named as the first conversation on a fresh
+    /// engine, on the CPU and GPU backends. Greedy must decode exact argmax: with a hot temperature and two
+    /// different seeds it still gives the argmax reply, which a sampled reply would not. TopK, the first
+    /// conversation on its own engine too, must sample exactly like TopP with <c>TopP = 1</c>. Without the
+    /// runtime's support for these types, the first send fails with <c>UNIMPLEMENTED: Sampler type: N</c> on
+    /// the CPU backend, and Greedy gives sampled text on the GPU backend (both measured on LiteRT-LM v0.18.0).
     /// </summary>
     [SkippableFact]
     public void GreedyAndTopK_ShouldWorkOnAFreshEngine_AndGreedyShouldBeArgmax()
@@ -200,21 +201,25 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         string argmax;
         using (var engine = LiteRtEngine.Load(options))
         {
-            // The first conversation on the fresh engine asks for Greedy: the case the CPU backend rejected.
+            // The first conversation on the fresh engine asks for Greedy.
             var hotGreedy = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.Greedy, Temperature = 1.6f };
             string greedy7 = Reply(engine, hotGreedy with { Seed = 7 });
             string greedy8 = Reply(engine, hotGreedy with { Seed = 8 });
             argmax = Reply(engine, Argmax);
+            output.WriteLine($"Greedy seed 7: {greedy7}");
+            output.WriteLine($"Greedy seed 8: {greedy8}");
+            output.WriteLine($"Argmax:        {argmax}");
             Assert.Equal(argmax, greedy7);
             Assert.Equal(argmax, greedy8);
         }
-        output.WriteLine($"Greedy/argmax reply: {argmax}");
 
         using (var engine = LiteRtEngine.Load(options))
         {
             var sampled = new LiteRtSamplerParams { TopK = 8, Temperature = 1.0f, Seed = 7 };
             string topK = Reply(engine, sampled with { Strategy = LiteRtSamplerType.TopK });
             string topP = Reply(engine, sampled with { Strategy = LiteRtSamplerType.TopP, TopP = 1.0f });
+            output.WriteLine($"TopK k 8:      {topK}");
+            output.WriteLine($"TopP k 8, p 1: {topP}");
             Assert.False(string.IsNullOrWhiteSpace(topK));
             Assert.Equal(topP, topK);
         }
@@ -229,7 +234,11 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
     /// <summary>
     /// Each conversation's parameters take effect on an engine where others already generated: a Greedy
     /// conversation after a sampled one gives the reply of a separate engine that never sampled, and so does
-    /// one sent turn by turn next to a live sampled conversation.
+    /// one sent turn by turn next to a live sampled conversation. If the runtime kept the sampler of an earlier
+    /// conversation on the engine, the Greedy reply would be sampled text (LiteRT-LM v0.18.0 on the CPU backend
+    /// did that). The TopK half pins LiteRT-LM v0.20.0 behaviour: a TopK conversation after a TopP one gives
+    /// the reply a TopK conversation gives as the first on a fresh engine. If the runtime kept the TopP
+    /// sampler, the TopK reply would come from it instead.
     /// </summary>
     [SkippableFact]
     public void Greedy_ShouldBeArgmax_AfterASampledConversation_AndNextToALiveOne()
@@ -241,11 +250,24 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         using (var alone = LiteRtEngine.Load(options))
             argmax = Reply(alone, Argmax);
 
+        var topKSampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopK, TopK = 8, Temperature = 1.0f, Seed = 7 };
+        string topKAlone;
+        using (var fresh = LiteRtEngine.Load(options))
+            topKAlone = Reply(fresh, topKSampler);
+        output.WriteLine($"Argmax, own engine: {argmax}");
+        output.WriteLine($"TopK, fresh engine: {topKAlone}");
+        Assert.NotEqual(argmax, topKAlone);   // the TopK reply samples, so the comparison below can fail
+
         var hotTopP = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 64, TopP = 1.0f, Temperature = 1.6f, Seed = 7 };
         var hotGreedy = hotTopP with { Strategy = LiteRtSamplerType.Greedy, Seed = 8 };
         using var engine = LiteRtEngine.Load(options);
         Assert.NotEqual(argmax, Reply(engine, hotTopP));
         Assert.Equal(argmax, Reply(engine, hotGreedy));
+
+        Assert.NotEqual(argmax, Reply(engine, hotTopP));
+        string topKAfter = Reply(engine, topKSampler);
+        output.WriteLine($"TopK after TopP:    {topKAfter}");
+        Assert.Equal(topKAlone, topKAfter);
 
         using var sampled = engine.CreateConversation(new LiteRtConversationOptions { Sampler = hotTopP, MaxOutputTokens = 48 });
         using var greedy = engine.CreateConversation(new LiteRtConversationOptions { Sampler = hotGreedy, MaxOutputTokens = 48 });

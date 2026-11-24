@@ -4,21 +4,21 @@ namespace LiteRtLmSharp;
 public enum LiteRtSamplerType
 {
     /// <summary>Let the engine choose its default: the binding sends <b>no</b> sampler parameters at
-    /// all, so the executor's internal default sampling applies and the other
-    /// <see cref="LiteRtSamplerParams"/> fields are not forwarded. (Native v0.14.0 removed its
-    /// unspecified sampler type, and v0.18.0 declares it again; not sending parameters preserves the
-    /// pre-v0.14.0 behavior, where the unspecified type also deferred to the executor.)</summary>
+    /// all, so the engine's own default sampling applies and the other
+    /// <see cref="LiteRtSamplerParams"/> fields are not forwarded.</summary>
     Unspecified = 0,
-    /// <summary>Sample probabilistically among the top-k tokens. Sent to the runtime as
-    /// <see cref="TopP"/> with <see cref="LiteRtSamplerParams.TopP"/> = 1, which is the same sampling
-    /// (see <see cref="LiteRtSamplerParams"/>).</summary>
-    TopK = 1,
-    /// <summary>Nucleus (top-p) sampling after a top-k cut. The one type both the CPU and the GPU backend
-    /// build.</summary>
-    TopP = 2,
-    /// <summary>Always pick the highest-probability token (argmax). Sent to the runtime as
-    /// <see cref="TopP"/> with <see cref="LiteRtSamplerParams.TopK"/> = 1, which is exact argmax whatever the
+    /// <summary>Sample probabilistically among the top-k tokens. The runtime ignores
+    /// <see cref="LiteRtSamplerParams.TopP"/> for this type: a TopK reply is byte-identical to a
+    /// <see cref="TopP"/> reply with <see cref="LiteRtSamplerParams.TopP"/> = 1 and the same top-k,
     /// temperature and seed (see <see cref="LiteRtSamplerParams"/>).</summary>
+    TopK = 1,
+    /// <summary>Nucleus (top-p) sampling after a top-k cut.</summary>
+    TopP = 2,
+    /// <summary>Always pick the highest-probability token (argmax). The runtime ignores
+    /// <see cref="LiteRtSamplerParams.Temperature"/>, <see cref="LiteRtSamplerParams.TopP"/> and
+    /// <see cref="LiteRtSamplerParams.Seed"/> for this type: a Greedy reply is byte-identical to a
+    /// <see cref="TopP"/> reply with <see cref="LiteRtSamplerParams.TopK"/> = 1 (see
+    /// <see cref="LiteRtSamplerParams"/>).</summary>
     Greedy = 3,
 }
 
@@ -32,21 +32,22 @@ public enum LiteRtSamplerType
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>How strategies reach the runtime.</b> The LiteRT-LM CPU backend builds only TopP samplers (a Greedy or
-/// TopK session that is the first to decode on an engine fails with <c>UNIMPLEMENTED</c>), and the GPU backend
-/// runs every type as TopP. The binding therefore sends <see cref="LiteRtSamplerType.Greedy"/> as TopP with
-/// <see cref="TopK"/> = 1 and <see cref="LiteRtSamplerType.TopK"/> as TopP with <see cref="TopP"/> = 1,
-/// changing only the field that defines the strategy, so each explicit strategy behaves as named on the CPU
-/// and GPU backends. <see cref="LiteRtSamplerType.Unspecified"/> uses the sampler the model file declares
-/// (<see cref="LiteRtModelInfo.DefaultSampler"/>), which the CPU backend rejects when it is TopK or Greedy.
+/// <b>How strategies reach the runtime.</b> The binding sends each explicit strategy and its fields as
+/// given. Measured on LiteRT-LM v0.20.0 (win-x64; CPU with gemma-4 E2B, Phi-4-mini and Ministral-3-3B, GPU
+/// with gemma-4 E2B), also as the first conversation on a fresh engine: a
+/// <see cref="LiteRtSamplerType.Greedy"/> reply is the argmax reply whatever the temperature and seed, and a
+/// <see cref="LiteRtSamplerType.TopK"/> reply is byte-identical to a <see cref="LiteRtSamplerType.TopP"/>
+/// reply with <see cref="TopP"/> = 1 and the same top-k, temperature and seed.
+/// <see cref="LiteRtSamplerType.Unspecified"/> leaves the choice to the engine; for a model file that
+/// declares a sampler, <see cref="LiteRtModelInfo.DefaultSampler"/> shows it. No model at hand declares
+/// one, so how the runtime handles a declared TopK or Greedy sampler is not measured.
 /// </para>
 /// <para>
-/// <b>Per conversation and per engine.</b> Measured on LiteRT-LM v0.18.0 (gemma-4 E2B, win-x64, CPU and GPU):
+/// <b>Per conversation and per engine.</b> Measured on LiteRT-LM v0.20.0 (gemma-4 E2B, win-x64, CPU and GPU):
 /// a conversation's parameters take effect on a fresh engine, after a conversation with other parameters on
-/// the same engine (a Greedy conversation after a sampled one returns the argmax reply), and with two live
-/// conversations whose samplers differ, sent turn by turn. The runtime fixes the sampler <i>type</i> per
-/// engine at its first decode; with the mapping above every explicit strategy is TopP, so this only matters
-/// next to a conversation that used the model's own sampler (<see cref="LiteRtSamplerType.Unspecified"/>).
+/// the same engine (a Greedy conversation after a sampled one returns the argmax reply, and a TopK
+/// conversation after a TopP one returns the reply it gives on a fresh engine), and with two live
+/// conversations whose samplers differ, sent turn by turn.
 /// </para>
 /// <para>
 /// <b>Where the runtime decodes greedily.</b> In the LiteRT-LM v0.18.0 and v0.18.1 sources, speculative

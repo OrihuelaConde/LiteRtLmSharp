@@ -540,9 +540,9 @@ public sealed record LiteRtConversationOptions
 
     /// <summary>Optional sampler parameters. Null = engine default.</summary>
     /// <remarks>
-    /// Each explicit strategy works on the CPU and GPU backends: the binding sends
-    /// <see cref="LiteRtSamplerType.Greedy"/> and <see cref="LiteRtSamplerType.TopK"/> as TopP, the one sampler
-    /// type both build. Each conversation's parameters take effect, also on an engine where other
+    /// Each explicit strategy works as named on the CPU and GPU backends: <see cref="LiteRtSamplerType.Greedy"/>
+    /// decodes argmax and <see cref="LiteRtSamplerType.TopK"/> samples among the top-k tokens. Each
+    /// conversation's parameters take effect, also on an engine where other
     /// conversations already generated. <see cref="LiteRtSamplerParams"/> lists what was measured and where
     /// the runtime decodes greedily instead (speculative decoding and the NPU backend).
     /// </remarks>
