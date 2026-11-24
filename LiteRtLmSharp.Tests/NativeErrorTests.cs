@@ -5,8 +5,8 @@ using Xunit.Abstractions;
 namespace LiteRtLmSharp.Tests;
 
 /// <summary>
-/// The native error report (LiteRT-LM v0.18.0 <c>c/error_reporter.h</c>): a failed native call surfaces the
-/// runtime's own status and reason in <see cref="LiteRtException"/>. The engine-load case needs no model, so
+/// The native error report (<c>c/error_reporter.h</c>): a failed native call surfaces the status it returned
+/// and the runtime's own reason in <see cref="LiteRtException"/>. The engine-load case needs no model, so
 /// it runs on every CI leg; the conversation cases load the test model.
 /// </summary>
 public sealed class NativeErrorTests(ITestOutputHelper output)
@@ -41,6 +41,28 @@ public sealed class NativeErrorTests(ITestOutputHelper output)
         }
         finally
         {
+            File.Delete(bogus);
+        }
+    }
+
+    /// <summary>With the native log silenced, a failed engine creation still carries its status and its
+    /// reason (measured on LiteRT-LM v0.20.0 with a file that is not a model).</summary>
+    [Fact]
+    public void Load_InvalidModelFile_WithTheLogSilenced_KeepsTheStatus()
+    {
+        string bogus = Path.Combine(Path.GetTempPath(), $"not-a-model-{Guid.NewGuid():N}.litertlm");
+        File.WriteAllBytes(bogus, [.. Enumerable.Range(0, 4096).Select(i => (byte)(i * 31))]);
+        try
+        {
+            LiteRtEngine.SetMinLogLevel(1000);
+            var ex = Assert.Throws<LiteRtException>(() => LiteRtEngine.Load(new LiteRtEngineOptions { ModelPath = bogus }));
+            output.WriteLine($"[{ex.StatusCode}] {ex.Message}");
+            Assert.Equal(LiteRtStatusCode.InvalidArgument, ex.StatusCode);
+            Assert.Equal("litert_lm_engine_create failed: INVALID_ARGUMENT: Invalid magic number or failed to read.", ex.Message);
+        }
+        finally
+        {
+            LiteRtEngine.SetMinLogLevel(3);
             File.Delete(bogus);
         }
     }
@@ -140,8 +162,8 @@ public sealed class NativeErrorTests(ITestOutputHelper output)
             LiteRtConversation.SendFailureHint(null, mediaHintApplies: true, smallContext: true));
     }
 
-    /// <summary>A report is consumed when read: the next read on the same thread sees nothing, so a later
-    /// failure can never be described with an earlier one's reason.</summary>
+    /// <summary>A report is consumed when read: the thread's message is empty after the failure was
+    /// reported, so a later failure can never be described with an earlier one's reason.</summary>
     [Fact]
     public void Take_ConsumesTheThreadReport()
     {
@@ -151,7 +173,7 @@ public sealed class NativeErrorTests(ITestOutputHelper output)
         try
         {
             Assert.Throws<LiteRtException>(() => LiteRtEngine.Load(new LiteRtEngineOptions { ModelPath = bogus }));
-            Assert.Null(NativeError.Take());
+            Assert.Null(System.Runtime.InteropServices.Marshal.PtrToStringUTF8(LiteRtLmNative.litert_lm_get_last_error_message()));
         }
         finally
         {

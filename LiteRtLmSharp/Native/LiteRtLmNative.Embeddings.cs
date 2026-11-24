@@ -12,11 +12,14 @@ internal static unsafe partial class LiteRtLmNative
 
     /// <summary>Creates an input item of the given type. For text, <paramref name="data"/> is UTF-8 and
     /// <paramref name="size"/> its byte length; for image/audio, the raw bytes. The data is copied, so the
-    /// caller's buffer can be released right after the call. Caller frees with
-    /// <see cref="litert_lm_input_data_delete"/>. Null on failure.</summary>
+    /// caller's buffer can be released right after the call. Null data is accepted only with a zero size,
+    /// and an undeclared type fails with <c>INVALID_ARGUMENT</c>. Caller frees
+    /// <paramref name="out_input_data"/> with <see cref="litert_lm_input_data_delete"/>; it is NULL on
+    /// failure.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_input_data_create(LiteRtLmInputDataType type, void* data, nuint size);
+    internal static partial LiteRtStatusCode litert_lm_input_data_create(
+        LiteRtLmInputDataType type, void* data, nuint size, nint* out_input_data);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]

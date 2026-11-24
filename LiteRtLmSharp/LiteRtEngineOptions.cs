@@ -622,8 +622,7 @@ public sealed record LiteRtConversationOptions
     /// <remarks>
     /// Unlike <see cref="MaxOutputTokens"/> — which caps the whole reply and starves the answer when
     /// thinking runs long — this bounds only the reasoning share. Maps to the C API thinking config
-    /// (<c>litert_lm_thinking_config_*</c>, native v0.15.0+; older binaries throw
-    /// <see cref="System.EntryPointNotFoundException"/> at conversation creation). The per-send
+    /// (<c>litert_lm_thinking_config_*</c>). The per-send
     /// <see cref="LiteRtSendOptions.ThinkingTokenBudget"/> overrides this for one send.
     /// </remarks>
     /// <exception cref="System.ArgumentOutOfRangeException">The value is negative and not -1.</exception>

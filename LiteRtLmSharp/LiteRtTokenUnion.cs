@@ -46,17 +46,27 @@ public sealed class LiteRtTokenUnion
 
     /// <summary>
     /// Reads a native <c>LiteRtLmTokenUnion</c> into a managed value, copying out its data. Does not take
-    /// ownership of <paramref name="tokenUnion"/> — the caller still frees the native object.
+    /// ownership of <paramref name="tokenUnion"/>: the caller frees a union it owns, and a union borrowed
+    /// from a collection stays the collection's.
     /// </summary>
+    /// <exception cref="LiteRtException">The runtime could not report the union's type.</exception>
     internal static unsafe LiteRtTokenUnion FromNative(nint tokenUnion)
     {
-        LiteRtLmTokenUnionType type = LiteRtLmNative.litert_lm_token_union_get_type(tokenUnion);
+        LiteRtLmTokenUnionType type;
+        NativeError.ThrowIfFailed(
+            LiteRtLmNative.litert_lm_token_union_get_type(tokenUnion, &type),
+            nameof(LiteRtLmNative.litert_lm_token_union_get_type));
         if (type == LiteRtLmTokenUnionType.Ids)
         {
             int* outTokens;
             nuint count;
-            int rc = LiteRtLmNative.litert_lm_token_union_get_ids(tokenUnion, &outTokens, &count);
-            if (rc != 0 || outTokens is null || count == 0)
+            if (LiteRtLmNative.litert_lm_token_union_get_ids(tokenUnion, &outTokens, &count) != LiteRtStatusCode.Ok)
+            {
+                // Read as an empty id list, the value the binding has always returned for a failed read.
+                NativeError.Clear();
+                return new LiteRtTokenUnion(LiteRtTokenKind.Ids, text: null, []);
+            }
+            if (outTokens is null || count == 0)
                 return new LiteRtTokenUnion(LiteRtTokenKind.Ids, text: null, []);
 
             var ids = new int[count];
@@ -64,7 +74,13 @@ public sealed class LiteRtTokenUnion
             return new LiteRtTokenUnion(LiteRtTokenKind.Ids, text: null, ids);
         }
 
-        nint strPtr = LiteRtLmNative.litert_lm_token_union_get_string(tokenUnion);
+        nint strPtr;
+        if (LiteRtLmNative.litert_lm_token_union_get_string(tokenUnion, &strPtr) != LiteRtStatusCode.Ok)
+        {
+            // Read as an empty string, the value the binding has always returned for a failed read.
+            NativeError.Clear();
+            strPtr = nint.Zero;
+        }
         return new LiteRtTokenUnion(LiteRtTokenKind.String, Marshal.PtrToStringUTF8(strPtr) ?? string.Empty, []);
     }
 }

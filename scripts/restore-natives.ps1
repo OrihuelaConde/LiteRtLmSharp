@@ -14,7 +14,7 @@ Usage:
   pwsh scripts/restore-natives.ps1 -All
 #>
 param(
-    [string]$Version = 'v0.18.0',
+    [string]$Version = 'v0.20.0',
     # One or more RIDs. Validated below rather than with ValidateSet: `pwsh script.ps1 -Rid a,b` runs the
     # script through -File, which passes "a,b" as ONE string, so commas are split here.
     [string[]]$Rid,

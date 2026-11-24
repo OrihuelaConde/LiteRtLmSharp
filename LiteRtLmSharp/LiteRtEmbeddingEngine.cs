@@ -50,7 +50,8 @@ public sealed class LiteRtEmbeddingEngine : IDisposable
     /// language model (load those with <see cref="LiteRtEngine.Load"/>), or the cache directory does not
     /// exist.</exception>
     /// <exception cref="LiteRtException">Native engine creation failed; the message carries the runtime's
-    /// reason (for example, a file that is not a model, or a backend the model does not support).</exception>
+    /// reason (for example, a file that is not a model, or a backend the model does not support). Also thrown
+    /// when the native library's C API version does not match this binding.</exception>
     public static LiteRtEmbeddingEngine Load(LiteRtEmbeddingEngineOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -67,6 +68,10 @@ public sealed class LiteRtEmbeddingEngine : IDisposable
                 $"Cache directory not found: {dir}. The embedding engine does not create it: create it first, or " +
                 "use LiteRtCache.Default (next to the model file).", nameof(options));
 
+        // Before the metadata read below, whose LiteRtException is swallowed: a refused native library must
+        // stop the load here.
+        NativeLibraryResolver.EnsureCompatible();
+
         // The metadata names the model kind up front, so passing a chat model gets a clear error instead of a
         // native one; a file whose metadata cannot be read still gets the engine's own verdict below.
         LiteRtModelInfo? info = null;
@@ -81,7 +86,7 @@ public sealed class LiteRtEmbeddingEngine : IDisposable
         nint settingsPtr = LiteRtLmNative.litert_lm_embedding_engine_settings_create(
             options.ModelPath, options.Backend.Value, null, null);
         if (settingsPtr == nint.Zero)
-            throw NativeError.Exception("litert_lm_embedding_engine_settings_create returned null.");
+            throw NativeError.LegacyException("litert_lm_embedding_engine_settings_create returned null.");
 
         using var settings = new EmbeddingEngineSettingsHandle(settingsPtr);
         if (options.Cache.NativeValue is { } cacheDir)
@@ -98,7 +103,7 @@ public sealed class LiteRtEmbeddingEngine : IDisposable
         NativeError.Clear();
         nint enginePtr = LiteRtLmNative.litert_lm_embedding_engine_create(settings.Ptr);
         if (enginePtr == nint.Zero)
-            throw NativeError.Exception(
+            throw NativeError.LegacyException(
                 "litert_lm_embedding_engine_create returned null.",
                 fallbackHint: "The runtime reported no reason (see the native stderr). Check that the file is an " +
                 "embedding model and that the backend is one it supports.");
@@ -249,7 +254,7 @@ public sealed class LiteRtEmbeddingEngine : IDisposable
         nint responsePtr = LiteRtLmNative.litert_lm_embedding_engine_compute_embedding(
             _engine.Ptr, &inputPtr, 1, nativeOptions?.Ptr ?? nint.Zero);
         if (responsePtr == nint.Zero)
-            throw NativeError.Exception("litert_lm_embedding_engine_compute_embedding returned null.");
+            throw NativeError.LegacyException("litert_lm_embedding_engine_compute_embedding returned null.");
         using var response = new EmbeddingResponseHandle(responsePtr);
         return ReadVector(response.Ptr);
     }
@@ -283,7 +288,7 @@ public sealed class LiteRtEmbeddingEngine : IDisposable
                     _engine.Ptr, (nint**)requestsPtr, countsPtr, (nuint)texts.Count, nativeOptions?.Ptr ?? nint.Zero);
             }
             if (responsesPtr == nint.Zero)
-                throw NativeError.Exception("litert_lm_embedding_engine_compute_embedding_batch returned null.");
+                throw NativeError.LegacyException("litert_lm_embedding_engine_compute_embedding_batch returned null.");
 
             using var responses = new EmbeddingResponsesHandle(responsesPtr);
             nuint count = LiteRtLmNative.litert_lm_embedding_responses_get_size(responses.Ptr);
@@ -320,14 +325,14 @@ public sealed class LiteRtEmbeddingEngine : IDisposable
     {
         byte[] utf8 = Encoding.UTF8.GetBytes(text);
         nint ptr;
+        LiteRtStatusCode status;
+        // An empty string pins a null pointer with a zero size, which the runtime accepts.
         fixed (byte* p = utf8)
         {
-            NativeError.Clear();
             // The runtime copies the bytes, so the managed buffer can go right after the call.
-            ptr = LiteRtLmNative.litert_lm_input_data_create(LiteRtLmInputDataType.Text, p, (nuint)utf8.Length);
+            status = LiteRtLmNative.litert_lm_input_data_create(LiteRtLmInputDataType.Text, p, (nuint)utf8.Length, &ptr);
         }
-        if (ptr == nint.Zero)
-            throw NativeError.Exception("litert_lm_input_data_create returned null.");
+        NativeError.ThrowIfFailed(status, nameof(LiteRtLmNative.litert_lm_input_data_create));
         return new InputDataHandle(ptr);
     }
 
@@ -338,7 +343,7 @@ public sealed class LiteRtEmbeddingEngine : IDisposable
         NativeError.Clear();
         nint ptr = LiteRtLmNative.litert_lm_embedding_options_create();
         if (ptr == nint.Zero)
-            throw NativeError.Exception("litert_lm_embedding_options_create returned null.");
+            throw NativeError.LegacyException("litert_lm_embedding_options_create returned null.");
         var handle = new EmbeddingOptionsHandle(ptr);
         if (options.Normalize is { } normalize)
             LiteRtLmNative.litert_lm_embedding_options_set_normalize(ptr, normalize);

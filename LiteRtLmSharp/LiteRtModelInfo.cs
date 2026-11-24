@@ -97,12 +97,14 @@ public sealed class LiteRtModelInfo
     /// <param name="modelPath">The path to the <c>.litertlm</c> file.</param>
     /// <returns>The model's declared metadata.</returns>
     /// <exception cref="ArgumentException"><paramref name="modelPath"/> is empty or the file does not exist.</exception>
-    /// <exception cref="LiteRtException">The native layer could not open the file as a model.</exception>
+    /// <exception cref="LiteRtException">The native layer could not open the file as a model, or the native
+    /// library's C API version does not match this binding.</exception>
     public static LiteRtModelInfo Read(string modelPath)
     {
         ArgumentException.ThrowIfNullOrEmpty(modelPath);
         if (!File.Exists(modelPath))
             throw new ArgumentException($"Model file not found: {modelPath}", nameof(modelPath));
+        NativeLibraryResolver.EnsureCompatible();
 
         // The native reader opens the file through the C runtime's narrow API, which on Windows reads the
         // path in the ANSI code page rather than UTF-8 (see NarrowPath).
@@ -115,7 +117,7 @@ public sealed class LiteRtModelInfo
                 filePtr = LiteRtLmNative.litert_lm_loaded_file_create(p);
         }
         if (filePtr == nint.Zero)
-            throw NativeError.Exception(
+            throw NativeError.LegacyException(
                 $"litert_lm_loaded_file_create returned null for '{modelPath}'.",
                 hint: opens ? null
                     : "On Windows the native metadata reader opens paths in the ANSI code page, which cannot spell " +

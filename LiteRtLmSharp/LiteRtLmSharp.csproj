@@ -26,6 +26,11 @@
     <InternalsVisibleTo Include="LiteRtLmSharp.Tests" />
   </ItemGroup>
 
+  <!-- The LiteRT-LM release the binding is built against, named by the C API version check's message. -->
+  <ItemGroup>
+    <AssemblyMetadata Include="LiteRtLmVersion" Value="$(LiteRtLmVersion)" />
+  </ItemGroup>
+
   <!--
     Local dev only: copy the native LiteRT-LM runtime next to the managed assembly so the sample
     and tests resolve it. These come from runtimes/<rid>/native/ (gitignored; produced by

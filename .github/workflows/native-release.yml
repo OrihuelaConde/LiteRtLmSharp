@@ -38,7 +38,7 @@ on:
       litertlm_version:
         description: 'LiteRT-LM release tag (release tag here = native-<tag>).'
         required: true
-        default: 'v0.18.0'
+        default: 'v0.20.0'
       source:
         description: 'Where the Linux, Windows, Android and macOS libraries come from: the C API zip release asset, the litert-lm-api wheels on PyPI, or auto (the zip when the release has it, else PyPI).'
         type: choice
@@ -64,7 +64,7 @@ on:
 env:
   UPSTREAM_REPO: google-ai-edge/LiteRT-LM
   # Defaults keep the workflow runnable when an input is left empty.
-  UPSTREAM_TAG: ${{ inputs.litertlm_version || 'v0.18.0' }}
+  UPSTREAM_TAG: ${{ inputs.litertlm_version || 'v0.20.0' }}
   # The jobs read the resolved source (auto -> zip or pypi) from the prepare job.
   SOURCE_INPUT: ${{ inputs.source || 'auto' }}
   CAPI_ZIP: litert_lm_c_api-${{ inputs.capi_version || '0.1.0' }}.zip

@@ -6,28 +6,45 @@ namespace LiteRtLmSharp.Native;
 /// <summary>
 /// Raw P/Invoke declarations for the LiteRT-LM C API (see <c>c/engine.h</c> upstream).
 /// Source-generated marshalling via <see cref="LibraryImportAttribute"/> (AOT-friendly).
-/// String parameters are UTF-8; <c>const char*</c> returns are owned by native objects
-/// and are returned as <see cref="nint"/> to avoid the runtime freeing them.
+/// String parameters are UTF-8; <c>const char*</c> results are owned by native objects
+/// and are read as <see cref="nint"/> to avoid the runtime freeing them.
 /// </summary>
+/// <remarks>
+/// Since C API 1.0.0 (LiteRT-LM v0.19.0) every function that can fail returns a <c>LiteRtLmStatusCode</c>,
+/// declared here as <see cref="LiteRtStatusCode"/> (same values, both <c>int</c>-sized), and delivers its
+/// result through trailing <c>out_*</c> pointers. Pointer outputs are set to NULL on failure; scalar outputs
+/// are written only on success, so callers read them only after checking the status (see
+/// <see cref="NativeError.ThrowIfFailed"/>). <c>size_t</c> crosses as <see cref="nuint"/> and C <c>bool</c>
+/// as one byte (<see cref="UnmanagedType.U1"/>). Only the <c>*_delete</c> destructors and the error-reporter
+/// functions return no status.
+/// </remarks>
 internal static unsafe partial class LiteRtLmNative
 {
     internal const string Library = "LiteRtLm";
 
-    // --- Logging ---------------------------------------------------------
+    // --- Version (C API 1.0.0+) ----------------------------------------
 
-    [LibraryImport(Library)]
-    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-    internal static partial void litert_lm_set_min_log_level(int level);
-
-    // --- Error reporting (v0.18.0, c/error_reporter.h) --------------------
-    // errno-style and thread-local: a FAILING call stores a canonical status code and a message on the
-    // calling thread; successful calls never clear them. NativeError owns the read/clear discipline.
-
-    /// <summary>The calling thread's last failure status (absl canonical code), or 0 when none is
-    /// recorded.</summary>
+    /// <summary>The C API version of the loaded library (1.1.0 for LiteRT-LM v0.20.0). Libraries older than
+    /// C API 1.0.0 do not export it. <see cref="NativeLibraryResolver"/> calls it through a function pointer
+    /// when it loads the library (a P/Invoke from inside the resolver would re-enter it); this declaration
+    /// serves the other callers.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial int litert_lm_get_last_error_code();
+    internal static partial LiteRtStatusCode litert_lm_get_api_version(int* out_major, int* out_minor, int* out_patch);
+
+    // --- Logging ---------------------------------------------------------
+
+    /// <summary>Sets the process-wide minimum native log severity. Fails with <c>INVALID_ARGUMENT</c>, and
+    /// leaves the level unchanged, for a value <c>LiteRtLmLogSeverity</c> does not declare (0 to 5 and
+    /// 1000).</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial LiteRtStatusCode litert_lm_set_min_log_level(int level);
+
+    // --- Error reporting (c/error_reporter.h) ----------------------------
+    // errno-style and thread-local: every non-OK return stores a message on the calling thread; successful
+    // calls never clear it. The status itself is the function's return value. NativeError owns the
+    // read/clear discipline.
 
     /// <summary>The calling thread's last failure message, or null. Owned by the library (thread-local)
     /// and valid until the next failing call or clear on that thread — copy it out immediately.</summary>
@@ -35,64 +52,70 @@ internal static unsafe partial class LiteRtLmNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial nint litert_lm_get_last_error_message();
 
-    /// <summary>Resets the calling thread's error state (code 0, message null) and frees the message.</summary>
+    /// <summary>Resets the calling thread's message to null and frees it.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_clear_last_error();
 
     // --- Engine settings -------------------------------------------------
 
+    /// <summary>Creates engine settings for a model file. Null vision or audio backends leave that modality
+    /// unconfigured. Caller frees <paramref name="out_settings"/> with
+    /// <see cref="litert_lm_engine_settings_delete"/>; it is NULL on failure.</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_engine_settings_create(
-        string model_path, string backend_str, string? vision_backend_str, string? audio_backend_str);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_create(
+        string model_path, string backend_str, string? vision_backend_str, string? audio_backend_str,
+        nint* out_settings);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_max_num_tokens(nint settings, int max_num_tokens);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_max_num_tokens(nint settings, int max_num_tokens);
 
     /// <summary>Number of threads for the CPU text executor. A no-op on non-CPU backends: the setter
     /// fetches the executor's <c>CpuConfig</c> and only applies when the backend is CPU (see engine.cc
     /// <c>set_num_threads</c>).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_num_threads(nint settings, int num_threads);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_num_threads(nint settings, int num_threads);
 
     /// <summary>Number of threads for the CPU audio executor. Applies only when an audio executor is
     /// configured, and only reaches the audio backend's CPU compilation options (audio_executor path).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_audio_num_threads(nint settings, int num_threads);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_audio_num_threads(nint settings, int num_threads);
 
     /// <summary>Sets the LoRA rank for the text executor. 0 disables LoRA. Requires a LoRA-enabled model.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_lora_rank(nint settings, int lora_rank);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_lora_rank(nint settings, int lora_rank);
 
-    /// <summary>Sets the supported LoRA ranks for the text executor. Returns 0 on success, non-zero on
-    /// null/empty input. The ranks are only honored on the GPU (Artisan) backend; on other backends the
-    /// native layer accepts and ignores them (still returns success) — see engine.cc + llm_executor_settings.h.</summary>
+    /// <summary>Sets the supported LoRA ranks for the text executor (copied). Fails with
+    /// <c>INVALID_ARGUMENT</c> on null or empty input. The ranks are only honored on the GPU (Artisan)
+    /// backend; on other backends the native layer accepts and ignores them (still returns OK) — see
+    /// engine.cc + llm_executor_settings.h.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial int litert_lm_engine_settings_set_supported_lora_ranks(nint settings, int* lora_ranks, nuint num_ranks);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_supported_lora_ranks(nint settings, int* lora_ranks, nuint num_ranks);
 
     /// <summary>Sets the LoRA rank for the audio executor. Applies only when an audio executor is configured.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_audio_lora_rank(nint settings, int lora_rank);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_audio_lora_rank(nint settings, int lora_rank);
 
-    /// <summary>Sets the supported LoRA ranks for the audio executor. Returns 0 on success, non-zero on
-    /// null/empty input or when no audio executor is configured.</summary>
+    /// <summary>Sets the supported LoRA ranks for the audio executor (copied). Fails with
+    /// <c>INVALID_ARGUMENT</c> on null or empty input and with <c>FAILED_PRECONDITION</c> when no audio
+    /// executor is configured.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial int litert_lm_engine_settings_set_supported_audio_lora_ranks(nint settings, int* lora_ranks, nuint num_ranks);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_supported_audio_lora_ranks(nint settings, int* lora_ranks, nuint num_ranks);
 
     /// <summary>Sets the maximum number of images the engine accepts. Per the header this only
     /// affects the <i>legacy</i> engine implementation; the current path ignores it. Bound for
     /// completeness — the per-conversation knob is <c>optional_args_set_visual_token_budget</c>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_max_num_images(nint settings, int max_num_images);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_max_num_images(nint settings, int max_num_images);
 
     /// <summary>Caps the vision tokens generated per image: the engine picks the smallest vision
     /// encoder/adapter signature that fits (engine_advanced_impl.cc). Must be positive; only applies when
@@ -100,81 +123,84 @@ internal static unsafe partial class LiteRtLmNative
     /// token budgets above it are then rejected (conversation.cc ValidateVisualTokenBudget) (v0.18.0+).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_max_vision_tokens_per_image(nint settings, int max_vision_tokens_per_image);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_max_vision_tokens_per_image(nint settings, int max_vision_tokens_per_image);
 
     /// <summary>Keeps model weights and allocations resident in GPU memory through Apple's MTLResidencySet
     /// API. Apple platforms with the Metal GPU backend only; ignored elsewhere (v0.18.0+).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_gpu_enable_metal_residency_set(
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_gpu_enable_metal_residency_set(
         nint settings, [MarshalAs(UnmanagedType.U1)] bool enable_metal_residency_set);
 
-    /// <summary>Enables speculative decoding (MTP drafter); requires a model that ships a drafter.</summary>
+    /// <summary>Enables speculative decoding (MTP drafter); requires a model that ships a drafter. Deprecated
+    /// in C API 1.0.0 in favor of the speculative-decoding config object, and still exported; <c>true</c>
+    /// sets the mode On.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_enable_speculative_decoding(
-        nint settings, [MarshalAs(UnmanagedType.U1)] bool enable);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_enable_speculative_decoding(
+        nint settings, [MarshalAs(UnmanagedType.U1)] bool enable_speculative_decoding);
 
     /// <summary>Turns on benchmark instrumentation so the conversation exposes timings.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_enable_benchmark(nint settings);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_enable_benchmark(nint settings);
 
-    /// <summary>Directory for the compiled-artifact cache. Special values <c>:nocache</c> (disable)
-    /// and <c>:memory</c> (in-RAM); empty = next to the model file.</summary>
+    /// <summary>Directory for the compiled-artifact cache (copied; null is rejected). Special values
+    /// <c>:nocache</c> (disable) and <c>:memory</c> (in-RAM); empty = next to the model file.</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_cache_dir(nint settings, string cache_dir);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_cache_dir(nint settings, string cache_dir);
 
     /// <summary>Whether to load the <c>.litertlm</c> file sections in parallel. Defaults to true.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_parallel_file_section_loading(
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_parallel_file_section_loading(
         nint settings, [MarshalAs(UnmanagedType.U1)] bool parallel_file_section_loading);
 
     /// <summary>Whether YNNPACK delegates supported CPU operations before XNNPACK (experimental). Native v0.16.0+.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_enable_ynnpack(
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_enable_ynnpack(
         nint settings, [MarshalAs(UnmanagedType.U1)] bool enable_ynnpack);
 
-    /// <summary>Activation tensor precision (0=F32, 1=F16, 2=I16, 3=I8 per <c>ActivationDataType</c>).</summary>
+    /// <summary>Activation tensor precision (0=F32, 1=F16, 2=I16, 3=I8 per <c>ActivationDataType</c>). Fails
+    /// with <c>INVALID_ARGUMENT</c> for any other value.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_activation_data_type(nint settings, int activation_data_type_int);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_activation_data_type(nint settings, int activation_data_type);
 
     /// <summary>Prefill chunk size. Only applicable to the CPU backend with dynamic models.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_prefill_chunk_size(nint settings, int prefill_chunk_size);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_prefill_chunk_size(nint settings, int prefill_chunk_size);
 
     /// <summary>Number of synthetic prefill tokens for benchmarking (read by the benchmark path).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_num_prefill_tokens(nint settings, int num_prefill_tokens);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_num_prefill_tokens(nint settings, int num_prefill_tokens);
 
     /// <summary>Number of synthetic decode tokens for benchmarking (read by the benchmark path).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_num_decode_tokens(nint settings, int num_decode_tokens);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_num_decode_tokens(nint settings, int num_decode_tokens);
 
     /// <summary>Decode steps per GPU sync. Only honored by the Artisan GPU backend (v0.15.0+).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_gpu_decode_steps_per_sync(nint settings, int num_decode_steps_per_sync);
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_gpu_decode_steps_per_sync(nint settings, int num_decode_steps_per_sync);
 
     /// <summary>Whether to wait for GPU weight uploads. Only honored by the Artisan GPU backend (v0.15.0+).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_gpu_wait_for_weight_uploads(
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_gpu_wait_for_weight_uploads(
         nint settings, [MarshalAs(UnmanagedType.U1)] bool wait_for_weight_uploads);
 
     /// <summary>Ringbuffer KV cache for local-attention layers (lower memory, no instant rewind).
-    /// Backend-agnostic in interface but currently only the Artisan GPU backend implements it;
-    /// unsupported models/backends log a warning and ignore it (v0.15.0+).</summary>
+    /// Backend-agnostic in interface but only the Artisan GPU backend implements it; unsupported
+    /// models/backends log a warning and ignore it (v0.15.0+).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_engine_settings_set_use_ringbuffers_local_attention(
+    internal static partial LiteRtStatusCode litert_lm_engine_settings_set_use_ringbuffers_local_attention(
         nint settings, [MarshalAs(UnmanagedType.U1)] bool use_ringbuffers_local_attention);
 
     [LibraryImport(Library)]
@@ -183,9 +209,12 @@ internal static unsafe partial class LiteRtLmNative
 
     // --- Engine ----------------------------------------------------------
 
+    /// <summary>Creates the engine. Caller frees <paramref name="out_engine"/> with
+    /// <see cref="litert_lm_engine_delete"/>, after every conversation created from it; it is NULL on
+    /// failure. The settings may be deleted right after the call.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_engine_create(nint settings);
+    internal static partial LiteRtStatusCode litert_lm_engine_create(nint settings, nint* out_engine);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -198,66 +227,72 @@ internal static unsafe partial class LiteRtLmNative
     // (NOT the ecosystem defaults), so the binding always sets all four explicitly.
 
     /// <summary>Allocates an opaque sampler-params object of the given type (all numeric fields zeroed).
-    /// Caller frees it with <see cref="litert_lm_sampler_params_delete"/>. Null on failure.</summary>
+    /// Fails with <c>INVALID_ARGUMENT</c> for an undeclared type. Caller frees
+    /// <paramref name="out_params"/> with <see cref="litert_lm_sampler_params_delete"/>; it is NULL on
+    /// failure.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_sampler_params_create(LiteRtLmSamplerType type);
+    internal static partial LiteRtStatusCode litert_lm_sampler_params_create(LiteRtLmSamplerType type, nint* out_params);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_sampler_params_delete(nint sampler_params);
+    internal static partial void litert_lm_sampler_params_delete(nint @params);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_sampler_params_set_top_k(nint sampler_params, int top_k);
+    internal static partial LiteRtStatusCode litert_lm_sampler_params_set_top_k(nint @params, int top_k);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_sampler_params_set_top_p(nint sampler_params, float top_p);
+    internal static partial LiteRtStatusCode litert_lm_sampler_params_set_top_p(nint @params, float top_p);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_sampler_params_set_temperature(nint sampler_params, float temperature);
+    internal static partial LiteRtStatusCode litert_lm_sampler_params_set_temperature(nint @params, float temperature);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_sampler_params_set_seed(nint sampler_params, int seed);
+    internal static partial LiteRtStatusCode litert_lm_sampler_params_set_seed(nint @params, int seed);
 
     // --- Session config -------------------------------------------------
 
+    /// <summary>Allocates an empty session config. Caller frees <paramref name="out_config"/> with
+    /// <see cref="litert_lm_session_config_delete"/>; it is NULL on failure.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_session_config_create();
+    internal static partial LiteRtStatusCode litert_lm_session_config_create(nint* out_config);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_session_config_set_max_output_tokens(nint config, int max_output_tokens);
+    internal static partial LiteRtStatusCode litert_lm_session_config_set_max_output_tokens(nint config, int max_output_tokens);
 
     /// <summary>Copies the opaque sampler params into the session config; the caller keeps ownership of
-    /// <paramref name="sampler_params"/> and deletes it afterwards.</summary>
+    /// <paramref name="sampler_params"/> and deletes it afterwards. Null params and an undeclared sampler
+    /// type fail with <c>INVALID_ARGUMENT</c>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_session_config_set_sampler_params(nint config, nint sampler_params);
+    internal static partial LiteRtStatusCode litert_lm_session_config_set_sampler_params(nint config, nint sampler_params);
 
     /// <summary>Sets the text LoRA weights file for the session. The native side OPENS the file
-    /// immediately (validates it exists/opens), so a bad path fails here. Returns 0 on success, non-zero
-    /// on a null/empty path or an open failure. Requires a LoRA-enabled model.</summary>
+    /// immediately (validates it exists/opens), so a bad path fails here: <c>INVALID_ARGUMENT</c> for a
+    /// null or empty path, otherwise the status of the open. Requires a LoRA-enabled model.</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial int litert_lm_session_config_set_lora_path(nint config, string lora_path);
+    internal static partial LiteRtStatusCode litert_lm_session_config_set_lora_path(nint config, string lora_path);
 
     /// <summary>Sets the audio LoRA weights file for the session. Opens the file immediately (see
-    /// <see cref="litert_lm_session_config_set_lora_path"/>). Returns 0 on success, non-zero on failure.</summary>
+    /// <see cref="litert_lm_session_config_set_lora_path"/>).</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial int litert_lm_session_config_set_audio_lora_path(nint config, string audio_lora_path);
+    internal static partial LiteRtStatusCode litert_lm_session_config_set_audio_lora_path(nint config, string audio_lora_path);
 
     /// <summary>Per-session speculative decoding. Unset = inherit the engine setting; true on an engine
     /// created without it lazily loads the MTP drafter on the session's first request; false disables it
-    /// for this session even when the engine enables it (v0.18.0+).</summary>
+    /// for this session even when the engine enables it (v0.18.0+). Deprecated in C API 1.0.0 in favor of
+    /// the speculative-decoding config object, and still exported.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_session_config_set_enable_speculative_decoding(
+    internal static partial LiteRtStatusCode litert_lm_session_config_set_enable_speculative_decoding(
         nint config, [MarshalAs(UnmanagedType.U1)] bool enable_speculative_decoding);
 
     [LibraryImport(Library)]
@@ -412,11 +447,11 @@ internal static unsafe partial class LiteRtLmNative
     // conversation config (which deep-copies), then delete immediately — the caller retains ownership.
 
     /// <summary>Allocates a repetition-penalty config (defaults: repetition 1.0 = off, presence 0.0,
-    /// frequency 0.0, window 0 = infinite). Caller frees with
-    /// <see cref="litert_lm_repetition_penalty_config_delete"/>. Null on failure.</summary>
+    /// frequency 0.0, window 0 = infinite). Caller frees <paramref name="out_config"/> with
+    /// <see cref="litert_lm_repetition_penalty_config_delete"/>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_repetition_penalty_config_create();
+    internal static partial LiteRtStatusCode litert_lm_repetition_penalty_config_create(nint* out_config);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -426,28 +461,28 @@ internal static unsafe partial class LiteRtLmNative
     /// (values below are clamped to 1.0 during execution).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_repetition_penalty_config_set_repetition_penalty(nint config, float repetition_penalty);
+    internal static partial LiteRtStatusCode litert_lm_repetition_penalty_config_set_repetition_penalty(nint config, float repetition_penalty);
 
     /// <summary>Subtractive presence penalty (OpenAI style): applied once if the token appeared in the window.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_repetition_penalty_config_set_presence_penalty(nint config, float presence_penalty);
+    internal static partial LiteRtStatusCode litert_lm_repetition_penalty_config_set_presence_penalty(nint config, float presence_penalty);
 
     /// <summary>Subtractive frequency penalty (OpenAI style): scaled by the token's occurrence count in the window.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_repetition_penalty_config_set_frequency_penalty(nint config, float frequency_penalty);
+    internal static partial LiteRtStatusCode litert_lm_repetition_penalty_config_set_frequency_penalty(nint config, float frequency_penalty);
 
     /// <summary>Generated-history window for the penalties. 0 = infinite; negatives clamp to 0.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_repetition_penalty_config_set_window_size(nint config, int window_size);
+    internal static partial LiteRtStatusCode litert_lm_repetition_penalty_config_set_window_size(nint config, int window_size);
 
-    /// <summary>Allocates a no-repeat-ngram config. Caller frees with
-    /// <see cref="litert_lm_no_repeat_ngram_config_delete"/>. Null on failure.</summary>
+    /// <summary>Allocates a no-repeat-ngram config. Caller frees <paramref name="out_config"/> with
+    /// <see cref="litert_lm_no_repeat_ngram_config_delete"/>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_no_repeat_ngram_config_create();
+    internal static partial LiteRtStatusCode litert_lm_no_repeat_ngram_config_create(nint* out_config);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -457,35 +492,36 @@ internal static unsafe partial class LiteRtLmNative
     /// the candidate token's logit to -inf. &lt;= 0 disables.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_no_repeat_ngram_config_set_no_repeat_ngram_size(nint config, int no_repeat_ngram_size);
+    internal static partial LiteRtStatusCode litert_lm_no_repeat_ngram_config_set_no_repeat_ngram_size(nint config, int no_repeat_ngram_size);
 
     /// <summary>Generated-history window for ngram tracking. 0 = infinite; clamped up to the ngram size.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_no_repeat_ngram_config_set_window_size(nint config, int window_size);
+    internal static partial LiteRtStatusCode litert_lm_no_repeat_ngram_config_set_window_size(nint config, int window_size);
 
-    /// <summary>Allocates a suppress-tokens config. Caller frees with
-    /// <see cref="litert_lm_suppress_tokens_config_delete"/>. Null on failure.</summary>
+    /// <summary>Allocates a suppress-tokens config. Caller frees <paramref name="out_config"/> with
+    /// <see cref="litert_lm_suppress_tokens_config_delete"/>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_suppress_tokens_config_create();
+    internal static partial LiteRtStatusCode litert_lm_suppress_tokens_config_create(nint* out_config);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_suppress_tokens_config_delete(nint config);
 
-    /// <summary>Token ids whose logits are forced to -inf on every decode step. Null/0 clears.</summary>
+    /// <summary>Token ids whose logits are forced to -inf on every decode step (copied). A count of 0
+    /// clears; null ids with a non-zero count fail with <c>INVALID_ARGUMENT</c>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_suppress_tokens_config_set_suppress_tokens(
+    internal static partial LiteRtStatusCode litert_lm_suppress_tokens_config_set_suppress_tokens(
         nint config, int* suppress_tokens, nuint num_tokens);
 
-    /// <summary>Allocates a thinking config. NOTE the native default ctor is enabled + infinite budget
-    /// (-1); the binding always sets both fields explicitly. Caller frees with
-    /// <see cref="litert_lm_thinking_config_delete"/>. Null on failure.</summary>
+    /// <summary>Allocates a thinking config (declared in conversation.h). NOTE the native default ctor is
+    /// enabled + infinite budget (-1); the binding always sets both fields explicitly. Caller frees
+    /// <paramref name="out_config"/> with <see cref="litert_lm_thinking_config_delete"/>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_thinking_config_create();
+    internal static partial LiteRtStatusCode litert_lm_thinking_config_create(nint* out_config);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -495,7 +531,7 @@ internal static unsafe partial class LiteRtLmNative
     /// <c>enable_thinking</c> variable unless explicit extra context already sets it).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_thinking_config_set_enable_thinking(
+    internal static partial LiteRtStatusCode litert_lm_thinking_config_set_enable_thinking(
         nint config, [MarshalAs(UnmanagedType.U1)] bool enable_thinking);
 
     /// <summary>Token budget for the thinking block (-1 = infinite; 0 = treated as no budget by the
@@ -503,7 +539,7 @@ internal static unsafe partial class LiteRtLmNative
     /// (runtime/core/tasks.cc).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_thinking_config_set_thinking_token_budget(nint config, int thinking_token_budget);
+    internal static partial LiteRtStatusCode litert_lm_thinking_config_set_thinking_token_budget(nint config, int thinking_token_budget);
 
     // --- Conversation ----------------------------------------------------
 
@@ -616,70 +652,84 @@ internal static unsafe partial class LiteRtLmNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_benchmark_info_delete(nint info);
+    internal static partial void litert_lm_benchmark_info_delete(nint benchmark_info);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial double litert_lm_benchmark_info_get_time_to_first_token(nint info);
+    internal static partial LiteRtStatusCode litert_lm_benchmark_info_get_time_to_first_token(nint benchmark_info, double* out_seconds);
+
+    /// <summary>The engine creation time in seconds (since C API 1.1.0; before, the sum of every recorded
+    /// init phase); 0 when it was not reported.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial LiteRtStatusCode litert_lm_benchmark_info_get_total_init_time_in_second(nint benchmark_info, double* out_seconds);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial double litert_lm_benchmark_info_get_total_init_time_in_second(nint info);
+    internal static partial LiteRtStatusCode litert_lm_benchmark_info_get_num_prefill_turns(nint benchmark_info, nuint* out_num_turns);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial int litert_lm_benchmark_info_get_num_prefill_turns(nint info);
+    internal static partial LiteRtStatusCode litert_lm_benchmark_info_get_num_decode_turns(nint benchmark_info, nuint* out_num_turns);
 
+    /// <summary>Token count of the prefill turn at <paramref name="index"/>; <c>OUT_OF_RANGE</c> past the
+    /// last turn.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial int litert_lm_benchmark_info_get_num_decode_turns(nint info);
+    internal static partial LiteRtStatusCode litert_lm_benchmark_info_get_prefill_token_count_at(nint benchmark_info, nuint index, nuint* out_token_count);
 
+    /// <summary>Token count of the decode turn at <paramref name="index"/>; <c>OUT_OF_RANGE</c> past the
+    /// last turn.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial int litert_lm_benchmark_info_get_prefill_token_count_at(nint info, int index);
+    internal static partial LiteRtStatusCode litert_lm_benchmark_info_get_decode_token_count_at(nint benchmark_info, nuint index, nuint* out_token_count);
 
+    /// <summary>Prefill throughput of the turn at <paramref name="index"/>; <c>OUT_OF_RANGE</c> past the
+    /// last turn.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial int litert_lm_benchmark_info_get_decode_token_count_at(nint info, int index);
+    internal static partial LiteRtStatusCode litert_lm_benchmark_info_get_prefill_tokens_per_sec_at(nint benchmark_info, nuint index, double* out_tokens_per_sec);
 
+    /// <summary>Decode throughput of the turn at <paramref name="index"/>; <c>OUT_OF_RANGE</c> past the
+    /// last turn.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial double litert_lm_benchmark_info_get_prefill_tokens_per_sec_at(nint info, int index);
-
-    [LibraryImport(Library)]
-    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial double litert_lm_benchmark_info_get_decode_tokens_per_sec_at(nint info, int index);
+    internal static partial LiteRtStatusCode litert_lm_benchmark_info_get_decode_tokens_per_sec_at(nint benchmark_info, nuint index, double* out_tokens_per_sec);
 
     // --- Tokenizer -------------------------------------------------------
     // Exact tokenization / detokenization without running inference, plus the model's configured
-    // start (BOS) and stop (EOS) tokens. Each tokenize/detokenize/token-union object is caller-owned
-    // and freed by its matching *_delete (see the handles in Handles.cs); the const int*/char* getters
-    // point INTO the owning object, so callers copy the data out before disposing it.
+    // start (BOS) and stop (EOS) tokens. Each tokenize/detokenize result, the start token and the stop-token
+    // collection are caller-owned and freed by their matching *_delete (see the handles in Handles.cs); the
+    // const int*/char* outputs and the collection's elements point INTO the owning object, so callers copy
+    // the data out before disposing it.
 
-    /// <summary>Tokenizes UTF-8 <paramref name="text"/> with the engine's tokenizer. Returns a result
-    /// object (caller frees with <see cref="litert_lm_tokenize_result_delete"/>), or null on failure.</summary>
+    /// <summary>Tokenizes UTF-8 <paramref name="text"/> with the engine's tokenizer. Caller frees
+    /// <paramref name="out_result"/> with <see cref="litert_lm_tokenize_result_delete"/>; it is NULL on
+    /// failure.</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_engine_tokenize(nint engine, string text);
+    internal static partial LiteRtStatusCode litert_lm_engine_tokenize(nint engine, string text, nint* out_result);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_tokenize_result_delete(nint result);
 
-    /// <summary>Pointer to the result's internal token-id array (valid only while the result lives).</summary>
+    /// <summary>Pointer to the result's internal token-id array (valid only while the result lives); NULL
+    /// on success when the result holds no tokens.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_tokenize_result_get_tokens(nint result);
+    internal static partial LiteRtStatusCode litert_lm_tokenize_result_get_tokens(nint result, int** out_tokens);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nuint litert_lm_tokenize_result_get_num_tokens(nint result);
+    internal static partial LiteRtStatusCode litert_lm_tokenize_result_get_num_tokens(nint result, nuint* out_num_tokens);
 
-    /// <summary>Detokenizes a token-id array back to UTF-8. Returns a result object (caller frees with
-    /// <see cref="litert_lm_detokenize_result_delete"/>), or null on failure.</summary>
+    /// <summary>Detokenizes a token-id array back to UTF-8 (null <paramref name="tokens"/> is rejected even
+    /// with a zero count). Caller frees <paramref name="out_result"/> with
+    /// <see cref="litert_lm_detokenize_result_delete"/>; it is NULL on failure.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_engine_detokenize(nint engine, int* tokens, nuint num_tokens);
+    internal static partial LiteRtStatusCode litert_lm_engine_detokenize(nint engine, int* tokens, nuint num_tokens, nint* out_result);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -688,54 +738,60 @@ internal static unsafe partial class LiteRtLmNative
     /// <summary>The detokenized UTF-8 string (owned by the result; valid only while it lives).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_detokenize_result_get_string(nint result);
+    internal static partial LiteRtStatusCode litert_lm_detokenize_result_get_string(nint result, nint* out_text);
 
     // A TokenUnion is one start/stop token: either a literal string or a sequence of ids (see the type).
 
+    /// <summary>Frees a token union the caller owns (the start token). Never pass an element borrowed from
+    /// a <c>LiteRtLmTokenUnions</c> collection: the collection owns and frees those.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_token_union_delete(nint token_union);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial LiteRtLmTokenUnionType litert_lm_token_union_get_type(nint token_union);
+    internal static partial LiteRtStatusCode litert_lm_token_union_get_type(nint token_union, LiteRtLmTokenUnionType* out_type);
 
-    /// <summary>The string value, or null when the type is not <see cref="LiteRtLmTokenUnionType.String"/>.</summary>
+    /// <summary>The string value (owned by the union); <c>INVALID_ARGUMENT</c> when the type is not
+    /// <see cref="LiteRtLmTokenUnionType.String"/>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_token_union_get_string(nint token_union);
+    internal static partial LiteRtStatusCode litert_lm_token_union_get_string(nint token_union, nint* out_string);
 
-    /// <summary>Receives the internal id array + count. Returns 0 on success, non-zero when the type is
-    /// not <see cref="LiteRtLmTokenUnionType.Ids"/>.</summary>
+    /// <summary>Receives the internal id array (owned by the union) and its count; <c>INVALID_ARGUMENT</c>
+    /// when the type is not <see cref="LiteRtLmTokenUnionType.Ids"/>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial int litert_lm_token_union_get_ids(nint token_union, int** out_tokens, nuint* out_num_tokens);
+    internal static partial LiteRtStatusCode litert_lm_token_union_get_ids(nint token_union, int** out_tokens, nuint* out_num_tokens);
 
+    /// <summary>Frees the collection and every element <see cref="litert_lm_token_unions_get_token_at"/>
+    /// lent out.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_token_unions_delete(nint tokens);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nuint litert_lm_token_unions_get_num_tokens(nint tokens);
+    internal static partial LiteRtStatusCode litert_lm_token_unions_get_num_tokens(nint tokens, nuint* out_num_tokens);
 
-    /// <summary>The token union at <paramref name="index"/> — a NEW caller-owned object freed with
-    /// <see cref="litert_lm_token_union_delete"/>; null when out of bounds.</summary>
+    /// <summary>The token union at <paramref name="index"/>, BORROWED from the collection: valid until
+    /// <paramref name="tokens"/> is deleted, and never passed to <see cref="litert_lm_token_union_delete"/>.
+    /// <c>OUT_OF_RANGE</c> past the end.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_token_unions_get_token_at(nint tokens, nuint index);
+    internal static partial LiteRtStatusCode litert_lm_token_unions_get_token_at(nint tokens, nuint index, nint* out_token);
 
-    /// <summary>The model's configured start (BOS) token, or null if none — caller frees with
-    /// <see cref="litert_lm_token_union_delete"/>.</summary>
+    /// <summary>The model's configured start (BOS) token; NULL on success when the model declares none.
+    /// Caller frees it with <see cref="litert_lm_token_union_delete"/>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_engine_get_start_token(nint engine);
+    internal static partial LiteRtStatusCode litert_lm_engine_get_start_token(nint engine, nint* out_token);
 
-    /// <summary>The model's configured stop (EOS) tokens, or null if none — caller frees with
-    /// <see cref="litert_lm_token_unions_delete"/>.</summary>
+    /// <summary>The model's configured stop (EOS) tokens; NULL on success when the model declares none.
+    /// Caller frees them with <see cref="litert_lm_token_unions_delete"/>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_engine_get_stop_tokens(nint engine);
+    internal static partial LiteRtStatusCode litert_lm_engine_get_stop_tokens(nint engine, nint* out_tokens);
 }
 
 /// <summary>Mirrors <c>LiteRtLmSamplerType</c> in engine.h. v0.14.0 removed the <c>Unspecified = 0</c>

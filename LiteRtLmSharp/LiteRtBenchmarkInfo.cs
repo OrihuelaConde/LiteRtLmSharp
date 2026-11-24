@@ -15,7 +15,9 @@ public sealed record LiteRtBenchmarkInfo
     /// <summary>Seconds from the start of prefill to the first decoded token (excludes init).</summary>
     public double TimeToFirstTokenSeconds { get; init; }
 
-    /// <summary>Total engine initialization time in seconds.</summary>
+    /// <summary>Engine initialization time in seconds.</summary>
+    /// <remarks>From LiteRT-LM v0.20.0 this is the engine creation time only; LiteRT-LM v0.18.0 reported
+    /// the sum of every recorded initialization phase. 0 when the runtime did not record it.</remarks>
     public double TotalInitTimeSeconds { get; init; }
 
     /// <summary>Number of prefill turns recorded so far.</summary>

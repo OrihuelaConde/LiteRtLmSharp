@@ -64,7 +64,8 @@ public sealed class LiteRtEngine : IDisposable
     /// </summary>
     public static int LiveEngineCount => EngineLiveness.Default.LiveCount;
 
-    /// <summary>Sets the global minimum log level (0=VERBOSE … 5=FATAL, 1000=SILENT).</summary>
+    /// <summary>Sets the global minimum log level (0=VERBOSE … 5=FATAL, 1000=SILENT). Any other value
+    /// silences the log, like 1000.</summary>
     /// <remarks>Above 5 (SILENT included) LiteRT also stops recording the reason of the errors its status
     /// macros raise, so a <see cref="LiteRtException"/> then names the status (for example
     /// <c>INVALID_ARGUMENT</c>) without saying why. Use 3 (ERROR) to keep the console quiet and the
@@ -72,7 +73,24 @@ public sealed class LiteRtEngine : IDisposable
     /// <exception cref="DllNotFoundException">The native LiteRT-LM library could not be loaded; the
     /// message names the fix (the missing <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package, a runtime
     /// package for another architecture, or a missing system library).</exception>
-    public static void SetMinLogLevel(int level) => LiteRtLmNative.litert_lm_set_min_log_level(level);
+    /// <exception cref="LiteRtException">The native library's C API version does not match this binding
+    /// (checked the first time any native function is used), or the native call failed.</exception>
+    public static void SetMinLogLevel(int level)
+    {
+        NativeLibraryResolver.EnsureCompatible();
+        NativeError.ThrowIfFailed(
+            LiteRtLmNative.litert_lm_set_min_log_level(NativeLogLevel(level)),
+            nameof(LiteRtLmNative.litert_lm_set_min_log_level));
+    }
+
+    /// <summary><c>LiteRtLmLogSeverity</c>'s silent level.</summary>
+    internal const int SilentLogLevel = 1000;
+
+    /// <summary>The level sent to the runtime: a value <c>LiteRtLmLogSeverity</c> declares (0 to 5 and
+    /// 1000) as is, any other value as <see cref="SilentLogLevel"/>. LiteRT-LM v0.18.0 treated every
+    /// undeclared value as silent and later versions reject it with <c>INVALID_ARGUMENT</c>, so the binding
+    /// maps it to keep the earlier effect.</summary>
+    internal static int NativeLogLevel(int level) => level is >= 0 and <= 5 or SilentLogLevel ? level : SilentLogLevel;
 
     /// <summary>
     /// Loads a model and creates the engine. By default only ONE chat engine may be alive at a time; a
@@ -88,7 +106,8 @@ public sealed class LiteRtEngine : IDisposable
     /// <exception cref="DllNotFoundException">The native LiteRT-LM library could not be loaded; the
     /// message names the fix (the missing <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package, a runtime
     /// package for another architecture, or a missing system library).</exception>
-    /// <exception cref="LiteRtException">Native engine creation failed.</exception>
+    /// <exception cref="LiteRtException">Native engine creation failed, or the native library's C API
+    /// version does not match this binding.</exception>
     public static LiteRtEngine Load(LiteRtEngineOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -99,6 +118,8 @@ public sealed class LiteRtEngine : IDisposable
         if (!File.Exists(options.ModelPath))
             throw new ArgumentException($"Model file not found: {options.ModelPath}", nameof(options));
 
+        // Before the engine slot is taken, so a refused native library cannot leak it.
+        NativeLibraryResolver.EnsureCompatible();
         switch (EngineLiveness.Default.TryAcquire(options.AllowMultipleEngines))
         {
             case EngineAdmission.NewEngineNotOptedIn:
@@ -119,63 +140,92 @@ public sealed class LiteRtEngine : IDisposable
         {
             // Passing null for vision/audio leaves that modality unconfigured (NULL = "not set" per
             // the C API). Set a LiteRtBackend on a multimodal model to enable image/audio input.
-            NativeError.Clear();
-            nint settingsPtr = LiteRtLmNative.litert_lm_engine_settings_create(
-                options.ModelPath, options.Backend.Value, options.VisionBackend?.Value, options.AudioBackend?.Value);
-            if (settingsPtr == nint.Zero)
-                throw NativeError.Exception("litert_lm_engine_settings_create returned null.");
+            nint settingsPtr;
+            LiteRtStatusCode status;
+            unsafe
+            {
+                status = LiteRtLmNative.litert_lm_engine_settings_create(
+                    options.ModelPath, options.Backend.Value, options.VisionBackend?.Value, options.AudioBackend?.Value,
+                    &settingsPtr);
+            }
+            NativeError.ThrowIfFailed(status, nameof(LiteRtLmNative.litert_lm_engine_settings_create));
 
             using var settings = new EngineSettingsHandle(settingsPtr);
+            nint s = settings.Ptr;
             if (options.MaxNumTokens > 0)
-                LiteRtLmNative.litert_lm_engine_settings_set_max_num_tokens(settings.Ptr, options.MaxNumTokens);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_max_num_tokens(s, options.MaxNumTokens),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_max_num_tokens));
             if (options.MaxNumImages > 0)
-                LiteRtLmNative.litert_lm_engine_settings_set_max_num_images(settings.Ptr, options.MaxNumImages);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_max_num_images(s, options.MaxNumImages),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_max_num_images));
             if (options.MaxVisionTokensPerImage is { } maxVisionTokens)
-                LiteRtLmNative.litert_lm_engine_settings_set_max_vision_tokens_per_image(settings.Ptr, maxVisionTokens);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_max_vision_tokens_per_image(s, maxVisionTokens),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_max_vision_tokens_per_image));
             if (options.EnableMetalResidencySet is { } metalResidency)
-                LiteRtLmNative.litert_lm_engine_settings_set_gpu_enable_metal_residency_set(settings.Ptr, metalResidency);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_gpu_enable_metal_residency_set(s, metalResidency),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_gpu_enable_metal_residency_set));
             if (options.Cache.NativeValue is { } cacheDir)
-                LiteRtLmNative.litert_lm_engine_settings_set_cache_dir(settings.Ptr, cacheDir);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_cache_dir(s, cacheDir),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_cache_dir));
             if (options.EnableBenchmark)
-                LiteRtLmNative.litert_lm_engine_settings_enable_benchmark(settings.Ptr);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_enable_benchmark(s),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_enable_benchmark));
             if (options.EnableSpeculativeDecoding)
-                LiteRtLmNative.litert_lm_engine_settings_set_enable_speculative_decoding(settings.Ptr, true);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_enable_speculative_decoding(s, true),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_enable_speculative_decoding));
             if (options.ParallelFileSectionLoading is { } parallelLoading)
-                LiteRtLmNative.litert_lm_engine_settings_set_parallel_file_section_loading(settings.Ptr, parallelLoading);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_parallel_file_section_loading(s, parallelLoading),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_parallel_file_section_loading));
             if (options.ActivationDataType is { } activationType)
-                LiteRtLmNative.litert_lm_engine_settings_set_activation_data_type(settings.Ptr, (int)activationType);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_activation_data_type(s, (int)activationType),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_activation_data_type));
             if (options.PrefillChunkSize > 0)
-                LiteRtLmNative.litert_lm_engine_settings_set_prefill_chunk_size(settings.Ptr, options.PrefillChunkSize);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_prefill_chunk_size(s, options.PrefillChunkSize),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_prefill_chunk_size));
             if (options.BenchmarkPrefillTokens > 0)
-                LiteRtLmNative.litert_lm_engine_settings_set_num_prefill_tokens(settings.Ptr, options.BenchmarkPrefillTokens);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_num_prefill_tokens(s, options.BenchmarkPrefillTokens),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_num_prefill_tokens));
             if (options.BenchmarkDecodeTokens > 0)
-                LiteRtLmNative.litert_lm_engine_settings_set_num_decode_tokens(settings.Ptr, options.BenchmarkDecodeTokens);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_num_decode_tokens(s, options.BenchmarkDecodeTokens),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_num_decode_tokens));
             if (options.NumThreads is { } numThreads)
-                LiteRtLmNative.litert_lm_engine_settings_set_num_threads(settings.Ptr, numThreads);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_num_threads(s, numThreads),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_num_threads));
             if (options.AudioNumThreads is { } audioNumThreads)
-                LiteRtLmNative.litert_lm_engine_settings_set_audio_num_threads(settings.Ptr, audioNumThreads);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_audio_num_threads(s, audioNumThreads),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_audio_num_threads));
             if (options.GpuDecodeStepsPerSync is { } gpuSteps)
-                LiteRtLmNative.litert_lm_engine_settings_set_gpu_decode_steps_per_sync(settings.Ptr, gpuSteps);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_gpu_decode_steps_per_sync(s, gpuSteps),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_gpu_decode_steps_per_sync));
             if (options.GpuWaitForWeightUploads is { } gpuWait)
-                LiteRtLmNative.litert_lm_engine_settings_set_gpu_wait_for_weight_uploads(settings.Ptr, gpuWait);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_gpu_wait_for_weight_uploads(s, gpuWait),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_gpu_wait_for_weight_uploads));
             if (options.EnableYnnpack is { } ynnpack)
-                LiteRtLmNative.litert_lm_engine_settings_set_enable_ynnpack(settings.Ptr, ynnpack);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_enable_ynnpack(s, ynnpack),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_enable_ynnpack));
             if (options.UseRingbuffersLocalAttention is { } ringbuffers)
-                LiteRtLmNative.litert_lm_engine_settings_set_use_ringbuffers_local_attention(settings.Ptr, ringbuffers);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_use_ringbuffers_local_attention(s, ringbuffers),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_use_ringbuffers_local_attention));
             if (options.LoraRank is { } loraRank)
-                LiteRtLmNative.litert_lm_engine_settings_set_lora_rank(settings.Ptr, loraRank);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_lora_rank(s, loraRank),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_lora_rank));
             if (options.AudioLoraRank is { } audioLoraRank)
-                LiteRtLmNative.litert_lm_engine_settings_set_audio_lora_rank(settings.Ptr, audioLoraRank);
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_engine_settings_set_audio_lora_rank(s, audioLoraRank),
+                    nameof(LiteRtLmNative.litert_lm_engine_settings_set_audio_lora_rank));
             if (options.SupportedLoraRanks is { } supportedLoraRanks)
-                ApplySupportedLoraRanks(settings.Ptr, supportedLoraRanks, audio: false);
+                ApplySupportedLoraRanks(s, supportedLoraRanks, audio: false);
             if (options.SupportedAudioLoraRanks is { } supportedAudioLoraRanks)
-                ApplySupportedLoraRanks(settings.Ptr, supportedAudioLoraRanks, audio: true);
+                ApplySupportedLoraRanks(s, supportedAudioLoraRanks, audio: true);
 
-            NativeError.Clear();
-            nint enginePtr = LiteRtLmNative.litert_lm_engine_create(settings.Ptr);
-            if (enginePtr == nint.Zero)
+            nint enginePtr;
+            unsafe
+            {
+                status = LiteRtLmNative.litert_lm_engine_create(s, &enginePtr);
+            }
+            if (status != LiteRtStatusCode.Ok)
                 throw NativeError.Exception(
-                    "litert_lm_engine_create returned null.",
+                    status,
+                    "litert_lm_engine_create failed.",
                     // The YNNPACK note fits only the failure it explains: UNIMPLEMENTED (or no reason) on a
                     // library without the kernels, which is every official one but linux-arm64.
                     // The speculative-decoding note fits only a failure about the drafter.
@@ -232,22 +282,23 @@ public sealed class LiteRtEngine : IDisposable
 
     /// <summary>
     /// Marshals a supported-LoRA-ranks list to the native <c>const int*</c>/count setter (text or audio)
-    /// and surfaces a non-zero return as a <see cref="LiteRtException"/>. The list is validated non-empty
+    /// and surfaces a failed status as a <see cref="LiteRtException"/>. The list is validated non-empty
     /// with positive elements by <see cref="LiteRtEngineOptions.SupportedLoraRanks"/> at init time.
     /// </summary>
     private static unsafe void ApplySupportedLoraRanks(nint settings, IReadOnlyList<int> ranks, bool audio)
     {
         int[] arr = ranks as int[] ?? [.. ranks];
-        int rc;
-        NativeError.Clear();
+        LiteRtStatusCode status;
         fixed (int* p = arr)
-            rc = audio
+            status = audio
                 ? LiteRtLmNative.litert_lm_engine_settings_set_supported_audio_lora_ranks(settings, p, (nuint)arr.Length)
                 : LiteRtLmNative.litert_lm_engine_settings_set_supported_lora_ranks(settings, p, (nuint)arr.Length);
-        if (rc != 0)
-            throw NativeError.Exception(
-                $"litert_lm_engine_settings_set_supported{(audio ? "_audio" : "")}_lora_ranks failed (returned {rc}).",
-                hint: audio ? "Audio LoRA ranks require an audio executor (set AudioBackend)." : "Check the provided ranks.");
+        NativeError.ThrowIfFailed(
+            status,
+            audio
+                ? nameof(LiteRtLmNative.litert_lm_engine_settings_set_supported_audio_lora_ranks)
+                : nameof(LiteRtLmNative.litert_lm_engine_settings_set_supported_lora_ranks),
+            hint: audio ? "Audio LoRA ranks require an audio executor (set AudioBackend)." : "Check the provided ranks.");
     }
 
     /// <summary>Creates a new stateful conversation from this engine.</summary>
@@ -273,30 +324,28 @@ public sealed class LiteRtEngine : IDisposable
     /// the round trip.
     /// </summary>
     /// <exception cref="LiteRtException">The native tokenizer call failed.</exception>
-    /// <exception cref="EntryPointNotFoundException">The native binary predates the tokenizer API.</exception>
-    public int[] Tokenize(string text)
+    public unsafe int[] Tokenize(string text)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(text);
 
-        NativeError.Clear();
-        nint resultPtr = LiteRtLmNative.litert_lm_engine_tokenize(_engine.Ptr, text);
-        if (resultPtr == nint.Zero)
-            throw NativeError.Exception("litert_lm_engine_tokenize returned null.");
-
-        using var result = new TokenizeResultHandle(resultPtr);
-        nuint count = LiteRtLmNative.litert_lm_tokenize_result_get_num_tokens(result.Ptr);
+        using var result = TokenizeNative(text);
+        nuint count = TokenCountOf(result);
         if (count == 0)
             return [];
 
-        nint tokensPtr = LiteRtLmNative.litert_lm_tokenize_result_get_tokens(result.Ptr);
-        if (tokensPtr == nint.Zero)
+        int* tokensPtr;
+        if (LiteRtLmNative.litert_lm_tokenize_result_get_tokens(result.Ptr, &tokensPtr) != LiteRtStatusCode.Ok)
+        {
+            // Read as "no tokens", like a result without an id array.
+            NativeError.Clear();
+            return [];
+        }
+        if (tokensPtr is null)
             return [];
 
-        var tokens = new int[count];
         // The pointer is into the result's internal buffer; copy out before the handle disposes it.
-        Marshal.Copy(tokensPtr, tokens, 0, checked((int)count));
-        return tokens;
+        return new ReadOnlySpan<int>(tokensPtr, checked((int)count)).ToArray();
     }
 
     /// <summary>Counts <paramref name="text"/>'s tokens without materializing the id array — the native
@@ -307,13 +356,27 @@ public sealed class LiteRtEngine : IDisposable
     /// <exception cref="LiteRtException">The native tokenizer call failed.</exception>
     internal int CountTokens(string text)
     {
-        NativeError.Clear();
-        nint resultPtr = LiteRtLmNative.litert_lm_engine_tokenize(_engine.Ptr, text);
-        if (resultPtr == nint.Zero)
-            throw NativeError.Exception("litert_lm_engine_tokenize returned null.");
+        using var result = TokenizeNative(text);
+        return checked((int)TokenCountOf(result));
+    }
 
-        using var result = new TokenizeResultHandle(resultPtr);
-        return checked((int)LiteRtLmNative.litert_lm_tokenize_result_get_num_tokens(result.Ptr));
+    /// <summary>Runs the native tokenizer; the caller disposes the result.</summary>
+    private unsafe TokenizeResultHandle TokenizeNative(string text)
+    {
+        nint resultPtr;
+        NativeError.ThrowIfFailed(
+            LiteRtLmNative.litert_lm_engine_tokenize(_engine.Ptr, text, &resultPtr),
+            nameof(LiteRtLmNative.litert_lm_engine_tokenize));
+        return new TokenizeResultHandle(resultPtr);
+    }
+
+    private static unsafe nuint TokenCountOf(TokenizeResultHandle result)
+    {
+        nuint count;
+        NativeError.ThrowIfFailed(
+            LiteRtLmNative.litert_lm_tokenize_result_get_num_tokens(result.Ptr, &count),
+            nameof(LiteRtLmNative.litert_lm_tokenize_result_get_num_tokens));
+        return count;
     }
 
     /// <summary>
@@ -321,25 +384,28 @@ public sealed class LiteRtEngine : IDisposable
     /// <see cref="Tokenize"/>. An empty span returns the empty string without calling native.
     /// </summary>
     /// <exception cref="LiteRtException">The native detokenizer call failed (e.g. an out-of-range id).</exception>
-    /// <exception cref="EntryPointNotFoundException">The native binary predates the tokenizer API.</exception>
-    public string Detokenize(ReadOnlySpan<int> tokens)
+    public unsafe string Detokenize(ReadOnlySpan<int> tokens)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        // Required, not only a shortcut: fixed over an empty span yields a null pointer, which the runtime
+        // rejects even with a zero count.
         if (tokens.IsEmpty)
             return string.Empty;
 
         nint resultPtr;
-        NativeError.Clear();
-        unsafe
-        {
-            fixed (int* p = tokens)
-                resultPtr = LiteRtLmNative.litert_lm_engine_detokenize(_engine.Ptr, p, (nuint)tokens.Length);
-        }
-        if (resultPtr == nint.Zero)
-            throw NativeError.Exception("litert_lm_engine_detokenize returned null.");
+        LiteRtStatusCode status;
+        fixed (int* p = tokens)
+            status = LiteRtLmNative.litert_lm_engine_detokenize(_engine.Ptr, p, (nuint)tokens.Length, &resultPtr);
+        NativeError.ThrowIfFailed(status, nameof(LiteRtLmNative.litert_lm_engine_detokenize));
 
         using var result = new DetokenizeResultHandle(resultPtr);
-        nint strPtr = LiteRtLmNative.litert_lm_detokenize_result_get_string(result.Ptr);
+        nint strPtr;
+        if (LiteRtLmNative.litert_lm_detokenize_result_get_string(result.Ptr, &strPtr) != LiteRtStatusCode.Ok)
+        {
+            // Read as an empty string, like a result without text.
+            NativeError.Clear();
+            return string.Empty;
+        }
         return Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
     }
 
@@ -347,14 +413,22 @@ public sealed class LiteRtEngine : IDisposable
     /// The model's configured start (BOS) token, or <c>null</c> when the model declares none. Reported
     /// either as a literal string or a token-id sequence — see <see cref="LiteRtTokenUnion.Kind"/>.
     /// </summary>
-    public LiteRtTokenUnion? GetStartToken()
+    /// <exception cref="LiteRtException">The runtime could not report the token's kind.</exception>
+    public unsafe LiteRtTokenUnion? GetStartToken()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        nint ptr = LiteRtLmNative.litert_lm_engine_get_start_token(_engine.Ptr);
+        nint ptr;
+        if (LiteRtLmNative.litert_lm_engine_get_start_token(_engine.Ptr, &ptr) != LiteRtStatusCode.Ok)
+        {
+            // Read as "none declared", the value the binding has always returned for a failed read.
+            NativeError.Clear();
+            return null;
+        }
         if (ptr == nint.Zero)
             return null;
 
+        // The start token is caller-owned: delete it once its data is copied out.
         using var handle = new TokenUnionHandle(ptr);
         return LiteRtTokenUnion.FromNative(handle.Ptr);
     }
@@ -364,28 +438,45 @@ public sealed class LiteRtEngine : IDisposable
     /// model emits any of these; each is a literal string or a token-id sequence — see
     /// <see cref="LiteRtTokenUnion.Kind"/>.
     /// </summary>
-    public IReadOnlyList<LiteRtTokenUnion> GetStopTokens()
+    /// <exception cref="LiteRtException">The runtime could not report how many stop tokens there are, or the
+    /// kind of one of them.</exception>
+    public unsafe IReadOnlyList<LiteRtTokenUnion> GetStopTokens()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        nint ptr = LiteRtLmNative.litert_lm_engine_get_stop_tokens(_engine.Ptr);
+        nint ptr;
+        if (LiteRtLmNative.litert_lm_engine_get_stop_tokens(_engine.Ptr, &ptr) != LiteRtStatusCode.Ok)
+        {
+            // Read as "none declared", the value the binding has always returned for a failed read.
+            NativeError.Clear();
+            return [];
+        }
         if (ptr == nint.Zero)
             return [];
 
         using var handle = new TokenUnionsHandle(ptr);
-        nuint count = LiteRtLmNative.litert_lm_token_unions_get_num_tokens(handle.Ptr);
+        nuint count;
+        NativeError.ThrowIfFailed(
+            LiteRtLmNative.litert_lm_token_unions_get_num_tokens(handle.Ptr, &count),
+            nameof(LiteRtLmNative.litert_lm_token_unions_get_num_tokens));
         if (count == 0)
             return [];
 
         var stops = new List<LiteRtTokenUnion>(checked((int)count));
         for (nuint i = 0; i < count; i++)
         {
-            nint unionPtr = LiteRtLmNative.litert_lm_token_unions_get_token_at(handle.Ptr, i);
+            nint unionPtr;
+            if (LiteRtLmNative.litert_lm_token_unions_get_token_at(handle.Ptr, i, &unionPtr) != LiteRtStatusCode.Ok)
+            {
+                // Skipped, as an element the runtime does not hand out has always been.
+                NativeError.Clear();
+                continue;
+            }
             if (unionPtr == nint.Zero)
                 continue;
-            // get_token_at hands back a NEW token union that the caller must delete.
-            using var unionHandle = new TokenUnionHandle(unionPtr);
-            stops.Add(LiteRtTokenUnion.FromNative(unionHandle.Ptr));
+            // get_token_at lends an element the collection owns: read it while the collection is alive and
+            // never delete it (the collection's delete frees it).
+            stops.Add(LiteRtTokenUnion.FromNative(unionPtr));
         }
         return stops;
     }

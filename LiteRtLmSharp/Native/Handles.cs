@@ -193,6 +193,8 @@ internal sealed class DetokenizeResultHandle(nint handle) : LiteRtLmHandle(handl
     }
 }
 
+/// <summary>A token union the caller owns, such as the start token. Never wraps an element borrowed from a
+/// <see cref="TokenUnionsHandle"/> collection: the collection owns and deletes those.</summary>
 internal sealed class TokenUnionHandle(nint handle) : LiteRtLmHandle(handle)
 {
     protected override bool ReleaseHandle()

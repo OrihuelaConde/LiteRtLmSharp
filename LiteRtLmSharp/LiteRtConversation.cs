@@ -146,19 +146,24 @@ public sealed class LiteRtConversation : IDisposable
                 NativeError.Clear();
                 configPtr = LiteRtLmNative.litert_lm_conversation_config_create();
                 if (configPtr == nint.Zero)
-                    throw NativeError.Exception("litert_lm_conversation_config_create returned null.");
+                    throw NativeError.LegacyException("litert_lm_conversation_config_create returned null.");
                 config = new ConversationConfigHandle(configPtr);
 
                 if (needsSessionConfig)
                 {
-                    NativeError.Clear();
-                    nint sessionPtr = LiteRtLmNative.litert_lm_session_config_create();
-                    if (sessionPtr == nint.Zero)
-                        throw NativeError.Exception("litert_lm_session_config_create returned null.");
+                    nint sessionPtr;
+                    unsafe
+                    {
+                        NativeError.ThrowIfFailed(
+                            LiteRtLmNative.litert_lm_session_config_create(&sessionPtr),
+                            nameof(LiteRtLmNative.litert_lm_session_config_create));
+                    }
                     sessionConfig = new SessionConfigHandle(sessionPtr);
 
                     if (options?.MaxOutputTokens > 0)
-                        LiteRtLmNative.litert_lm_session_config_set_max_output_tokens(sessionPtr, options.MaxOutputTokens);
+                        NativeError.ThrowIfFailed(
+                            LiteRtLmNative.litert_lm_session_config_set_max_output_tokens(sessionPtr, options.MaxOutputTokens),
+                            nameof(LiteRtLmNative.litert_lm_session_config_set_max_output_tokens));
 
                     // Unspecified = "let the engine choose": no sampler params are sent at all, so the
                     // executor's internal default sampling applies — the same effective behavior as
@@ -173,19 +178,27 @@ public sealed class LiteRtConversation : IDisposable
                         // session config, then delete immediately (try/finally so it can't leak). Greedy and
                         // TopK reach the runtime as TopP (see NativeSampler).
                         (LiteRtSamplerType nativeType, int topK, float topP) = NativeSampler(s);
-                        NativeError.Clear();
-                        nint samplerParams = LiteRtLmNative.litert_lm_sampler_params_create((LiteRtLmSamplerType)nativeType);
-                        if (samplerParams == nint.Zero)
-                            throw NativeError.Exception("litert_lm_sampler_params_create returned null.");
+                        nint samplerParams;
+                        unsafe
+                        {
+                            NativeError.ThrowIfFailed(
+                                LiteRtLmNative.litert_lm_sampler_params_create((LiteRtLmSamplerType)nativeType, &samplerParams),
+                                nameof(LiteRtLmNative.litert_lm_sampler_params_create));
+                        }
                         try
                         {
-                            LiteRtLmNative.litert_lm_sampler_params_set_top_k(samplerParams, topK);
-                            LiteRtLmNative.litert_lm_sampler_params_set_top_p(samplerParams, topP);
-                            LiteRtLmNative.litert_lm_sampler_params_set_temperature(samplerParams, s.Temperature);
+                            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_top_k(samplerParams, topK),
+                                nameof(LiteRtLmNative.litert_lm_sampler_params_set_top_k));
+                            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_top_p(samplerParams, topP),
+                                nameof(LiteRtLmNative.litert_lm_sampler_params_set_top_p));
+                            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_temperature(samplerParams, s.Temperature),
+                                nameof(LiteRtLmNative.litert_lm_sampler_params_set_temperature));
                             // Seed 0 (the default) = deterministic, matching the engine default and
                             // Google's official bindings (Kotlin defaults 0; python maps unset -> 0).
-                            LiteRtLmNative.litert_lm_sampler_params_set_seed(samplerParams, s.Seed);
-                            LiteRtLmNative.litert_lm_session_config_set_sampler_params(sessionPtr, samplerParams);
+                            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_seed(samplerParams, s.Seed),
+                                nameof(LiteRtLmNative.litert_lm_sampler_params_set_seed));
+                            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_session_config_set_sampler_params(sessionPtr, samplerParams),
+                                nameof(LiteRtLmNative.litert_lm_session_config_set_sampler_params));
                         }
                         finally
                         {
@@ -197,21 +210,21 @@ public sealed class LiteRtConversation : IDisposable
                     // path surfaces here as a clear LiteRtException rather than a later create failure.
                     if (options?.LoraPath is { } loraPath)
                     {
-                        NativeError.Clear();
-                        int rc = LiteRtLmNative.litert_lm_session_config_set_lora_path(sessionPtr, loraPath);
-                        if (rc != 0)
+                        LiteRtStatusCode status = LiteRtLmNative.litert_lm_session_config_set_lora_path(sessionPtr, loraPath);
+                        if (status != LiteRtStatusCode.Ok)
                             throw NativeError.Exception(
-                                $"litert_lm_session_config_set_lora_path failed (returned {rc}) for '{loraPath}'.",
+                                status,
+                                $"litert_lm_session_config_set_lora_path failed for '{loraPath}'.",
                                 hint: "The path must point to a readable LoRA weights file.");
                     }
 
                     if (options?.AudioLoraPath is { } audioLoraPath)
                     {
-                        NativeError.Clear();
-                        int rc = LiteRtLmNative.litert_lm_session_config_set_audio_lora_path(sessionPtr, audioLoraPath);
-                        if (rc != 0)
+                        LiteRtStatusCode status = LiteRtLmNative.litert_lm_session_config_set_audio_lora_path(sessionPtr, audioLoraPath);
+                        if (status != LiteRtStatusCode.Ok)
                             throw NativeError.Exception(
-                                $"litert_lm_session_config_set_audio_lora_path failed (returned {rc}) for '{audioLoraPath}'.",
+                                status,
+                                $"litert_lm_session_config_set_audio_lora_path failed for '{audioLoraPath}'.",
                                 hint: "The path must point to a readable audio LoRA weights file.");
                     }
 
@@ -219,7 +232,9 @@ public sealed class LiteRtConversation : IDisposable
                     // on an engine loaded without it makes the executor load the MTP drafter lazily on this
                     // conversation's first send; false turns it off here even when the engine enables it.
                     if (speculative is { } enableSpeculative)
-                        LiteRtLmNative.litert_lm_session_config_set_enable_speculative_decoding(sessionPtr, enableSpeculative);
+                        NativeError.ThrowIfFailed(
+                            LiteRtLmNative.litert_lm_session_config_set_enable_speculative_decoding(sessionPtr, enableSpeculative),
+                            nameof(LiteRtLmNative.litert_lm_session_config_set_enable_speculative_decoding));
                     // Multimodal-only (no sampler/output cap/LoRA): the session config stays bare — its
                     // mere presence is what lets the encoder executor load.
 
@@ -287,7 +302,7 @@ public sealed class LiteRtConversation : IDisposable
             if (convPtr == nint.Zero)
             {
                 engine.Handle.DangerousRelease();
-                throw NativeError.Exception("litert_lm_conversation_create returned null.");
+                throw NativeError.LegacyException("litert_lm_conversation_create returned null.");
             }
 
             return new LiteRtConversation(
@@ -396,12 +411,12 @@ public sealed class LiteRtConversation : IDisposable
     /// (<see cref="LiteRtEngineOptions.EnableBenchmark"/>) or no turn has completed yet.
     /// </summary>
     /// <remarks>
-    /// The native per-turn accessors do not bounds-check their index, so this only reads a turn
-    /// after confirming the corresponding turn count is &gt; 0. Throws
-    /// <see cref="EntryPointNotFoundException"/> on native binaries predating the benchmark API.
+    /// The native per-turn accessors reject an index past the last turn, so this only reads a turn
+    /// after confirming the corresponding turn count is &gt; 0.
     /// Wraps a native surface Google still marks experimental in its own bindings; the reported
     /// values may change with the native runtime version.
     /// </remarks>
+    /// <exception cref="LiteRtException">Reading a benchmark value failed in the runtime.</exception>
     public LiteRtBenchmarkInfo? GetBenchmarkInfo()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -411,24 +426,56 @@ public sealed class LiteRtConversation : IDisposable
             return null;
 
         using var info = new BenchmarkInfoHandle(infoPtr);
-        int prefillTurns = LiteRtLmNative.litert_lm_benchmark_info_get_num_prefill_turns(info.Ptr);
-        int decodeTurns = LiteRtLmNative.litert_lm_benchmark_info_get_num_decode_turns(info.Ptr);
+        return ReadBenchmarkInfo(info.Ptr);
+    }
+
+    /// <summary>Reads every value of a native benchmark info. A failed read throws: the runtime writes no
+    /// value on failure, and every getter fails only on a null handle or an index past the last turn, which
+    /// this never passes.</summary>
+    private static unsafe LiteRtBenchmarkInfo ReadBenchmarkInfo(nint info)
+    {
+        nuint prefillTurns, decodeTurns;
+        double timeToFirstToken, totalInitTime;
+        NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_benchmark_info_get_num_prefill_turns(info, &prefillTurns),
+            nameof(LiteRtLmNative.litert_lm_benchmark_info_get_num_prefill_turns));
+        NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_benchmark_info_get_num_decode_turns(info, &decodeTurns),
+            nameof(LiteRtLmNative.litert_lm_benchmark_info_get_num_decode_turns));
+        NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_benchmark_info_get_time_to_first_token(info, &timeToFirstToken),
+            nameof(LiteRtLmNative.litert_lm_benchmark_info_get_time_to_first_token));
+        NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_benchmark_info_get_total_init_time_in_second(info, &totalInitTime),
+            nameof(LiteRtLmNative.litert_lm_benchmark_info_get_total_init_time_in_second));
+
+        nuint lastPrefillTokens = 0, lastDecodeTokens = 0;
+        double lastPrefillRate = 0, lastDecodeRate = 0;
+        if (prefillTurns > 0)
+        {
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_benchmark_info_get_prefill_token_count_at(info, prefillTurns - 1, &lastPrefillTokens),
+                nameof(LiteRtLmNative.litert_lm_benchmark_info_get_prefill_token_count_at));
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_benchmark_info_get_prefill_tokens_per_sec_at(info, prefillTurns - 1, &lastPrefillRate),
+                nameof(LiteRtLmNative.litert_lm_benchmark_info_get_prefill_tokens_per_sec_at));
+        }
+        if (decodeTurns > 0)
+        {
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_benchmark_info_get_decode_token_count_at(info, decodeTurns - 1, &lastDecodeTokens),
+                nameof(LiteRtLmNative.litert_lm_benchmark_info_get_decode_token_count_at));
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_benchmark_info_get_decode_tokens_per_sec_at(info, decodeTurns - 1, &lastDecodeRate),
+                nameof(LiteRtLmNative.litert_lm_benchmark_info_get_decode_tokens_per_sec_at));
+        }
 
         return new LiteRtBenchmarkInfo
         {
-            TimeToFirstTokenSeconds = LiteRtLmNative.litert_lm_benchmark_info_get_time_to_first_token(info.Ptr),
-            TotalInitTimeSeconds = LiteRtLmNative.litert_lm_benchmark_info_get_total_init_time_in_second(info.Ptr),
-            NumPrefillTurns = prefillTurns,
-            NumDecodeTurns = decodeTurns,
-            // Per-turn getters are unguarded natively — never pass a negative index.
-            LastPrefillTokenCount = prefillTurns > 0
-                ? LiteRtLmNative.litert_lm_benchmark_info_get_prefill_token_count_at(info.Ptr, prefillTurns - 1) : 0,
-            LastDecodeTokenCount = decodeTurns > 0
-                ? LiteRtLmNative.litert_lm_benchmark_info_get_decode_token_count_at(info.Ptr, decodeTurns - 1) : 0,
-            LastPrefillTokensPerSecond = prefillTurns > 0
-                ? LiteRtLmNative.litert_lm_benchmark_info_get_prefill_tokens_per_sec_at(info.Ptr, prefillTurns - 1) : 0,
-            LastDecodeTokensPerSecond = decodeTurns > 0
-                ? LiteRtLmNative.litert_lm_benchmark_info_get_decode_tokens_per_sec_at(info.Ptr, decodeTurns - 1) : 0,
+            TimeToFirstTokenSeconds = timeToFirstToken,
+            TotalInitTimeSeconds = totalInitTime,
+            NumPrefillTurns = checked((int)prefillTurns),
+            NumDecodeTurns = checked((int)decodeTurns),
+            LastPrefillTokenCount = checked((int)lastPrefillTokens),
+            LastDecodeTokenCount = checked((int)lastDecodeTokens),
+            LastPrefillTokensPerSecond = lastPrefillRate,
+            LastDecodeTokensPerSecond = lastDecodeRate,
         };
     }
 
@@ -518,7 +565,7 @@ public sealed class LiteRtConversation : IDisposable
         if (clonedPtr == nint.Zero)
         {
             _engineOwner.Handle.DangerousRelease();
-            throw NativeError.Exception(
+            throw NativeError.LegacyException(
                 "litert_lm_conversation_clone returned null.",
                 hint: "Cloning duplicates the conversation's prefilled KV-cache state into a new conversation, " +
                 "and some engines or backends do not implement it (the native layer then reports " +
@@ -840,7 +887,7 @@ public sealed class LiteRtConversation : IDisposable
             // executor should not be null"), or when the runtime reported nothing; a specific native reason
             // (an undecodable image, a visual budget above the per-image cap) speaks for itself.
             bool smallContext = LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(_engineOwner.MaxNumTokens);
-            LiteRtException failure = NativeError.Exception("litert_lm_conversation_send_message returned null.",
+            LiteRtException failure = NativeError.LegacyException("litert_lm_conversation_send_message returned null.",
                 report => SendFailureHint(report?.Message, hasMedia, smallContext));
             if (failure.StatusCode == LiteRtStatusCode.Cancelled)
                 _cancelled = true;
@@ -889,7 +936,7 @@ public sealed class LiteRtConversation : IDisposable
         NativeError.Clear();
         nint strPtr = LiteRtLmNative.litert_lm_conversation_render_message_to_string(_conversation.Ptr, messageJson);
         if (strPtr == nint.Zero)
-            throw NativeError.Exception("litert_lm_conversation_render_message_to_string returned null.");
+            throw NativeError.LegacyException("litert_lm_conversation_render_message_to_string returned null.");
         return Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
     }
 
@@ -914,7 +961,7 @@ public sealed class LiteRtConversation : IDisposable
         NativeError.Clear();
         nint strPtr = LiteRtLmNative.litert_lm_conversation_render_preface_to_string(_conversation.Ptr);
         if (strPtr == nint.Zero)
-            throw NativeError.Exception("litert_lm_conversation_render_preface_to_string returned null.");
+            throw NativeError.LegacyException("litert_lm_conversation_render_preface_to_string returned null.");
         return Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
     }
 
@@ -1074,7 +1121,7 @@ public sealed class LiteRtConversation : IDisposable
         NativeError.Clear();
         nint p = LiteRtLmNative.litert_lm_conversation_optional_args_create();
         if (p == nint.Zero)
-            throw NativeError.Exception("litert_lm_conversation_optional_args_create returned null.");
+            throw NativeError.LegacyException("litert_lm_conversation_optional_args_create returned null.");
 
         var handle = new ConversationOptionalArgsHandle(p);
         try
@@ -1088,16 +1135,26 @@ public sealed class LiteRtConversation : IDisposable
             // the build-set-attach-delete lifetime stays inside this method (sampler-params pattern).
             if (options?.RepetitionPenalties is { } penalties)
             {
-                NativeError.Clear();
-                nint cfg = LiteRtLmNative.litert_lm_repetition_penalty_config_create();
-                if (cfg == nint.Zero)
-                    throw NativeError.Exception("litert_lm_repetition_penalty_config_create returned null.");
+                nint cfg;
+                unsafe
+                {
+                    NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_repetition_penalty_config_create(&cfg),
+                        nameof(LiteRtLmNative.litert_lm_repetition_penalty_config_create));
+                }
                 try
                 {
-                    LiteRtLmNative.litert_lm_repetition_penalty_config_set_repetition_penalty(cfg, penalties.RepetitionPenalty);
-                    LiteRtLmNative.litert_lm_repetition_penalty_config_set_presence_penalty(cfg, penalties.PresencePenalty);
-                    LiteRtLmNative.litert_lm_repetition_penalty_config_set_frequency_penalty(cfg, penalties.FrequencyPenalty);
-                    LiteRtLmNative.litert_lm_repetition_penalty_config_set_window_size(cfg, penalties.WindowSize);
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_repetition_penalty_config_set_repetition_penalty(cfg, penalties.RepetitionPenalty),
+                        nameof(LiteRtLmNative.litert_lm_repetition_penalty_config_set_repetition_penalty));
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_repetition_penalty_config_set_presence_penalty(cfg, penalties.PresencePenalty),
+                        nameof(LiteRtLmNative.litert_lm_repetition_penalty_config_set_presence_penalty));
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_repetition_penalty_config_set_frequency_penalty(cfg, penalties.FrequencyPenalty),
+                        nameof(LiteRtLmNative.litert_lm_repetition_penalty_config_set_frequency_penalty));
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_repetition_penalty_config_set_window_size(cfg, penalties.WindowSize),
+                        nameof(LiteRtLmNative.litert_lm_repetition_penalty_config_set_window_size));
                     LiteRtLmNative.litert_lm_conversation_optional_args_set_repetition_penalty_config(p, cfg);
                 }
                 finally
@@ -1108,14 +1165,20 @@ public sealed class LiteRtConversation : IDisposable
 
             if (options?.NoRepeatNgram is { } ngram)
             {
-                NativeError.Clear();
-                nint cfg = LiteRtLmNative.litert_lm_no_repeat_ngram_config_create();
-                if (cfg == nint.Zero)
-                    throw NativeError.Exception("litert_lm_no_repeat_ngram_config_create returned null.");
+                nint cfg;
+                unsafe
+                {
+                    NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_no_repeat_ngram_config_create(&cfg),
+                        nameof(LiteRtLmNative.litert_lm_no_repeat_ngram_config_create));
+                }
                 try
                 {
-                    LiteRtLmNative.litert_lm_no_repeat_ngram_config_set_no_repeat_ngram_size(cfg, ngram.NgramSize);
-                    LiteRtLmNative.litert_lm_no_repeat_ngram_config_set_window_size(cfg, ngram.WindowSize);
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_no_repeat_ngram_config_set_no_repeat_ngram_size(cfg, ngram.NgramSize),
+                        nameof(LiteRtLmNative.litert_lm_no_repeat_ngram_config_set_no_repeat_ngram_size));
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_no_repeat_ngram_config_set_window_size(cfg, ngram.WindowSize),
+                        nameof(LiteRtLmNative.litert_lm_no_repeat_ngram_config_set_window_size));
                     LiteRtLmNative.litert_lm_conversation_optional_args_set_no_repeat_ngram_config(p, cfg);
                 }
                 finally
@@ -1126,10 +1189,12 @@ public sealed class LiteRtConversation : IDisposable
 
             if (options?.SuppressTokens is { Count: > 0 } suppress)
             {
-                NativeError.Clear();
-                nint cfg = LiteRtLmNative.litert_lm_suppress_tokens_config_create();
-                if (cfg == nint.Zero)
-                    throw NativeError.Exception("litert_lm_suppress_tokens_config_create returned null.");
+                nint cfg;
+                unsafe
+                {
+                    NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_suppress_tokens_config_create(&cfg),
+                        nameof(LiteRtLmNative.litert_lm_suppress_tokens_config_create));
+                }
                 try
                 {
                     int[] ids = suppress as int[] ?? [.. suppress];
@@ -1137,7 +1202,9 @@ public sealed class LiteRtConversation : IDisposable
                     {
                         fixed (int* idsPtr = ids)
                         {
-                            LiteRtLmNative.litert_lm_suppress_tokens_config_set_suppress_tokens(cfg, idsPtr, (nuint)ids.Length);
+                            NativeError.ThrowIfFailed(
+                                LiteRtLmNative.litert_lm_suppress_tokens_config_set_suppress_tokens(cfg, idsPtr, (nuint)ids.Length),
+                                nameof(LiteRtLmNative.litert_lm_suppress_tokens_config_set_suppress_tokens));
                         }
                     }
                     LiteRtLmNative.litert_lm_conversation_optional_args_set_suppress_tokens_config(p, cfg);
@@ -1182,15 +1249,19 @@ public sealed class LiteRtConversation : IDisposable
     /// conversation-level and per-send thinking configs.</summary>
     private static void ApplyThinkingConfig(bool enableThinking, int tokenBudget, Action<nint> attach)
     {
-        NativeError.Clear();
-        nint cfg = LiteRtLmNative.litert_lm_thinking_config_create();
-        if (cfg == nint.Zero)
-            throw NativeError.Exception("litert_lm_thinking_config_create returned null.");
+        nint cfg;
+        unsafe
+        {
+            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_thinking_config_create(&cfg),
+                nameof(LiteRtLmNative.litert_lm_thinking_config_create));
+        }
         try
         {
             // Always set BOTH fields: the native default ctor is enabled + infinite, not zeroes.
-            LiteRtLmNative.litert_lm_thinking_config_set_enable_thinking(cfg, enableThinking);
-            LiteRtLmNative.litert_lm_thinking_config_set_thinking_token_budget(cfg, tokenBudget);
+            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_thinking_config_set_enable_thinking(cfg, enableThinking),
+                nameof(LiteRtLmNative.litert_lm_thinking_config_set_enable_thinking));
+            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_thinking_config_set_thinking_token_budget(cfg, tokenBudget),
+                nameof(LiteRtLmNative.litert_lm_thinking_config_set_thinking_token_budget));
             attach(cfg);
         }
         finally
@@ -1257,7 +1328,7 @@ public sealed class LiteRtConversation : IDisposable
         if (rc != 0)
         {
             // Read the report before any other native call (disposing the args is one).
-            LiteRtException failure = NativeError.Exception($"litert_lm_conversation_send_message_stream failed with code {rc}.",
+            LiteRtException failure = NativeError.LegacyException($"litert_lm_conversation_send_message_stream failed with code {rc}.",
                 report => SendFailureHint(report?.Message, attachments is { Count: > 0 },
                     LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(_engineOwner.MaxNumTokens)));
             if (gcHandle.IsAllocated) gcHandle.Free();
