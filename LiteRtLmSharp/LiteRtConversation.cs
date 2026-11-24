@@ -557,11 +557,11 @@ public sealed class LiteRtConversation : IDisposable
     /// it returns then fails too.
     /// </para>
     /// <para>
-    /// <b>Known issue on the GPU backend</b> (LiteRT-LM v0.18.0 and v0.19.0): a clone shares its native state with
-    /// its parent and its sibling clones until it diverges. If its first send repeats, word for word, a message
-    /// any of them already processed, and another conversation generated in between, the reply comes out wrong
-    /// or empty, with no error. Any other token avoids it, but whitespace does not, because the model's template
-    /// trims it: reword the message, or append one more zero-width space (U+200B) than the earlier attempts had.
+    /// <b>Re-sending a message on a clone, GPU backend.</b> On LiteRT-LM v0.18.0, when a clone's first send repeated
+    /// word for word a message the conversation it came from had already processed, and another conversation
+    /// generated in between, the reply came out wrong, with no error. This was not reproduced with v0.20.0 on the
+    /// GPU measured (win-x64 WebGPU, gemma-4 E2B, Float32 activations): 60 of 60 such re-sends gave the same reply
+    /// as a fresh conversation. Other GPUs were not measured.
     /// </para>
     /// <para>
     /// Creating the clone is lazy: on text conversations it costs no measurable time or memory until the clone

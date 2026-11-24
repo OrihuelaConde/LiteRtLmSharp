@@ -229,7 +229,6 @@ public sealed class LiteRtChatClient : IChatClient
             ThrowIfConstraintWithoutProvider(sendOptions, entry);
             // The turn's rollback point, so a cancelled or failed send on a continuation leaves its id valid.
             TurnCheckpoint turn = BeginTurn(entry, conv, trigger, newConversation: conversationId is null, out bool startsTurn);
-            trigger = trigger with { UserText = entry.AvoidRepeatingACutMessage(trigger.UserText) };
             LiteRtResponse response;
             try
             {
@@ -351,7 +350,6 @@ public sealed class LiteRtChatClient : IChatClient
             entry.PendingTurn = turn;
             return;
         }
-        entry.ClearCutMessages();
         turn.Checkpoint?.Dispose();
     }
 
@@ -369,8 +367,8 @@ public sealed class LiteRtChatClient : IChatClient
     /// rounds) is discarded, results sent for its tool calls are rejected, and the next request continues from
     /// the turn before it. Otherwise the conversation is evicted, and resuming its id throws: a turn that created
     /// the conversation, no checkpoint, a checkpoint that is itself full (the guard's context-full rejection of
-    /// a turn's first send), or a turn started by tool results, whose retry could not be changed to avoid the
-    /// wrong reply <see cref="LiteRtConversationStore.Entry.AvoidRepeatingACutMessage"/> describes.
+    /// a turn's first send), or a turn started by tool results: re-sending tool results on a checkpoint was not
+    /// measured to give a correct reply.
     /// </summary>
     private void RecoverFailedTurn(string id, LiteRtConversationStore.Entry entry, TurnCheckpoint turn)
     {
@@ -379,7 +377,6 @@ public sealed class LiteRtChatClient : IChatClient
         {
             entry.RestoreToolCalls(turn.ToolCalls);
             entry.DiscardToolCalls(turn.CallIds);
-            entry.RecordCutMessage(turn.UserText);
             _store!.Replace(id, turn.Checkpoint);
             return;
         }
@@ -591,7 +588,6 @@ public sealed class LiteRtChatClient : IChatClient
             ThrowIfConstraintWithoutProvider(sendOptions, entry);
             // The turn's rollback point, so a cancelled or failed stream on a continuation leaves its id valid.
             turn = BeginTurn(entry, conv, trigger, newConversation: conversationId is null, out startsTurn);
-            trigger = trigger with { UserText = entry.AvoidRepeatingACutMessage(trigger.UserText) };
             Action<string, string> recordToolCall = ToolCallRecorder(entry, turn);
             // Enumerated by hand (not await-foreach) because C# forbids `yield return` inside a try that
             // has a catch, and the MoveNext needs one: the overflow guard's pre-native "message doesn't

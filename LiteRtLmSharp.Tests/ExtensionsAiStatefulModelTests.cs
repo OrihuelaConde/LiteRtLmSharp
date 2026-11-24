@@ -2,6 +2,7 @@ using System.Text.Json;
 using LiteRtLmSharp.Extensions.AI;
 using Microsoft.Extensions.AI;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace LiteRtLmSharp.Tests;
 
@@ -12,7 +13,7 @@ namespace LiteRtLmSharp.Tests;
 /// Each test loads and disposes its own engine — assembly parallelization is disabled (AssemblyInfo.cs), so
 /// they run serially and never have two engines alive at once.
 /// </summary>
-public sealed class ExtensionsAiStatefulModelTests
+public sealed class ExtensionsAiStatefulModelTests(ITestOutputHelper output)
 {
     private static string? Model => Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
     private static string Backend => Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu";
@@ -202,8 +203,7 @@ public sealed class ExtensionsAiStatefulModelTests
             new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = id })).Text;
 
         // Each send on a checkpoint words its message differently from what the conversations it shares state with
-        // already sent: on the GPU backend (LiteRT-LM v0.18.0), a first send on a clone that repeats such a message
-        // word for word, after another conversation generated, gets a wrong reply.
+        // already sent, so this test checks the kept state only. The next two tests re-send a message word for word.
         await CutTurnAsync(client, a);
         Assert.Contains("COBALT", await Ask(b, "What is my code word? One word."), StringComparison.OrdinalIgnoreCase);
         await CutTurnAsync(client, a, "Count upward starting from 700, one number per line, and never stop.");
@@ -214,9 +214,10 @@ public sealed class ExtensionsAiStatefulModelTests
     }
 
     /// <summary>
-    /// Re-sending the cut message on the checkpoint, after another conversation generated, gets a real reply. On
-    /// the GPU backend the runtime answers a checkpoint's first send that repeats the message word for word with
-    /// a wrong or empty reply, so the client changes the repeated message, also when the retry is cut again.
+    /// Re-sending the cut message word for word on the checkpoint, after another conversation generated, gets the
+    /// reply a fresh conversation with the same history gets, also after the message was cut twice. The client
+    /// sends the message as it is. Only a GPU backend discriminates: on LiteRT-LM v0.18.0 (win-x64 WebGPU) the
+    /// reply continued the other conversation instead ("COBAL", then "401", "402", and so on), with no error.
     /// </summary>
     [SkippableFact]
     public async Task Stateful_ResendingACutMessage_GetsARealReply_AfterAnotherConversationGenerated()
@@ -227,6 +228,7 @@ public sealed class ExtensionsAiStatefulModelTests
         using var engine = LiteRtEngine.Load(Options());
         using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
         var greedy = new ChatOptions { TopK = 1, MaxOutputTokens = 32 };
+        string fresh = await FreshReplyToTheCountPromptAsync(client);
 
         string a = (await client.GetResponseAsync(
             [new ChatMessage(ChatRole.User, "Remember: my code word is TANGERINE. Reply OK.")], greedy)).ConversationId!;
@@ -245,13 +247,14 @@ public sealed class ExtensionsAiStatefulModelTests
         ChatResponse retry = await client.GetResponseAsync(
             [new ChatMessage(ChatRole.User, CountPrompt)],
             new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = a });
-        Assert.Contains("400", retry.Text, StringComparison.Ordinal);
-        Assert.Contains("401", retry.Text, StringComparison.Ordinal);
+        AssertTheFreshReply(fresh, retry.Text);
     }
 
     /// <summary>
-    /// A fork taken after a rollback inherits what the rollback left behind: re-sending the cut message on the
-    /// branch, after another conversation generated, gets a real reply on the GPU backend too.
+    /// A fork taken after a rollback re-sends the cut message word for word, after another conversation generated,
+    /// and gets the reply a fresh conversation with the same history gets. Only a GPU backend discriminates: on
+    /// LiteRT-LM v0.18.0 (win-x64 WebGPU), sent as it is, the message got a reply that continued the other
+    /// conversation instead ("COBAL", then "401", "402", and so on), with no error.
     /// </summary>
     [SkippableFact]
     public async Task Stateful_ForkAfterARollback_GetsARealReply_WhenItResendsTheCutMessage()
@@ -263,6 +266,7 @@ public sealed class ExtensionsAiStatefulModelTests
         using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
         var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
         var greedy = new ChatOptions { TopK = 1, MaxOutputTokens = 32 };
+        string fresh = await FreshReplyToTheCountPromptAsync(client);
 
         string a = (await client.GetResponseAsync(
             [new ChatMessage(ChatRole.User, "Remember: my code word is TANGERINE. Reply OK.")], greedy)).ConversationId!;
@@ -278,8 +282,28 @@ public sealed class ExtensionsAiStatefulModelTests
         ChatResponse retry = await client.GetResponseAsync(
             [new ChatMessage(ChatRole.User, CountPrompt)],
             new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = fork });
-        Assert.Contains("400", retry.Text, StringComparison.Ordinal);
-        Assert.Contains("401", retry.Text, StringComparison.Ordinal);
+        AssertTheFreshReply(fresh, retry.Text);
+    }
+
+    /// <summary>The count prompt's reply on a fresh stateful conversation that holds only the TANGERINE turn, which
+    /// is the history of the conversation the re-send tests cut.</summary>
+    private static async Task<string> FreshReplyToTheCountPromptAsync(LiteRtChatClient client)
+    {
+        string id = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is TANGERINE. Reply OK.")],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32 })).ConversationId!;
+        return (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, CountPrompt)],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = id })).Text;
+    }
+
+    private void AssertTheFreshReply(string fresh, string retry)
+    {
+        output.WriteLine($"Fresh conversation: {JsonSerializer.Serialize(fresh)}");
+        output.WriteLine($"Re-sent message:    {JsonSerializer.Serialize(retry)}");
+        Assert.Contains("400", retry, StringComparison.Ordinal);
+        Assert.Contains("401", retry, StringComparison.Ordinal);
+        Assert.Equal(fresh, retry);
     }
 
     /// <summary>

@@ -73,15 +73,6 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// (<see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/>).
 /// </para>
 /// <para>
-/// <b>Re-sending the cut message.</b> The client appends a zero-width space (U+200B) to a message that repeats
-/// the one rolled back, one more each time it is cut again, so the reply can differ from the one the model would
-/// otherwise give. On the GPU backend (LiteRT-LM v0.18.0 and v0.19.0), a checkpoint's first send that repeats that
-/// message word for word, after another conversation generated, otherwise gets a wrong or empty reply with no
-/// error. A fork inherits this. A first send on a <see cref="LiteRtConversationBranching.ForkAsync"/> branch has
-/// the same problem when it repeats a message the parent or a sibling branch sent after the fork; the client does
-/// not change those.
-/// </para>
-/// <para>
 /// Disposing the client disposes all live conversations. There is no time-based expiry in this mode — size
 /// the cap for your concurrency.
 /// (Multiple live conversations require native LiteRT-LM v0.15.0+: earlier runtimes silently lost a
