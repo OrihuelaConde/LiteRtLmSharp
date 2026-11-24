@@ -549,8 +549,8 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
             Assert.Throws<LiteRtException>(() => chat.Send("Reply with one word: OK", attachments: null, noProvider));
         Assert.True(chat.LastReplyReachedContextLimit, "a send the binding rejected cleared the flag");
 
-        // A caller cap under the guard's budget arms no truncation check, so only the reset at the start of the
-        // send can clear the flag. The cap is above what this reply decodes (about 150 tokens, mostly thinking).
+        // A caller cap under the guard's budget arms no truncation check, so only the reset that a send makes when
+        // it reaches the runtime can clear the flag. The cap is above what this reply decodes (about 150 tokens, mostly thinking).
         // If the cut reply's answer left the guard a budget of 400 or less, the guard would cap the follow-up
         // itself and its truncation check could clear the flag without the reset.
         int followUpBudget = Limit - chat.TokenCount - engine.CountTokens(chat.RenderMessage("Reply with one word: OK"))
@@ -558,7 +558,7 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
         output.WriteLine($"follow-up budget {followUpBudget}");
         Skip.If(followUpBudget <= 400,
             $"The guard's budget for the follow-up is {followUpBudget}, not above the 400-token cap, so the " +
-            "follow-up cannot show that the start of a send clears the flag.");
+            "follow-up cannot show that a send that reaches the runtime clears the flag.");
         Assert.False(string.IsNullOrWhiteSpace(
             chat.Send("Reply with one word: OK", attachments: null, new LiteRtSendOptions { MaxOutputTokens = 400 }).Text));
         Assert.False(chat.LastReplyReachedContextLimit);
@@ -569,7 +569,8 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
     /// <see cref="LiteRtBenchmarkInfo.LastSendPrefillTokenCount"/> keeps its value. A long message leaves the guard a
     /// small budget, the reply (a count that never stops) runs to it and fills the context, and the next send throws
     /// <see cref="LiteRtContextOverflowException"/>. Clearing the flag at the start of every send, before the guard,
-    /// would read <c>false</c> here.</summary>
+    /// would read <c>false</c> here. The test skips with a message when the model ends the count before the guard's
+    /// budget (measured on LiteRT-LM v0.20.0, win-x64 CPU, gemma-4 E2B: it decodes the whole budget of 125).</summary>
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
@@ -605,6 +606,13 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
         LiteRtBenchmarkInfo before = chat.GetBenchmarkInfo()!;
         output.WriteLine($"input {input}, count {chat.TokenCount}, decoded {before.LastDecodeTokenCount}, send prefill " +
                          $"{before.LastSendPrefillTokenCount}, cut {chat.LastReplyReachedContextLimit}, full {chat.IsContextFull}");
+        // Where the count stops is the model's choice. Skip only when the reply ended before the guard's budget and
+        // the flag says so; a reply that decoded the whole budget with the flag false still fails below.
+        int budget = LiteRtContextGuard.DecodeBudget(0, Limit, input);
+        Skip.If(!chat.LastReplyReachedContextLimit
+                && !LiteRtContextGuard.ReplyUsedBudget(before.LastDecodeTokenCount, budget, exactCount: true),
+            $"The reply ended on its own after {before.LastDecodeTokenCount} of {budget} tokens, so the context is " +
+            "not full and the rejected send cannot be shown.");
         Assert.True(chat.LastReplyReachedContextLimit, $"the reply must run to the guard's budget: '{cut}'");
         Assert.True(chat.IsContextFull);
         Assert.True(before.LastSendPrefillTokenCount > 0);
