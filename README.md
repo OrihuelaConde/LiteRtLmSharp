@@ -63,6 +63,13 @@ version number**. Which LiteRT-LM native build each release wraps:
 | 0.1.0-preview.2 | v0.13.1 |
 | 0.1.0-preview.1 | v0.13.1 |
 
+> **Use 1.2.0 or newer for more than one conversation per engine.** With the LiteRT-LM v0.13.x and
+> v0.14.0 libraries (LiteRtLmSharp 1.1.x and older), interleaving two conversations of one engine
+> silently loses the suspended conversation's state (upstream #2807, fixed in v0.15.0), and a send on a
+> conversation after a cancellation does not return. The binding cannot detect the native version at
+> runtime, so on those versions keep one conversation alive at a time and dispose a cancelled
+> conversation instead of sending on it again.
+
 ```csharp
 using LiteRtLmSharp;
 
@@ -143,10 +150,19 @@ conversations** (MEAI `ConversationId`) are supported — see the
 
 ## Important notes
 
-- **One chat engine alive at a time.** Loading a second `LiteRtEngine` while one is alive throws (it
-  would hang in the native layer). To switch model or backend, dispose the conversations and the
-  engine, then `LiteRtEngine.Load` again — same pattern as Google's Edge Gallery. An embedding engine
-  (`LiteRtEmbeddingEngine`) does not count, so a chat model and an embedding model can stay loaded together.
+- **One chat engine alive at a time — by default.** Loading a second `LiteRtEngine` while one is alive
+  throws. To switch model or backend, dispose the conversations and the engine, then `LiteRtEngine.Load`
+  again — same pattern as Google's Edge Gallery. An embedding engine (`LiteRtEmbeddingEngine`) does not
+  count, so a chat model and an embedding model can stay loaded together. To keep several chat engines
+  alive, load each of them with `AllowMultipleEngines = true` in `LiteRtEngineOptions`; an engine loaded
+  without it stays alone. Several engines were measured on win-x64 (CPU and GPU), linux-x64 and the Android
+  emulator, but they only run in parallel on a desktop CPU, and each one holds its own memory (on Windows,
+  about 2.3 GB of committed memory per gemma-4 E2B engine on CPU), so check free memory before loading
+  another one. The `AllowMultipleEngines` docs list the measurements.
+- **A send that is cut short consumes its conversation.** After a cancelled send, an abandoned stream or
+  `CancelProcess()` during a send, the runtime answers every later send with `CANCELLED`. To continue, take a
+  `Clone()` before the send that might be cut and continue on the clone — see the
+  [conversation-state guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html).
 - **`MaxNumTokens`** is the total context window (prompt + response, across turns). Use >= 1024;
   too small can make blocking generation return nothing.
 - **Conversations are not thread-safe** — serialize sends per engine (the Microsoft.Extensions.AI

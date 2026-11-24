@@ -43,8 +43,47 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// <b>Lifetime and eviction.</b> Live conversations are held in an LRU cache bounded by
 /// <see cref="MaxLiveConversations"/>. Creating a new conversation beyond that cap evicts and disposes the
 /// least-recently-used one; a request whose <see cref="ChatOptions.ConversationId"/> was evicted (or was
-/// never issued by this client) throws <see cref="ArgumentException"/>. Disposing the client disposes all
-/// live conversations. There is no time-based expiry in this mode — size the cap for your concurrency.
+/// never issued by this client) throws <see cref="ArgumentException"/>.
+/// </para>
+/// <para>
+/// <b>Cancelled and failed sends.</b> The client takes a <see cref="LiteRtConversation.Clone"/> checkpoint before
+/// each turn. A turn starts with a user message and ends with the first reply that has no tool calls, so with
+/// function invocation it spans several sends. If a send of the turn is cancelled or fails, the conversation goes
+/// back to the checkpoint under the same id, and the whole turn is discarded, so re-send the message to get the
+/// answer. This matches what Agent Framework keeps after a failed run. Tool results sent for the discarded calls
+/// throw <see cref="ArgumentException"/>.
+/// </para>
+/// <para>
+/// A turn is kept when no native send was cancelled or failed: a run that ends between sends, for example cancelled while a tool
+/// runs, or a stream the consumer stops reading after the reply ended, for example at its tool calls.
+/// </para>
+/// <para>
+/// A cancelled or failed send ends the conversation instead in these cases, and resuming its id throws
+/// <see cref="ArgumentException"/>: the turn that started the conversation, tool calls included (even when stream
+/// updates already carried its id); a turn started by tool results with no turn waiting for them, which includes results
+/// sent on a fork, because a fork doesn't inherit its parent's waiting turn; a conversation with constrained decoding,
+/// a constraint provider, or a JSON-schema <see cref="ChatOptions.ResponseFormat"/> on its first call, unless
+/// <see cref="CheckpointConstrainedConversations"/> is set, because cloning one rebuilds its constraints, about a second
+/// on LiteRT-LM v0.18.0; and a backend that cannot clone.
+/// </para>
+/// <para>
+/// The checkpoint is a second native conversation outside <see cref="MaxLiveConversations"/>. On text conversations
+/// it costs no measurable time or memory until it is used; inline attachments are copied once per checkpoint, which
+/// a file-path attachment avoids. A rollback does not remove earlier reasoning from the KV cache
+/// (<see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/>).
+/// </para>
+/// <para>
+/// <b>Re-sending the cut message.</b> The client appends a zero-width space (U+200B) to a message that repeats
+/// the one rolled back, one more each time it is cut again, so the reply can differ from the one the model would
+/// otherwise give. On the GPU backend (LiteRT-LM v0.18.0 and v0.19.0), a checkpoint's first send that repeats that
+/// message word for word, after another conversation generated, otherwise gets a wrong or empty reply with no
+/// error. A fork inherits this. A first send on a <see cref="LiteRtConversationBranching.ForkAsync"/> branch has
+/// the same problem when it repeats a message the parent or a sibling branch sent after the fork; the client does
+/// not change those.
+/// </para>
+/// <para>
+/// Disposing the client disposes all live conversations. There is no time-based expiry in this mode — size
+/// the cap for your concurrency.
 /// (Multiple live conversations require native LiteRT-LM v0.15.0+: earlier runtimes silently lost a
 /// suspended conversation's state when another advanced, and this mode was hard-limited to one live
 /// conversation until the fix shipped.)
@@ -65,8 +104,9 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// overriding <see cref="ChatFinishReason.ToolCalls"/> — a full conversation cannot be continued, so treat
 /// <c>Length</c> as "this thread is over"). A "message doesn't fit" rejection happens before any native
 /// work and <b>keeps the live conversation resumable</b> — retry the id with a shorter message; a "context
-/// is full" rejection is terminal and evicts it like a cancelled one — resuming its id then throws
-/// <see cref="ArgumentException"/>; start a new conversation, summarizing or trimming what must carry over.
+/// is full" rejection evicts it, so resuming its id throws <see cref="ArgumentException"/> and you start a new
+/// conversation, summarizing or trimming what must carry over. The exception is a send of tool results whose turn
+/// has a checkpoint with room: the turn rolls back and the id stays valid.
 /// </para>
 /// </remarks>
 public sealed record LiteRtStatefulConversationOptions
@@ -80,10 +120,13 @@ public sealed record LiteRtStatefulConversationOptions
     /// to 8.
     /// </summary>
     /// <remarks>
-    /// <b>Each live conversation holds its own native KV cache</b>, sized against the engine's
-    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> — the cap is a memory ceiling, not just a count. On
-    /// memory-constrained (mobile) devices size it deliberately: 8 conversations on a 4096-token context
-    /// hold up to 8 full KV caches resident. Lower it (e.g. 1-2) where memory is tighter than concurrency.
+    /// <b>Each live conversation keeps its own native KV state</b> — the cap is a memory ceiling, not just a
+    /// count. On a model with a dynamic context such as gemma-4 E2B, that state grows with the tokens the
+    /// conversation has used, up to the engine's <see cref="LiteRtEngineOptions.MaxNumTokens"/>: measured on
+    /// LiteRT-LM v0.18.0, a conversation of 2,300 tokens holds about 36 MB on a desktop CPU and 60 to 100 MB on
+    /// a desktop GPU. A model with a static context keeps a full-size cache for every live conversation. On
+    /// memory-constrained (mobile) devices size the cap deliberately, and lower it (e.g. 1-2) where memory is
+    /// tighter than concurrency.
     /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">The value is less than 1.</exception>
     public int MaxLiveConversations
@@ -97,4 +140,19 @@ public sealed record LiteRtStatefulConversationOptions
             _maxLiveConversations = value;
         }
     }
+
+    /// <summary>
+    /// Takes the checkpoint behind the rollback on conversations with constrained decoding or a constraint provider
+    /// too. Default <c>false</c>: a cancelled or failed send on such a conversation evicts its id, so resuming it
+    /// throws <see cref="ArgumentException"/> and the caller starts a new conversation.
+    /// </summary>
+    /// <remarks>
+    /// Cloning such a conversation rebuilds its constraints, which costs about 0.9 s with constrained decoding and
+    /// 1 s with the LlGuidance provider per clone (gemma-4 E2B, LiteRT-LM v0.18.0, win-x64, CPU and GPU), so with this
+    /// on, every turn takes that much longer, whether or not it is cancelled. Turn it on when a cancelled send has
+    /// to keep the conversation, for example an Agent Framework session whose user can stop a reply: the session
+    /// keeps its id after a failed run, so without this every later run on it throws. A slower device takes longer;
+    /// that cost was not measured.
+    /// </remarks>
+    public bool CheckpointConstrainedConversations { get; init; }
 }

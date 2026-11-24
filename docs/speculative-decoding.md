@@ -3,7 +3,7 @@
 Speculative decoding speeds up token generation by letting a small **Multi-Token-Prediction (MTP)
 drafter** — shipped *inside* the `.litertlm` file — propose several tokens ahead, which the main
 model then verifies in a single forward pass. When the drafter is accurate, many tokens are accepted
-per main-model step, so decode throughput goes up without changing the output distribution. On the
+per main-model step, so decode throughput goes up, with the sampler caveat in the note below. On the
 hardware we measured it has not paid off yet: it slowed gemma-4-E2B down on desktop CPU and GPU (see
 [Measured results](#measured-results)).
 
@@ -92,10 +92,11 @@ dotnet test LiteRtLmSharp.Tests/LiteRtLmSharp.Tests.csproj -c Release `
 In CI it runs on the CPU leg of `model-tests.yml` on each push via ci.yml (linux-x64 / linux-arm64 /
 win-x64 / osx-arm64); the printed row lands in that job's console log and step summary.
 
-> Sampler note: the CPU sampler factory only implements the **TopP** sampler (Greedy and TopK
-> return *"not implemented yet"*; verified on v0.14.0 and v0.15.0). Speculative decoding preserves the output *distribution*, not the
-> exact token sequence under sampling, so the A/B checks coherence + throughput rather than asserting
-> byte-identical output.
+> Sampler note: in the LiteRT-LM v0.18.0 and v0.18.1 sources, the main model verifies the drafted
+> tokens greedily, so with speculative decoding on, only the first token of each turn uses the
+> conversation's sampler and the rest of the reply is decoded greedily (upstream changed this after
+> v0.18.1). On the GPU backend the reply can still differ from a plain argmax reply (measured on v0.18.0,
+> win-x64). The A/B therefore checks coherence and throughput rather than asserting byte-identical output.
 
 ## Measured results
 

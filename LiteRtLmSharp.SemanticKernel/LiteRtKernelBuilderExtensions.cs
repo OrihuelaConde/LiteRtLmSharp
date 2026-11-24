@@ -1,5 +1,6 @@
 using LiteRtLmSharp;
 using LiteRtLmSharp.Extensions.AI;
+using LiteRtLmSharp.SemanticKernel;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.SemanticKernel.ChatCompletion;
@@ -16,7 +17,14 @@ namespace Microsoft.SemanticKernel;
 /// through that single chat client (function calling is auto-invoked via MEAI's function-invocation
 /// middleware, since Semantic Kernel's adapter does not run the invoke loop for an <c>IChatClient</c>).
 /// Register over an engine you own, or from a <see cref="LiteRtEngineOptions"/> (the container
-/// loads/owns/disposes a single shared engine).
+/// loads/owns/disposes the engine). With a <c>serviceId</c>, the chat client (and, from options, its engine) is
+/// registered under that key, so several on-device models can be registered side by side: serviceIds from equal
+/// engine options share one engine, and different options load one engine each, so set
+/// <see cref="LiteRtEngineOptions.AllowMultipleEngines"/> on each of them. Services from options load their engine
+/// when they first run, unless <c>eager</c> is set. A <see cref="LiteRtEngine"/> you registered without a key before
+/// these calls serves every serviceId from options, whatever the options say, and an <c>IChatClient</c> you
+/// registered under the serviceId is kept. Service ids that share an engine also share a LoRA adapter one of
+/// them sets in its template.
 /// </summary>
 public static class LiteRtKernelBuilderExtensions
 {
@@ -33,7 +41,10 @@ public static class LiteRtKernelBuilderExtensions
     /// <see cref="LiteRtStatefulConversationOptions"/>). <c>null</c> (default) = stateless, today's behavior.
     /// After enabling, propagate <c>response.ConversationId</c> into <c>ChatOptions.ConversationId</c> and send
     /// only the new messages each turn (the <see cref="LiteRtChatClient"/> constructor docs show the loop);
-    /// function-invocation and agent-thread layers do this automatically.</param>
+    /// function-invocation and agent-session layers do this automatically.</param>
+    /// <exception cref="ArgumentException">The template sets <c>History</c> or <c>HistoryJson</c>.</exception>
+    /// <exception cref="InvalidOperationException">A chat client is already registered under the same
+    /// <paramref name="serviceId"/> (or without one) over a different engine or from engine options.</exception>
     public static IKernelBuilder AddLiteRtChatCompletion(this IKernelBuilder builder, LiteRtEngine engine, string? modelId = null, string? serviceId = null, LiteRtConversationOptions? optionsTemplate = null, LiteRtStatefulConversationOptions? statefulConversations = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
@@ -42,14 +53,16 @@ public static class LiteRtKernelBuilderExtensions
     }
 
     /// <summary>Adds a chat-completion service from <paramref name="options"/>; the container loads/owns/disposes
-    /// a single shared engine. <paramref name="eager"/> loads it at registration. The underlying
+    /// the engine (serviceIds from equal options share one). <paramref name="eager"/> loads it at registration. The underlying
     /// <c>IChatClient</c> is also registered, so the same model is available to Microsoft Agent Framework / MEAI.</summary>
     /// <param name="builder">The kernel builder to register into.</param>
-    /// <param name="options">Engine options the container uses to load the single shared engine.</param>
+    /// <param name="options">Engine options the container uses to load the engine.</param>
     /// <param name="modelId">Optional model id surfaced on the chat client's metadata.</param>
     /// <param name="serviceId">Optional Semantic Kernel service id; registers a keyed service when set.</param>
-    /// <param name="eager">When <c>true</c>, load the engine now (a bad model path/backend throws here);
-    /// otherwise it is loaded lazily on first use.</param>
+    /// <param name="eager">When <c>true</c>, load the engine now (a bad model path/backend throws here); otherwise it
+    /// is loaded on the service's first call. It has no effect when an engine from equal options, or one you
+    /// registered, already serves the service. An eager engine that is never resolved lives until the process
+    /// ends.</param>
     /// <param name="optionsTemplate">Optional per-client conversation-options template applied to every call —
     /// the settings MEAI's <c>ChatOptions</c> does not surface (system message, LoRA paths, tool-call streaming,
     /// visual token budget, thinking-KV filtering, extra context, a session-default output cap). Per-call values
@@ -58,7 +71,10 @@ public static class LiteRtKernelBuilderExtensions
     /// <see cref="LiteRtStatefulConversationOptions"/>). <c>null</c> (default) = stateless, today's behavior.
     /// After enabling, propagate <c>response.ConversationId</c> into <c>ChatOptions.ConversationId</c> and send
     /// only the new messages each turn (the <see cref="LiteRtChatClient"/> constructor docs show the loop);
-    /// function-invocation and agent-thread layers do this automatically.</param>
+    /// function-invocation and agent-session layers do this automatically.</param>
+    /// <exception cref="ArgumentException">The template sets <c>History</c> or <c>HistoryJson</c>.</exception>
+    /// <exception cref="InvalidOperationException">A chat client is already registered under the same
+    /// <paramref name="serviceId"/> (or without one) from different engine options or over an engine you own.</exception>
     public static IKernelBuilder AddLiteRtChatCompletion(this IKernelBuilder builder, LiteRtEngineOptions options, string? modelId = null, string? serviceId = null, bool eager = false, LiteRtConversationOptions? optionsTemplate = null, LiteRtStatefulConversationOptions? statefulConversations = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
@@ -71,7 +87,15 @@ public static class LiteRtKernelBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(engine);
-        services.AddLiteRtChatClient(engine, modelId, optionsTemplate, statefulConversations);
+        if (serviceId is null)
+        {
+            services.AddLiteRtChatClient(engine, modelId, optionsTemplate, statefulConversations);
+        }
+        else
+        {
+            services.AddKeyedLiteRtChatClient(serviceId, engine, modelId, optionsTemplate, statefulConversations);
+            LiteRtChatClientServiceCollectionExtensions.AliasUnkeyed(services, serviceId);
+        }
         return RegisterChatCompletion(services, serviceId);
     }
 
@@ -80,7 +104,17 @@ public static class LiteRtKernelBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
-        services.AddLiteRtChatClient(options, modelId, eager, optionsTemplate, statefulConversations);
+        if (serviceId is null)
+        {
+            services.AddLiteRtChatClient(options, modelId, eager, optionsTemplate, statefulConversations);
+        }
+        else
+        {
+            LiteRtChatClientServiceCollectionExtensions.AddKeyedFromOptions(services, serviceId, options, modelId, eager, optionsTemplate, statefulConversations, reuseUnkeyedEngine: true);
+            // The first serviceId's client (and engine) also stays available without a key, to Microsoft Agent
+            // Framework / MEAI, as before keyed clients existed.
+            LiteRtChatClientServiceCollectionExtensions.AliasUnkeyed(services, serviceId);
+        }
         return RegisterChatCompletion(services, serviceId);
     }
 
@@ -91,12 +125,21 @@ public static class LiteRtKernelBuilderExtensions
         // the kernel's functions to the client as tools but does NOT run the auto-invoke loop itself, so
         // UseFunctionInvocation is what makes FunctionChoiceBehavior actually invoke the functions. It is a
         // no-op when a request carries no tools, so it is safe to apply unconditionally.
-        static IChatCompletionService Factory(IServiceProvider sp, object? _) =>
-            sp.GetRequiredService<IChatClient>()
-              .AsBuilder()
-              .UseFunctionInvocation()
-              .Build(sp)
-              .AsChatCompletionService(sp);
+        // A service wraps the chat client registered under the same key (or none). A client that would load an engine
+        // is resolved on the first call: Semantic Kernel's default service selection resolves every registered
+        // service, and a prompt would otherwise load the model of every service. An engine loaded eagerly is resolved
+        // at once, which hands it to the container.
+        (bool defer, string? clientModelId) = LiteRtChatClientServiceCollectionExtensions.ClientSettings(services, serviceId);
+
+        IChatCompletionService Factory(IServiceProvider sp, object? serviceKey)
+        {
+            IChatClient Build() => (serviceKey is null ? sp.GetRequiredService<IChatClient>() : sp.GetRequiredKeyedService<IChatClient>(serviceKey))
+                .AsBuilder()
+                .UseFunctionInvocation()
+                .Build(sp);
+            IChatClient client = defer ? new DeferredChatClient(Build, new ChatClientMetadata("litert-lm", null, clientModelId)) : Build();
+            return client.AsChatCompletionService(sp);
+        }
 
         if (serviceId is null)
             services.AddSingleton<IChatCompletionService>(sp => Factory(sp, null));

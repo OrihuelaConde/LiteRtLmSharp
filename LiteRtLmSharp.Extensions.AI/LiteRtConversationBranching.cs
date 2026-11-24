@@ -61,16 +61,20 @@ public sealed class LiteRtConversationBranching
     /// <see cref="ChatResponse"/> from this client (or itself the result of a prior fork) that has not since
     /// been evicted.
     /// </param>
-    /// <param name="cancellationToken">Cancels waiting to acquire the client's call gate. Cloning itself is a
-    /// fast, non-cancellable native memory copy.</param>
+    /// <param name="cancellationToken">Cancels waiting to acquire the call gate, which every client over the
+    /// same engine shares. Cloning itself is a fast, non-cancellable native copy (about a second on a
+    /// conversation with constrained decoding or a constraint provider).</param>
     /// <returns>
     /// A fresh <c>ConversationId</c> for the branch. It has identical semantics to any other conversation id:
     /// set it on <see cref="ChatOptions.ConversationId"/> to resume, re-fork, or evict it. The branch inherits
     /// the parent's prefilled context and diverges from there; the parent is unaffected.
     /// </returns>
     /// <remarks>
-    /// Runs under the client's call gate, so it cannot race an in-flight send or stream (forking while a
-    /// stream is live is impossible by construction — the gate is held for the whole stream). The new branch
+    /// Runs under the call gate every client over the same engine shares, so it cannot race an in-flight send
+    /// or stream (the gate is held for the whole stream, so a fork called from inside the loop that reads a
+    /// stream over the same engine waits forever). On the GPU backend, do not make a branch's first send repeat
+    /// word for word a message the parent or a sibling branch sent after the fork (see
+    /// <see cref="LiteRtConversation.Clone"/>). The new branch
     /// is stored in the same live-conversation cache as every other live conversation: it counts toward the
     /// cache's capacity and adding it may evict the least-recently-used conversation (potentially the
     /// parent). A parent reachable through this client has always advanced at least once (an id is only

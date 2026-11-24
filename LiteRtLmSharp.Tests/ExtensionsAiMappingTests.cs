@@ -3,6 +3,7 @@ using System.Text.Json;
 using LiteRtLmSharp.Extensions.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Xunit;
 
 namespace LiteRtLmSharp.Tests;
@@ -124,6 +125,190 @@ public class ExtensionsAiMappingTests
 
         Assert.Single(services, d => d.ServiceType == typeof(LiteRtEngine));
         Assert.Single(services, d => d.ServiceType == typeof(IChatClient));
+    }
+
+    [Fact]
+    public void AddLiteRtChatClient_FromEqualOptions_IsANoOp_EvenWithDistinctListInstances()
+    {
+        // Records compare list members by reference; the registration compares the LoRA ranks by value.
+        var first = new LiteRtEngineOptions { ModelPath = "does-not-exist.litertlm", SupportedLoraRanks = [8, 16] };
+        var second = new LiteRtEngineOptions { ModelPath = "does-not-exist.litertlm", SupportedLoraRanks = [8, 16] };
+
+        var services = new ServiceCollection();
+        services.AddLiteRtChatClient(first);
+        services.AddLiteRtChatClient(second);
+
+        Assert.Single(services, d => d.ServiceType == typeof(LiteRtEngine));
+        Assert.Single(services, d => d.ServiceType == typeof(IChatClient));
+    }
+
+    [Fact]
+    public void AddLiteRtChatClient_FromDifferentOptions_Throws_InsteadOfIgnoringTheSecond()
+    {
+        var services = new ServiceCollection();
+        services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "a.litertlm" });
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "b.litertlm" }));
+        Assert.Contains("AddKeyedLiteRtChatClient", ex.Message, StringComparison.Ordinal);
+        Assert.Single(services, d => d.ServiceType == typeof(IChatClient));
+    }
+
+    [Fact]
+    public void AddKeyedLiteRtChatClient_RegistersOneEngineAndClientPerKey()
+    {
+        var services = new ServiceCollection();
+        services.AddKeyedLiteRtChatClient("fast", new LiteRtEngineOptions { ModelPath = "e2b.litertlm", AllowMultipleEngines = true });
+        services.AddKeyedLiteRtChatClient("smart", new LiteRtEngineOptions { ModelPath = "e4b.litertlm", AllowMultipleEngines = true });
+        services.AddKeyedLiteRtChatClient("fast", new LiteRtEngineOptions { ModelPath = "e2b.litertlm", AllowMultipleEngines = true });   // repeat: no-op
+
+        Assert.Equal(2, services.Count(d => d.ServiceType == typeof(IChatClient) && d.ServiceKey is not null));
+        Assert.Equal(2, services.Count(d => d.ServiceType == typeof(LiteRtEngine) && d.ServiceKey is not null));
+        Assert.DoesNotContain(services, d => d.ServiceType == typeof(IChatClient) && d.ServiceKey is null);
+
+        Assert.Throws<InvalidOperationException>(
+            () => services.AddKeyedLiteRtChatClient("fast", new LiteRtEngineOptions { ModelPath = "other.litertlm" }));
+    }
+
+    // Resolving a client loads its engine, and Load names a missing model path before any native work, so
+    // distinct missing paths show which engine each registration reaches without a model.
+
+    [Fact]
+    public void AddKeyedLiteRtChatClient_EachKeyResolvesItsOwnEngine()
+    {
+        var services = new ServiceCollection();
+        services.AddKeyedLiteRtChatClient("fast", new LiteRtEngineOptions { ModelPath = "e2b-missing.litertlm", AllowMultipleEngines = true });
+        services.AddKeyedLiteRtChatClient("smart", new LiteRtEngineOptions { ModelPath = "e4b-missing.litertlm", AllowMultipleEngines = true });
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        Assert.Contains("e4b-missing.litertlm",
+            Assert.Throws<ArgumentException>(() => provider.GetRequiredKeyedService<IChatClient>("smart")).Message);
+        Assert.Contains("e2b-missing.litertlm",
+            Assert.Throws<ArgumentException>(() => provider.GetRequiredKeyedService<IChatClient>("fast")).Message);
+    }
+
+    [Fact]
+    public void ChatClientsFromEqualOptions_ShareTheFirstRegistrationsEngine()
+    {
+        // The first registration's engine is the app's, so a load through a later key would name the missing path.
+        var services = new ServiceCollection();
+        services.AddSingleton<LiteRtEngine>(_ => throw new NotSupportedException("the first registration's engine"));
+        services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "shared-missing.litertlm" });
+        services.AddKeyedLiteRtChatClient("chat", new LiteRtEngineOptions { ModelPath = "shared-missing.litertlm" });
+        services.AddKeyedLiteRtChatClient("translate", new LiteRtEngineOptions { ModelPath = "shared-missing.litertlm" });
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        Assert.Equal(3, services.Count(d => d.ServiceType == typeof(LiteRtEngine)));
+        foreach (string key in new[] { "chat", "translate" })
+            Assert.Equal("the first registration's engine",
+                Assert.Throws<NotSupportedException>(() => provider.GetRequiredKeyedService<IChatClient>(key)).Message);
+    }
+
+    [Fact]
+    public void ReplacingARegistration_RegistersAgain_AfterTheClientWasRemoved()
+    {
+        var services = new ServiceCollection();
+        services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "a.litertlm" });
+        services.RemoveAll<IChatClient>();
+        services.RemoveAll<LiteRtEngine>();
+
+        services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "b.litertlm" });
+
+        Assert.Single(services, d => d.ServiceType == typeof(IChatClient));
+        Assert.Single(services, d => d.ServiceType == typeof(LiteRtEngine));
+    }
+
+    [Fact]
+    public async Task ReplacingARegistration_WorksWithEqualOptions_UnderAnotherKey_AndWithoutACycle()
+    {
+        // Equal options under another key, after everything was removed: a new registration, not an alias of the old.
+        var services = new ServiceCollection();
+        services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "o-missing.litertlm" });
+        services.RemoveAll<IChatClient>();
+        services.RemoveAll<LiteRtEngine>();
+        services.AddKeyedLiteRtChatClient("x", new LiteRtEngineOptions { ModelPath = "o-missing.litertlm" });
+        using (ServiceProvider provider = services.BuildServiceProvider())
+            Assert.Contains("o-missing.litertlm",
+                Assert.Throws<ArgumentException>(() => provider.GetRequiredKeyedService<IChatClient>("x")).Message);
+
+        // The key that provided a shared engine is replaced: it loads again, and the sharing key follows it. An alias
+        // back to the sharing key would be a cycle, which the container does not detect: its first resolve hangs.
+        services = new ServiceCollection();
+        services.AddKeyedLiteRtChatClient("a", new LiteRtEngineOptions { ModelPath = "o-missing.litertlm" });
+        services.AddKeyedLiteRtChatClient("b", new LiteRtEngineOptions { ModelPath = "o-missing.litertlm" });
+        foreach (ServiceDescriptor d in services.Where(d => Equals(d.ServiceKey, "a") && d.ServiceType != typeof(LiteRtChatClientServiceCollectionExtensions.ChatClientRegistration)).ToList())
+            services.Remove(d);
+        services.AddKeyedLiteRtChatClient("a", new LiteRtEngineOptions { ModelPath = "o-missing.litertlm" });
+        using ServiceProvider replaced = services.BuildServiceProvider();
+        // WaitAsync throws TimeoutException if resolving the sharing key never returns.
+        ArgumentException missing = await Task.Run(
+                () => Assert.Throws<ArgumentException>(() => replaced.GetRequiredKeyedService<IChatClient>("b")))
+            .WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Contains("o-missing.litertlm", missing.Message);
+    }
+
+    [Fact]
+    public void AddKeyedLiteRtChatClient_FromOptions_RejectsAnyKey()
+        => Assert.Throws<ArgumentException>(() => new ServiceCollection().AddKeyedLiteRtChatClient(
+            KeyedService.AnyKey, new LiteRtEngineOptions { ModelPath = "a.litertlm" }));
+
+    [Fact]
+    public void AnAliasOfAnInstanceYouOwn_IsNotDisposedByTheContainer()
+    {
+        // The unkeyed alias of a key whose client is an instance stays an instance, which the container does not own.
+        var services = new ServiceCollection();
+        var mine = new CountingChatClient();
+        services.AddKeyedSingleton<IChatClient>("local", mine);
+        services.AddKeyedLiteRtChatClient("local", new LiteRtEngineOptions { ModelPath = "local.litertlm" });
+        LiteRtChatClientServiceCollectionExtensions.AliasUnkeyed(services, "local");
+
+        using (ServiceProvider provider = services.BuildServiceProvider())
+            Assert.Same(mine, provider.GetRequiredService<IChatClient>());
+
+        Assert.Equal(0, mine.Disposed);
+    }
+
+    private sealed class CountingChatClient : IChatClient
+    {
+        public int Disposed { get; private set; }
+        public void Dispose() => Disposed++;
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+    }
+
+    [Fact]
+    public void AddLiteRtChatClient_AFailedEagerLoad_LeavesTheKeyFree()
+    {
+        var services = new ServiceCollection();
+        Assert.Contains("first-missing.litertlm", Assert.Throws<ArgumentException>(() => services.AddLiteRtChatClient(
+            new LiteRtEngineOptions { ModelPath = "first-missing.litertlm" }, eager: true)).Message);
+        Assert.Contains("second-missing.litertlm", Assert.Throws<ArgumentException>(() => services.AddKeyedLiteRtChatClient(
+            "chat", new LiteRtEngineOptions { ModelPath = "second-missing.litertlm" }, eager: true)).Message);
+
+        // A retry with other options is a new registration, not a conflict with the failed one.
+        Assert.Contains("third-missing.litertlm", Assert.Throws<ArgumentException>(() => services.AddLiteRtChatClient(
+            new LiteRtEngineOptions { ModelPath = "third-missing.litertlm" }, eager: true)).Message);
+        services.AddLiteRtChatClient(new LiteRtEngineOptions { ModelPath = "first-missing.litertlm" });
+        services.AddKeyedLiteRtChatClient("chat", new LiteRtEngineOptions { ModelPath = "second-missing.litertlm" });
+
+        Assert.Equal(2, services.Count(d => d.ServiceType == typeof(IChatClient)));
+        Assert.Equal(2, services.Count(d => d.ServiceType == typeof(LiteRtEngine)));
+    }
+
+    [Fact]
+    public void AddKeyedLiteRtChatClient_KeepsAKeyedClientYouRegistered()
+    {
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<IChatClient>("local", (_, _) => throw new NotSupportedException("the app's own client"));
+        services.AddKeyedLiteRtChatClient("local", new LiteRtEngineOptions { ModelPath = "local.litertlm" });
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        Assert.Single(services, d => d.ServiceType == typeof(IChatClient) && Equals(d.ServiceKey, "local"));
+        Assert.Equal("the app's own client",
+            Assert.Throws<NotSupportedException>(() => provider.GetRequiredKeyedService<IChatClient>("local")).Message);
     }
 
     [Fact]

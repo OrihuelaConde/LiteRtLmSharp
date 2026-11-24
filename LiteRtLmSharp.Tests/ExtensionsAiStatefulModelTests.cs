@@ -130,6 +130,453 @@ public sealed class ExtensionsAiStatefulModelTests
             "Expected the stateful response to carry a ConversationId.");
     }
 
+    private const string CountPrompt = "Count upward starting from 400, one number per line, and never stop.";
+
+    /// <summary>
+    /// A cancelled continuation keeps its <c>ConversationId</c>: the client rolls the conversation back to the
+    /// checkpoint it took before the turn, so the next request on the same id continues from the turn before the
+    /// cut. This is what Agent Framework relies on, since it keeps the session's id after a failed run.
+    /// </summary>
+    [SkippableFact]
+    public async Task Stateful_CancelledContinuation_KeepsTheIdValid()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        var greedy = new ChatOptions { TopK = 1, MaxOutputTokens = 32 };
+
+        ChatResponse first = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is TANGERINE. Reply OK.")], greedy);
+        string id = first.ConversationId!;
+
+        // A blocking continuation cancelled mid-generation.
+        int beforeTurn = client.Store!.Get(id)!.Conversation.TokenCount;
+        await CutTurnAsync(client, id);
+        Assert.Equal(beforeTurn, client.Store!.Get(id)!.Conversation.TokenCount);
+
+        ChatResponse recall = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is my code word? One word.")], new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = id });
+        Assert.Equal(id, recall.ConversationId);
+        Assert.Contains("TANGERINE", recall.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task CutTurnAsync(LiteRtChatClient client, string id, string prompt = CountPrompt)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, prompt)],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 900, ConversationId = id }, cts.Token));
+    }
+
+    /// <summary>
+    /// The sequence the connector runs in a real session: a rollback disposes the consumed original at once, so
+    /// the checkpoint must keep its state while another conversation generates, through a second cut on the same
+    /// id, and through a fork.
+    /// </summary>
+    [SkippableFact]
+    public async Task Stateful_RolledBackConversation_KeepsItsState_AcrossOtherConversationsASecondCutAndAFork()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
+        var greedy = new ChatOptions { TopK = 1, MaxOutputTokens = 32 };
+
+        string a = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is TANGERINE. Reply OK.")], greedy)).ConversationId!;
+        string b = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is COBALT. Reply OK.")], greedy)).ConversationId!;
+
+        async Task<string> Ask(string id, string question) => (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, question)],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = id })).Text;
+
+        // Each send on a checkpoint words its message differently from what the conversations it shares state with
+        // already sent: on the GPU backend (LiteRT-LM v0.18.0), a first send on a clone that repeats such a message
+        // word for word, after another conversation generated, gets a wrong reply.
+        await CutTurnAsync(client, a);
+        Assert.Contains("COBALT", await Ask(b, "What is my code word? One word."), StringComparison.OrdinalIgnoreCase);
+        await CutTurnAsync(client, a, "Count upward starting from 700, one number per line, and never stop.");
+        string fork = await branching.ForkAsync(a);
+        Assert.Contains("COBALT", await Ask(b, "Repeat my code word. One word."), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("TANGERINE", await Ask(a, "What is my code word? One word."), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("TANGERINE", await Ask(fork, "Which code word did I give you? One word."), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Re-sending the cut message on the checkpoint, after another conversation generated, gets a real reply. On
+    /// the GPU backend the runtime answers a checkpoint's first send that repeats the message word for word with
+    /// a wrong or empty reply, so the client changes the repeated message, also when the retry is cut again.
+    /// </summary>
+    [SkippableFact]
+    public async Task Stateful_ResendingACutMessage_GetsARealReply_AfterAnotherConversationGenerated()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        var greedy = new ChatOptions { TopK = 1, MaxOutputTokens = 32 };
+
+        string a = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is TANGERINE. Reply OK.")], greedy)).ConversationId!;
+        string b = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is COBALT. Reply OK.")], greedy)).ConversationId!;
+
+        await CutTurnAsync(client, a);
+        await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is my code word? One word.")],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = b });
+        await CutTurnAsync(client, a);
+        await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Repeat my code word. One word.")],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = b });
+
+        ChatResponse retry = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, CountPrompt)],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = a });
+        Assert.Contains("400", retry.Text, StringComparison.Ordinal);
+        Assert.Contains("401", retry.Text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A fork taken after a rollback inherits what the rollback left behind: re-sending the cut message on the
+    /// branch, after another conversation generated, gets a real reply on the GPU backend too.
+    /// </summary>
+    [SkippableFact]
+    public async Task Stateful_ForkAfterARollback_GetsARealReply_WhenItResendsTheCutMessage()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
+        var greedy = new ChatOptions { TopK = 1, MaxOutputTokens = 32 };
+
+        string a = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is TANGERINE. Reply OK.")], greedy)).ConversationId!;
+        string b = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is COBALT. Reply OK.")], greedy)).ConversationId!;
+
+        await CutTurnAsync(client, a);
+        string fork = await branching.ForkAsync(a);
+        await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is my code word? One word.")],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = b });
+
+        ChatResponse retry = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, CountPrompt)],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = fork });
+        Assert.Contains("400", retry.Text, StringComparison.Ordinal);
+        Assert.Contains("401", retry.Text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A first call has nothing to roll back to: an abandoned first stream evicts the id its updates already
+    /// carried, and resuming that id says so.
+    /// </summary>
+    [SkippableFact]
+    public async Task Stateful_AbandonedFirstStream_EvictsTheIdItsUpdatesCarried()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+
+        string? id = null;
+        int updates = 0;
+        await foreach (ChatResponseUpdate update in client.GetStreamingResponseAsync(
+            [new ChatMessage(ChatRole.User, CountPrompt)], new ChatOptions { TopK = 1, MaxOutputTokens = 900 }))
+        {
+            id = update.ConversationId;
+            if (++updates == 10)
+                break;
+        }
+
+        Assert.Equal(10, updates);
+        Assert.NotNull(id);
+        var gone = await Assert.ThrowsAsync<ArgumentException>(() => client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")], new ChatOptions { MaxOutputTokens = 8, ConversationId = id }));
+        Assert.Contains("started the conversation", gone.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A stream the consumer stops reading after the native generation ended is a completed turn, not a cut: the
+    /// conversation is kept as it is, with the turn in it, instead of being rolled back.
+    /// </summary>
+    [SkippableFact]
+    public async Task Stateful_StreamLeftAfterTheReplyEnded_KeepsTheTurn()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+
+        string id = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is OBSIDIAN. Reply OK.")],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32 })).ConversationId!;
+        LiteRtConversation live = client.Store!.Get(id)!.Conversation;
+        int beforeTurn = live.TokenCount;
+
+        await foreach (ChatResponseUpdate _ in client.GetStreamingResponseAsync(
+            [new ChatMessage(ChatRole.User, "Write one short sentence about the sea.")],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 48, ConversationId = id }))
+        {
+            // Creating a conversation waits for the generation in flight, so the reply has ended after this.
+            using LiteRtConversation waited = engine.CreateConversation();
+            break;
+        }
+
+        LiteRtConversationStore.Entry entry = client.Store!.Get(id)!;
+        Assert.Same(live, entry.Conversation);
+        Assert.False(live.IsCancelled);
+        Assert.Null(entry.PendingTurn);
+        Assert.True(live.TokenCount > beforeTurn, "The completed turn must stay in the conversation.");
+    }
+
+    /// <summary>
+    /// A conversation with constrained decoding takes no checkpoint (cloning it rebuilds its constraints, about a
+    /// second each), so a cut on a continuation evicts its id, as a backend that cannot clone does.
+    /// </summary>
+    [SkippableFact]
+    public async Task Stateful_ConstrainedConversation_IsEvictedByACut()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(
+            engine,
+            optionsTemplate: new LiteRtConversationOptions { EnableConstrainedDecoding = true },
+            statefulConversations: new LiteRtStatefulConversationOptions());
+
+        string id = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Reply with one short word: hello")],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 16 })).ConversationId!;
+        Assert.True(client.Store!.Get(id)!.CloneIsSlow);
+
+        await CutTurnAsync(client, id);
+
+        var gone = await Assert.ThrowsAsync<ArgumentException>(() => client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")], new ChatOptions { MaxOutputTokens = 8, ConversationId = id }));
+        Assert.Contains("CheckpointConstrainedConversations", gone.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// With <see cref="LiteRtStatefulConversationOptions.CheckpointConstrainedConversations"/>, a cut on a
+    /// constrained conversation rolls back like any other, and the conversation still knows the earlier turn.
+    /// </summary>
+    [SkippableFact]
+    public async Task Stateful_ConstrainedConversation_KeepsItsId_WhenCheckpointsAreOn()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(
+            engine,
+            optionsTemplate: new LiteRtConversationOptions { EnableConstrainedDecoding = true },
+            statefulConversations: new LiteRtStatefulConversationOptions { CheckpointConstrainedConversations = true });
+
+        string id = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is OBSIDIAN. Reply OK.")],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 16 })).ConversationId!;
+        int beforeTurn = client.Store!.Get(id)!.Conversation.TokenCount;
+
+        await CutTurnAsync(client, id);
+
+        Assert.Equal(beforeTurn, client.Store!.Get(id)!.Conversation.TokenCount);
+        ChatResponse recall = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is my code word? One word.")],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = id });
+        Assert.Contains("OBSIDIAN", recall.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static AIFunction WeatherTool() => AIFunctionFactory.Create(
+        (string city) => $"22 degrees and sunny in {city}",
+        name: "get_weather", description: "Gets the current weather for a given city.");
+
+    private static ChatMessage ToolResult(FunctionCallContent call) => new(ChatRole.Tool, (IList<AIContent>)
+        [new FunctionResultContent(call.CallId!, "22 degrees and sunny in Paris")]);
+
+    private const string WeatherThenEssay =
+        "What is the weather in Paris? Use the get_weather tool, and with its result write a long essay about the weather in Paris.";
+
+    /// <summary>
+    /// The rollback is per turn: a turn that ended in a tool call stays pending until the reply without tool
+    /// calls, and a cancelled tool round discards the whole turn, its question and tool call included, which is
+    /// what Agent Framework keeps after a failed run.
+    /// </summary>
+    [SkippableFact]
+    public async Task Stateful_CancelledToolRound_RollsBackTheWholeTurn()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        Skip.If(Environment.GetEnvironmentVariable("LITERTLM_TEST_TOOLS") != "1",
+            "Set LITERTLM_TEST_TOOLS=1 (with a version-matched native binary) to run tool tests.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+
+        // Tools are fixed when the conversation is created. No constrained decoding, so a checkpoint is taken.
+        string id = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is JUNIPER. Reply OK.")],
+            new ChatOptions { Tools = [WeatherTool()], TopK = 1, MaxOutputTokens = 32 })).ConversationId!;
+        LiteRtConversationStore.Entry entry = client.Store!.Get(id)!;
+        int beforeTurn = entry.Conversation.TokenCount;
+
+        var round = new ChatOptions { TopK = 1, MaxOutputTokens = 512, ConversationId = id };
+        ChatResponse call = await client.GetResponseAsync([new ChatMessage(ChatRole.User, WeatherThenEssay)], round);
+        FunctionCallContent? fcc = call.Messages[^1].Contents.OfType<FunctionCallContent>().FirstOrDefault();
+        Skip.If(fcc is null, "The model answered without calling the tool on this platform.");
+        Assert.NotNull(entry.PendingTurn?.Checkpoint);
+
+        await CutToolRoundAsync(client, fcc, round);
+
+        Assert.Null(entry.PendingTurn);
+        Assert.DoesNotContain(fcc.CallId!, entry.CallIdToName.Keys);
+        Assert.Equal(beforeTurn, entry.Conversation.TokenCount);
+        Assert.False(entry.Conversation.IsCancelled);
+
+        // Results for the discarded call would reach a conversation that holds neither the question nor the call.
+        var discarded = await Assert.ThrowsAsync<ArgumentException>(() => client.GetResponseAsync([ToolResult(fcc)], round));
+        Assert.Contains("discarded", discarded.Message, StringComparison.Ordinal);
+
+        ChatResponse recall = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is my code word? One word.")],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = id });
+        Assert.Contains("JUNIPER", recall.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// A tool round that completes ends the turn; a tool round of the turn that started the conversation has
+    /// nothing to roll back to, so cutting it evicts the id.
+    /// </summary>
+    [SkippableFact]
+    public async Task Stateful_ToolRounds_EndTheTurn_AndEvictAFirstCallsTurnWhenCut()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        Skip.If(Environment.GetEnvironmentVariable("LITERTLM_TEST_TOOLS") != "1",
+            "Set LITERTLM_TEST_TOOLS=1 (with a version-matched native binary) to run tool tests.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        var first = new ChatOptions { Tools = [WeatherTool()], TopK = 1, MaxOutputTokens = 512 };
+
+        ChatResponse call = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is the weather in Paris? Use the get_weather tool.")], first);
+        string completed = call.ConversationId!;
+        FunctionCallContent? fcc = call.Messages[^1].Contents.OfType<FunctionCallContent>().FirstOrDefault();
+        Skip.If(fcc is null, "The model answered without calling the tool on this platform.");
+        LiteRtConversationStore.Entry entry = client.Store!.Get(completed)!;
+        Assert.NotNull(entry.PendingTurn);
+        Assert.Null(entry.PendingTurn!.Checkpoint);   // the turn created the conversation
+
+        ChatResponse answer = await client.GetResponseAsync([ToolResult(fcc)], new ChatOptions { TopK = 1, MaxOutputTokens = 64, ConversationId = completed });
+        Skip.If(answer.Messages[^1].Contents.OfType<FunctionCallContent>().Any(), "The model called the tool again on this platform.");
+        Assert.Null(entry.PendingTurn);
+
+        call = await client.GetResponseAsync([new ChatMessage(ChatRole.User, WeatherThenEssay)], first);
+        string cut = call.ConversationId!;
+        fcc = call.Messages[^1].Contents.OfType<FunctionCallContent>().FirstOrDefault();
+        Skip.If(fcc is null, "The model answered without calling the tool on this platform.");
+        await CutToolRoundAsync(client, fcc, new ChatOptions { TopK = 1, MaxOutputTokens = 512, ConversationId = cut });
+
+        Assert.Null(client.Store!.Get(cut));
+    }
+
+    private static async Task CutToolRoundAsync(LiteRtChatClient client, FunctionCallContent call, ChatOptions options)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        try
+        {
+            await client.GetResponseAsync([ToolResult(call)], options, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        Skip.If(true, "The tool round ended before the cut on this platform.");
+    }
+
+    /// <summary>
+    /// A stream stopped at its tool call keeps the turn, because the update arrives after the native generation
+    /// ended: the conversation is unchanged, the turn stays pending, and the results can still be sent.
+    /// </summary>
+    [SkippableFact]
+    public async Task Stateful_StreamStoppedAtItsToolCall_KeepsTheTurn()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        Skip.If(Environment.GetEnvironmentVariable("LITERTLM_TEST_TOOLS") != "1",
+            "Set LITERTLM_TEST_TOOLS=1 (with a version-matched native binary) to run tool tests.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+
+        string id = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is JUNIPER. Reply OK.")],
+            new ChatOptions { Tools = [WeatherTool()], TopK = 1, MaxOutputTokens = 32 })).ConversationId!;
+        LiteRtConversationStore.Entry entry = client.Store!.Get(id)!;
+        LiteRtConversation live = entry.Conversation;
+
+        var round = new ChatOptions { TopK = 1, MaxOutputTokens = 256, ConversationId = id };
+        FunctionCallContent? fcc = null;
+        await foreach (ChatResponseUpdate update in client.GetStreamingResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is the weather in Paris? Use the get_weather tool.")], round))
+        {
+            fcc = update.Contents.OfType<FunctionCallContent>().FirstOrDefault();
+            if (fcc is not null)
+                break;
+        }
+        Skip.If(fcc is null, "The model answered without calling the tool on this platform.");
+
+        Assert.Same(live, entry.Conversation);
+        Assert.False(live.IsCancelled);
+        Assert.NotNull(entry.PendingTurn);
+        ChatResponse answer = await client.GetResponseAsync([ToolResult(fcc)], round);
+        Assert.Equal(id, answer.ConversationId);
+    }
+
+    /// <summary>The streaming counterpart: a continuation stream the consumer abandons rolls back too.</summary>
+    [SkippableFact]
+    public async Task Stateful_AbandonedContinuationStream_KeepsTheIdValid()
+    {
+        Skip.If(string.IsNullOrEmpty(Model) || !File.Exists(Model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(Options());
+        using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
+        var greedy = new ChatOptions { TopK = 1, MaxOutputTokens = 32 };
+
+        ChatResponse first = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is OBSIDIAN. Reply OK.")], greedy);
+        string id = first.ConversationId!;
+
+        int updates = 0;
+        await foreach (ChatResponseUpdate _ in client.GetStreamingResponseAsync(
+            [new ChatMessage(ChatRole.User, CountPrompt)],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 900, ConversationId = id }))
+        {
+            if (++updates == 10)
+                break;   // the consumer gives up: the client cancels the native stream
+        }
+
+        ChatResponse recall = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "What is my code word? One word.")], new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = id });
+        Assert.Equal(10, updates);
+        Assert.Equal(id, recall.ConversationId);
+        Assert.Contains("OBSIDIAN", recall.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>A request naming a ConversationId the client never issued throws (nothing to resume).</summary>
     [SkippableFact]
     public async Task Stateful_UnknownConversationId_Throws()

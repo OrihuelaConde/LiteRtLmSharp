@@ -9,11 +9,16 @@ public enum LiteRtSamplerType
     /// unspecified sampler type, and v0.18.0 declares it again; not sending parameters preserves the
     /// pre-v0.14.0 behavior, where the unspecified type also deferred to the executor.)</summary>
     Unspecified = 0,
-    /// <summary>Sample probabilistically among the top-k tokens.</summary>
+    /// <summary>Sample probabilistically among the top-k tokens. Sent to the runtime as
+    /// <see cref="TopP"/> with <see cref="LiteRtSamplerParams.TopP"/> = 1, which is the same sampling
+    /// (see <see cref="LiteRtSamplerParams"/>).</summary>
     TopK = 1,
-    /// <summary>Nucleus (top-p) sampling after a top-k cut.</summary>
+    /// <summary>Nucleus (top-p) sampling after a top-k cut. The one type both the CPU and the GPU backend
+    /// build.</summary>
     TopP = 2,
-    /// <summary>Always pick the highest-probability token (argmax).</summary>
+    /// <summary>Always pick the highest-probability token (argmax). Sent to the runtime as
+    /// <see cref="TopP"/> with <see cref="LiteRtSamplerParams.TopK"/> = 1, which is exact argmax whatever the
+    /// temperature and seed (see <see cref="LiteRtSamplerParams"/>).</summary>
     Greedy = 3,
 }
 
@@ -25,6 +30,31 @@ public enum LiteRtSamplerType
 /// 40, 0.95, 1.0, seed 0) are the same values Google's official bindings fill in for unset fields, so a
 /// partial configuration behaves identically across the LiteRT-LM ecosystem.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <b>How strategies reach the runtime.</b> The LiteRT-LM CPU backend builds only TopP samplers (a Greedy or
+/// TopK session that is the first to decode on an engine fails with <c>UNIMPLEMENTED</c>), and the GPU backend
+/// runs every type as TopP. The binding therefore sends <see cref="LiteRtSamplerType.Greedy"/> as TopP with
+/// <see cref="TopK"/> = 1 and <see cref="LiteRtSamplerType.TopK"/> as TopP with <see cref="TopP"/> = 1,
+/// changing only the field that defines the strategy, so each explicit strategy behaves as named on the CPU
+/// and GPU backends. <see cref="LiteRtSamplerType.Unspecified"/> uses the sampler the model file declares
+/// (<see cref="LiteRtModelInfo.DefaultSampler"/>), which the CPU backend rejects when it is TopK or Greedy.
+/// </para>
+/// <para>
+/// <b>Per conversation and per engine.</b> Measured on LiteRT-LM v0.18.0 (gemma-4 E2B, win-x64, CPU and GPU):
+/// a conversation's parameters take effect on a fresh engine, after a conversation with other parameters on
+/// the same engine (a Greedy conversation after a sampled one returns the argmax reply), and with two live
+/// conversations whose samplers differ, sent turn by turn. The runtime fixes the sampler <i>type</i> per
+/// engine at its first decode; with the mapping above every explicit strategy is TopP, so this only matters
+/// next to a conversation that used the model's own sampler (<see cref="LiteRtSamplerType.Unspecified"/>).
+/// </para>
+/// <para>
+/// <b>Where the runtime decodes greedily.</b> In the LiteRT-LM v0.18.0 and v0.18.1 sources, speculative
+/// decoding (<see cref="LiteRtEngineOptions.EnableSpeculativeDecoding"/>) verifies the drafted tokens
+/// greedily, so only the first token of each turn uses the conversation's sampler (upstream changed this
+/// after v0.18.1), and the NPU backend always decodes greedily.
+/// </para>
+/// </remarks>
 public sealed record LiteRtSamplerParams
 {
     /// <summary>The sampling strategy. Default <see cref="LiteRtSamplerType.TopP"/> (the value the
@@ -64,8 +94,9 @@ public sealed record LiteRtSamplerParams
 
     private readonly float _temperature = 1.0f;
 
-    /// <summary>Sampling temperature: higher is more random, 0 is greedy/argmax. Must be a
-    /// non-negative number. Default 1.0.</summary>
+    /// <summary>Sampling temperature: higher is more random, 0 is greedy/argmax (measured: with TopP,
+    /// temperature 0 gives the same replies as <see cref="LiteRtSamplerType.Greedy"/>, whatever the seed).
+    /// Must be a non-negative number. Default 1.0.</summary>
     /// <exception cref="System.ArgumentOutOfRangeException">The value is NaN or negative.</exception>
     public float Temperature
     {

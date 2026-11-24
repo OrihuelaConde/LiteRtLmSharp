@@ -149,6 +149,51 @@ public sealed record LiteRtEngineOptions
     public LiteRtCache Cache { get; init; }
 
     /// <summary>
+    /// Allow this engine to stay alive next to other chat engines in the process. Default <c>false</c>:
+    /// <see cref="LiteRtEngine.Load"/> throws <see cref="System.InvalidOperationException"/> while another chat
+    /// engine is alive. A <see cref="LiteRtEmbeddingEngine"/> never counts.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Set it on every engine that should coexist: a load next to live engines succeeds only when the engine
+    /// being loaded and every live engine opted in. A component that loads an engine without this setting
+    /// therefore keeps the one-engine guarantee it was written for. <see cref="LiteRtEngine.LiveEngineCount"/>
+    /// reports how many chat engines are alive.
+    /// </para>
+    /// <para>
+    /// Measured on LiteRT-LM v0.18.0 with gemma-4 E2B and E4B on win-x64 (CPU with up to four engines, GPU
+    /// with up to three) and linux-x64 (CPU, up to four): the engines load, generate at the same time and
+    /// dispose in any order, with replies byte-identical to a single engine. That includes engines loaded
+    /// concurrently from two threads (with the compiled-model cache already warm), mixed CPU and GPU engines, a
+    /// vision engine next to a text engine, and speculative decoding. On the android-x64 emulator (CPU,
+    /// gemma-4 E2B) up to three engines load and generate. Physical Android devices, Apple platforms and
+    /// linux-arm64 were not measured.
+    /// </para>
+    /// <para>
+    /// Engines run in parallel only on a desktop CPU. On a GPU, and on the Android emulator, a second engine
+    /// adds no throughput: two replies generated at the same time take longer than one after the other.
+    /// </para>
+    /// <para>
+    /// Each engine holds its own memory. On Windows a gemma-4 E2B engine commits about 2.3 GB of private memory
+    /// on CPU and 3.6 GB on GPU once loaded, while right after loading the working set of a CPU engine grows by
+    /// about 0.35 GB, because the weights are memory-mapped; on linux-x64 and the Android emulator each extra CPU
+    /// engine took 0.2 to 0.4 GB. These figures are before generating: one engine alone reached 1.3 GB on win-x64
+    /// and 1.45 GB on the emulator after one short reply, and several generating engines were not measured. Over ten
+    /// load and dispose cycles next to a live engine, private memory ended about 90 MB higher on CPU and 215 to 250 MB
+    /// on GPU (win-x64), moving in both directions, so this does not show steady growth. Check free memory (on Windows, the commit limit) before loading another
+    /// engine. On win-x64 GPU, test runs that load and dispose many engines in one process have ended a few
+    /// times with the process exiting without an error; the project roadmap tracks it.
+    /// </para>
+    /// <para>
+    /// The one-engine rule was added in an earlier release built on self-built LiteRT-LM v0.13.1 libraries,
+    /// after a second live engine was reported to hang in the native layer. That hang was never reproduced, and
+    /// the official libraries this package ships showed none in the measurements above, which is why the rule
+    /// can be lifted per engine.
+    /// </para>
+    /// </remarks>
+    public bool AllowMultipleEngines { get; init; }
+
+    /// <summary>
     /// Enable speculative decoding: the model drafts several tokens ahead with a small
     /// Multi-Token-Prediction (MTP) drafter and the main model verifies them in one step. It pays off
     /// only where verification is cheap relative to the drafter (memory-bound accelerators, high
@@ -168,6 +213,12 @@ public sealed record LiteRtEngineOptions
     /// (0.52× on an RTX 3080 with the default float32 activations), with the default disk cache in both
     /// cases. On an Adreno 650 phone GPU it made no difference (measured in June 2026 on LiteRT-LM
     /// v0.13.1).
+    /// </para>
+    /// <para>
+    /// In the LiteRT-LM v0.18.0 and v0.18.1 sources the main model verifies the drafted tokens greedily, so
+    /// with speculative decoding only the first token of each turn uses the conversation's sampler, and the
+    /// rest of the reply is decoded greedily (upstream changed this after v0.18.1). On the GPU backend the reply
+    /// can still differ from a plain argmax reply (measured on v0.18.0, win-x64).
     /// </para>
     /// </remarks>
     public bool EnableSpeculativeDecoding { get; init; }
@@ -488,6 +539,13 @@ public sealed record LiteRtConversationOptions
     public string? SystemMessage { get; init; }
 
     /// <summary>Optional sampler parameters. Null = engine default.</summary>
+    /// <remarks>
+    /// Each explicit strategy works on the CPU and GPU backends: the binding sends
+    /// <see cref="LiteRtSamplerType.Greedy"/> and <see cref="LiteRtSamplerType.TopK"/> as TopP, the one sampler
+    /// type both build. Each conversation's parameters take effect, also on an engine where other
+    /// conversations already generated. <see cref="LiteRtSamplerParams"/> lists what was measured and where
+    /// the runtime decodes greedily instead (speculative decoding and the NPU backend).
+    /// </remarks>
     public LiteRtSamplerParams? Sampler { get; init; }
 
     /// <summary>Maximum output tokens per response. 0 = engine default.</summary>
@@ -497,9 +555,9 @@ public sealed record LiteRtConversationOptions
     public IReadOnlyList<LiteRtTool>? Tools { get; init; }
 
     /// <summary>
-    /// Conversation history to restore (or a few-shot preface) — the prior turns are re-prefilled into
-    /// the KV cache when the conversation is created, so the model continues as if they had just
-    /// happened. Build the list with <see cref="LiteRtMessage"/> factories and capture assistant turns
+    /// Conversation history to restore (or a few-shot preface) — the prior turns are prefilled into the
+    /// KV cache by the conversation's first send (creating the conversation prefills nothing), so the model
+    /// continues as if they had just happened. Build the list with <see cref="LiteRtMessage"/> factories and capture assistant turns
     /// with <see cref="LiteRtResponse.ToMessage"/>; persist and reload via
     /// <see cref="LiteRtMessage.Serialize"/> / <see cref="LiteRtMessage.Deserialize"/>.
     /// </summary>
@@ -700,6 +758,8 @@ public sealed record LiteRtConversationOptions
     /// conversations explicitly. Requires a model that ships an MTP drafter (such as the Gemma 4 E-series):
     /// on a model without one, <c>true</c> makes the first send fail with <see cref="LiteRtException"/>.
     /// Maps to the C API <c>session_config_set_enable_speculative_decoding</c> (native LiteRT-LM v0.18.0+).
+    /// With speculative decoding on, only the first token of each turn uses the conversation's sampler (see
+    /// <see cref="LiteRtEngineOptions.EnableSpeculativeDecoding"/>).
     /// </remarks>
     public bool? EnableSpeculativeDecoding { get; init; }
 }

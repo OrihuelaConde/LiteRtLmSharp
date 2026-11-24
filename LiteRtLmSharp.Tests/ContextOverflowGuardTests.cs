@@ -204,6 +204,11 @@ public sealed class ContextOverflowModelTests
                     Assert.False(fullSignaled,
                         "IsContextFull was true after the previous send, but this send did not throw.");
                     fullSignaled = conv.IsContextFull;
+                    if (fullSignaled)
+                    {
+                        using LiteRtConversation branch = conv.Clone();
+                        Assert.True(branch.IsContextFull, "A clone of a full conversation holds the same tokens.");
+                    }
                 }
                 catch (LiteRtContextOverflowException ex)
                 {
@@ -307,6 +312,37 @@ public sealed class ContextOverflowModelTests
             chatOptions);
         Assert.Equal(first.ConversationId, retry.ConversationId);
         Assert.False(string.IsNullOrWhiteSpace(retry.Text), "The preserved thread did not answer.");
+    }
+
+    /// <summary>
+    /// A "context is full" rejection is terminal in the stateful mode: the checkpoint would be just as full, so
+    /// the client evicts the conversation instead of rolling it back, and resuming the id says why.
+    /// </summary>
+    [SkippableFact]
+    public async Task StatefulThread_IsEvictedByAContextFullRejection()
+    {
+        LiteRtEngineOptions? options = SmallContextOptions();
+        Skip.If(options is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var engine = LiteRtEngine.Load(options);
+        using var client = new LiteRtLmSharp.Extensions.AI.LiteRtChatClient(
+            engine, statefulConversations: new LiteRtLmSharp.Extensions.AI.LiteRtStatefulConversationOptions());
+
+        Microsoft.Extensions.AI.ChatResponse clamped = await client.GetResponseAsync(
+            [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User,
+                "Count upward from 1, one number per line, and do not stop counting.")],
+            new Microsoft.Extensions.AI.ChatOptions { MaxOutputTokens = 4096 });
+        long total = clamped.Usage?.TotalTokenCount ?? 0;
+        Skip.If(total < SmallContext - LiteRtContextGuard.SafetyMargin,
+            $"The model stopped on its own at {total} tokens — no clamp happened, nothing to observe.");
+        Assert.Equal(Microsoft.Extensions.AI.ChatFinishReason.Length, clamped.FinishReason);
+
+        var next = new Microsoft.Extensions.AI.ChatOptions { MaxOutputTokens = 16, ConversationId = clamped.ConversationId };
+        Microsoft.Extensions.AI.ChatMessage[] hello = [new(Microsoft.Extensions.AI.ChatRole.User, "Reply with one short word: hello")];
+        await Assert.ThrowsAsync<LiteRtContextOverflowException>(() => client.GetResponseAsync(hello, next));
+
+        var gone = await Assert.ThrowsAsync<ArgumentException>(() => client.GetResponseAsync(hello, next));
+        Assert.Contains("context is full", gone.Message, StringComparison.Ordinal);
     }
 
     /// <summary>

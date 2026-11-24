@@ -147,6 +147,59 @@ public class StatefulConversationMappingTests
     // ─────────────────────── DI registration (Extensions.AI) ───────────────────────
 
     [Fact]
+    public void CutMessages_AreChanged_OneMoreZeroWidthSpacePerCut_UntilTheTurnEnds()
+    {
+        // Model-free: the entry's conversation is not used by this logic. The runtime problem this avoids is on the
+        // GPU backend, which most CI legs do not run.
+        var entry = new LiteRtConversationStore.Entry(null!);
+        Assert.Equal("hello", entry.AvoidRepeatingACutMessage("hello"));
+
+        entry.RecordCutMessage("hello");
+        Assert.Equal("hello\u200B", entry.AvoidRepeatingACutMessage("hello"));
+        Assert.Equal("  hello \u200B", entry.AvoidRepeatingACutMessage("  hello "));   // the template trims whitespace
+        Assert.Equal("other", entry.AvoidRepeatingACutMessage("other"));
+        Assert.Null(entry.AvoidRepeatingACutMessage(null));
+
+        entry.RecordCutMessage("hello");
+        Assert.Equal("hello\u200B\u200B", entry.AvoidRepeatingACutMessage("hello"));
+
+        var fork = new LiteRtConversationStore.Entry(null!);
+        fork.CopyRollbackStateFrom(entry);
+        Assert.Equal("hello\u200B\u200B", fork.AvoidRepeatingACutMessage("hello"));
+
+        entry.ClearCutMessages();
+        Assert.Equal("hello", entry.AvoidRepeatingACutMessage("hello"));
+    }
+
+    [Fact]
+    public void DiscardedToolCalls_AreOnlyRejected_WhenTheyAreWhatTheSendWouldSend()
+    {
+        // The conversation is only reached after the check, and this client has no conversations to resume.
+        var results = new ChatMessage(ChatRole.Tool, (IList<AIContent>)[new FunctionResultContent("get_weather_0", "sunny")]);
+        var entry = new LiteRtConversationStore.Entry(null!);
+        entry.DiscardToolCalls(["get_weather_0"]);
+
+        var thrown = Assert.Throws<ArgumentException>(() => LiteRtChatClient.ThrowIfResultsOfADiscardedTurn([results], entry));
+        Assert.Contains("get_weather_0", thrown.Message, StringComparison.Ordinal);
+
+        // A resent history can still hold an old result with the same id; only the last message goes out.
+        LiteRtChatClient.ThrowIfResultsOfADiscardedTurn([results, new ChatMessage(ChatRole.User, "next")], entry);
+    }
+
+    [Fact]
+    public void DiscardedToolCalls_AreForgotten_WhenALaterTurnMakesACallWithTheSameId()
+    {
+        var entry = new LiteRtConversationStore.Entry(null!);
+        entry.DiscardToolCalls(["get_weather_0"]);
+        Assert.True(entry.IsDiscardedToolCall("get_weather_0"));
+        Assert.False(entry.IsDiscardedToolCall("get_time_0"));
+        Assert.False(entry.IsDiscardedToolCall(null));
+
+        entry.RecordToolCall("get_weather_0", "get_weather");
+        Assert.False(entry.IsDiscardedToolCall("get_weather_0"));
+    }
+
+    [Fact]
     public void AddLiteRtChatClient_FromOptions_WithStateful_RegistersOneEngineAndClient()
     {
         var options = new LiteRtEngineOptions { ModelPath = "does-not-exist.litertlm" };

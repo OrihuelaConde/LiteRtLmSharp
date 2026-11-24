@@ -847,7 +847,8 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     {
         Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
-        var conv = _fixture.Engine.CreateConversation(
+        // Under using so a failed assert below cannot leave a conversation holding the engine's slot.
+        using var conv = _fixture.Engine.CreateConversation(
             new LiteRtConversationOptions { MaxOutputTokens = 512 });
 
         // Idle cancel is a no-op — must not fault the conversation or the send that follows.
@@ -887,7 +888,7 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         // Token cancellation mid-stream.
-        var conv = _fixture.Engine.CreateConversation();
+        using var conv = _fixture.Engine.CreateConversation();
         using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
         {
             await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
@@ -1387,8 +1388,8 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
 /// </para>
 /// <para>
 /// This class loads its OWN engines (it does NOT take <see cref="EngineFixture"/>) and disposes each
-/// before loading the next, so only one engine is ever alive — required because two live engines hang
-/// the native layer. Safe to coexist with <see cref="ModelTests"/>: the assembly disables test
+/// before loading the next, so only one engine is ever alive — required because these engines do not
+/// opt in to coexisting (<see cref="LiteRtEngineOptions.AllowMultipleEngines"/>). Safe to coexist with <see cref="ModelTests"/>: the assembly disables test
 /// parallelization (see AssemblyInfo.cs), so classes run one at a time and the shared fixture engine
 /// is never alive while this runs.
 /// </para>

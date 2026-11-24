@@ -26,34 +26,92 @@ internal sealed class EngineSettingsHandle(nint handle) : LiteRtLmHandle(handle)
     }
 }
 
-/// <summary>
-/// Process-wide gate for the "only one live engine at a time" rule. The slot is acquired in
-/// <see cref="LiteRtEngine.Load"/> and released when the native engine is actually destroyed, in
-/// <see cref="EngineHandle.ReleaseHandle"/> — which runs on Dispose AND on finalization, so a
-/// GC'd-but-undisposed engine still frees the slot (and only after the native engine is gone).
-/// </summary>
-internal static class EngineLiveness
+/// <summary>The outcome of <see cref="EngineLiveness.TryAcquire"/>.</summary>
+internal enum EngineAdmission
 {
-    private static int s_live;
-
-    /// <summary>Tries to take the single engine slot; returns false if one is already live.</summary>
-    public static bool TryAcquire() => Interlocked.CompareExchange(ref s_live, 1, 0) == 0;
-
-    /// <summary>Frees the engine slot.</summary>
-    public static void Release() => Interlocked.Exchange(ref s_live, 0);
+    /// <summary>The engine took a slot.</summary>
+    Admitted,
+    /// <summary>Refused: engines are alive and the engine being loaded did not opt in.</summary>
+    NewEngineNotOptedIn,
+    /// <summary>Refused: a live engine did not opt in, so nothing may load next to it.</summary>
+    LiveEngineNotOptedIn,
 }
 
-internal sealed class EngineHandle(nint handle) : LiteRtLmHandle(handle)
+/// <summary>
+/// The process-wide gate for live chat engines. A slot is acquired in <see cref="LiteRtEngine.Load"/> and
+/// released when the native engine is actually destroyed, in <see cref="EngineHandle.ReleaseHandle"/> —
+/// which runs on Dispose AND on finalization, so a GC'd-but-undisposed engine still frees its slot (and
+/// only after the native engine is gone).
+/// </summary>
+/// <remarks>
+/// By default one engine may be alive at a time. Engines loaded with
+/// <see cref="LiteRtEngineOptions.AllowMultipleEngines"/> may coexist with each other, but never with an
+/// engine that did not opt in, in either order. The live count and the count of engines that did not opt in
+/// change together under one lock (two counters cannot be checked and updated atomically with CAS), and
+/// neither goes below zero. <see cref="Default"/> is the gate <see cref="LiteRtEngine.Load"/> uses; tests
+/// create their own instances instead of draining process-global state.
+/// </remarks>
+internal sealed class EngineLiveness
+{
+    /// <summary>The process-wide gate.</summary>
+    public static EngineLiveness Default { get; } = new();
+
+    private readonly object _lock = new();
+    private int _live;
+    private int _exclusive;
+
+    /// <summary>How many chat engines are currently alive.</summary>
+    public int LiveCount
+    {
+        get { lock (_lock) return _live; }
+    }
+
+    /// <summary>Takes an engine slot when the rule allows it.</summary>
+    /// <param name="allowMultiple">Whether the engine being loaded opted in to coexisting.</param>
+    public EngineAdmission TryAcquire(bool allowMultiple)
+    {
+        lock (_lock)
+        {
+            if (_live > 0)
+            {
+                if (!allowMultiple)
+                    return EngineAdmission.NewEngineNotOptedIn;
+                if (_exclusive > 0)
+                    return EngineAdmission.LiveEngineNotOptedIn;
+            }
+            _live++;
+            if (!allowMultiple)
+                _exclusive++;
+            return EngineAdmission.Admitted;
+        }
+    }
+
+    /// <summary>Frees the slot of an engine that was admitted with the same <paramref name="allowMultiple"/>
+    /// value (never below zero).</summary>
+    public void Release(bool allowMultiple)
+    {
+        lock (_lock)
+        {
+            if (_live <= 0)
+                return;
+            _live--;
+            if (!allowMultiple && _exclusive > 0)
+                _exclusive--;
+        }
+    }
+}
+
+internal sealed class EngineHandle(nint handle, bool allowMultiple) : LiteRtLmHandle(handle)
 {
     protected override bool ReleaseHandle()
     {
         LiteRtLmNative.litert_lm_engine_delete(handle);
-        // Free the one-engine slot only after the native engine is destroyed (ordering matters: a new
-        // engine must not be created while this one's native object still exists). This runs on Dispose
-        // and on finalization, so even a forgotten/GC'd engine releases the slot — but note that every
-        // LiteRtConversation strongly references its engine (for the KV overflow guard), so finalization
-        // can only happen once no conversation objects remain reachable either.
-        EngineLiveness.Release();
+        // Free this engine's slot only after the native engine is destroyed (ordering matters: a new
+        // engine must not be created while this one's native object still exists). This runs once the
+        // engine is disposed or finalized AND every ConversationHandle released its reference, so a
+        // forgotten/GC'd engine still frees its slot, and never while one of its sessions is alive. The
+        // handle carries the engine's opt-in because a finalizer must not depend on other managed objects.
+        EngineLiveness.Default.Release(allowMultiple);
         return true;
     }
 }
@@ -76,11 +134,16 @@ internal sealed class ConversationConfigHandle(nint handle) : LiteRtLmHandle(han
     }
 }
 
-internal sealed class ConversationHandle(nint handle) : LiteRtLmHandle(handle)
+/// <summary>A native conversation. It holds a reference on its engine's handle, taken by the caller with
+/// <see cref="SafeHandle.DangerousAddRef"/> before the native create or clone, and releases it after deleting
+/// the conversation: a native conversation uses its engine until it is deleted, so the engine is deleted only
+/// after its last conversation, whichever of them is disposed or finalized first.</summary>
+internal sealed class ConversationHandle(nint handle, EngineHandle engine) : LiteRtLmHandle(handle)
 {
     protected override bool ReleaseHandle()
     {
         LiteRtLmNative.litert_lm_conversation_delete(handle);
+        engine.DangerousRelease();
         return true;
     }
 }

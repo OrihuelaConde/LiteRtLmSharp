@@ -23,11 +23,25 @@ internal sealed class LiteRtConversationStore
     {
         private static readonly IReadOnlyDictionary<string, string> Empty = new Dictionary<string, string>(0);
         private Dictionary<string, string>? _callIdToName;
+        private Dictionary<string, int>? _cutMessages;
+        private HashSet<string>? _discardedCalls;
 
         public Entry(LiteRtConversation conversation) => Conversation = conversation;
 
-        /// <summary>The live native conversation.</summary>
-        public LiteRtConversation Conversation { get; }
+        /// <summary>The live native conversation. Replaced (see <see cref="Replace"/>) when a send that was
+        /// cancelled or failed rolls the conversation back to the checkpoint taken before its turn.</summary>
+        public LiteRtConversation Conversation { get; set; }
+
+        /// <summary>The rollback point of a turn in progress, or <c>null</c> between turns. A reply that ends in
+        /// tool calls continues with their results, so the checkpoint taken before the turn's first send stays
+        /// here until a reply without tool calls completes the turn.</summary>
+        public TurnCheckpoint? PendingTurn { get; set; }
+
+        /// <summary>Whether cloning this conversation rebuilds its constraint machinery (it was created with
+        /// constrained decoding or a constraint provider): about a second per clone on LiteRT-LM v0.18.0, so unless
+        /// <see cref="LiteRtStatefulConversationOptions.CheckpointConstrainedConversations"/> is set the client takes
+        /// no checkpoint for it and a cancelled or failed send evicts it instead. Copied to forks.</summary>
+        public bool CloneIsSlow { get; set; }
 
         /// <summary>Whether the conversation was created with a custom constraint provider (LlGuidance),
         /// i.e. whether per-send constraints (a JSON-schema <c>ResponseFormat</c>) can be enforced on it.
@@ -38,7 +52,30 @@ internal sealed class LiteRtConversationStore
 
         /// <summary>Records a synthesized call id and the tool name it stands for (idempotent; last write wins).</summary>
         public void RecordToolCall(string callId, string name)
-            => (_callIdToName ??= new Dictionary<string, string>(StringComparer.Ordinal))[callId] = name;
+        {
+            (_callIdToName ??= new Dictionary<string, string>(StringComparer.Ordinal))[callId] = name;
+            _discardedCalls?.Remove(callId);
+        }
+
+        /// <summary>Marks the tool calls of a rolled-back turn, so results sent for them can be rejected instead of
+        /// reaching a conversation that never saw the call. A later call with the same id clears the mark: call
+        /// ids repeat across turns.</summary>
+        public void DiscardToolCalls(IEnumerable<string> callIds)
+            => (_discardedCalls ??= new HashSet<string>(StringComparer.Ordinal)).UnionWith(callIds);
+
+        /// <summary>Whether <paramref name="callId"/> belongs to a turn that was rolled back.</summary>
+        public bool IsDiscardedToolCall(string? callId)
+            => callId is not null && _discardedCalls is not null && _discardedCalls.Contains(callId);
+
+        /// <summary>Copies what a rollback left behind to a fork, which shares this conversation's native state: the
+        /// discarded tool calls and the cut messages.</summary>
+        public void CopyRollbackStateFrom(Entry source)
+        {
+            if (source._discardedCalls is not null)
+                _discardedCalls = new HashSet<string>(source._discardedCalls, StringComparer.Ordinal);
+            if (source._cutMessages is not null)
+                _cutMessages = new Dictionary<string, int>(source._cutMessages, StringComparer.Ordinal);
+        }
 
         /// <summary>Copies <paramref name="source"/>'s accumulated call-id → tool-name entries into this one
         /// (used when a fork inherits its parent's map so tool continuations keep resolving on the branch).
@@ -55,6 +92,61 @@ internal sealed class LiteRtConversationStore
 
         /// <summary>The accumulated synthesized-call-id → tool-name map (empty until the conversation emits a tool call).</summary>
         public IReadOnlyDictionary<string, string> CallIdToName => _callIdToName ?? Empty;
+
+        /// <summary>A copy of the tool-call map, for a <see cref="TurnCheckpoint"/>.</summary>
+        public IReadOnlyDictionary<string, string> SnapshotToolCalls()
+            => _callIdToName is null ? Empty : new Dictionary<string, string>(_callIdToName, StringComparer.Ordinal);
+
+        /// <summary>Puts back the tool-call map a <see cref="TurnCheckpoint"/> recorded, so the calls of a
+        /// rolled-back turn no longer resolve.</summary>
+        public void RestoreToolCalls(IReadOnlyDictionary<string, string> snapshot)
+            => _callIdToName = snapshot.Count == 0 ? null : new Dictionary<string, string>(snapshot, StringComparer.Ordinal);
+
+        /// <summary>Records the user message of a turn that was rolled back. See <see cref="AvoidRepeatingACutMessage"/>.</summary>
+        public void RecordCutMessage(string? userText)
+        {
+            if (userText is null)
+                return;
+            _cutMessages ??= new Dictionary<string, int>(StringComparer.Ordinal);
+            string key = userText.Trim();
+            _cutMessages[key] = _cutMessages.GetValueOrDefault(key) + 1;
+        }
+
+        /// <summary>
+        /// Returns the text to send for a user message, changed if it repeats a message rolled back since the last
+        /// completed send. The checkpoint still shares its native state with the cut conversation, which already
+        /// processed that message, and when a first send matches that state completely the runtime skips its
+        /// prefill. On the GPU backend (LiteRT-LM v0.18.0 and v0.19.0), after another conversation generated, the
+        /// reply then comes out wrong or empty, with no error. Any other token avoids the match. The templates trim
+        /// whitespace, so this adds zero-width spaces, one more each time the same message was cut.
+        /// </summary>
+        public string? AvoidRepeatingACutMessage(string? userText)
+            => userText is not null && _cutMessages is not null && _cutMessages.TryGetValue(userText.Trim(), out int cuts)
+                ? userText + new string('\u200B', cuts)
+                : userText;
+
+        /// <summary>Forgets the rolled-back messages when a turn ends: a completed send separates the conversation's
+        /// native state from the cut conversation's. A reply with tool calls does not, because the checkpoint its
+        /// turn keeps still shares that state.</summary>
+        public void ClearCutMessages() => _cutMessages = null;
+
+        /// <summary>Disposes the live conversation and the checkpoint of a turn in progress.</summary>
+        public void Dispose()
+        {
+            Conversation.Dispose();
+            PendingTurn?.Checkpoint?.Dispose();
+            PendingTurn = null;
+        }
+    }
+
+    /// <summary>Where a stateful turn rolls back to if one of its sends is cancelled or fails: a clone of the
+    /// conversation taken before the turn's first send, the tool-call map at that point, and the user message
+    /// that started the turn (<c>null</c> for a turn started by tool results). The clone is <c>null</c> when the turn
+    /// created the conversation or no checkpoint could be taken; a failure then evicts the conversation.</summary>
+    internal sealed record TurnCheckpoint(LiteRtConversation? Checkpoint, IReadOnlyDictionary<string, string> ToolCalls, string? UserText)
+    {
+        /// <summary>The ids of the tool calls the model made in this turn.</summary>
+        public HashSet<string> CallIds { get; } = new(StringComparer.Ordinal);
     }
 
     private readonly int _capacity;
@@ -95,28 +187,49 @@ internal sealed class LiteRtConversationStore
         {
             _lru.RemoveLast();
             _map.Remove(lru.Value.Key);
-            lru.Value.Value.Conversation.Dispose();
+            lru.Value.Value.Dispose();
         }
         return entry;
     }
 
+    /// <summary>
+    /// Puts <paramref name="conversation"/> in place of the live conversation stored under
+    /// <paramref name="id"/> and disposes the one it replaces. The entry (its flags) and its LRU position stay,
+    /// so the id keeps resolving. Used to roll a stateful conversation back to the checkpoint taken before a
+    /// turn whose send was cancelled or failed. When the id is no longer stored, <paramref name="conversation"/>
+    /// is disposed instead.
+    /// </summary>
+    public void Replace(string id, LiteRtConversation conversation)
+    {
+        if (!_map.TryGetValue(id, out LinkedListNode<KeyValuePair<string, Entry>>? node))
+        {
+            conversation.Dispose();
+            return;
+        }
+        Entry entry = node.Value.Value;
+        LiteRtConversation consumed = entry.Conversation;
+        entry.Conversation = conversation;
+        consumed.Dispose();
+    }
+
     /// <summary>Removes and disposes the conversation with <paramref name="id"/> if present (a no-op
-    /// otherwise). Used to evict a conversation whose send was cancelled or abandoned — the native runtime
-    /// leaves such a conversation consumed, so it must not be resumed.</summary>
+    /// otherwise). Used to evict a conversation that cannot continue: a send rejected because its context is
+    /// full, or a cancelled or failed send with no checkpoint to roll back to (the native runtime leaves such a
+    /// conversation consumed, so it must not be resumed).</summary>
     public void Remove(string id)
     {
         if (!_map.TryGetValue(id, out LinkedListNode<KeyValuePair<string, Entry>>? node))
             return;
         _lru.Remove(node);
         _map.Remove(id);
-        node.Value.Value.Conversation.Dispose();
+        node.Value.Value.Dispose();
     }
 
     /// <summary>Disposes every live conversation and clears the store. Called from the client's <c>Dispose</c>.</summary>
     public void DisposeAll()
     {
         foreach (LinkedListNode<KeyValuePair<string, Entry>> node in EnumerateNodes())
-            node.Value.Value.Conversation.Dispose();
+            node.Value.Value.Dispose();
         _lru.Clear();
         _map.Clear();
     }

@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
+using TurnCheckpoint = LiteRtLmSharp.Extensions.AI.LiteRtConversationStore.TurnCheckpoint;
 
 namespace LiteRtLmSharp.Extensions.AI;
 
@@ -20,8 +21,13 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// between calls and send only the new messages each turn.
 /// </para>
 /// <para>
-/// <b>Serialized.</b> Calls are serialized with an internal gate: LiteRtLmSharp allows only one live chat
-/// engine per process and conversations are not thread-safe.
+/// <b>Serialized per engine.</b> Calls are serialized with a gate shared by every
+/// <see cref="LiteRtChatClient"/> over the same engine: the native runtime does not support two generations in
+/// flight on one engine, and conversations are not thread-safe. Clients over different engines (see
+/// <see cref="LiteRtEngineOptions.AllowMultipleEngines"/>) do not wait for each other. A stream holds the gate
+/// until it is read to the end or disposed, so a call on any client over the same engine (a fork included)
+/// made from inside the loop that reads the stream waits for that loop forever. Finish or dispose the stream
+/// first, or use a client over another engine.
 /// </para>
 /// <para>
 /// <b>Reasoning.</b> Enable the model's reasoning ("thinking") mode with the <c>enable_thinking</c> key in
@@ -73,7 +79,10 @@ namespace LiteRtLmSharp.Extensions.AI;
 public sealed class LiteRtChatClient : IChatClient
 {
     private readonly LiteRtEngine _engine;
-    private readonly SemaphoreSlim _gate = new(1, 1);
+    // One gate per engine, shared by every client over it (see the class remarks). Weak keys, so a collected
+    // engine takes its gate with it; a SemaphoreSlim whose wait handle is never used needs no disposal.
+    private static readonly ConditionalWeakTable<LiteRtEngine, SemaphoreSlim> s_engineGates = new();
+    private readonly SemaphoreSlim _gate;
     private readonly ChatClientMetadata _metadata;
     private readonly LiteRtConversationOptions? _optionsTemplate;
     // Non-null only in the opt-in stateful mode; when null the client is stateless (the default): a fresh
@@ -83,6 +92,10 @@ public sealed class LiteRtChatClient : IChatClient
     // conversations to fork otherwise). Allocated once in the constructor so GetService needs no locking.
     private readonly LiteRtConversationBranching? _branching;
     private bool _disposed;
+    // Set after the first Clone() the backend reports as UNIMPLEMENTED, so stateful sends stop attempting a
+    // checkpoint (and pay no failing native call each time). Read and written under _gate.
+    private bool _checkpointUnsupported;
+    private readonly bool _checkpointConstrained;
 
     /// <summary>Creates a chat client over an already-loaded <paramref name="engine"/>. The client does not
     /// own the engine: dispose the engine yourself (after the client). To have a container manage the
@@ -114,8 +127,8 @@ public sealed class LiteRtChatClient : IChatClient
     /// <c>options.ConversationId</c> and send <b>only the new messages</b> each turn — that is what makes
     /// turns incremental. If the id is never propagated (or the full history keeps being resent) the answers
     /// stay correct, but every call pays the full stateless re-prefill <i>plus</i> live conversations pile up
-    /// in the LRU with no benefit. Higher-level consumers (<c>FunctionInvokingChatClient</c>, agent-framework
-    /// threads) propagate the id automatically.
+    /// in the LRU with no benefit. Higher-level consumers (<c>FunctionInvokingChatClient</c>, Agent Framework
+    /// sessions) propagate the id automatically.
     /// </para>
     /// <example>
     /// <code>
@@ -134,8 +147,10 @@ public sealed class LiteRtChatClient : IChatClient
         ArgumentNullException.ThrowIfNull(engine);
         LiteRtChatMapping.ValidateTemplate(optionsTemplate);
         _engine = engine;
+        _gate = s_engineGates.GetValue(engine, static _ => new SemaphoreSlim(1, 1));
         _metadata = new ChatClientMetadata("litert-lm", null, modelId);
         _optionsTemplate = optionsTemplate;
+        _checkpointConstrained = statefulConversations?.CheckpointConstrainedConversations == true;
         _store = statefulConversations is null
             ? null
             : new LiteRtConversationStore(statefulConversations.MaxLiveConversations);
@@ -144,6 +159,12 @@ public sealed class LiteRtChatClient : IChatClient
     }
 
     private string? ModelId => _metadata.DefaultModelId;
+
+    /// <summary>The gate this client serializes its calls with, shared by every client over the same engine.</summary>
+    internal SemaphoreSlim Gate => _gate;
+
+    /// <summary>The live conversations (stateful mode only), for tests to inspect a rollback.</summary>
+    internal LiteRtConversationStore? Store => _store;
 
     /// <inheritdoc/>
     public async Task<ChatResponse> GetResponseAsync(
@@ -206,6 +227,9 @@ public sealed class LiteRtChatClient : IChatClient
             // stays resumable (the core would reject this too, but with a lower-level message — and
             // via the catch below, which would wrongly destroy a healthy conversation).
             ThrowIfConstraintWithoutProvider(sendOptions, entry);
+            // The turn's rollback point, so a cancelled or failed send on a continuation leaves its id valid.
+            TurnCheckpoint turn = BeginTurn(entry, conv, trigger, newConversation: conversationId is null, out bool startsTurn);
+            trigger = trigger with { UserText = entry.AvoidRepeatingACutMessage(trigger.UserText) };
             LiteRtResponse response;
             try
             {
@@ -215,18 +239,21 @@ public sealed class LiteRtChatClient : IChatClient
             {
                 // The overflow guard rejected the message BEFORE any native work ("message doesn't fit"):
                 // the live conversation is untouched and stays resumable — the caller can retry this id
-                // with a shorter message, exactly as the exception's own guidance suggests.
+                // with a shorter message, exactly as the exception's own guidance suggests. A turn in
+                // progress stays as it was.
+                if (startsTurn)
+                    turn.Checkpoint?.Dispose();
                 throw;
             }
             catch
             {
                 // Any other failure (cancellation, native error, or the guard's context-FULL rejection)
-                // leaves the conversation consumed or terminal, so evict and dispose it — a later resume
-                // of this id then throws cleanly.
-                _store!.Remove(id);
+                // leaves the conversation consumed or terminal: roll the turn back, or evict it.
+                RecoverFailedTurn(id, entry, turn);
                 throw;
             }
-            return BuildResponse(response, conv, id, entry.RecordToolCall);
+            EndSend(entry, turn, endsWithToolCalls: response.ToolCalls.Count > 0);
+            return BuildResponse(response, conv, id, ToolCallRecorder(entry, turn));
         }
         finally
         {
@@ -254,14 +281,139 @@ public sealed class LiteRtChatClient : IChatClient
             string id = NewConversationId();
             LiteRtConversationStore.Entry entry = _store!.Add(id, conv);   // may evict + dispose the LRU conversation
             entry.HasConstraintProvider = convOptions?.ConstraintProvider is not null;
+            entry.CloneIsSlow = entry.HasConstraintProvider || convOptions?.EnableConstrainedDecoding == true;
             return (conv, entry, trigger, id);
         }
 
         // Continuation: resume the stored conversation; the incoming messages are only the new ones (the native
         // conversation already holds the prior turns), so map them without any history.
         LiteRtConversationStore.Entry found = _store!.Get(conversationId) ?? throw UnknownConversation(conversationId);
-        LiteRtChatMapping.SendTrigger contTrigger = LiteRtChatMapping.SplitContinuation(messages, found.CallIdToName);
+        IReadOnlyList<ChatMessage> list = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
+        ThrowIfResultsOfADiscardedTurn(list, found);
+        LiteRtChatMapping.SendTrigger contTrigger = LiteRtChatMapping.SplitContinuation(list, found.CallIdToName);
         return (found.Conversation, found, contTrigger, conversationId);
+    }
+
+    /// <summary>Rejects tool results for a call whose turn was rolled back: the conversation holds neither the
+    /// question nor the call, so the model would answer without that context and nothing would report it.</summary>
+    internal static void ThrowIfResultsOfADiscardedTurn(IReadOnlyList<ChatMessage> messages, LiteRtConversationStore.Entry entry)
+    {
+        // Only the last message is sent; an earlier one is a resent history, which the mapping ignores.
+        if (messages.Count == 0 || messages[^1].Role != ChatRole.Tool)
+            return;
+        foreach (FunctionResultContent result in messages[^1].Contents.OfType<FunctionResultContent>())
+            if (entry.IsDiscardedToolCall(result.CallId))
+                throw new ArgumentException(
+                    $"The tool call '{result.CallId}' belongs to a turn that was cancelled or failed, and the client " +
+                    "discarded that turn, its question included. Send the user message again.", nameof(messages));
+    }
+
+    /// <summary>What a stateful send calls for each tool call in its reply.</summary>
+    private static Action<string, string> ToolCallRecorder(LiteRtConversationStore.Entry entry, TurnCheckpoint turn) =>
+        (callId, name) =>
+        {
+            turn.CallIds.Add(callId);
+            entry.RecordToolCall(callId, name);
+        };
+
+    /// <summary>
+    /// Returns the rollback point of a stateful send's turn (<paramref name="startsTurn"/> tells whether the send
+    /// starts it). A send that carries the tool results a pending turn waits for continues that turn and its
+    /// checkpoint; any other send starts a turn, with a checkpoint of the conversation as it is now (none for a
+    /// conversation this call created, which has nothing to roll back to). A pending turn whose tool calls the
+    /// caller did not answer is over: its checkpoint is released once the new turn's send gets past the overflow
+    /// guard (see <see cref="ReleaseSupersededTurn"/>).
+    /// </summary>
+    private TurnCheckpoint BeginTurn(
+        LiteRtConversationStore.Entry entry, LiteRtConversation conversation, LiteRtChatMapping.SendTrigger trigger,
+        bool newConversation, out bool startsTurn)
+    {
+        if (trigger.IsToolResults && entry.PendingTurn is { } pending)
+        {
+            startsTurn = false;
+            return pending;
+        }
+        startsTurn = true;
+        LiteRtConversation? checkpoint = newConversation || (entry.CloneIsSlow && !_checkpointConstrained)
+            ? null
+            : TakeCheckpoint(conversation);
+        return new TurnCheckpoint(checkpoint, entry.SnapshotToolCalls(), trigger.UserText);
+    }
+
+    /// <summary>Records the end of a stateful send that completed: a reply with tool calls keeps its turn
+    /// pending until their results come back; any other reply completes the turn and releases its
+    /// checkpoint.</summary>
+    private static void EndSend(LiteRtConversationStore.Entry entry, TurnCheckpoint turn, bool endsWithToolCalls)
+    {
+        ReleaseSupersededTurn(entry, turn);
+        if (endsWithToolCalls)
+        {
+            entry.PendingTurn = turn;
+            return;
+        }
+        entry.ClearCutMessages();
+        turn.Checkpoint?.Dispose();
+    }
+
+    /// <summary>Clears the pending turn, and releases its checkpoint when a newer turn took over from it.</summary>
+    private static void ReleaseSupersededTurn(LiteRtConversationStore.Entry entry, TurnCheckpoint turn)
+    {
+        if (entry.PendingTurn is { } pending && !ReferenceEquals(pending, turn))
+            pending.Checkpoint?.Dispose();
+        entry.PendingTurn = null;
+    }
+
+    /// <summary>
+    /// Handles a stateful send that did not complete. With a checkpoint, and a context that is not full, the
+    /// conversation is rolled back to it under the same id: the whole turn (its user message and any tool
+    /// rounds) is discarded, results sent for its tool calls are rejected, and the next request continues from
+    /// the turn before it. Otherwise the conversation is evicted, and resuming its id throws: a turn that created
+    /// the conversation, no checkpoint, a checkpoint that is itself full (the guard's context-full rejection of
+    /// a turn's first send), or a turn started by tool results, whose retry could not be changed to avoid the
+    /// wrong reply <see cref="LiteRtConversationStore.Entry.AvoidRepeatingACutMessage"/> describes.
+    /// </summary>
+    private void RecoverFailedTurn(string id, LiteRtConversationStore.Entry entry, TurnCheckpoint turn)
+    {
+        ReleaseSupersededTurn(entry, turn);
+        if (turn.Checkpoint is { IsContextFull: false } && turn.UserText is not null)
+        {
+            entry.RestoreToolCalls(turn.ToolCalls);
+            entry.DiscardToolCalls(turn.CallIds);
+            entry.RecordCutMessage(turn.UserText);
+            _store!.Replace(id, turn.Checkpoint);
+            return;
+        }
+        turn.Checkpoint?.Dispose();
+        _store!.Remove(id);
+    }
+
+    /// <summary>
+    /// Takes the checkpoint a stateful turn rolls back to: a clone of the live conversation, taken under the
+    /// gate right before the turn's first send. Creating it costs no measurable time or memory (measured on
+    /// LiteRT-LM v0.18.0) except on a conversation with constrained decoding or a constraint provider, which
+    /// gets none unless the client opted in (see <see cref="LiteRtConversationStore.Entry.CloneIsSlow"/>). It is a transient second
+    /// conversation, outside <see cref="LiteRtStatefulConversationOptions.MaxLiveConversations"/>, disposed
+    /// when the turn completes. Returns <c>null</c> when no checkpoint can be taken; after the backend reports
+    /// that it does not implement cloning, no further clone is attempted, so a failure then evicts as before.
+    /// </summary>
+    private LiteRtConversation? TakeCheckpoint(LiteRtConversation conversation)
+    {
+        if (_checkpointUnsupported)
+            return null;
+        try
+        {
+            return conversation.Clone();
+        }
+        catch (LiteRtException ex)
+        {
+            if (ex.StatusCode == LiteRtStatusCode.Unimplemented)
+                _checkpointUnsupported = true;
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;   // nothing prefilled to copy, or the conversation is already consumed
+        }
     }
 
     /// <summary>
@@ -294,6 +446,8 @@ public sealed class LiteRtChatClient : IChatClient
             LiteRtConversationStore.Entry forkEntry = _store.Add(forkId, clone);
             forkEntry.CopyToolCallsFrom(parent);
             forkEntry.HasConstraintProvider = parent.HasConstraintProvider;   // the native clone keeps the provider
+            forkEntry.CloneIsSlow = parent.CloneIsSlow;
+            forkEntry.CopyRollbackStateFrom(parent);
             return forkId;
         }
         finally
@@ -416,29 +570,36 @@ public sealed class LiteRtChatClient : IChatClient
         string? conversationId = options?.ConversationId;
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        bool completed = false;
+        // completed: the stream ran to its end. untouched: the guard rejected the message before any native
+        // work. failed: the stream threw. With none of them, the consumer stopped reading.
+        bool completed = false, untouched = false, failed = false, sawToolCall = false, startsTurn = false;
         string? storedId = null;
+        LiteRtConversation? streamed = null;
+        LiteRtConversationStore.Entry? streamedEntry = null;
+        TurnCheckpoint? turn = null;
         try
         {
             (LiteRtConversation conv, LiteRtConversationStore.Entry entry, LiteRtChatMapping.SendTrigger trigger, string id) =
                 AcquireConversation(messages, options, conversationId);
-            // Set only after the conversation is live in the store: if acquisition threw for a continuation
-            // (unknown id, or a system message), the stored conversation was never sent and must be preserved.
             storedId = id;
+            streamed = conv;
+            streamedEntry = entry;
 
             LiteRtSendOptions? sendOptions = LiteRtChatMapping.ToSendOptions(options);
-            // Pre-native argument check: nothing was sent, so the conversation must stay resumable —
-            // mark the stream completed before throwing so the finally below does not evict it.
-            if (ConstraintWithoutProvider(sendOptions, entry))
-            {
-                completed = true;
-                ThrowIfConstraintWithoutProvider(sendOptions, entry);
-            }
+            // Pre-native argument check: nothing was sent and no turn began, so the finally below leaves the
+            // conversation as it is (resumable).
+            ThrowIfConstraintWithoutProvider(sendOptions, entry);
+            // The turn's rollback point, so a cancelled or failed stream on a continuation leaves its id valid.
+            turn = BeginTurn(entry, conv, trigger, newConversation: conversationId is null, out startsTurn);
+            trigger = trigger with { UserText = entry.AvoidRepeatingACutMessage(trigger.UserText) };
+            Action<string, string> recordToolCall = ToolCallRecorder(entry, turn);
             // Enumerated by hand (not await-foreach) because C# forbids `yield return` inside a try that
             // has a catch, and the MoveNext needs one: the overflow guard's pre-native "message doesn't
             // fit" rejection must NOT evict the untouched, still-resumable conversation.
             IAsyncEnumerator<ChatResponseUpdate> updates = StreamReplyAsync(
-                conv, trigger, sendOptions, entry.RecordToolCall, cancellationToken).GetAsyncEnumerator(cancellationToken);
+                conv, trigger, sendOptions,
+                (callId, name) => { sawToolCall = true; recordToolCall(callId, name); },
+                cancellationToken).GetAsyncEnumerator(cancellationToken);
             try
             {
                 while (true)
@@ -454,7 +615,12 @@ public sealed class LiteRtChatClient : IChatClient
                     {
                         // Pre-native rejection: nothing was streamed and the conversation is untouched —
                         // keep it resumable (the caller can retry this id with a shorter message).
-                        completed = true;
+                        untouched = true;
+                        throw;
+                    }
+                    catch
+                    {
+                        failed = true;
                         throw;
                     }
                     update.ConversationId = id;
@@ -469,12 +635,26 @@ public sealed class LiteRtChatClient : IChatClient
         }
         finally
         {
-            // A stream that did not complete cleanly (cancelled, the consumer broke out early, or a
-            // mid-stream failure) leaves the native conversation consumed — sending on it again would
-            // hang — so evict and dispose it. A clean completion, or the guard's pre-native rejection
-            // above, keeps it alive for the next turn.
-            if (!completed && storedId is not null)
-                _store!.Remove(storedId);
+            if (turn is not null)
+            {
+                if (untouched)
+                {
+                    if (startsTurn)
+                        turn.Checkpoint?.Dispose();   // a turn in progress stays as it was
+                }
+                else if (completed || (!failed && !streamed!.IsCancelled))
+                {
+                    // A clean end, or a consumer that stopped reading after the model had finished the reply
+                    // (for example at its tool calls): the turn stands, as it would for a blocking send.
+                    EndSend(streamedEntry!, turn, sawToolCall);
+                }
+                else
+                {
+                    // Cancelled, cut while the consumer stopped reading, or failed: the native conversation is
+                    // consumed (every later send on it fails with CANCELLED), so roll the turn back, or evict it.
+                    RecoverFailedTurn(storedId!, streamedEntry!, turn);
+                }
+            }
             ReleaseGate();
         }
     }
@@ -510,6 +690,11 @@ public sealed class LiteRtChatClient : IChatClient
             : conv.SendStreamingAsync(trigger.UserText!, attachments: null, sendOptions, cancellationToken);
 
         int toolCallIndex = 0;   // monotonic across the whole stream so synthesized call ids stay unique
+        // In the stateful mode, tool calls are yielded together after the native stream ended. The runtime emits a
+        // call before the stop token, and a consumer that stops at the call (a manual tool loop, an approval flow)
+        // would otherwise cancel the generation and lose a turn it is about to answer, or miss a later call.
+        List<AIContent>? heldToolCalls = null;
+        LiteRtStreamChunk? lastToolCallChunk = null;
         bool sawAnswer = false, sawReasoning = false, sawToolCall = false;
         await foreach (LiteRtStreamChunk chunk in stream.ConfigureAwait(false))
         {
@@ -525,6 +710,12 @@ public sealed class LiteRtChatClient : IChatClient
                     FunctionCallContent call = LiteRtChatMapping.ToFunctionCall(toolCall, toolCallIndex++);
                     calls.Add(call);
                     onToolCall?.Invoke(call.CallId!, call.Name);
+                }
+                if (onToolCall is not null)
+                {
+                    (heldToolCalls ??= []).AddRange(calls);
+                    lastToolCallChunk = chunk;
+                    continue;
                 }
                 yield return new ChatResponseUpdate
                 {
@@ -565,6 +756,16 @@ public sealed class LiteRtChatClient : IChatClient
                 };
             }
         }
+
+        if (heldToolCalls is not null)
+            yield return new ChatResponseUpdate
+            {
+                Role = ChatRole.Assistant,
+                Contents = heldToolCalls,
+                ModelId = ModelId,
+                RawRepresentation = lastToolCallChunk,
+                FinishReason = ChatFinishReason.ToolCalls,
+            };
 
         // Mirror GetResponseAsync: reasoning but no answer (and no tool call) means the reasoning consumed
         // the MaxOutputTokens budget before the answer began — emit a Length finish reason so an empty
@@ -707,7 +908,7 @@ public sealed class LiteRtChatClient : IChatClient
         if (_disposed) return;
         _disposed = true;
         _store?.DisposeAll();
-        _gate.Dispose();
+        // The gate belongs to the engine and other clients may share it, so it is not disposed here.
     }
 
     /// <summary>Releases the gate, tolerating a disposal that raced an in-flight call (the contract is to
@@ -723,16 +924,20 @@ public sealed class LiteRtChatClient : IChatClient
 
     /// <summary>The exception thrown when a request names a <c>ConversationId</c> the store does not hold —
     /// it was never issued by this client, or its conversation is gone: evicted by the LRU cap
-    /// (<see cref="LiteRtStatefulConversationOptions.MaxLiveConversations"/>), or evicted after a
-    /// cancelled/failed/context-full send left it unusable.</summary>
+    /// (<see cref="LiteRtStatefulConversationOptions.MaxLiveConversations"/>), or evicted by a send rejected because its context is full
+    /// its context (or was cancelled or failed when no checkpoint could be taken).</summary>
     private static ArgumentException UnknownConversation(string conversationId)
         => new(
             $"No live conversation with id '{conversationId}'. Either it was never started by this client, or " +
-            "its conversation is no longer live: it was evicted by the LRU cap " +
-            "(LiteRtStatefulConversationOptions.MaxLiveConversations, default 8) when newer conversations or " +
-            "forks were started, or it was evicted after a cancelled, failed or context-full send left it " +
-            "unusable. Start a new conversation by omitting ChatOptions.ConversationId; the response's " +
-            "ConversationId is the id to reuse for the next turn.",
+            "its conversation is no longer live: the LRU cap (LiteRtStatefulConversationOptions." +
+            "MaxLiveConversations, default 8) evicted it when newer conversations or forks were started; a send " +
+            "on it was rejected because its context is full; or a send on it was cancelled or failed with no " +
+            "checkpoint to roll back to (in the turn that started the conversation, tool rounds included, in a " +
+            "turn started by tool results, on a conversation with constrained decoding or a constraint provider " +
+            "(LiteRtStatefulConversationOptions.CheckpointConstrainedConversations keeps those), or on a backend " +
+            "that cannot clone). Start a new " +
+            "conversation by omitting ChatOptions.ConversationId; the response's ConversationId is the id to " +
+            "reuse for the next turn.",
             nameof(conversationId));
 
     /// <summary>Whether <paramref name="sendOptions"/> carries a per-send constraint (a JSON-schema
