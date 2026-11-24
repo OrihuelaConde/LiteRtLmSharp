@@ -1408,10 +1408,10 @@ public sealed class LiteRtConversation : IDisposable
             // first message, and the runtime's decode config for a send with thinking off enforces nothing: after a
             // first reply with thinking, a follow-up with thinking off still thinks (measured on v0.20.0, CPU and
             // GPU). Suppressing the token that opens the thinking channel makes the send answer without it.
-            IReadOnlyList<int>? suppressList = options?.SuppressTokens;
-            if (options?.EnableThinking == false && _engineOwner.ThinkingChannelOpenToken is int channelOpen
-                && !(suppressList?.Contains(channelOpen) ?? false))
-                suppressList = suppressList is { Count: > 0 } ? [.. suppressList, channelOpen] : [channelOpen];
+            IReadOnlyList<int>? suppressList = SendSuppressTokens(
+                options?.SuppressTokens, options?.EnableThinking,
+                options?.EnableThinking == false && SuppressThinkingChannelWhenThinkingOff
+                    ? _engineOwner.ThinkingChannelOpenToken : null);
             if (suppressList is { Count: > 0 } suppress)
             {
                 nint cfg;
@@ -1473,6 +1473,24 @@ public sealed class LiteRtConversation : IDisposable
             throw;
         }
     }
+
+    /// <summary>The suppressed tokens of one send: the caller's <paramref name="callerTokens"/>, plus
+    /// <paramref name="channelOpenToken"/> when the send turns thinking off (<paramref name="enableThinking"/>
+    /// <c>false</c>) and the caller's list does not hold it already. Returns <paramref name="callerTokens"/>
+    /// itself when nothing is added. <paramref name="channelOpenToken"/> is <c>null</c> when the model's tokenizer
+    /// has no such token.</summary>
+    internal static IReadOnlyList<int>? SendSuppressTokens(
+        IReadOnlyList<int>? callerTokens, bool? enableThinking, int? channelOpenToken)
+    {
+        if (enableThinking != false || channelOpenToken is not int open || (callerTokens?.Contains(open) ?? false))
+            return callerTokens;
+        return callerTokens is { Count: > 0 } ? [.. callerTokens, open] : [open];
+    }
+
+    /// <summary>Whether a send with <see cref="LiteRtSendOptions.EnableThinking"/> <c>false</c> suppresses the
+    /// token that opens the thinking channel. Always <c>true</c> outside tests; a test sets it to <c>false</c> to
+    /// compare with what the runtime does alone.</summary>
+    internal bool SuppressThinkingChannelWhenThinkingOff { get; set; } = true;
 
     /// <summary>Builds a native thinking config, hands it to <paramref name="attach"/> (whose native
     /// setter deep-copies it and returns its status, checked against <paramref name="attachName"/>), and

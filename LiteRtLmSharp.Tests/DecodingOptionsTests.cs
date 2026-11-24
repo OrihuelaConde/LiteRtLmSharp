@@ -325,6 +325,47 @@ public class DecodingOptionsMappingTests
         Assert.False(LiteRtConversation.IsSmallContextFailure(
             "RET_CHECK failure (context_handler.h:77) HasRuntimeConfig() Runtime config not found"));
     }
+
+    /// <summary>A send's suppressed tokens: the thinking channel's open token (here 100) is added only to a send
+    /// that turns thinking off, after the caller's own ids and only once, and only when the model has the token.
+    /// Every other send keeps the caller's list as it is, so a later send that inherits the conversation's
+    /// thinking suppresses nothing. Lists are written as comma-separated ids; "" is an empty list.</summary>
+    [Theory]
+    [InlineData(null, false, 100, "100")]
+    [InlineData("", false, 100, "100")]
+    [InlineData("5,6", false, 100, "5,6,100")]
+    [InlineData("100,5", false, 100, "100,5")]
+    [InlineData("5", true, 100, "5")]
+    [InlineData("5", null, 100, "5")]
+    [InlineData(null, true, 100, null)]
+    [InlineData(null, null, 100, null)]
+    [InlineData(null, false, null, null)]
+    [InlineData("5", false, null, "5")]
+    [InlineData("", true, 100, "")]
+    public void SendSuppressTokens_AddsTheChannelTokenOnlyToAThinkingOffSend(
+        string? caller, bool? enableThinking, int? channelOpen, string? expected)
+    {
+        int[]? callerIds = caller is null ? null : caller.Length == 0 ? [] : [.. caller.Split(',').Select(int.Parse)];
+        IReadOnlyList<int>? result = LiteRtConversation.SendSuppressTokens(callerIds, enableThinking, channelOpen);
+        Assert.Equal(expected, result is null ? null : string.Join(",", result));
+        if (expected == caller)
+            Assert.Same(callerIds, result);
+    }
+
+    /// <summary>The lookup of the thinking channel's open token: an id only when the text is one token that
+    /// detokenizes back to the same text; <c>null</c> for several tokens, a round trip that gives other text, or a
+    /// tokenizer error.</summary>
+    [Fact]
+    public void SingleTokenOf_ReturnsAnIdOnlyForOneTokenThatRoundTrips()
+    {
+        const string text = "<|channel>";
+        Assert.Equal(100, LiteRtEngine.SingleTokenOf(text, _ => [100], _ => text));
+        Assert.Null(LiteRtEngine.SingleTokenOf(text, _ => [27, 100], _ => text));
+        Assert.Null(LiteRtEngine.SingleTokenOf(text, _ => [], _ => ""));
+        Assert.Null(LiteRtEngine.SingleTokenOf(text, _ => [100], _ => "<|chan"));
+        Assert.Null(LiteRtEngine.SingleTokenOf(text, _ => throw new LiteRtException("tokenize failed"), _ => text));
+        Assert.Null(LiteRtEngine.SingleTokenOf(text, _ => [100], _ => throw new LiteRtException("detokenize failed")));
+    }
 }
 
 /// <summary>

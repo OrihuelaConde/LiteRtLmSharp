@@ -52,8 +52,9 @@ public sealed class LiteRtEngine : IDisposable
 
     /// <summary>The id of the token that opens the thinking channel in Gemma 4's chat template
     /// (<c>&lt;|channel&gt;</c>), or <c>null</c> when the model's tokenizer has no single token that round-trips
-    /// to that text. A send with <see cref="LiteRtSendOptions.EnableThinking"/> <c>false</c> suppresses it. Resolved
-    /// on first use; it does not check that this object is disposed, as <see cref="CountTokens"/>.</summary>
+    /// to that text, or when the lookup failed. A send with <see cref="LiteRtSendOptions.EnableThinking"/>
+    /// <c>false</c> suppresses it. Resolved on first use and kept; it does not check that this object is disposed,
+    /// as <see cref="CountTokens"/>.</summary>
     internal int? ThinkingChannelOpenToken
     {
         get
@@ -61,21 +62,27 @@ public sealed class LiteRtEngine : IDisposable
             int id = Volatile.Read(ref _thinkingChannelOpenToken);
             if (id == UnresolvedToken)
             {
-                id = NoToken;
-                try
-                {
-                    int[] ids = TokenizeIds(ThinkingChannelOpenText);
-                    if (ids.Length == 1 && DetokenizeIds(ids) == ThinkingChannelOpenText)
-                        id = ids[0];
-                }
-                catch (LiteRtException)
-                {
-                    // A tokenizer that cannot round-trip the text has no such token.
-                }
+                id = SingleTokenOf(ThinkingChannelOpenText, TokenizeIds, ids => DetokenizeIds(ids)) ?? NoToken;
                 // Two first uses at once compute the same value.
                 Volatile.Write(ref _thinkingChannelOpenToken, id);
             }
             return id >= 0 ? id : null;
+        }
+    }
+
+    /// <summary>The id of the one token that <paramref name="text"/> tokenizes to and that detokenizes back to
+    /// <paramref name="text"/>; <c>null</c> when it tokenizes to another number of tokens, when the round trip
+    /// gives other text, or when either call throws <see cref="LiteRtException"/>.</summary>
+    internal static int? SingleTokenOf(string text, Func<string, int[]> tokenize, Func<int[], string> detokenize)
+    {
+        try
+        {
+            int[] ids = tokenize(text);
+            return ids.Length == 1 && detokenize(ids) == text ? ids[0] : null;
+        }
+        catch (LiteRtException)
+        {
+            return null;
         }
     }
 
