@@ -119,7 +119,7 @@ public sealed record LiteRtEngineOptions
     /// E-series). It applies only when <see cref="VisionBackend"/> is set and the model declares a per-image
     /// token count. A cap above the model's largest signature (280 on the Gemma 4 E-series) fails
     /// <see cref="LiteRtEngine.Load"/> with <see cref="LiteRtStatusCode.InvalidArgument"/>. Maps to
-    /// <c>engine_settings_set_max_vision_tokens_per_image</c> (native LiteRT-LM v0.18.0+).
+    /// <c>engine_settings_set_max_vision_tokens_per_image</c>.
     /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">The value is zero or negative.</exception>
     public int? MaxVisionTokensPerImage
@@ -434,7 +434,7 @@ public sealed record LiteRtEngineOptions
     /// <summary>
     /// Decode steps the GPU runs between host syncs. <c>null</c> (default) = engine default. Only
     /// honored by the Artisan GPU backend (the mobile GPU stack); the desktop WebGPU backend ignores
-    /// it. Requires native LiteRT-LM v0.15.0+.
+    /// it.
     /// </summary>
     /// <remarks>Maps to <c>engine_settings_set_gpu_decode_steps_per_sync</c>. Larger values reduce
     /// sync overhead but coarsen streaming/cancellation granularity.</remarks>
@@ -453,15 +453,13 @@ public sealed record LiteRtEngineOptions
     /// <summary>
     /// Whether engine load blocks until GPU weight uploads complete. <c>null</c> (default) = engine
     /// default. Only honored by the Artisan GPU backend; the desktop WebGPU backend ignores it.
-    /// Requires native LiteRT-LM v0.15.0+.
     /// </summary>
     /// <remarks>Maps to <c>engine_settings_set_gpu_wait_for_weight_uploads</c>.</remarks>
     public bool? GpuWaitForWeightUploads { get; init; }
 
     /// <summary>
     /// Lets the experimental YNNPACK delegate take the CPU operations it supports before XNNPACK.
-    /// <c>null</c> (default) = engine default (off). CPU backend, linux-arm64 only. Requires native
-    /// LiteRT-LM v0.16.0+.
+    /// <c>null</c> (default) = engine default (off). CPU backend, linux-arm64 only.
     /// </summary>
     /// <remarks>
     /// Maps to <c>engine_settings_set_enable_ynnpack</c>. Of the official libraries, only linux-arm64 carries
@@ -476,7 +474,7 @@ public sealed record LiteRtEngineOptions
     /// actually need, instead of allocating the full context length — lower memory for long
     /// contexts, at the cost of instant rewinding. <c>null</c> (default) = off. Backend-agnostic in
     /// interface but currently only the Artisan GPU backend implements it; unsupported
-    /// models/backends log a native warning and ignore it. Requires native LiteRT-LM v0.15.0+.
+    /// models/backends log a native warning and ignore it.
     /// </summary>
     /// <remarks>Maps to <c>engine_settings_set_use_ringbuffers_local_attention</c> (the knob the JS
     /// API exposes as <c>use_autosized_ringbuffers</c>).</remarks>
@@ -488,9 +486,9 @@ public sealed record LiteRtEngineOptions
     /// overhead. <c>null</c> (default) leaves the engine default. Apple platforms with the Metal GPU
     /// backend only; other platforms and backends ignore it.
     /// </summary>
-    /// <remarks>Maps to <c>engine_settings_set_gpu_enable_metal_residency_set</c> (native LiteRT-LM
-    /// v0.18.0+). The desktop macOS GPU backend runs on WebGPU over Metal; measure the effect on the
-    /// target device rather than assume one.</remarks>
+    /// <remarks>Maps to <c>engine_settings_set_gpu_enable_metal_residency_set</c>. The desktop macOS GPU
+    /// backend runs on WebGPU over Metal; measure the effect on the target device rather than assume
+    /// one.</remarks>
     public bool? EnableMetalResidencySet { get; init; }
 
     private static void ValidateRanks(IReadOnlyList<int>? ranks)
@@ -642,7 +640,7 @@ public sealed record LiteRtConversationOptions
     /// <c>null</c> (default) = the template the model file (or engine) provides. For advanced use —
     /// a template that does not match what the model was trained on degrades output quality.
     /// </summary>
-    /// <remarks>Maps to the C API <c>conversation_config_set_prompt_template</c> (native v0.15.0+).
+    /// <remarks>Maps to the C API <c>conversation_config_set_prompt_template</c>.
     /// Inspect the result with <see cref="LiteRtConversation.RenderMessage"/> /
     /// <see cref="LiteRtConversation.RenderPreface"/> before relying on it.</remarks>
     public string? PromptTemplate { get; init; }
@@ -656,8 +654,8 @@ public sealed record LiteRtConversationOptions
     /// Mutually exclusive with <see cref="EnableConstrainedDecoding"/> (the tool-calling
     /// constrained-decoding path) — the native runtime supports one per conversation, and
     /// <see cref="LiteRtEngine.CreateConversation"/> throws <see cref="ArgumentException"/> when both
-    /// are set. Maps to the C API <c>conversation_config_set_constraint_provider</c> (native
-    /// v0.15.0+). The LlGuidance provider, like the tool-calling one, is embedded in the native library.
+    /// are set. Maps to the C API <c>conversation_config_set_constraint_provider</c>. The LlGuidance
+    /// provider, like the tool-calling one, is embedded in the native library.
     /// </remarks>
     public LiteRtConstraintProvider? ConstraintProvider { get; init; }
 
@@ -694,9 +692,8 @@ public sealed record LiteRtConversationOptions
     /// act on the final parsed chunk. Only meaningful when <see cref="Tools"/> are set.
     /// </summary>
     /// <remarks>
-    /// Maps to the C API <c>conversation_config_set_stream_tool_calls</c> (requires native LiteRT-LM
-    /// v0.14.0+; older binaries throw <see cref="System.EntryPointNotFoundException"/> at conversation
-    /// creation). The deltas do not affect the blocking <see cref="LiteRtConversation.Send(string)"/> path.
+    /// Maps to the C API <c>conversation_config_set_stream_tool_calls</c>. The deltas do not affect the
+    /// blocking <see cref="LiteRtConversation.Send(string)"/> path.
     /// </remarks>
     public bool StreamToolCalls { get; init; }
 

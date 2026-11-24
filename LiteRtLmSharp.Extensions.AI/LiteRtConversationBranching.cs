@@ -9,11 +9,6 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Requires native LiteRT-LM v0.15.0+: earlier runtimes silently lost a suspended conversation's state
-/// when another advanced, which is why this type stayed internal (and the stateful mode single-conversation)
-/// until that fix shipped.
-/// </para>
-/// <para>
 /// Forking builds on LiteRtLmSharp's native <see cref="LiteRtConversation.Clone"/>: the branch starts from a
 /// copy of the parent's prefilled KV-cache state (cheap — no re-prefill of the shared prefix) and then
 /// advances on its own. Neither branch affects the other, and the parent is untouched. Typical uses are

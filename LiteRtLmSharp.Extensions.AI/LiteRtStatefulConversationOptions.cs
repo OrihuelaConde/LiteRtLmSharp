@@ -75,9 +75,6 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// <para>
 /// Disposing the client disposes all live conversations. There is no time-based expiry in this mode — size
 /// the cap for your concurrency.
-/// (Multiple live conversations require native LiteRT-LM v0.15.0+: earlier runtimes silently lost a
-/// suspended conversation's state when another advanced, and this mode was hard-limited to one live
-/// conversation until the fix shipped.)
 /// </para>
 /// <para>
 /// <b>Token usage.</b> <see cref="ChatResponse.Usage"/>'s <see cref="UsageDetails.TotalTokenCount"/> is the

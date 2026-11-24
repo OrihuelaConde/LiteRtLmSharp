@@ -11,21 +11,22 @@ internal static class LiteRtContextGuard
     /// <summary>
     /// Tokens reserved out of every decode budget to absorb the small accounting drift between our
     /// measurement (render + tokenize of the templated text) and what the runtime actually prefills
-    /// (BOS/system tokens the template layer adds around it). Overshooting the KV cache by even a few
-    /// tokens corrupts native memory, so the budget errs low.
+    /// (BOS/system tokens the template layer adds around it), so the budget errs low and a clamped reply
+    /// ends short of the limit.
     /// </summary>
     internal const int SafetyMargin = 16;
 
     /// <summary>
-    /// State entries a send's <b>prefill</b> needs free to be accepted by the v0.15.0+ native
-    /// executor: it plans the prefill in fixed work groups taken from the model's prefill signatures
-    /// and rejects the send outright (<c>FAILED_PRECONDITION: Chosen prefill work group size exceeds
-    /// available state entries</c>, litert_compiled_model_executor_utils.cc
-    /// <c>GetOptimizedPrefillWorkGroups</c>) when fewer entries remain than the smallest signature
-    /// length — regardless of how short the message actually is. 128 is the smallest prefill
-    /// signature in the current gemma <c>.litertlm</c> conversions (observed live: 99 remaining
-    /// entries rejected). A model with a smaller signature just gets the typed rejection slightly
-    /// early; pre-v0.15.0 natives (no such check) simply keep the stronger guard.
+    /// State entries a send's <b>prefill</b> needs free to be accepted by the native executor: it
+    /// plans the prefill in fixed work groups taken from the model's prefill signatures and rejects
+    /// the send outright (<c>FAILED_PRECONDITION: Chosen prefill work group size exceeds available
+    /// state entries</c>, litert_compiled_model_executor_utils.cc <c>GetOptimizedPrefillWorkGroups</c>)
+    /// when fewer entries remain than the smallest signature length — regardless of how short the
+    /// message actually is. After that rejection, every later send on the conversation fails with
+    /// <c>INTERNAL: Task failed with state: 7.</c> 128 is the smallest prefill signature in the current
+    /// gemma <c>.litertlm</c> conversions (measured on LiteRT-LM v0.20.0, CPU, gemma-4 E2B: 127 free
+    /// entries rejected, 129 accepted). A model with a smaller signature just gets the typed rejection
+    /// slightly early.
     /// </summary>
     internal const int MinPrefillReserve = 128;
 
@@ -45,7 +46,7 @@ internal static class LiteRtContextGuard
 
     /// <summary>
     /// Whether a conversation's context is effectively full: fewer than <see cref="MinPrefillReserve"/>
-    /// entries remain, so the v0.15.0+ executor would reject any next send's prefill (and a clamped
+    /// entries remain, so the native executor would reject any next send's prefill (and a clamped
     /// send lands here by construction — its decode budget stops at the <see cref="SafetyMargin"/>,
     /// well inside the reserve). This is THE full/not-full predicate, shared by the pre-send hard stop
     /// and the public <see cref="LiteRtConversation.IsContextFull"/> signal so they can never
@@ -55,8 +56,8 @@ internal static class LiteRtContextGuard
     internal static bool IsContextFull(int tokenCount, int maxNumTokens)
         => maxNumTokens > 0 && tokenCount > maxNumTokens - MinPrefillReserve;
 
-    /// <summary>Throws when the conversation's context is full (see <see cref="IsContextFull"/>) — the
-    /// state shown in the field to crash the native runtime on the next send. No-op when the limit is unknown (≤ 0).</summary>
+    /// <summary>Throws when the conversation's context is full (see <see cref="IsContextFull"/>), the
+    /// state in which the runtime rejects the next send. No-op when the limit is unknown (≤ 0).</summary>
     internal static void ThrowIfContextFull(int tokenCount, int maxNumTokens)
     {
         if (IsContextFull(tokenCount, maxNumTokens))
@@ -82,10 +83,9 @@ internal static class LiteRtContextGuard
             $"The conversation's context is full: its KV cache holds {tokenCount} tokens against " +
             $"MaxNumTokens = {maxNumTokens}, and the native executor plans prefill in fixed work groups " +
             $"(the guard treats the last {MinPrefillReserve} tokens as unusable for a new send — fewer free " +
-            "entries than the model's smallest prefill signature make the runtime reject any send; on " +
-            "pre-v0.15.0 natives an overflow corrupted the KV cache outright). The previous reply may have " +
-            "been truncated to fit — LiteRtConversation.IsContextFull signals this state as soon as it is " +
-            "reached. Dispose this conversation and start a fresh one — restore a trimmed " +
+            "entries than the model's smallest prefill signature make the runtime reject any send). The " +
+            "previous reply may have been truncated to fit — LiteRtConversation.IsContextFull signals this " +
+            "state as soon as it is reached. Dispose this conversation and start a fresh one — restore a trimmed " +
             "LiteRtConversationOptions.History if the thread must continue — or reload the engine with a " +
             "larger LiteRtEngineOptions.MaxNumTokens.",
             tokenCount, maxNumTokens);
@@ -94,7 +94,7 @@ internal static class LiteRtContextGuard
     /// <summary>
     /// The decode budget (max output tokens) that keeps a send inside the KV cache, after the message's
     /// measured prefill cost and the <see cref="SafetyMargin"/>. Throws when the message itself does not
-    /// fit: either its prefill PLAN does not fit the remaining entries (the v0.15.0+ executor plans
+    /// fit: either its prefill PLAN does not fit the remaining entries (the native executor plans
     /// prefill in fixed work groups from the model's prefill signatures, so a plan consumes the input
     /// rounded UP to whole signature lengths — an input of 180 tokens against 200 remaining entries is
     /// rejected natively because it plans as two 128-entry groups; modeled here as

@@ -48,27 +48,25 @@ public sealed class LiteRtPromptExecutionSettings : PromptExecutionSettings
     public bool? EnableConstrainedDecoding { get => GetBoolean("enable_constrained_decoding"); set => Set("enable_constrained_decoding", value); }
 
     /// <summary>OpenAI-style presence penalty (<c>"presence_penalty"</c>): subtracted once from a token's
-    /// logit if the token already appeared in the generated output. Positive discourages repetition.
-    /// Requires native LiteRT-LM v0.15.0+.</summary>
+    /// logit if the token already appeared in the generated output. Positive discourages repetition.</summary>
     [JsonIgnore]
     public float? PresencePenalty { get => GetSingle("presence_penalty"); set => Set("presence_penalty", value); }
 
     /// <summary>OpenAI-style frequency penalty (<c>"frequency_penalty"</c>): subtracted from a token's
-    /// logit scaled by its occurrence count in the generated output. Positive discourages repetition.
-    /// Requires native LiteRT-LM v0.15.0+.</summary>
+    /// logit scaled by its occurrence count in the generated output. Positive discourages repetition.</summary>
     [JsonIgnore]
     public float? FrequencyPenalty { get => GetSingle("frequency_penalty"); set => Set("frequency_penalty", value); }
 
     /// <summary>Bans the reply from repeating any n-gram of this many tokens it already produced
     /// (<c>"no_repeat_ngram_size"</c>). <c>null</c> = off. Useful against a small model echoing a prompt template
-    /// verbatim. Requires native LiteRT-LM v0.15.0+.</summary>
+    /// verbatim.</summary>
     [JsonIgnore]
     public int? NoRepeatNgramSize { get => GetInt32("no_repeat_ngram_size"); set => Set("no_repeat_ngram_size", value); }
 
     /// <summary>Token ids the reply may never emit (<c>"suppress_tokens"</c>): each id's logit is forced to
     /// <c>-inf</c> on every decode step. Find ids with <c>LiteRtEngine.Tokenize</c> (ban the forms with and
     /// without a leading space). Stored as an <c>int[]</c>; a JSON array of numbers is accepted when the
-    /// settings come from a prompt template. Requires native LiteRT-LM v0.15.0+.</summary>
+    /// settings come from a prompt template.</summary>
     [JsonIgnore]
     public IReadOnlyList<int>? SuppressTokens
     {

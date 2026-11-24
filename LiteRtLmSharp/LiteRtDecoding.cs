@@ -5,7 +5,7 @@ namespace LiteRtLmSharp;
 /// implements: a multiplicative HuggingFace-style <see cref="RepetitionPenalty"/> and subtractive
 /// OpenAI-style <see cref="PresencePenalty"/>/<see cref="FrequencyPenalty"/>. All penalties look at
 /// the <b>generated</b> output window of the current send only (not the prompt, not prior turns).
-/// Set on <see cref="LiteRtSendOptions.RepetitionPenalties"/>. Requires native LiteRT-LM v0.15.0+.
+/// Set on <see cref="LiteRtSendOptions.RepetitionPenalties"/>.
 /// </summary>
 /// <remarks>Maps to the C API <c>litert_lm_repetition_penalty_config_*</c> builder; the defaults
 /// below are the native defaults, so a partially configured record is faithful.</remarks>
@@ -82,8 +82,7 @@ public sealed record LiteRtRepetitionPenaltyOptions
 /// <summary>
 /// Bans the current send's decode from repeating any n-gram of <see cref="NgramSize"/> consecutive
 /// tokens it already produced: a candidate token that would complete an already-seen n-gram has its
-/// logit forced to -inf. Set on <see cref="LiteRtSendOptions.NoRepeatNgram"/>. Requires native
-/// LiteRT-LM v0.15.0+.
+/// logit forced to -inf. Set on <see cref="LiteRtSendOptions.NoRepeatNgram"/>.
 /// </summary>
 /// <remarks>Maps to the C API <c>litert_lm_no_repeat_ngram_config_*</c> builder.</remarks>
 public sealed record LiteRtNoRepeatNgramOptions
@@ -138,7 +137,7 @@ public enum LiteRtConstraintType
 /// <see cref="LiteRtConversationOptions.ConstraintProvider"/>: tokens that cannot lead to a valid
 /// completion of the pattern are masked out, so the model can only emit conforming output. Set on
 /// <see cref="LiteRtSendOptions.Constraint"/>; requires the conversation to have been created with
-/// <see cref="LiteRtConstraintProvider.LlGuidance"/>. Requires native LiteRT-LM v0.15.0+.
+/// <see cref="LiteRtConstraintProvider.LlGuidance"/>.
 /// </summary>
 /// <remarks>Maps to the C API <c>litert_lm_conversation_optional_args_set_constraint</c>.</remarks>
 public sealed record LiteRtConstraint

@@ -225,34 +225,21 @@ static async Task StreamReplyAsync(LiteRtConversation chat, string prompt, int c
 
 static void PrintContextGauge(LiteRtConversation chat, int contextTokens, TimeSpan elapsed)
 {
-    try
-    {
-        // chat.TokenCount = context used so far (prompt + replies, all turns).
-        int used = chat.TokenCount;
-        double frac = contextTokens > 0 ? (double)used / contextTokens : 0;
-        var color = frac > 0.85 ? ConsoleColor.Red : ConsoleColor.DarkGray;
-        Ui.WriteLine($"[context {used}/{contextTokens} ({frac:P0}) · {elapsed.TotalSeconds:F1}s{BenchSuffix(chat)}]", color);
-        if (frac > 0.85)
-            Ui.WriteLine("[context almost full — start a new conversation to avoid degraded replies]", ConsoleColor.Red);
-    }
-    catch (EntryPointNotFoundException)
-    {
-        Ui.WriteLine($"[{elapsed.TotalSeconds:F1}s]", ConsoleColor.DarkGray); // older native binary without TokenCount
-    }
+    // chat.TokenCount = context used so far (prompt + replies, all turns).
+    int used = chat.TokenCount;
+    double frac = contextTokens > 0 ? (double)used / contextTokens : 0;
+    var color = frac > 0.85 ? ConsoleColor.Red : ConsoleColor.DarkGray;
+    Ui.WriteLine($"[context {used}/{contextTokens} ({frac:P0}) · {elapsed.TotalSeconds:F1}s{BenchSuffix(chat)}]", color);
+    if (frac > 0.85)
+        Ui.WriteLine("[context almost full — start a new conversation to avoid degraded replies]", ConsoleColor.Red);
 }
 
 // Decode throughput + time-to-first-token from the benchmark API. Empty when benchmark info is
-// unavailable (benchmark not enabled, no decode turn yet, or an older native binary).
+// unavailable (benchmark not enabled, or no decode turn yet).
 static string BenchSuffix(LiteRtConversation chat)
-{
-    try
-    {
-        if (chat.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b)
-            return $" · {b.LastDecodeTokensPerSecond:F1} tok/s decode · TTFT {b.TimeToFirstTokenSeconds:F2}s";
-    }
-    catch (EntryPointNotFoundException) { /* native binary predates the benchmark API */ }
-    return "";
-}
+    => chat.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b
+        ? $" · {b.LastDecodeTokensPerSecond:F1} tok/s decode · TTFT {b.TimeToFirstTokenSeconds:F2}s"
+        : "";
 
 // ──────────────────── Function calling (tools) ────────────────────
 
@@ -379,17 +366,10 @@ static void RunTokenizerDemo(LiteRtEngine engine)
 
     // 5. The preface is the templated preamble before the first user turn (system message + any tools +
     //    restored history). RenderPreface shows it without sending; tokenize it for the up-front cost the
-    //    system prompt adds once per conversation. Complements RenderMessage; needs the v0.14.0+ runtime.
-    try
-    {
-        string preface = conv.RenderPreface();
-        Ui.WriteLine($"  preface: {engine.Tokenize(preface).Length} tokens (system prompt, rendered once up front):", ConsoleColor.White);
-        Ui.WriteLine("  " + preface.TrimEnd().Replace("\n", "\n  "), ConsoleColor.DarkGray);
-    }
-    catch (EntryPointNotFoundException)
-    {
-        Ui.WriteLine("  (RenderPreface needs the v0.14.0+ native runtime)", ConsoleColor.DarkGray);
-    }
+    //    system prompt adds once per conversation. Complements RenderMessage.
+    string preface = conv.RenderPreface();
+    Ui.WriteLine($"  preface: {engine.Tokenize(preface).Length} tokens (system prompt, rendered once up front):", ConsoleColor.White);
+    Ui.WriteLine("  " + preface.TrimEnd().Replace("\n", "\n  "), ConsoleColor.DarkGray);
 }
 
 // First few token ids, abbreviated so a long input stays readable.
@@ -411,12 +391,7 @@ static void PrintInfo(string modelPath, string backend, int contextTokens, bool 
     Ui.WriteLine($"  Context:     {contextTokens} tokens", ConsoleColor.Gray);
     Ui.WriteLine($"  Speculative: {(speculative ? "on (MTP drafter)" : "off")}", ConsoleColor.Gray);
     Ui.WriteLine($"  Thinking:    {(thinking ? "on" : "off")}", ConsoleColor.Gray);
-    try { Ui.WriteLine($"  In use:      {chat.TokenCount} tokens", ConsoleColor.Gray); }
-    catch (EntryPointNotFoundException) { /* token count not available on this binary */ }
-    try
-    {
-        if (chat.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b)
-            Ui.WriteLine($"  Last decode: {b.LastDecodeTokensPerSecond:F1} tok/s · TTFT {b.TimeToFirstTokenSeconds:F2}s", ConsoleColor.Gray);
-    }
-    catch (EntryPointNotFoundException) { /* benchmark API not available on this binary */ }
+    Ui.WriteLine($"  In use:      {chat.TokenCount} tokens", ConsoleColor.Gray);
+    if (chat.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b)
+        Ui.WriteLine($"  Last decode: {b.LastDecodeTokensPerSecond:F1} tok/s · TTFT {b.TimeToFirstTokenSeconds:F2}s", ConsoleColor.Gray);
 }

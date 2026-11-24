@@ -1749,7 +1749,7 @@ public sealed class MultimodalModelTests(ITestOutputHelper output)
 /// (one engine alive at a time; the assembly disables parallelization). Skipped unless
 /// LITERTLM_TEST_MODEL is set; runs on LITERTLM_TEST_BACKEND (the CPU-only knobs only on CPU).
 /// </summary>
-public sealed class EngineTuningTests
+public sealed class EngineTuningTests(ITestOutputHelper output)
 {
     /// <summary>The opt-outs from the Float32 default: Float16, and <c>null</c> (no native call, the runtime's
     /// choice). The GPU backend reads the setting; the CPU backend ignores it.</summary>
@@ -1817,6 +1817,62 @@ public sealed class EngineTuningTests
         Assert.Equal(256, bench!.LastPrefillTokenCount);
         Assert.Equal(64, bench.LastDecodeTokenCount);
         Assert.True(bench.LastDecodeTokensPerSecond > 0, "Expected a decode throughput measurement.");
+    }
+
+    /// <summary>
+    /// <see cref="LiteRtConversation.GetBenchmarkInfo"/> on a benchmark engine returns an info with zero turns
+    /// before the first send and one prefill and one decode turn after it; on an engine loaded without
+    /// <see cref="LiteRtEngineOptions.EnableBenchmark"/> it returns <c>null</c>. If the runtime created no
+    /// benchmark info until a turn completed, the first read would be <c>null</c>; if the binding read a turn
+    /// at a zero turn count, the runtime's <c>OUT_OF_RANGE</c> would make it throw <see cref="LiteRtException"/>.
+    /// Loads two engines, one after the other. Skipped unless LITERTLM_TEST_MODEL is set.
+    /// </summary>
+    [SkippableFact]
+    public void GetBenchmarkInfo_BeforeTheFirstSend_ReportsZeroTurns()
+    {
+        string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
+        Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        LiteRtEngine.SetMinLogLevel(3);
+
+        using (var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = model!, Backend = LiteRtBackend.Cpu, MaxNumTokens = 2048, EnableBenchmark = true,
+        }))
+        {
+            using var conv = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
+
+            LiteRtBenchmarkInfo? before = conv.GetBenchmarkInfo();
+            output.WriteLine($"before any send: {before}");
+            Assert.NotNull(before);
+            Assert.Equal(0, before!.NumPrefillTurns);
+            Assert.Equal(0, before.NumDecodeTurns);
+            Assert.Equal(0, before.LastPrefillTokenCount);
+            Assert.Equal(0, before.LastDecodeTokenCount);
+            Assert.Equal(0d, before.TimeToFirstTokenSeconds);
+            Assert.True(before.TotalInitTimeSeconds > 0, "Expected the init time to be set before any send.");
+
+            conv.Send("Reply with one word: OK");
+            LiteRtBenchmarkInfo? after = conv.GetBenchmarkInfo();
+            output.WriteLine($"after one send: {after}");
+            Assert.NotNull(after);
+            Assert.Equal(1, after!.NumPrefillTurns);
+            Assert.Equal(1, after.NumDecodeTurns);
+            Assert.True(after.LastPrefillTokenCount > 0, "Expected the send's prefill token count.");
+            Assert.True(after.LastDecodeTokenCount > 0, "Expected the send's decode token count.");
+        }
+
+        using (var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = model!, Backend = LiteRtBackend.Cpu, MaxNumTokens = 2048,
+        }))
+        {
+            using var conv = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
+            conv.Send("Reply with one word: OK");
+            LiteRtBenchmarkInfo? off = conv.GetBenchmarkInfo();
+            output.WriteLine($"benchmark off, after one send: {off?.ToString() ?? "null"}");
+            Assert.Null(off);
+        }
     }
 }
 

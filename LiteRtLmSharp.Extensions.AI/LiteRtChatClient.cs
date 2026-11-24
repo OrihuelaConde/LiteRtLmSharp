@@ -813,9 +813,7 @@ public sealed class LiteRtChatClient : IChatClient
     /// </summary>
     private static UsageDetails ReadUsage(LiteRtConversation conv)
     {
-        LiteRtBenchmarkInfo? benchmark = null;
-        try { benchmark = conv.GetBenchmarkInfo(); }
-        catch (EntryPointNotFoundException) { /* native build predates the benchmark API → total-only */ }
+        LiteRtBenchmarkInfo? benchmark = conv.GetBenchmarkInfo();
         return LiteRtChatMapping.BuildUsage(conv.TokenCount, benchmark);
     }
 

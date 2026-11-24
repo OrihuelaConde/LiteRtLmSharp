@@ -38,13 +38,13 @@ public sealed record LiteRtSendOptions
 
     /// <summary>
     /// Repetition penalties (multiplicative and/or subtractive) applied to this send's decode.
-    /// <c>null</c> (default) = none. Requires native LiteRT-LM v0.15.0+.
+    /// <c>null</c> (default) = none.
     /// </summary>
     public LiteRtRepetitionPenaltyOptions? RepetitionPenalties { get; init; }
 
     /// <summary>
     /// Bans this send's decode from repeating n-grams it already produced. <c>null</c> (default) =
-    /// no ban. Requires native LiteRT-LM v0.15.0+.
+    /// no ban.
     /// </summary>
     public LiteRtNoRepeatNgramOptions? NoRepeatNgram { get; init; }
 
@@ -56,7 +56,6 @@ public sealed record LiteRtSendOptions
     /// (note most words tokenize differently with/without a leading space). The list is copied at
     /// initialization (later mutation of the source list has no effect) and ids must be
     /// non-negative; out-of-vocabulary ids are ignored by the native layer (bounds-checked there).
-    /// Requires native LiteRT-LM v0.15.0+.
     /// </summary>
     /// <exception cref="System.ArgumentOutOfRangeException">Any id is negative.</exception>
     public IReadOnlyList<int>? SuppressTokens
@@ -80,7 +79,7 @@ public sealed record LiteRtSendOptions
     /// Per-send thinking override: <c>true</c>/<c>false</c> turns the model's reasoning mode on/off
     /// for this send only, overriding the conversation-level
     /// <see cref="LiteRtConversationOptions.EnableThinking"/>. <c>null</c> (default) = inherit the
-    /// conversation-level value. Requires native LiteRT-LM v0.15.0+.
+    /// conversation-level value.
     /// </summary>
     /// <remarks>
     /// The native per-send thinking config replaces the conversation-level one wholesale, so the
@@ -99,7 +98,6 @@ public sealed record LiteRtSendOptions
     /// (default) = inherit the conversation-level value; <c>-1</c> = explicitly infinite; <c>0</c>
     /// is treated by the native layer as "no budget". A budget on a send whose effective
     /// <see cref="EnableThinking"/> is unset at both levels implies thinking ON for that send.
-    /// Requires native LiteRT-LM v0.15.0+.
     /// </summary>
     /// <exception cref="System.ArgumentOutOfRangeException">The value is negative and not -1.</exception>
     public int? ThinkingTokenBudget
@@ -117,8 +115,7 @@ public sealed record LiteRtSendOptions
     /// Output constraint (regex / JSON Schema) enforced during this send's sampling. Requires the
     /// conversation to have been created with
     /// <see cref="LiteRtConversationOptions.ConstraintProvider"/> set — without a provider the send
-    /// throws <see cref="LiteRtException"/>. <c>null</c> (default) = unconstrained. Requires native
-    /// LiteRT-LM v0.15.0+.
+    /// throws <see cref="LiteRtException"/>. <c>null</c> (default) = unconstrained.
     /// </summary>
     /// <remarks>
     /// The constraint masks <b>every</b> generated token to pattern-conforming continuations, so on a

@@ -17,8 +17,7 @@ namespace LiteRtLmSharp;
 /// </summary>
 /// <remarks>
 /// <b>Interleaving vs. concurrency.</b> Switching between several live conversations of one engine turn by
-/// turn is supported and verified from LiteRT-LM v0.15.0 (no state loss, replies stay correct, measured on
-/// CPU and GPU); on v0.14.0 the suspended conversation silently loses its state. What is <i>not</i>
+/// turn is supported (no state loss, replies stay correct, measured on CPU and GPU). What is <i>not</i>
 /// supported is two generations in flight on one engine at the same time: upstream reports
 /// non-deterministic output and GPU-backend errors (LiteRT-LM#2807). Native calls that go through the
 /// engine, such as <see cref="TokenCount"/> and creating a conversation, also wait for a generation in
@@ -448,9 +447,12 @@ public sealed class LiteRtConversation : IDisposable
     /// <summary>
     /// Returns benchmark timings (prefill/decode tokens-per-second, time-to-first-token, init
     /// time) for this conversation, or <c>null</c> when benchmarking was not enabled
-    /// (<see cref="LiteRtEngineOptions.EnableBenchmark"/>) or no turn has completed yet.
+    /// (<see cref="LiteRtEngineOptions.EnableBenchmark"/>).
     /// </summary>
     /// <remarks>
+    /// Before the first send, the info has zero prefill and decode turns: the per-turn values and
+    /// <see cref="LiteRtBenchmarkInfo.TimeToFirstTokenSeconds"/> are 0, and
+    /// <see cref="LiteRtBenchmarkInfo.TotalInitTimeSeconds"/> is already set.
     /// The native per-turn accessors reject an index past the last turn, so this only reads a turn
     /// after confirming the corresponding turn count is &gt; 0.
     /// Wraps a native surface Google still marks experimental in its own bindings; the reported
@@ -466,7 +468,7 @@ public sealed class LiteRtConversation : IDisposable
         {
             if (LiteRtLmNative.litert_lm_conversation_get_benchmark_info(_conversation.Ptr, &infoPtr) != LiteRtStatusCode.Ok)
             {
-                // Benchmarking off (or no info yet) is a failure natively and null here.
+                // Benchmarking off is a failure natively and null here.
                 NativeError.Clear();
                 return null;
             }
@@ -854,10 +856,10 @@ public sealed class LiteRtConversation : IDisposable
                 return options;
             inputTokens = _engineOwner.CountTokens(rendered);
         }
-        catch (Exception e) when (e is LiteRtException or EntryPointNotFoundException)
+        catch (LiteRtException)
         {
-            // Older natives without the render/tokenize entry points, or a message shape the template cannot
-            // render: the guard cannot measure, the hard stop above still protects the known-fatal state.
+            // A failed render or tokenize, such as a message shape the template cannot render: the guard cannot
+            // measure, the hard stop above still protects the known-fatal state.
             return options;
         }
 
