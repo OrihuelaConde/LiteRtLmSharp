@@ -609,9 +609,11 @@ public sealed class LiteRtConversation : IDisposable
     /// conversation with <see cref="LiteRtConversationOptions.EnableConstrainedDecoding"/> or a
     /// <see cref="LiteRtConversationOptions.ConstraintProvider"/> is the exception, because the runtime
     /// rebuilds the constraint machinery for the clone: about 0.9 s and 1 s per clone on gemma-4 E2B
-    /// (LiteRT-LM v0.18.0, win-x64, CPU and GPU alike). A clone does not carry the native state that removes
-    /// earlier reasoning from the KV cache (<see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/>),
-    /// so on a reasoning conversation that reasoning stays in the clone's context.
+    /// (LiteRT-LM v0.18.0, win-x64, CPU and GPU alike). On LiteRT-LM v0.18.0, a clone did not carry the native
+    /// state that removed earlier reasoning from the KV cache
+    /// (<see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/>), so that reasoning stayed in the clone's
+    /// context. On v0.20.0, the token count read after a reply with thinking already leaves the thinking out, and a
+    /// clone taken then holds the same count (measured on CPU, gemma-4 E2B).
     /// </para>
     /// </remarks>
     /// <exception cref="InvalidOperationException">

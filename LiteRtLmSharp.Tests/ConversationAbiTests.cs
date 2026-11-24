@@ -486,8 +486,8 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
     /// until the next send, so the count stayed at the ceiling, <see cref="LiteRtConversation.IsContextFull"/> read
     /// <c>true</c> and the next send threw <see cref="LiteRtContextOverflowException"/>), so the context has room
     /// again and the next send passes the guard. <see cref="LiteRtConversation.LastReplyReachedContextLimit"/>
-    /// still reports the cut (here from the tokenized reply, as benchmarking is off); a clone does not inherit it,
-    /// a send the binding rejects while it builds the per-send options leaves it, and the next send, which ends on
+    /// still reports the cut (here from the tokenized reply, as benchmarking is off); a clone does not inherit it
+    /// and holds the same token count, without the thinking; a send the binding rejects while it builds the per-send options leaves it, and the next send, which ends on
     /// its own under the caller's cap, clears it.</summary>
     [SkippableTheory]
     [InlineData(false)]
@@ -529,7 +529,13 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
         Assert.True(count <= promptTokens + answerTokens + 16, $"count {count} must leave the thinking out");
 
         using (LiteRtConversation clone = chat.Clone())
+        {
+            int cloneCount = clone.TokenCount;
+            output.WriteLine($"clone count {cloneCount}");
             Assert.False(clone.LastReplyReachedContextLimit);
+            Assert.True(cloneCount == count,
+                $"clone count {cloneCount}, conversation count {count}: the clone must hold the count without the thinking");
+        }
 
         // A send the binding rejects after the guard, while it builds the per-send options (a constraint on a
         // conversation without a constraint provider), leaves the flag as it was.
