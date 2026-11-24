@@ -68,8 +68,9 @@ public sealed class LiteRtEngine : IDisposable
     /// silences the log, like 1000.</summary>
     /// <remarks>Above 5 (SILENT included) LiteRT also stops recording the reason of the errors its status
     /// macros raise, so a <see cref="LiteRtException"/> then names the status (for example
-    /// <c>INVALID_ARGUMENT</c>) without saying why. Use 3 (ERROR) to keep the console quiet and the
-    /// reasons.</remarks>
+    /// <c>INVALID_ARGUMENT</c>) without saying why. Some failures keep their reason at any level, such as
+    /// <see cref="Load"/> or <see cref="LiteRtModelInfo.Read"/> on a file that is not a model. Every level
+    /// from 0 to 5 keeps the reasons; 4 (ERROR) logs errors only.</remarks>
     /// <exception cref="DllNotFoundException">The native LiteRT-LM library could not be loaded; the
     /// message names the fix (the missing <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package, a runtime
     /// package for another architecture, or a missing system library).</exception>

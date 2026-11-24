@@ -81,6 +81,11 @@ public sealed class NativeErrorTests(ITestOutputHelper output)
             output.WriteLine($"model info: [{info.StatusCode}] {info.Message}");
             Assert.StartsWith("litert_lm_loaded_file_create", info.Message, StringComparison.Ordinal);
             Assert.NotNull(info.StatusCode);
+            // Measured on LiteRT-LM v0.20.0.
+            Assert.Equal(LiteRtStatusCode.InvalidArgument, info.StatusCode);
+            Assert.Equal(
+                $"litert_lm_loaded_file_create failed for '{bogus}': INVALID_ARGUMENT: Invalid magic number or failed to read.",
+                info.Message);
 
             var load = Assert.Throws<LiteRtException>(() => LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions { ModelPath = bogus }));
             output.WriteLine($"embedding engine: [{load.StatusCode}] {load.Message}");
@@ -89,6 +94,10 @@ public sealed class NativeErrorTests(ITestOutputHelper output)
             // The runtime's call trace reads as one line: the reason, then where it was raised.
             Assert.DoesNotContain("ERROR: [", load.Message, StringComparison.Ordinal);
             Assert.Contains("(at ", load.Message, StringComparison.Ordinal);
+            Assert.Equal(LiteRtStatusCode.InvalidArgument, load.StatusCode);
+            Assert.StartsWith(
+                "litert_lm_embedding_engine_create failed: INVALID_ARGUMENT: Invalid magic number or failed to read (at ",
+                load.Message, StringComparison.Ordinal);
         }
         finally
         {
@@ -96,17 +105,19 @@ public sealed class NativeErrorTests(ITestOutputHelper output)
         }
     }
 
-    /// <summary>LiteRT's multi-line status traces (real messages from v0.18.0) read as one line: the reason,
-    /// then the innermost source location; a trace without a reason keeps the location.</summary>
+    /// <summary>LiteRT's multi-line status traces read as one line: the reason, then the innermost source
+    /// location; a trace without a reason keeps the location. The cache-directory trace is the one LiteRT-LM
+    /// v0.20.0 reports; the bare trace is a v0.18.0 one.</summary>
     [Fact]
     public void Untrace_PutsTheReasonFirst()
     {
         const string cacheDir =
-            "ERROR: [third_party/odml/litert_lm/runtime/core/embedding_engine_impl.cc:402]\n" +
-            "\u2514 ERROR: [third_party/odml/litert_lm/runtime/engine/embedding_engine_settings.cc:316]\n" +
+            "ERROR: [third_party/odml/litert_lm/runtime/core/embedding_engine_impl.cc:1283]\n" +
+            "\u2514 ERROR: [third_party/odml/litert_lm/runtime/core/embedding_engine_impl.cc:480]\n" +
+            "\u2514 ERROR: [third_party/odml/litert_lm/runtime/engine/embedding_engine_settings.cc:346]\n" +
             "\u2514 Cache directory does not exist or is not writable: C:\\missing";
         Assert.Equal(
-            "Cache directory does not exist or is not writable: C:\\missing (at embedding_engine_settings.cc:316)",
+            "Cache directory does not exist or is not writable: C:\\missing (at embedding_engine_settings.cc:346)",
             NativeError.Untrace(cacheDir));
 
         const string bareTrace =
@@ -281,6 +292,14 @@ public sealed class NativeErrorTests(ITestOutputHelper output)
             Assert.Equal(LiteRtStatusCode.InvalidArgument, silenced.StatusCode);
             Assert.DoesNotContain("INVALID_ARGUMENT: INVALID_ARGUMENT", silenced.Message, StringComparison.Ordinal);
             Assert.Contains("SetMinLogLevel", silenced.Message, StringComparison.Ordinal);
+            Assert.StartsWith(
+                "litert_lm_embedding_engine_compute_embedding failed: INVALID_ARGUMENT. The runtime gave no reason",
+                silenced.Message, StringComparison.Ordinal);
+
+            // Every declared level up to 5 keeps the reason (measured on LiteRT-LM v0.20.0).
+            LiteRtEngine.SetMinLogLevel(5);
+            var fatalOnly = Assert.Throws<LiteRtException>(() => engine.Embed(tooLong));
+            Assert.Contains("exceeds maximum supported signature length", fatalOnly.Message, StringComparison.Ordinal);
         }
         finally
         {

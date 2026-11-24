@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using LiteRtLmSharp.Native;
 
 namespace LiteRtLmSharp;
@@ -11,10 +12,9 @@ namespace LiteRtLmSharp;
 /// <remarks>
 /// <see cref="Read"/> opens the file, reads every value and closes it, so the object holds no native
 /// resources. Values a model does not declare read as <c>false</c>, <c>0</c>, <c>null</c> or an empty
-/// list, as each property states. On a multimodal bundle the native reader copies the vision sections into
-/// memory while it reads (gemma-4-E2B-it: about 0.8 GB for a few hundred milliseconds), so on a phone call
-/// it before loading engines rather than next to them. Requires native LiteRT-LM v0.18.0+
-/// (<c>c/model_info.h</c>).
+/// list, as each property states. The read is cheap: on gemma-4-E2B-it it takes about 20 ms and raises the
+/// process's peak memory by about 10 MB (measured on win-x64). Requires native LiteRT-LM v0.20.0 or later
+/// (C API 1.1, <c>c/model_info.h</c>).
 /// </remarks>
 public sealed class LiteRtModelInfo
 {
@@ -29,18 +29,20 @@ public sealed class LiteRtModelInfo
     public LiteRtModelType ModelType { get; private init; }
 
     /// <summary>
-    /// Gets the maximum context size in tokens: the fixed size of a static model, or the largest value a
-    /// dynamic model accepts for <see cref="LiteRtEngineOptions.MaxNumTokens"/> (see
-    /// <see cref="IsDynamicContext"/>). 0 when the file does not declare it. For an embedding model it is
-    /// the longest input signature (8,192 for EmbeddingGemma 2), which an embedding engine only accepts
-    /// with <see cref="LiteRtEmbeddingEngineOptions.MaxInputLength"/>: by default it stops at the limit the
-    /// model declares (1,024 for EmbeddingGemma 2), which the C API does not expose.
+    /// Gets the context size in tokens the file declares. For a language model it is the default context
+    /// size the model is initialized with (the runtime reports 4,096 for gemma-4-E2B-it); when the metadata
+    /// declares none, the runtime's default of 4,096, capped by the size of a static model graph. A dynamic model (see
+    /// <see cref="IsDynamicContext"/>) accepts another size through
+    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/>. 0 when the file does not declare it. For an embedding
+    /// model it is the longest input signature (8,192 for EmbeddingGemma 2), which an embedding engine only
+    /// accepts with <see cref="LiteRtEmbeddingEngineOptions.MaxInputLength"/>: by default it stops at the
+    /// limit the model declares (1,024 for EmbeddingGemma 2), which the C API does not expose.
     /// </summary>
     public int MaxContextTokens { get; private init; }
 
-    /// <summary>Gets a value indicating whether the context size is configurable up to
-    /// <see cref="MaxContextTokens"/> (dynamic) rather than fixed by the model graph. For an embedding
-    /// model it means the file has several input signatures.</summary>
+    /// <summary>Gets a value indicating whether the context size is configurable (dynamic) rather than fixed
+    /// by the model graph, as the graph itself declares. For an embedding model it means the file has
+    /// several input signatures.</summary>
     public bool IsDynamicContext { get; private init; }
 
     /// <summary>Gets a value indicating whether the model declares a reasoning ("thinking") mode. <c>false</c>
@@ -63,8 +65,7 @@ public sealed class LiteRtModelInfo
     /// Gets the backends the file declares for each modality, in the model's priority order (the first is
     /// its default). A modality without declared backends is absent.
     /// </summary>
-    /// <remarks>The declaration is not exhaustive: gemma-4-E2B-it declares only CPU for vision, yet its vision
-    /// encoder runs on the GPU backend. A backend the model truly cannot use makes
+    /// <remarks>The engine's own check at load time is authoritative: a backend the model cannot use makes
     /// <see cref="LiteRtEngine.Load"/> fail with the runtime's reason.</remarks>
     public IReadOnlyDictionary<LiteRtModality, IReadOnlyList<LiteRtBackend>> SupportedBackends { get; private init; } =
         new Dictionary<LiteRtModality, IReadOnlyList<LiteRtBackend>>();
@@ -99,30 +100,46 @@ public sealed class LiteRtModelInfo
     /// <exception cref="ArgumentException"><paramref name="modelPath"/> is empty or the file does not exist.</exception>
     /// <exception cref="LiteRtException">The native layer could not open the file as a model, or the native
     /// library's C API version does not match this binding.</exception>
-    public static LiteRtModelInfo Read(string modelPath)
+    public static LiteRtModelInfo Read(string modelPath) => ReadCore(modelPath, allowDeviceAlias: true);
+
+    /// <summary>Reads the metadata like <see cref="Read(string)"/>; <paramref name="allowDeviceAlias"/> is
+    /// <c>false</c> only to test the path that cannot open a non-ASCII path (see
+    /// <see cref="NarrowPath.Acquire"/>).</summary>
+    internal static unsafe LiteRtModelInfo ReadCore(string modelPath, bool allowDeviceAlias)
     {
         ArgumentException.ThrowIfNullOrEmpty(modelPath);
         if (!File.Exists(modelPath))
             throw new ArgumentException($"Model file not found: {modelPath}", nameof(modelPath));
         NativeLibraryResolver.EnsureCompatible();
 
-        // The native reader opens the file through the C runtime's narrow API, which on Windows reads the
-        // path in the ANSI code page rather than UTF-8 (see NarrowPath).
-        byte[] nativePath = NarrowPath.Encode(modelPath, out bool opens);
-        NativeError.Clear();
+        // The native reader opens the path both as UTF-8 and through the C runtime's narrow API, which on
+        // Windows reads it in the ANSI code page (see NarrowPath).
         nint filePtr;
-        unsafe
+        LiteRtStatusCode status;
+        bool opens;
+        string? alias;
+        using (NarrowPath.Lease path = NarrowPath.Acquire(modelPath, allowDeviceAlias))
         {
-            fixed (byte* p = nativePath)
-                filePtr = LiteRtLmNative.litert_lm_loaded_file_create(p);
+            opens = path.Opens;
+            // Read before the lease is disposed, which forgets the alias.
+            alias = path.IsDeviceAlias ? Encoding.ASCII.GetString(path.Bytes, 0, path.Bytes.Length - 1) : null;
+            fixed (byte* p = path.Bytes)
+                status = LiteRtLmNative.litert_lm_loaded_file_create(p, &filePtr);
+            // The loaded file holds the parsed metadata, so a temporary alias can go right away.
         }
-        if (filePtr == nint.Zero)
-            throw NativeError.LegacyException(
-                $"litert_lm_loaded_file_create returned null for '{modelPath}'.",
-                hint: opens ? null
-                    : "On Windows the native metadata reader opens paths in the ANSI code page, which cannot spell " +
-                      "this one, and the volume has no ASCII short name for it: move the model to a folder whose " +
-                      "path uses only characters of the system code page.");
+        if (status != LiteRtStatusCode.Ok)
+            throw NativeError.Exception(
+                status, $"litert_lm_loaded_file_create failed for '{modelPath}'.",
+                hintFor: report =>
+                    !opens
+                        ? "On Windows the native metadata reader opens the path both as UTF-8 and in the ANSI code page, " +
+                          "so a path with characters outside ASCII needs an ASCII alias, and none could be made for this " +
+                          "one: move the model to a folder whose path uses only ASCII characters."
+                        : alias is not null && report?.Message.Contains(alias, StringComparison.Ordinal) == true
+                            ? $"The runtime's reason names {alias}, a temporary ASCII alias of '{modelPath}' that " +
+                              "existed only for this call, because the native metadata reader cannot open the path's " +
+                              "characters otherwise."
+                            : null);
 
         using var file = new LoadedFileHandle(filePtr);
         nint f = file.Ptr;
@@ -131,33 +148,71 @@ public sealed class LiteRtModelInfo
         var backends = new Dictionary<LiteRtModality, IReadOnlyList<LiteRtBackend>>();
         foreach (LiteRtModality modality in AllModalities)
         {
-            if (LiteRtLmNative.litert_lm_loaded_file_supports_input_modality(f, (LiteRtLmModality)modality))
+            byte supported;
+            Check(LiteRtLmNative.litert_lm_loaded_file_supports_input_modality(f, (LiteRtLmModality)modality, &supported),
+                nameof(LiteRtLmNative.litert_lm_loaded_file_supports_input_modality));
+            if (supported != 0)
                 modalities.Add(modality);
             IReadOnlyList<LiteRtBackend> list = ReadBackends(f, modality);
             if (list.Count > 0)
                 backends[modality] = list;
         }
 
-        LiteRtLmSamplerType samplerType = LiteRtLmNative.litert_lm_loaded_file_sampler_type(f);
-        float topP = LiteRtLmNative.litert_lm_loaded_file_sampler_top_p(f);
-        float temperature = LiteRtLmNative.litert_lm_loaded_file_sampler_temperature(f);
-        int visionBudget = LiteRtLmNative.litert_lm_loaded_file_max_vision_token_budget(f);
-        int dimension = LiteRtLmNative.litert_lm_loaded_file_embedding_dimension(f);
-        uint maxContext = LiteRtLmNative.litert_lm_loaded_file_max_context_tokens(f);
+        // NOT_FOUND is the runtime's "the model does not declare it" (a file that is not an LLM has no default
+        // sampler); each reads as the value 1.3.0 reported for an undeclared value.
+        LiteRtLmSamplerType samplerType;
+        if (!Declared(LiteRtLmNative.litert_lm_loaded_file_sampler_type(f, &samplerType),
+                nameof(LiteRtLmNative.litert_lm_loaded_file_sampler_type)))
+            samplerType = LiteRtLmSamplerType.Unspecified;
+        float topP, temperature;
+        int topK;
+        if (!Declared(LiteRtLmNative.litert_lm_loaded_file_sampler_top_p(f, &topP), nameof(LiteRtLmNative.litert_lm_loaded_file_sampler_top_p)))
+            topP = 0;
+        if (!Declared(LiteRtLmNative.litert_lm_loaded_file_sampler_temperature(f, &temperature), nameof(LiteRtLmNative.litert_lm_loaded_file_sampler_temperature)))
+            temperature = 0;
+        if (!Declared(LiteRtLmNative.litert_lm_loaded_file_sampler_top_k(f, &topK), nameof(LiteRtLmNative.litert_lm_loaded_file_sampler_top_k)))
+            topK = 0;
+        int visionBudget;
+        if (!Declared(LiteRtLmNative.litert_lm_loaded_file_max_vision_token_budget(f, &visionBudget),
+                nameof(LiteRtLmNative.litert_lm_loaded_file_max_vision_token_budget)))
+            visionBudget = -1;
+        int dimension;
+        if (!Declared(LiteRtLmNative.litert_lm_loaded_file_embedding_dimension(f, &dimension),
+                nameof(LiteRtLmNative.litert_lm_loaded_file_embedding_dimension)))
+            dimension = -1;
+        uint maxContext;
+        if (!Declared(LiteRtLmNative.litert_lm_loaded_file_max_context_tokens(f, &maxContext),
+                nameof(LiteRtLmNative.litert_lm_loaded_file_max_context_tokens)))
+            maxContext = 0;
+
+        LiteRtLmModelType modelType;
+        Check(LiteRtLmNative.litert_lm_loaded_file_model_type(f, &modelType), nameof(LiteRtLmNative.litert_lm_loaded_file_model_type));
+        byte isDynamic, thinking, functionCalling, speculative;
+        Check(LiteRtLmNative.litert_lm_loaded_file_is_dynamic_context(f, &isDynamic), nameof(LiteRtLmNative.litert_lm_loaded_file_is_dynamic_context));
+        Check(LiteRtLmNative.litert_lm_loaded_file_supports_thinking(f, &thinking), nameof(LiteRtLmNative.litert_lm_loaded_file_supports_thinking));
+        Check(LiteRtLmNative.litert_lm_loaded_file_supports_function_calling(f, &functionCalling),
+            nameof(LiteRtLmNative.litert_lm_loaded_file_supports_function_calling));
+        Check(LiteRtLmNative.litert_lm_loaded_file_has_speculative_decoding_support(f, &speculative),
+            nameof(LiteRtLmNative.litert_lm_loaded_file_has_speculative_decoding_support));
+        // Lent by the loaded file: copied before the handle is disposed. NULL (a success) when undeclared.
+        nint version;
+        Check(LiteRtLmNative.litert_lm_loaded_file_min_runtime_version(f, &version),
+            nameof(LiteRtLmNative.litert_lm_loaded_file_min_runtime_version));
 
         return new LiteRtModelInfo
         {
-            ModelType = LiteRtLmNative.litert_lm_loaded_file_model_type(f) switch
+            ModelType = modelType switch
             {
                 LiteRtLmModelType.Llm => LiteRtModelType.LanguageModel,
                 LiteRtLmModelType.Embedding => LiteRtModelType.Embedding,
                 _ => LiteRtModelType.Unknown,
             },
+            // A uint32 the public int saturates rather than wraps.
             MaxContextTokens = maxContext > int.MaxValue ? int.MaxValue : (int)maxContext,
-            IsDynamicContext = LiteRtLmNative.litert_lm_loaded_file_is_dynamic_context(f),
-            SupportsThinking = LiteRtLmNative.litert_lm_loaded_file_supports_thinking(f),
-            SupportsFunctionCalling = LiteRtLmNative.litert_lm_loaded_file_supports_function_calling(f),
-            SupportsSpeculativeDecoding = LiteRtLmNative.litert_lm_loaded_file_has_speculative_decoding_support(f),
+            IsDynamicContext = isDynamic != 0,
+            SupportsThinking = thinking != 0,
+            SupportsFunctionCalling = functionCalling != 0,
+            SupportsSpeculativeDecoding = speculative != 0,
             InputModalities = modalities,
             SupportedBackends = backends,
             // A sampler declared with NaN values (a malformed file) reads as undeclared rather than throwing.
@@ -166,7 +221,7 @@ public sealed class LiteRtModelInfo
                 ? new LiteRtSamplerParams
                 {
                     Strategy = (LiteRtSamplerType)samplerType,
-                    TopK = Math.Max(1, LiteRtLmNative.litert_lm_loaded_file_sampler_top_k(f)),
+                    TopK = Math.Max(1, topK),
                     TopP = Math.Clamp(topP, 0f, 1f),
                     Temperature = Math.Max(0f, temperature),
                 }
@@ -175,35 +230,66 @@ public sealed class LiteRtModelInfo
             VisionTokenSizes = ReadLengths(f, embedding: false),
             EmbeddingDimension = dimension > 0 ? dimension : null,
             EmbeddingInputLengths = ReadLengths(f, embedding: true),
-            MinRuntimeVersion = Marshal.PtrToStringUTF8(LiteRtLmNative.litert_lm_loaded_file_min_runtime_version(f)),
+            MinRuntimeVersion = Marshal.PtrToStringUTF8(version),
         };
+    }
+
+    // A getter whose failure 1.3.0 had no value for: every failure throws. In practice these fail only on a
+    // NULL argument or an undeclared modality, which the binding never passes.
+    private static void Check(LiteRtStatusCode status, string function) => NativeError.ThrowIfFailed(status, function);
+
+    // true when the getter wrote its value; false when the model does not declare it (NOT_FOUND), with the
+    // thread's message cleared; any other failure throws.
+    private static bool Declared(LiteRtStatusCode status, string function)
+    {
+        if (status == LiteRtStatusCode.Ok)
+            return true;
+        if (status != LiteRtStatusCode.NotFound)
+            throw NativeError.Exception(status, $"{function} failed.");
+        NativeError.Clear();
+        return false;
     }
 
     private static unsafe IReadOnlyList<int> ReadLengths(nint file, bool embedding)
     {
-        int count = embedding
-            ? LiteRtLmNative.litert_lm_loaded_file_embedding_signature_selection(file, null, 0)
-            : LiteRtLmNative.litert_lm_loaded_file_vision_signature_selection(file, null, 0);
-        if (count <= 0)
+        string function = embedding
+            ? nameof(LiteRtLmNative.litert_lm_loaded_file_embedding_signature_selection)
+            : nameof(LiteRtLmNative.litert_lm_loaded_file_vision_signature_selection);
+        nuint total;
+        LiteRtStatusCode status = embedding
+            ? LiteRtLmNative.litert_lm_loaded_file_embedding_signature_selection(file, null, 0, &total)
+            : LiteRtLmNative.litert_lm_loaded_file_vision_signature_selection(file, null, 0, &total);
+        if (!Declared(status, function) || total == 0)
             return [];
-        var lengths = new int[count];
+        var lengths = new int[checked((int)total)];
+        nuint again;
         fixed (int* p = lengths)
         {
-            int written = embedding
-                ? LiteRtLmNative.litert_lm_loaded_file_embedding_signature_selection(file, p, count)
-                : LiteRtLmNative.litert_lm_loaded_file_vision_signature_selection(file, p, count);
-            return written >= count ? lengths : lengths[..Math.Max(0, written)];
+            status = embedding
+                ? LiteRtLmNative.litert_lm_loaded_file_embedding_signature_selection(file, p, total, &again)
+                : LiteRtLmNative.litert_lm_loaded_file_vision_signature_selection(file, p, total, &again);
         }
+        if (!Declared(status, function))
+            return [];
+        // The second call reports the total again; only min(total, again) entries were written.
+        return again >= total ? lengths : lengths[..(int)again];
     }
 
     private static unsafe IReadOnlyList<LiteRtBackend> ReadBackends(nint file, LiteRtModality modality)
     {
-        int count = LiteRtLmNative.litert_lm_loaded_file_modality_supported_backends(file, (LiteRtLmModality)modality, null, 0);
-        if (count <= 0)
+        nuint total;
+        Check(LiteRtLmNative.litert_lm_loaded_file_modality_supported_backends(file, (LiteRtLmModality)modality, null, 0, &total),
+            nameof(LiteRtLmNative.litert_lm_loaded_file_modality_supported_backends));
+        if (total == 0)
             return [];
-        var raw = new LiteRtLmBackendType[count];
+        var raw = new LiteRtLmBackendType[checked((int)total)];
+        nuint again;
         fixed (LiteRtLmBackendType* p = raw)
-            count = Math.Min(count, LiteRtLmNative.litert_lm_loaded_file_modality_supported_backends(file, (LiteRtLmModality)modality, p, count));
+        {
+            Check(LiteRtLmNative.litert_lm_loaded_file_modality_supported_backends(file, (LiteRtLmModality)modality, p, total, &again),
+                nameof(LiteRtLmNative.litert_lm_loaded_file_modality_supported_backends));
+        }
+        int count = (int)Math.Min(total, again);
         var result = new List<LiteRtBackend>(count);
         for (int i = 0; i < count; i++)
         {

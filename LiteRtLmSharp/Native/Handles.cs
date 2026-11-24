@@ -243,6 +243,8 @@ internal sealed class EmbeddingOptionsHandle(nint handle) : LiteRtLmHandle(handl
     }
 }
 
+/// <summary>A response the caller owns (from <c>compute_embedding</c>); never a response lent by a
+/// collection through <c>litert_lm_embedding_responses_get_at</c>, which the collection frees.</summary>
 internal sealed class EmbeddingResponseHandle(nint handle) : LiteRtLmHandle(handle)
 {
     protected override bool ReleaseHandle()

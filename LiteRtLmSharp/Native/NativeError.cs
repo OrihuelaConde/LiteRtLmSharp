@@ -23,8 +23,8 @@ namespace LiteRtLmSharp.Native;
 internal static class NativeError
 {
     /// <summary>Clears the calling thread's message, for a failure the binding maps to a value instead of
-    /// reporting it. (TRANSITION: the model-info, embedding and conversation call sites also call it before
-    /// a call until they are migrated.)</summary>
+    /// reporting it. (TRANSITION: the conversation call sites also call it before a call until they are
+    /// migrated.)</summary>
     internal static void Clear() => LiteRtLmNative.litert_lm_clear_last_error();
 
     /// <summary>
@@ -83,9 +83,8 @@ internal static class NativeError
         return Build(failure, report, hintFor(HasReason(report) ? report : null), fallbackHint);
     }
 
-    // TRANSITION: removed when the conversation area is migrated. The call sites of the model-info,
-    // embedding and conversation functions still use their pre-status declarations, which return no
-    // status; these members report the thread's message with an Unknown status, or no status when the
+    // TRANSITION: removed when the conversation area is migrated. The call sites of the conversation
+    // functions still use their pre-status declarations, which return no status; these members report the thread's message with an Unknown status, or no status when the
     // runtime left no message. Their names differ from the status-first members on purpose: a call of
     // Exception that passes a failure text without a status does not compile, so a migrated call site
     // cannot report Unknown instead of the status it received; the LegacyException calls that remain can be
@@ -159,10 +158,11 @@ internal static class NativeError
     /// <remarks>
     /// Errors raised through LiteRT's status macros arrive as a call trace: one <c>ERROR: [path:line]</c>
     /// location per line, the lines after the first prefixed with <c>└</c>, and the reason, when there is
-    /// one, on the last line. A missing cache directory, for example, arrives as three lines
-    /// (<c>embedding_engine_impl.cc:402</c>, <c>embedding_engine_settings.cc:316</c>, then
+    /// one, on the last line. A missing embedding cache directory, for example, arrives as four lines
+    /// (<c>embedding_engine_impl.cc:1283</c>, <c>embedding_engine_impl.cc:480</c>,
+    /// <c>embedding_engine_settings.cc:346</c>, then
     /// <c>Cache directory does not exist or is not writable: …</c>) and reads as
-    /// "Cache directory does not exist or is not writable: … (at embedding_engine_settings.cc:316)". A trace
+    /// "Cache directory does not exist or is not writable: … (at embedding_engine_settings.cc:346)". A trace
     /// without a reason keeps only the innermost location. Other messages are returned unchanged.
     /// </remarks>
     internal static string Untrace(string message)
