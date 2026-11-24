@@ -556,6 +556,20 @@ public class ExtensionsAiMappingTests
         Assert.Equal(90L, u.OutputTokenCount!.Value);
     }
 
+    /// <summary>After a reply with thinking the last prefill turn is the KV-cache refill, so the input count is
+    /// the send's own prefill.</summary>
+    [Fact]
+    public void BuildUsage_WithBenchmark_ReportsTheSendsOwnPrefill()
+    {
+        var bench = new LiteRtBenchmarkInfo
+        {
+            LastPrefillTokenCount = 296, LastSendPrefillTokenCount = 43, LastDecodeTokenCount = 966,
+        };
+        UsageDetails u = LiteRtChatMapping.BuildUsage(339, bench);
+        Assert.Equal(43L, u.InputTokenCount!.Value);
+        Assert.Equal(966L, u.OutputTokenCount!.Value);
+    }
+
     // ─────────────────────── Streaming chunk → MEAI content mapping ───────────────────────
 
     [Fact]

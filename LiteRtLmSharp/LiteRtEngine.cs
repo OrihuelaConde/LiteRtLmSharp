@@ -30,11 +30,12 @@ public sealed class LiteRtEngine : IDisposable
     // deleted, and the slot freed, only after its last conversation is gone, whichever is disposed or
     // finalized first. Disposing conversations and the engine remains the contract.
 
-    private LiteRtEngine(EngineHandle engine, bool isMultimodal, int maxNumTokens)
+    private LiteRtEngine(EngineHandle engine, bool isMultimodal, int maxNumTokens, bool benchmarkEnabled)
     {
         _engine = engine;
         _isMultimodal = isMultimodal;
         MaxNumTokens = maxNumTokens;
+        BenchmarkEnabled = benchmarkEnabled;
     }
 
     /// <summary>The native engine handle, for conversations spawned from this engine.</summary>
@@ -44,6 +45,10 @@ public sealed class LiteRtEngine : IDisposable
     /// 0 when the caller left the engine default, whose value the C API does not expose — the KV overflow
     /// guard is only active when this is known.</summary>
     internal int MaxNumTokens { get; }
+
+    /// <summary>Whether the engine was loaded with <see cref="LiteRtEngineOptions.EnableBenchmark"/>, so its
+    /// conversations record benchmark turns.</summary>
+    internal bool BenchmarkEnabled { get; }
 
     /// <summary>
     /// Gets how many chat engines are alive in this process: 0 or 1 unless the live engines were loaded
@@ -233,7 +238,8 @@ public sealed class LiteRtEngine : IDisposable
             return new LiteRtEngine(
                 handle,
                 isMultimodal: options.VisionBackend is not null || options.AudioBackend is not null,
-                maxNumTokens: options.MaxNumTokens);
+                maxNumTokens: options.MaxNumTokens,
+                benchmarkEnabled: options.EnableBenchmark);
         }
         catch
         {

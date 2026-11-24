@@ -780,7 +780,8 @@ public sealed class LiteRtChatClient : IChatClient
 
     /// <summary>A final streaming update carrying the turn's token <see cref="UsageContent"/> (and, when the
     /// input/output split is absent, the benchmark note in its <c>AdditionalProperties</c>), plus the
-    /// <see cref="ContextFullFinishReason"/> signal when the context filled up during the stream — on
+    /// <see cref="ContextFullFinishReason"/> signal when the context filled up or the reply was cut at the context
+    /// limit during the stream — on
     /// coalescing it wins over an earlier <c>ToolCalls</c> update, per that policy.</summary>
     private ChatResponseUpdate UsageUpdate(LiteRtConversation conv)
     {
@@ -794,16 +795,18 @@ public sealed class LiteRtChatClient : IChatClient
     }
 
     /// <summary>
-    /// THE context-full finish-reason policy, written once for both the blocking response and the final
-    /// streaming update: when the conversation's context filled up during the turn (the reply was likely
-    /// clamped by the KV overflow guard and the next send on it is guaranteed to throw), the turn carries
+    /// THE context-limit finish-reason policy, written once for both the blocking response and the final
+    /// streaming update: when the conversation's context filled up during the turn (the next send on it is
+    /// guaranteed to throw), or the KV overflow guard capped the reply at the room left in the context and the
+    /// reply used all of it (<see cref="LiteRtConversation.LastReplyReachedContextLimit"/>), the turn carries
     /// <see cref="ChatFinishReason.Length"/> — deliberately OVERRIDING <see cref="ChatFinishReason.ToolCalls"/>,
-    /// because even a complete tool call cannot be continued on a full conversation (sending its results
-    /// would throw); Length is the caller's same-turn cue to wind the thread down instead of discovering
-    /// the wall on the next call. Returns <c>null</c> (leave the content-derived reason) otherwise.
+    /// because a reply cut at the context limit, tool call included, is not one to continue as is; Length is
+    /// the caller's same-turn cue. After a reply with thinking the runtime removes the thinking from the KV
+    /// cache, so the context can have room again and the next send works. Returns <c>null</c> (leave the
+    /// content-derived reason) otherwise.
     /// </summary>
     private static ChatFinishReason? ContextFullFinishReason(LiteRtConversation conv)
-        => conv.IsContextFull ? ChatFinishReason.Length : null;
+        => conv.IsContextFull || conv.LastReplyReachedContextLimit ? ChatFinishReason.Length : null;
 
     /// <summary>
     /// Reads the just-completed turn's token usage off the (still-live) conversation. <c>TotalTokenCount</c>

@@ -457,7 +457,9 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
     /// full. The runtime removes the thinking from the KV cache right after the reply (LiteRT-LM v0.18.0 kept it
     /// until the next send, so the count stayed at the ceiling, <see cref="LiteRtConversation.IsContextFull"/> read
     /// <c>true</c> and the next send threw <see cref="LiteRtContextOverflowException"/>), so the context has room
-    /// again and the next send passes the guard.</summary>
+    /// again and the next send passes the guard. <see cref="LiteRtConversation.LastReplyReachedContextLimit"/>
+    /// still reports the cut (here from the tokenized reply, as benchmarking is off), and the next send, which ends
+    /// on its own, clears it.</summary>
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
@@ -489,14 +491,16 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
         int answerTokens = engine.CountTokens(answer), thinkingTokens = engine.CountTokens(thinking);
         int count = chat.TokenCount;
         output.WriteLine($"prompt {promptTokens}, answer {answerTokens}, thinking {thinkingTokens}; count {count}, " +
-                         $"IsContextFull {chat.IsContextFull}");
+                         $"IsContextFull {chat.IsContextFull}, LastReplyReachedContextLimit {chat.LastReplyReachedContextLimit}");
         // The reply ran into the clamp: with its thinking it reaches the band the guard treats as full.
         Assert.True(LiteRtContextGuard.IsContextFull(promptTokens + answerTokens + thinkingTokens, Limit),
             $"prompt {promptTokens} + answer {answerTokens} + thinking {thinkingTokens} must reach the clamp");
         Assert.False(chat.IsContextFull);
+        Assert.True(chat.LastReplyReachedContextLimit);
         Assert.True(count <= promptTokens + answerTokens + 16, $"count {count} must leave the thinking out");
 
         Assert.False(string.IsNullOrWhiteSpace(chat.Send("Reply with one word: OK").Text));
+        Assert.False(chat.LastReplyReachedContextLimit);
     }
 
     /// <summary>A <see cref="LiteRtConstraintProvider"/> value the runtime does not declare fails conversation

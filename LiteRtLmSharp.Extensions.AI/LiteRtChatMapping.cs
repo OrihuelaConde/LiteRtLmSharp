@@ -597,13 +597,19 @@ internal static class LiteRtChatMapping
     /// <see cref="UsageDetails.OutputTokenCount"/>) is taken from <paramref name="benchmark"/> when present — which
     /// requires the engine to have been loaded with <see cref="LiteRtEngineOptions.EnableBenchmark"/> = <c>true</c>;
     /// when it is <c>null</c> those stay <c>null</c> (the caller leaves <see cref="UsageBenchmarkNote"/> nearby).
+    /// The input count is the prefill of the send's own message
+    /// (<see cref="LiteRtBenchmarkInfo.LastSendPrefillTokenCount"/>), not the KV-cache refill the runtime records
+    /// as a later prefill turn after a reply with thinking.
     /// </summary>
     public static UsageDetails BuildUsage(int totalTokens, LiteRtBenchmarkInfo? benchmark)
     {
         var usage = new UsageDetails { TotalTokenCount = totalTokens };
         if (benchmark is not null)
         {
-            usage.InputTokenCount = benchmark.LastPrefillTokenCount;
+            // A send always prefills at least one token, so 0 means a benchmark built without the value.
+            usage.InputTokenCount = benchmark.LastSendPrefillTokenCount > 0
+                ? benchmark.LastSendPrefillTokenCount
+                : benchmark.LastPrefillTokenCount;
             usage.OutputTokenCount = benchmark.LastDecodeTokenCount;
         }
         return usage;

@@ -88,9 +88,11 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// <c>MaxNumTokens</c> to arm the binding's KV overflow guard: replies are clamped to the remaining context
 /// and a send on a full conversation throws <see cref="LiteRtContextOverflowException"/> instead of
 /// corrupting the native runtime (unguarded, the overflow crashes the process on a later call). A reply that
-/// filled the context carries <see cref="ChatFinishReason.Length"/> <b>in the same turn</b> (deliberately
-/// overriding <see cref="ChatFinishReason.ToolCalls"/> — a full conversation cannot be continued, so treat
-/// <c>Length</c> as "this thread is over"). A "message doesn't fit" rejection happens before any native
+/// the guard cut at the context limit carries <see cref="ChatFinishReason.Length"/> <b>in the same turn</b>
+/// (deliberately overriding <see cref="ChatFinishReason.ToolCalls"/>). Usually the context is then full and the
+/// thread is over. After a reply with thinking, the runtime removes the thinking from the KV cache, so the
+/// context has room again and the thread can continue; <see cref="UsageDetails.TotalTokenCount"/> shows how much
+/// of the context is in use. A "message doesn't fit" rejection happens before any native
 /// work and <b>keeps the live conversation resumable</b> — retry the id with a shorter message; a "context
 /// is full" rejection evicts it, so resuming its id throws <see cref="ArgumentException"/> and you start a new
 /// conversation, summarizing or trimming what must carry over. The exception is a send of tool results whose turn

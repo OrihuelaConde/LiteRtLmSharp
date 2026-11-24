@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using LiteRtLmSharp.Native;
@@ -440,9 +441,28 @@ public sealed class LiteRtConversation : IDisposable
     /// while a send is in flight (see <see cref="TokenCountCached"/>). It lags a send that is still in
     /// flight. A reply with thinking that the decode clamp cut can leave it <c>false</c>: the runtime removes the
     /// thinking from the KV cache after the reply, so the context has room again and the next send passes the
-    /// guard.</remarks>
+    /// guard. <see cref="LastReplyReachedContextLimit"/> tells that such a reply was cut.</remarks>
     public bool IsContextFull
         => _sawCeiling || LiteRtContextGuard.IsContextFull(_cachedTokenCount, _engineOwner.MaxNumTokens);
+
+    /// <summary>
+    /// Gets a value indicating whether the reply of the last completed send ran to the limit of the context: the
+    /// KV overflow guard capped the reply at the room left in the context, and the reply used that whole budget,
+    /// so it was likely cut mid-sentence.
+    /// </summary>
+    /// <remarks>
+    /// <para>Unlike <see cref="IsContextFull"/>, it does not mean that the next send fails. After a reply with
+    /// thinking, the runtime removes the thinking from the KV cache, so the context has room again: this property
+    /// is <c>true</c> and <see cref="IsContextFull"/> is <c>false</c>.</para>
+    /// <para>Each send resets it. It stays <c>false</c> when the reply ended on its own, when a
+    /// <c>MaxOutputTokens</c> cap set by the caller was the tighter limit, when the guard could not measure the
+    /// message (attachments or an extra context), and when the engine was loaded without an explicit
+    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/>. With <see cref="LiteRtEngineOptions.EnableBenchmark"/> on,
+    /// it compares the decoded token count with the budget. Otherwise it tokenizes the answer and thinking text the
+    /// send returned, which can count a few tokens fewer than were decoded, so a reply that ends on its own within
+    /// 16 tokens of the budget also reads as cut.</para>
+    /// </remarks>
+    public bool LastReplyReachedContextLimit => _lastReplyReachedLimit;
 
     /// <summary>
     /// Returns benchmark timings (prefill/decode tokens-per-second, time-to-first-token, init
@@ -475,13 +495,14 @@ public sealed class LiteRtConversation : IDisposable
         }
 
         using var info = new BenchmarkInfoHandle(infoPtr);
-        return ReadBenchmarkInfo(info.Ptr);
+        return ReadBenchmarkInfo(info.Ptr, _sendFirstPrefillTurn);
     }
 
     /// <summary>Reads every value of a native benchmark info. A failed read throws: the runtime writes no
     /// value on failure, and every getter fails only on a null handle or an index past the last turn, which
-    /// this never passes.</summary>
-    private static unsafe LiteRtBenchmarkInfo ReadBenchmarkInfo(nint info)
+    /// this never passes. <paramref name="sendFirstPrefillTurn"/> is the index of the first prefill turn of the
+    /// last send (-1 when not tracked).</summary>
+    private static unsafe LiteRtBenchmarkInfo ReadBenchmarkInfo(nint info, int sendFirstPrefillTurn)
     {
         nuint prefillTurns, decodeTurns;
         double timeToFirstToken, totalInitTime;
@@ -515,6 +536,15 @@ public sealed class LiteRtConversation : IDisposable
                 nameof(LiteRtLmNative.litert_lm_benchmark_info_get_decode_tokens_per_sec_at));
         }
 
+        // After a reply with thinking, the runtime records the KV-cache refill as a second prefill turn of the
+        // same send, so the send's message is its first prefill turn, not the last one.
+        nuint sendPrefillTokens = lastPrefillTokens;
+        if (sendFirstPrefillTurn >= 0 && (nuint)sendFirstPrefillTurn < prefillTurns)
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_benchmark_info_get_prefill_token_count_at(
+                    info, (nuint)sendFirstPrefillTurn, &sendPrefillTokens),
+                nameof(LiteRtLmNative.litert_lm_benchmark_info_get_prefill_token_count_at));
+
         return new LiteRtBenchmarkInfo
         {
             TimeToFirstTokenSeconds = timeToFirstToken,
@@ -522,6 +552,7 @@ public sealed class LiteRtConversation : IDisposable
             NumPrefillTurns = checked((int)prefillTurns),
             NumDecodeTurns = checked((int)decodeTurns),
             LastPrefillTokenCount = checked((int)lastPrefillTokens),
+            LastSendPrefillTokenCount = checked((int)sendPrefillTokens),
             LastDecodeTokenCount = checked((int)lastDecodeTokens),
             LastPrefillTokensPerSecond = lastPrefillRate,
             LastDecodeTokensPerSecond = lastDecodeRate,
@@ -643,6 +674,8 @@ public sealed class LiteRtConversation : IDisposable
         // parent's cache), and a full parent means a full branch.
         clone._cachedTokenCount = _cachedTokenCount;
         clone._sawCeiling = _sawCeiling;
+        // The native clone carries its parent's benchmark turns, so the parent's last send is the clone's too.
+        clone._sendFirstPrefillTurn = _sendFirstPrefillTurn;
         return clone;
     }
 
@@ -811,6 +844,39 @@ public sealed class LiteRtConversation : IDisposable
     // margin of measurement drift). A context never shrinks, so the latch never resets. Volatile for the same
     // reason as _cachedTokenCount (IsContextFull reads it).
     private volatile bool _sawCeiling;
+    // LastReplyReachedContextLimit: set by CompleteCeilingProbe, cleared when a send starts. Volatile for the same
+    // reason as _sawCeiling.
+    private volatile bool _lastReplyReachedLimit;
+    // The number of prefill turns the native benchmark had recorded when the last send started, which is the
+    // index of that send's own prefill turn; -1 when not tracked (benchmarking off, or no send yet).
+    private int _sendFirstPrefillTurn = -1;
+
+    /// <summary>Clears the per-send state at the start of a send, before the guard runs.</summary>
+    private void BeginSend() => _lastReplyReachedLimit = false;
+
+    /// <summary>Records, right before the native send, the index the send's first prefill turn will take. Reads
+    /// the native benchmark only when the engine has benchmarking on.</summary>
+    private unsafe void MarkSendPrefillTurn()
+    {
+        if (!_engineOwner.BenchmarkEnabled)
+            return;
+        int turns = -1;
+        nint info;
+        if (LiteRtLmNative.litert_lm_conversation_get_benchmark_info(_conversation.Ptr, &info) == LiteRtStatusCode.Ok)
+        {
+            using var handle = new BenchmarkInfoHandle(info);
+            nuint prefillTurns;
+            if (LiteRtLmNative.litert_lm_benchmark_info_get_num_prefill_turns(handle.Ptr, &prefillTurns) == LiteRtStatusCode.Ok)
+                turns = checked((int)prefillTurns);
+            else
+                NativeError.Clear();
+        }
+        else
+        {
+            NativeError.Clear();
+        }
+        _sendFirstPrefillTurn = turns;
+    }
 
     /// <summary>
     /// The KV overflow guard (see <see cref="LiteRtContextOverflowException"/>), run before every send.
@@ -879,14 +945,16 @@ public sealed class LiteRtConversation : IDisposable
     /// <summary>Consumes the pending ceiling probe after a completed send: latches the context-full state
     /// when the KV cache grew by at least the measured prefill plus the imposed decode budget (less the
     /// safety margin, absorbing measurement drift) — the reply ran to the ceiling rather than ending on
-    /// its own. Never throws (runs on success paths).</summary>
+    /// its own — and sets <see cref="LastReplyReachedContextLimit"/> when the reply used the whole budget. The
+    /// reply text for the tokenizer count comes from <paramref name="responseJson"/> (blocking) or
+    /// <paramref name="stream"/>. Never throws (runs on success paths).</summary>
     // NOTE (v0.15.0 recalibration): with the context-full threshold now at MinPrefillReserve (128),
     // a clamped send always lands inside the full band, so the threshold predicate alone already
     // reports IsContextFull — this probe's latch can no longer be the deciding term. It is kept as
     // belt-and-suspenders (exact detection independent of the constant) at negligible cost. A reply with
     // thinking is the exception to both: the runtime removes the thinking from the KV cache before this read,
-    // so the count shows neither the growth nor the full band.
-    private void CompleteCeilingProbe()
+    // so the count shows neither the growth nor the full band; ReplyUsedBudget still tells that it was cut.
+    private void CompleteCeilingProbe(string? responseJson, StreamState? stream)
     {
         // Runs on every completed send that no cancel consumed, so this is also where the non-blocking cache is
         // refreshed: the
@@ -902,6 +970,53 @@ public sealed class LiteRtConversation : IDisposable
         _ceilingProbe = null;
         if (count - probe.Used >= probe.Input + probe.Budget - LiteRtContextGuard.SafetyMargin)
             _sawCeiling = true;
+        _lastReplyReachedLimit = ReplyUsedBudget(probe.Budget, responseJson, stream);
+    }
+
+    /// <summary>Whether the reply decoded the whole decode <paramref name="budget"/> the guard imposed. With
+    /// benchmarking on, the decode turn's token count is exact: it equals the budget when the reply was cut
+    /// (CPU and GPU, LiteRT-LM v0.20.0). Otherwise the answer and thinking text are tokenized again, which
+    /// measured 0 to 4 tokens fewer than were decoded (the thinking-channel markers), within the guard's safety
+    /// margin. Never throws: a failed read counts as not cut.</summary>
+    private bool ReplyUsedBudget(int budget, string? responseJson, StreamState? stream)
+    {
+        try
+        {
+            if (_engineOwner.BenchmarkEnabled && GetBenchmarkInfo() is { NumDecodeTurns: > 0 } benchmark)
+                return benchmark.LastDecodeTokenCount >= budget;
+
+            string? answer, thinking;
+            if (stream is not null)
+            {
+                answer = stream.Answer?.ToString();
+                thinking = stream.Thinking?.ToString();
+            }
+            else if (responseJson is not null)
+            {
+                LiteRtResponse response = LiteRtResponse.Parse(responseJson);
+                answer = response.Text;
+                thinking = response.Thinking;
+            }
+            else
+            {
+                return false;
+            }
+            // The tokenizer gives at most one token per UTF-8 byte of text (byte fallback is the worst case), so a
+            // reply with fewer bytes than the threshold cannot reach it, and most replies that end on their own
+            // skip the tokenizer.
+            int threshold = budget - LiteRtContextGuard.SafetyMargin;
+            if (Encoding.UTF8.GetByteCount(answer ?? "") + Encoding.UTF8.GetByteCount(thinking ?? "") < threshold)
+                return false;
+            int decoded = (string.IsNullOrEmpty(answer) ? 0 : _engineOwner.CountTokens(answer))
+                        + (string.IsNullOrEmpty(thinking) ? 0 : _engineOwner.CountTokens(thinking));
+            return decoded >= threshold;
+        }
+        catch (Exception)
+        {
+            // A send that completed must not fail here, whatever the benchmark read, the parse of a raw reply or
+            // the tokenizer throws.
+            return false;
+        }
     }
 
     /// <summary>
@@ -934,9 +1049,11 @@ public sealed class LiteRtConversation : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(messageJson);
 
+        BeginSend();
         options = GuardContextOverflow(messageJson, options, unmeasured);
         bool hasMedia = MessageHasMedia(messageJson);
         using ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs(options, hasMedia);
+        MarkSendPrefillTurn();
         int cancelRequestsAtStart = Volatile.Read(ref _cancelRequests);
         nint responsePtr;
         LiteRtStatusCode status;
@@ -988,7 +1105,7 @@ public sealed class LiteRtConversation : IDisposable
         // the delete after cancel_process, so a send that a cancel consumed skips the count read, as the stream
         // teardown does; the cached count and IsContextFull then keep their values from before the send.
         if (!cancelRequested)
-            CompleteCeilingProbe();
+            CompleteCeilingProbe(result, stream: null);
         return result;
     }
 
@@ -1400,6 +1517,7 @@ public sealed class LiteRtConversation : IDisposable
         ArgumentNullException.ThrowIfNull(text);
 
         string messageJson = LiteRtJson.UserMessage(text, attachments);
+        BeginSend();
         // Same KV overflow guard as the blocking path; throws (on the consumer's first MoveNext)
         // before any native state is touched. The typed signature knows whether media is attached.
         options = GuardContextOverflow(messageJson, options, unmeasured: attachments is { Count: > 0 });
@@ -1407,10 +1525,18 @@ public sealed class LiteRtConversation : IDisposable
         var channel = Channel.CreateUnbounded<LiteRtStreamChunk>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
         var state = new StreamState(channel, _toolCallStreamChannel, _engineOwner.MaxNumTokens, attachments is { Count: > 0 });
+        // The truncation check tokenizes the reply when the guard capped it and benchmarking is off, so only
+        // then does the callback keep the text.
+        if (_ceilingProbe is not null && !_engineOwner.BenchmarkEnabled)
+        {
+            state.Answer = new StringBuilder();
+            state.Thinking = new StringBuilder();
+        }
         // The native send copies the optional args before it returns; they are freed in the finally,
         // after the channel completes. Built before the GCHandle so that if native allocation fails we
         // don't leak a pinned handle.
         ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs(options, attachments is { Count: > 0 });
+        MarkSendPrefillTurn();
         var gcHandle = GCHandle.Alloc(state);
         // A CancelProcess while the stream runs makes the teardown skip the wait (see the finally).
         int cancelRequestsAtStart = Volatile.Read(ref _cancelRequests);
@@ -1512,7 +1638,7 @@ public sealed class LiteRtConversation : IDisposable
                     }
                 }
                 if (settled)
-                    CompleteCeilingProbe();
+                    CompleteCeilingProbe(responseJson: null, state);
             }
             else
             {
@@ -1610,7 +1736,11 @@ public sealed class LiteRtConversation : IDisposable
                 string? piece = Marshal.PtrToStringUTF8(text);
                 if (!string.IsNullOrEmpty(piece))
                     foreach (LiteRtStreamChunk c in SplitMessageChunk(piece, state.ToolCallChannel))
+                    {
+                        if (c.Kind == LiteRtStreamChunkKind.Answer) state.Answer?.Append(c.Text);
+                        else if (c.Kind == LiteRtStreamChunkKind.Thinking) state.Thinking?.Append(c.Text);
                         state.Channel.Writer.TryWrite(c);
+                    }
             }
 
             if (isFinal)
@@ -1687,6 +1817,9 @@ public sealed class LiteRtConversation : IDisposable
         public readonly bool HasMedia = hasMedia;
         /// <summary>Whether the callback received the stream's final chunk.</summary>
         public volatile bool FinalSeen;
+        /// <summary>The answer and thinking text the callback received, kept only when the guard capped the
+        /// reply and benchmarking is off (<c>null</c> otherwise). Read after the stream completed.</summary>
+        public StringBuilder? Answer, Thinking;
     }
 
     /// <summary>Disposes the conversation, freeing its native resources (and its config handles). Dispose
