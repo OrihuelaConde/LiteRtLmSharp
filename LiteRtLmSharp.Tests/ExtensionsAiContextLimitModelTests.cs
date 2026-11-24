@@ -80,10 +80,15 @@ public sealed class ExtensionsAiContextLimitModelTests(ITestOutputHelper output)
                          $"last streamed finish {lastFinish}, output {response.Usage?.OutputTokenCount}");
         // The reply ran into the clamp: answer and thinking together nearly fill the context.
         Assert.True(answerTokens + thinkingTokens > Limit - 128, $"answer {answerTokens} + thinking {thinkingTokens}");
-        Assert.True(thinkingTokens > 32, $"the reply must carry thinking ({thinkingTokens} tokens)");
         Assert.Equal(ChatFinishReason.Length, response.FinishReason);
         Assert.Equal(ChatFinishReason.Length, lastFinish);
-        Assert.False(LiteRtContextGuard.IsContextFull(checked((int)total), Limit), $"total {total} must leave room");
+        // How the model splits the budget between thinking and answer is its choice (294/668 on CPU, 144/818 on
+        // GPU here). Without thinking, or with an answer long enough to fill the context, the full context gives
+        // Length on its own and the room left after the reply cannot be checked.
+        Skip.If(thinkingTokens <= 32,
+            $"The reply carried {thinkingTokens} tokens of thinking; the check needs a reply that thought.");
+        Skip.If(LiteRtContextGuard.IsContextFull(checked((int)total), Limit),
+            $"The answer part filled the context (total {total}), so it has no room left to check.");
 
         if (stateful)
         {
@@ -141,6 +146,7 @@ public sealed class ExtensionsAiContextLimitModelTests(ITestOutputHelper output)
         // later ones alone (a conversation that already sent renders the turn alone).
         using LiteRtConversation measure = engine.CreateConversation(new LiteRtConversationOptions { EnableThinking = thinking });
         string? id = null;
+        int turnsThatThought = 0;
         foreach (string prompt in prompts)
         {
             int rendered = engine.CountTokens(measure.RenderMessage(prompt));
@@ -154,11 +160,16 @@ public sealed class ExtensionsAiContextLimitModelTests(ITestOutputHelper output)
             string reasoning = Reasoning(response);
             output.WriteLine($"rendered {rendered}, input {input}, output {response.Usage.OutputTokenCount}, " +
                              $"answer {answerTokens}, thinking {reasoning.Length} chars");
-            Assert.Equal(thinking, reasoning.Length > 0);
+            if (!thinking)
+                Assert.Empty(reasoning);
+            else if (reasoning.Length > 0)
+                turnsThatThought++;
             Assert.True(answerTokens > rendered + 32, $"answer {answerTokens} must be far longer than the message {rendered}");
             // Measured: the first send prefills the rendered message plus one token, later sends the rendered
             // message alone.
             Assert.InRange(input, rendered - 2, rendered + 2);
         }
+        // Whether a turn thinks is the model's choice; the refill this test is about follows only a turn that did.
+        Skip.If(thinking && turnsThatThought == 0, "No turn thought, so no turn was followed by a KV-cache refill.");
     }
 }

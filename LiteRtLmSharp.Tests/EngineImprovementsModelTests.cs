@@ -238,7 +238,9 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
     /// conversation on the engine, the Greedy reply would be sampled text (LiteRT-LM v0.18.0 on the CPU backend
     /// did that). The TopK half pins LiteRT-LM v0.20.0 behaviour: a TopK conversation after a TopP one gives
     /// the reply a TopK conversation gives as the first on a fresh engine. If the runtime kept the TopP
-    /// sampler, the TopK reply would come from it instead.
+    /// sampler, the TopK reply would come from it instead; that sampler's reply differs from the TopK one, which
+    /// the test checks first. A runtime that kept the TopP type with the TopK conversation's parameters is not
+    /// told apart: on the win-x64 GPU, TopP with this TopK conversation's parameters gives the same text.
     /// </summary>
     [SkippableFact]
     public void Greedy_ShouldBeArgmax_AfterASampledConversation_AndNextToALiveOne()
@@ -264,7 +266,10 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         Assert.NotEqual(argmax, Reply(engine, hotTopP));
         Assert.Equal(argmax, Reply(engine, hotGreedy));
 
-        Assert.NotEqual(argmax, Reply(engine, hotTopP));
+        string topPBefore = Reply(engine, hotTopP);
+        output.WriteLine($"TopP before TopK:   {topPBefore}");
+        Assert.NotEqual(argmax, topPBefore);
+        Assert.NotEqual(topPBefore, topKAlone);
         string topKAfter = Reply(engine, topKSampler);
         output.WriteLine($"TopK after TopP:    {topKAfter}");
         Assert.Equal(topKAlone, topKAfter);

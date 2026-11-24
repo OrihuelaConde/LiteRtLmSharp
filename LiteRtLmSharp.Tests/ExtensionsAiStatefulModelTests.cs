@@ -218,6 +218,8 @@ public sealed class ExtensionsAiStatefulModelTests(ITestOutputHelper output)
     /// reply a fresh conversation with the same history gets, also after the message was cut twice. The client
     /// sends the message as it is. Only a GPU backend discriminates: on LiteRT-LM v0.18.0 (win-x64 WebGPU) the
     /// reply continued the other conversation instead ("COBAL", then "401", "402", and so on), with no error.
+    /// No CI leg has a GPU where that reproduced, so run this test and the next one on a win-x64 GPU before
+    /// moving to another native version.
     /// </summary>
     [SkippableFact]
     public async Task Stateful_ResendingACutMessage_GetsARealReply_AfterAnotherConversationGenerated()
@@ -254,7 +256,8 @@ public sealed class ExtensionsAiStatefulModelTests(ITestOutputHelper output)
     /// A fork taken after a rollback re-sends the cut message word for word, after another conversation generated,
     /// and gets the reply a fresh conversation with the same history gets. Only a GPU backend discriminates: on
     /// LiteRT-LM v0.18.0 (win-x64 WebGPU), sent as it is, the message got a reply that continued the other
-    /// conversation instead ("COBAL", then "401", "402", and so on), with no error.
+    /// conversation instead ("COBAL", then "401", "402", and so on), with no error. Run it on a win-x64 GPU before
+    /// moving to another native version, as the previous test.
     /// </summary>
     [SkippableFact]
     public async Task Stateful_ForkAfterARollback_GetsARealReply_WhenItResendsTheCutMessage()
@@ -303,7 +306,12 @@ public sealed class ExtensionsAiStatefulModelTests(ITestOutputHelper output)
         output.WriteLine($"Re-sent message:    {JsonSerializer.Serialize(retry)}");
         Assert.Contains("400", retry, StringComparison.Ordinal);
         Assert.Contains("401", retry, StringComparison.Ordinal);
-        Assert.Equal(fresh, retry);
+        // Equality was measured on win-x64 only (CPU, and the WebGPU backend). A difference on another backend is
+        // either the runtime defect these tests pin or a backend that does not decode greedily byte for byte.
+        Assert.True(fresh == retry,
+            "The re-sent message's reply differs from a fresh conversation's. Either the runtime again mixes in " +
+            "the other conversation's state, or this backend's greedy decode is not reproducible: compare a fresh " +
+            "conversation's reply with itself on this backend to tell them apart.");
     }
 
     /// <summary>
