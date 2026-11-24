@@ -85,6 +85,8 @@ public sealed class ExtensionsAiContextLimitModelTests(ITestOutputHelper output)
         Assert.True(answerTokens + thinkingTokens > Limit - 128, $"answer {answerTokens} + thinking {thinkingTokens}");
         Assert.Equal(ChatFinishReason.Length, response.FinishReason);
         Assert.Equal(ChatFinishReason.Length, lastFinish);
+        // The room check below reads the total; a response without usage would make it pass without checking.
+        Assert.True(total > 0, $"the response carried no TotalTokenCount ({total})");
         // How the model splits the budget between answer and thinking is its choice (answer/thinking 294/668 on CPU,
         // 144/818 on GPU here). Without thinking, or with an answer long enough to fill the context on its own, the
         // full context gives Length by itself and the room left after the reply cannot be checked.
