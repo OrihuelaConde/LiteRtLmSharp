@@ -538,8 +538,8 @@ public sealed class LiteRtConversation : IDisposable
         }
 
         // After a reply with thinking, the runtime records the KV-cache refill as a second prefill turn of the
-        // same send, so the send's message is its first prefill turn, not the last one. A send that failed before
-        // its prefill recorded none, so it reports 0 rather than the previous send's last turn.
+        // same send, so the send's message is its first prefill turn, not the last one. A send that the runtime
+        // rejected before its prefill recorded none, so it reports 0 rather than the previous send's last turn.
         nuint sendPrefillTokens = sendFirstPrefillTurn < 0 ? lastPrefillTokens : 0;
         if (sendFirstPrefillTurn >= 0 && (nuint)sendFirstPrefillTurn < prefillTurns)
             NativeError.ThrowIfFailed(

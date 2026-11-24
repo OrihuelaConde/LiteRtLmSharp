@@ -34,7 +34,9 @@ public sealed record LiteRtBenchmarkInfo
     public int LastPrefillTokenCount { get; init; }
 
     /// <summary>Prefill token count of the most recent send's message: the first prefill turn that send recorded
-    /// (0 before the first send, and after a send that failed before its prefill).</summary>
+    /// (0 before the first send, and after a send that the runtime rejected before its prefill). A send that the
+    /// binding rejects before calling the runtime, such as one that throws
+    /// <see cref="LiteRtContextOverflowException"/>, leaves the previous send's value.</summary>
     /// <remarks>A text send records one prefill turn, its message (sends with media or tool results were not
     /// measured). After a reply with thinking, the runtime records a
     /// second one, the KV-cache refill, so <see cref="LastPrefillTokenCount"/> differs from this value
