@@ -613,7 +613,7 @@ public sealed class DecodingConnectorModelTests
 
 /// <summary>
 /// Model-backed scenarios for the v0.15.0 decoding features (suppress tokens, no-repeat-ngram,
-/// thinking budget, LlGuidance constraints). Set LITERTLM_TEST_MODEL to run; sends rely on the
+/// thinking budget, LlGuidance constraints). Set LITERTLM_TEST_MODEL to run; most sends rely on the
 /// engine's default sampling (deterministic at the seed-0 default) — see the sampler note below.
 /// </summary>
 public sealed class DecodingModelTests(EngineFixture fixture, ITestOutputHelper output) : IClassFixture<EngineFixture>
@@ -621,8 +621,8 @@ public sealed class DecodingModelTests(EngineFixture fixture, ITestOutputHelper 
     private readonly EngineFixture _fixture = fixture;
     private readonly ITestOutputHelper _output = output;
 
-    // No explicit sampler anywhere in these tests: they rely on the engine's internal default
-    // sampling, which is deterministic at its seed-0 default.
+    // Most tests here set no sampler: they rely on the engine's internal default sampling, which is deterministic
+    // at its seed-0 default. The per-send thinking tests on a follow-up set argmax explicitly.
 
     /// <summary>Suppressing every token id of the expected answer word must keep that word out of the
     /// reply — the most directly observable of the new logit processors (the id's logit is forced to
@@ -833,36 +833,62 @@ public sealed class DecodingModelTests(EngineFixture fixture, ITestOutputHelper 
     }
 
     /// <summary>Per-send thinking override, OFF direction, on a follow-up: after a first reply with thinking,
-    /// a send that sets <c>EnableThinking = false</c> answers without a thinking trace. The model's template
-    /// switches thinking on only in the system turn, which the runtime prefills with the first message, so the
-    /// runtime alone keeps thinking on: without the binding suppressing the token that opens the thinking
-    /// channel, the follow-up's reply carries a thinking trace (about 435 characters with gemma-4 E2B, on CPU
-    /// and GPU).</summary>
+    /// a send that sets <c>EnableThinking = false</c> answers without a thinking trace, and the next send without
+    /// options thinks again. The model's template switches thinking on only in the system turn, which the runtime
+    /// prefills with the first message, so the runtime alone keeps thinking on. The control is the same
+    /// conversation with the binding's suppression of the token that opens the thinking channel turned off: its
+    /// follow-up carries a thinking trace (435 characters on CPU, 434 on GPU; LiteRT-LM v0.20.0, gemma-4 E2B,
+    /// argmax). The test skips when the control's follow-up does not think, because it then cannot show the
+    /// suppression; the checks on the reply itself run before that skip.</summary>
     [SkippableFact]
     public void Send_PerSendThinkingFalse_OnAFollowUp_AnswersWithoutThinking()
     {
         Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
-        using var conv = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions
+        (LiteRtResponse First, LiteRtResponse Off, LiteRtResponse Inherit) Run(bool suppress)
         {
-            EnableThinking = true, MaxOutputTokens = 512, Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 1 },
-        });
-        LiteRtResponse first = conv.Send("Think briefly about bridges, then reply with one short sentence about bridges.");
-        _output.WriteLine($"first: thinking {first.Thinking?.Length ?? 0} chars, answer '{first.Text}'");
-        Skip.If(string.IsNullOrEmpty(first.Thinking), "The first reply carried no thinking, so the follow-up tests nothing.");
+            using var conv = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions
+            {
+                EnableThinking = true, MaxOutputTokens = 512, Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 1 },
+            });
+            conv.SuppressThinkingChannelWhenThinkingOff = suppress;
+            LiteRtResponse first = conv.Send("Think briefly about bridges, then reply with one short sentence about bridges.");
+            LiteRtResponse off = conv.Send("What is the capital of France? Answer in one short sentence.", attachments: null,
+                new LiteRtSendOptions { EnableThinking = false });
+            LiteRtResponse inherit = conv.Send("Write two sentences about rivers.");
+            string arm = suppress ? "suppressed" : "control";
+            _output.WriteLine($"{arm}: first thinking {first.Thinking?.Length ?? 0} chars; off thinking {off.Thinking?.Length ?? 0} " +
+                              $"chars, answer '{off.Text}'; inherit thinking {inherit.Thinking?.Length ?? 0} chars");
+            return (first, off, inherit);
+        }
 
-        LiteRtResponse off = conv.Send("What is the capital of France? Answer in one short sentence.", attachments: null,
-            new LiteRtSendOptions { EnableThinking = false });
-        _output.WriteLine($"off: thinking {off.Thinking?.Length ?? 0} chars, answer '{off.Text}'");
-        Assert.True(string.IsNullOrEmpty(off.Thinking),
-            $"Per-send EnableThinking=false left a thinking trace on a follow-up ({off.Thinking?.Length} chars).");
-        Assert.False(string.IsNullOrWhiteSpace(off.Text));
+        var control = Run(suppress: false);
+        var suppressed = Run(suppress: true);
+
+        Assert.False(string.IsNullOrWhiteSpace(suppressed.Off.Text));
+        Assert.DoesNotContain("<|channel>", suppressed.Off.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("<channel|>", suppressed.Off.Text, StringComparison.Ordinal);
+        Skip.If(string.IsNullOrEmpty(control.First.Thinking),
+            "The first reply carried no thinking on this backend, so the follow-up cannot show the suppression.");
+        Skip.If(string.IsNullOrEmpty(control.Off.Thinking),
+            "Without the binding's suppression the follow-up does not think on this backend, so it cannot show the suppression.");
+        Assert.True(_fixture.Engine!.ThinkingChannelOpenToken is not null,
+            "The follow-up thinks, but the binding found no single token for '<|channel>' in this model's tokenizer.");
+        Assert.True(string.IsNullOrEmpty(suppressed.Off.Thinking),
+            $"Per-send EnableThinking=false left a thinking trace on a follow-up ({suppressed.Off.Thinking?.Length} chars).");
+
+        // The override holds for one send: the next send without options inherits the conversation's thinking.
+        Skip.If(string.IsNullOrEmpty(control.Inherit.Thinking),
+            "The send after the follow-up does not think on this backend even without the suppression, so it cannot " +
+            "show that the conversation's thinking comes back.");
+        Assert.False(string.IsNullOrEmpty(suppressed.Inherit.Thinking),
+            "The send after a per-send EnableThinking=false did not think: the override stuck to the conversation.");
     }
 
     /// <summary>Pins a native limitation: on a conversation whose first send did not think, a later send that
     /// sets <c>EnableThinking = true</c> does not think either. The model's template switches thinking on only in
-    /// the system turn, which the runtime prefilled with the first message, and the binding has no way to add it
-    /// later. If the runtime honoured a per-send thinking switch on a follow-up, this reply would carry a thinking
+    /// the system turn, which the runtime prefilled with the first message, and no binding change measured turns it
+    /// on later. If the runtime honoured a per-send thinking switch on a follow-up, this reply would carry a thinking
     /// trace and the test would fail; the remarks of <see cref="LiteRtSendOptions.EnableThinking"/> then need
     /// rewording.</summary>
     [SkippableFact]
