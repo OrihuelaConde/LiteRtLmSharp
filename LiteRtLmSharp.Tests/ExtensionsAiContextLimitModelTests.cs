@@ -71,24 +71,31 @@ public sealed class ExtensionsAiContextLimitModelTests(ITestOutputHelper output)
     {
         using LiteRtEngine engine = LoadEngine(Limit, benchmark);
         using LiteRtChatClient client = ThinkingClient(engine, stateful);
+        int promptTokens;
+        using (LiteRtConversation measure = engine.CreateConversation(new LiteRtConversationOptions { EnableThinking = true }))
+            promptTokens = engine.CountTokens(measure.RenderMessage(EssayPrompt));
 
         (ChatResponse response, ChatFinishReason? lastFinish) = await AskAsync(client, EssayPrompt, options: null, stream);
 
         int answerTokens = engine.CountTokens(response.Text), thinkingTokens = engine.CountTokens(Reasoning(response));
         long total = response.Usage?.TotalTokenCount ?? -1;
-        output.WriteLine($"answer {answerTokens}, thinking {thinkingTokens}, total {total}, finish {response.FinishReason}, " +
-                         $"last streamed finish {lastFinish}, output {response.Usage?.OutputTokenCount}");
+        output.WriteLine($"prompt {promptTokens}, answer {answerTokens}, thinking {thinkingTokens}, total {total}, " +
+                         $"finish {response.FinishReason}, last streamed finish {lastFinish}, output {response.Usage?.OutputTokenCount}");
         // The reply ran into the clamp: answer and thinking together nearly fill the context.
         Assert.True(answerTokens + thinkingTokens > Limit - 128, $"answer {answerTokens} + thinking {thinkingTokens}");
         Assert.Equal(ChatFinishReason.Length, response.FinishReason);
         Assert.Equal(ChatFinishReason.Length, lastFinish);
-        // How the model splits the budget between thinking and answer is its choice (294/668 on CPU, 144/818 on
-        // GPU here). Without thinking, or with an answer long enough to fill the context, the full context gives
-        // Length on its own and the room left after the reply cannot be checked.
+        // How the model splits the budget between answer and thinking is its choice (answer/thinking 294/668 on CPU,
+        // 144/818 on GPU here). Without thinking, or with an answer long enough to fill the context on its own, the
+        // full context gives Length by itself and the room left after the reply cannot be checked.
         Skip.If(thinkingTokens <= 32,
             $"The reply carried {thinkingTokens} tokens of thinking; the check needs a reply that thought.");
-        Skip.If(LiteRtContextGuard.IsContextFull(checked((int)total), Limit),
-            $"The answer part filled the context (total {total}), so it has no room left to check.");
+        Skip.If(LiteRtContextGuard.IsContextFull(promptTokens + answerTokens + LiteRtContextGuard.SafetyMargin, Limit),
+            $"The answer alone filled the context (prompt {promptTokens} + answer {answerTokens}), so it has no room " +
+            "left to check.");
+        // The prompt and the answer leave room, so a full context here means the thinking stayed in the KV cache.
+        Assert.False(LiteRtContextGuard.IsContextFull(checked((int)total), Limit),
+            $"total {total} (prompt {promptTokens} + answer {answerTokens}): the runtime kept the thinking in the KV cache");
 
         if (stateful)
         {
