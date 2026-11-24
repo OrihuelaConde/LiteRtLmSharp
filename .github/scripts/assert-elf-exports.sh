@@ -7,7 +7,9 @@ set -euo pipefail
 lib="${1:?library}"
 min="${2:?minimum export count}"
 
-defined=$(readelf --dyn-syms -W "$lib" | awk '$7 != "UND" && $8 ~ /^litert_lm_/ {print $8}' | sort -u)
+# From C API 1.0.0 (LiteRT-LM v0.19.0) the symbols are versioned: readelf prints them as
+# name@@LITERT_LM_C_API_1.0, so the version suffix is dropped before comparing names.
+defined=$(readelf --dyn-syms -W "$lib" | awk '$7 != "UND" && $8 ~ /^litert_lm_/ {sub(/@.*/, "", $8); print $8}' | sort -u)
 count=$(printf '%s\n' "$defined" | grep -c . || true)
 echo "exported litert_lm_* symbols: $count"
 if [ "$count" -lt "$min" ]; then

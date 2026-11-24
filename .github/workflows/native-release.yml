@@ -70,7 +70,7 @@ env:
   CAPI_ZIP: litert_lm_c_api-${{ inputs.capi_version || '0.1.0' }}.zip
   PYPI_VERSION: ${{ inputs.pypi_version }}
   PLATFORMS: ${{ inputs.platforms || 'all' }}
-  # Minimum litert_lm_* export count we accept (v0.16.0 ships 144, v0.18.0 212; the check catches a
+  # Minimum litert_lm_* export count we accept (v0.16.0 ships 144, v0.18.0 212, v0.20.0 242; the check catches a
   # truncated or wrong-architecture binary, not a specific version).
   MIN_EXPORTS: '140'
   # DirectX Shader Compiler runtime for win-x64 (the official DLL's Dawn requires DXC on D3D12 and

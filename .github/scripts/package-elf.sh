@@ -52,9 +52,19 @@ if [ "$kind" = android ]; then
   # and falls back to the statically linked copy, and we ship no companion. Without the embedded copy
   # GPU sampling falls back to CPU (or fails, as the self-built v0.15.0 set did, LiteRT-LM#3135). The
   # x86_64 build targets the emulator, which has no OpenCL, so a missing sampler there only warns.
-  defined=$(readelf --dyn-syms -W "$lib" | awk '$7 != "UND" {print $8}')
+  # From C API 1.0.0 the library exports only litert_lm_* symbols, so the sampler's entry points are no
+  # longer in the dynamic symbol table. The embedded copy is then recognized by its names in the binary's
+  # strings, which is weaker evidence: it shows the sampler code is referenced, not that it loads.
+  defined=$(readelf --dyn-syms -W "$lib" | awk '$7 != "UND" {sub(/@.*/, "", $8); print $8}')
+  sampler_strings=$(strings -a "$lib" | grep -i 'TopKOpenCl' | sort -u || true)
+  echo "--- OpenCL TopK sampler names found in the binary ---"
+  echo "${sampler_strings:-<none>}" | head -20
   for sym in LiteRtTopKOpenClSampler_Create LiteRtTopKOpenClSampler_CanHandleInput LiteRtTopKOpenClSampler_SetInferenceFuncAndInputTensors; do
     if ! grep -qx "$sym" <<< "$defined"; then
+      if grep -q "$sym" <<< "$sampler_strings"; then
+        echo "note: $sym is not exported, but the binary names it."
+        continue
+      fi
       if [ "$machine" = AArch64 ]; then
         echo "::error::$src does not embed the OpenCL TopK sampler ($sym missing)"
         exit 1
