@@ -602,7 +602,10 @@ public sealed record LiteRtConversationOptions
     /// template branches on <c>{% if enable_thinking %}</c>. On a model whose template does not
     /// reference the key it is a harmless no-op. Pair with <see cref="FilterThinkingFromKvCache"/>
     /// to keep the (often long) reasoning out of the KV cache on later turns. When both this and
-    /// <see cref="ExtraContext"/> set <c>enable_thinking</c>, this flag wins.
+    /// <see cref="ExtraContext"/> set <c>enable_thinking</c>, this flag wins. Gemma 4's template applies the
+    /// switch in the system turn, which the runtime prefills with the first send, so the mode of the first send
+    /// stays for the conversation; only a per-send <see cref="LiteRtSendOptions.EnableThinking"/> <c>false</c>
+    /// turns thinking off for a later send (see there).
     /// </remarks>
     public bool? EnableThinking { get; init; }
 

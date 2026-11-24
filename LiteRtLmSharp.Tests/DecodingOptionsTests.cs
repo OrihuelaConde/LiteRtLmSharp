@@ -7,6 +7,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace LiteRtLmSharp.Tests;
 
@@ -574,9 +575,10 @@ public sealed class DecodingConnectorModelTests
 /// thinking budget, LlGuidance constraints). Set LITERTLM_TEST_MODEL to run; sends rely on the
 /// engine's default sampling (deterministic at the seed-0 default) — see the sampler note below.
 /// </summary>
-public sealed class DecodingModelTests(EngineFixture fixture) : IClassFixture<EngineFixture>
+public sealed class DecodingModelTests(EngineFixture fixture, ITestOutputHelper output) : IClassFixture<EngineFixture>
 {
     private readonly EngineFixture _fixture = fixture;
+    private readonly ITestOutputHelper _output = output;
 
     // No explicit sampler anywhere in these tests: they rely on the engine's internal default
     // sampling, which is deterministic at its seed-0 default.
@@ -787,6 +789,60 @@ public sealed class DecodingModelTests(EngineFixture fixture) : IClassFixture<En
 
         Assert.False(string.IsNullOrEmpty(response.Thinking),
             "Per-send EnableThinking=true did not produce a thinking trace on a plain conversation.");
+    }
+
+    /// <summary>Per-send thinking override, OFF direction, on a follow-up: after a first reply with thinking,
+    /// a send that sets <c>EnableThinking = false</c> answers without a thinking trace. The model's template
+    /// switches thinking on only in the system turn, which the runtime prefills with the first message, so the
+    /// runtime alone keeps thinking on: without the binding suppressing the token that opens the thinking
+    /// channel, the follow-up's reply carries a thinking trace (about 435 characters with gemma-4 E2B, on CPU
+    /// and GPU).</summary>
+    [SkippableFact]
+    public void Send_PerSendThinkingFalse_OnAFollowUp_AnswersWithoutThinking()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var conv = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions
+        {
+            EnableThinking = true, MaxOutputTokens = 512, Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 1 },
+        });
+        LiteRtResponse first = conv.Send("Think briefly about bridges, then reply with one short sentence about bridges.");
+        _output.WriteLine($"first: thinking {first.Thinking?.Length ?? 0} chars, answer '{first.Text}'");
+        Skip.If(string.IsNullOrEmpty(first.Thinking), "The first reply carried no thinking, so the follow-up tests nothing.");
+
+        LiteRtResponse off = conv.Send("What is the capital of France? Answer in one short sentence.", attachments: null,
+            new LiteRtSendOptions { EnableThinking = false });
+        _output.WriteLine($"off: thinking {off.Thinking?.Length ?? 0} chars, answer '{off.Text}'");
+        Assert.True(string.IsNullOrEmpty(off.Thinking),
+            $"Per-send EnableThinking=false left a thinking trace on a follow-up ({off.Thinking?.Length} chars).");
+        Assert.False(string.IsNullOrWhiteSpace(off.Text));
+    }
+
+    /// <summary>Pins a native limitation: on a conversation whose first send did not think, a later send that
+    /// sets <c>EnableThinking = true</c> does not think either. The model's template switches thinking on only in
+    /// the system turn, which the runtime prefilled with the first message, and the binding has no way to add it
+    /// later. If the runtime honoured a per-send thinking switch on a follow-up, this reply would carry a thinking
+    /// trace and the test would fail; the remarks of <see cref="LiteRtSendOptions.EnableThinking"/> then need
+    /// rewording.</summary>
+    [SkippableFact]
+    public void Send_PerSendThinkingTrue_OnAFollowUp_DoesNotThink()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var conv = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions
+        {
+            MaxOutputTokens = 512, Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 1 },
+        });
+        LiteRtResponse first = conv.Send("Reply with one short sentence about bridges.");
+        _output.WriteLine($"first: thinking {first.Thinking?.Length ?? 0} chars, answer '{first.Text}'");
+        Assert.True(string.IsNullOrEmpty(first.Thinking));
+
+        LiteRtResponse on = conv.Send("What is 17 times 23? Think it through, then answer.", attachments: null,
+            new LiteRtSendOptions { EnableThinking = true });
+        _output.WriteLine($"on: thinking {on.Thinking?.Length ?? 0} chars, answer '{on.Text}'");
+        Assert.True(string.IsNullOrEmpty(on.Thinking),
+            $"Per-send EnableThinking=true now thinks on a follow-up ({on.Thinking?.Length} chars): the runtime honours it.");
+        Assert.False(string.IsNullOrWhiteSpace(on.Text));
     }
 
     /// <summary>The custom prompt template override reaches the renderer: RenderMessage on a

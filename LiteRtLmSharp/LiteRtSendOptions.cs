@@ -87,6 +87,12 @@ public sealed record LiteRtSendOptions
     /// is built (a raw <c>enable_thinking</c> key set only via
     /// <see cref="LiteRtConversationOptions.ExtraContext"/> is not visible to this composition —
     /// prefer the typed <see cref="LiteRtConversationOptions.EnableThinking"/>).
+    /// <para>Gemma 4's chat template switches thinking on in the system turn, which the runtime prefills with the
+    /// conversation's first send, so on a later send the runtime alone does not change the mode. For <c>false</c>,
+    /// the binding also suppresses the token that opens the thinking channel when the model's tokenizer has it
+    /// (<c>&lt;|channel&gt;</c>), so that send answers without thinking and later sends inherit again. <c>true</c>
+    /// on a later send of a conversation whose first send did not think gives no thinking (measured on LiteRT-LM
+    /// v0.20.0, gemma-4 E2B, CPU and GPU).</para>
     /// </remarks>
     public bool? EnableThinking { get; init; }
 

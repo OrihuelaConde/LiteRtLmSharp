@@ -1394,7 +1394,15 @@ public sealed class LiteRtConversation : IDisposable
                 }
             }
 
-            if (options?.SuppressTokens is { Count: > 0 } suppress)
+            // The Gemma 4 template switches thinking on only in the system turn, which the runtime prefills with the
+            // first message, and the runtime's decode config for a send with thinking off enforces nothing: after a
+            // first reply with thinking, a follow-up with thinking off still thinks (measured on v0.20.0, CPU and
+            // GPU). Suppressing the token that opens the thinking channel makes the send answer without it.
+            IReadOnlyList<int>? suppressList = options?.SuppressTokens;
+            if (options?.EnableThinking == false && _engineOwner.ThinkingChannelOpenToken is int channelOpen
+                && !(suppressList?.Contains(channelOpen) ?? false))
+                suppressList = suppressList is { Count: > 0 } ? [.. suppressList, channelOpen] : [channelOpen];
+            if (suppressList is { Count: > 0 } suppress)
             {
                 nint cfg;
                 unsafe

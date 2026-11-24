@@ -50,6 +50,39 @@ public sealed class LiteRtEngine : IDisposable
     /// conversations record benchmark turns.</summary>
     internal bool BenchmarkEnabled { get; }
 
+    /// <summary>The id of the token that opens the thinking channel in Gemma 4's chat template
+    /// (<c>&lt;|channel&gt;</c>), or <c>null</c> when the model's tokenizer has no single token that round-trips
+    /// to that text. A send with <see cref="LiteRtSendOptions.EnableThinking"/> <c>false</c> suppresses it. Resolved
+    /// on first use; it does not check that this object is disposed, as <see cref="CountTokens"/>.</summary>
+    internal int? ThinkingChannelOpenToken
+    {
+        get
+        {
+            int id = Volatile.Read(ref _thinkingChannelOpenToken);
+            if (id == UnresolvedToken)
+            {
+                id = NoToken;
+                try
+                {
+                    int[] ids = TokenizeIds(ThinkingChannelOpenText);
+                    if (ids.Length == 1 && DetokenizeIds(ids) == ThinkingChannelOpenText)
+                        id = ids[0];
+                }
+                catch (LiteRtException)
+                {
+                    // A tokenizer that cannot round-trip the text has no such token.
+                }
+                // Two first uses at once compute the same value.
+                Volatile.Write(ref _thinkingChannelOpenToken, id);
+            }
+            return id >= 0 ? id : null;
+        }
+    }
+
+    private const string ThinkingChannelOpenText = "<|channel>";
+    private const int UnresolvedToken = -2, NoToken = -1;
+    private int _thinkingChannelOpenToken = UnresolvedToken;
+
     /// <summary>
     /// Gets how many chat engines are alive in this process: 0 or 1 unless the live engines were loaded
     /// with <see cref="LiteRtEngineOptions.AllowMultipleEngines"/>. A <see cref="LiteRtEmbeddingEngine"/> is
@@ -319,11 +352,16 @@ public sealed class LiteRtEngine : IDisposable
     /// the round trip.
     /// </summary>
     /// <exception cref="LiteRtException">The native tokenizer call failed.</exception>
-    public unsafe int[] Tokenize(string text)
+    public int[] Tokenize(string text)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(text);
+        return TokenizeIds(text);
+    }
 
+    /// <summary>The body of <see cref="Tokenize"/>, without the disposed check (see <see cref="CountTokens"/>).</summary>
+    private unsafe int[] TokenizeIds(string text)
+    {
         using var result = TokenizeNative(text);
         nuint count = TokenCountOf(result);
         if (count == 0)
@@ -379,9 +417,15 @@ public sealed class LiteRtEngine : IDisposable
     /// <see cref="Tokenize"/>. An empty span returns the empty string without calling native.
     /// </summary>
     /// <exception cref="LiteRtException">The native detokenizer call failed (e.g. an out-of-range id).</exception>
-    public unsafe string Detokenize(ReadOnlySpan<int> tokens)
+    public string Detokenize(ReadOnlySpan<int> tokens)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        return DetokenizeIds(tokens);
+    }
+
+    /// <summary>The body of <see cref="Detokenize"/>, without the disposed check (see <see cref="CountTokens"/>).</summary>
+    private unsafe string DetokenizeIds(ReadOnlySpan<int> tokens)
+    {
         // Required, not only a shortcut: fixed over an empty span yields a null pointer, which the runtime
         // rejects even with a zero count.
         if (tokens.IsEmpty)
