@@ -225,7 +225,8 @@ public sealed class ThinkingOffModelTests(EngineFixture fixture, ITestOutputHelp
     /// <summary>The truncation check skips the tokenizer for a reply with fewer UTF-8 bytes than its threshold,
     /// which assumes that the tokenizer gives at most one token per byte, with no token added around the text. On
     /// these strings, gemma-4 E2B's tokenizer gives at most one token per byte (measured on LiteRT-LM v0.20.0, CPU
-    /// and GPU: "x " gives 2 tokens for 2 bytes, every other string fewer tokens than bytes).</summary>
+    /// and GPU: "x " and the one-byte strings "a" and "\n" give one token per byte; every other string gives fewer
+    /// tokens than bytes).</summary>
     [SkippableFact]
     public void CountTokens_IsAtMostTheUtf8ByteCount()
     {
