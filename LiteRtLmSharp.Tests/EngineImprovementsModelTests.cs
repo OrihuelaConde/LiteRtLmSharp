@@ -240,7 +240,8 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
     /// the reply a TopK conversation gives as the first on a fresh engine. If the runtime kept the TopP
     /// sampler, the TopK reply would come from it instead; that sampler's reply differs from the TopK one, which
     /// the test checks first. A runtime that kept the TopP type with the TopK conversation's parameters is not
-    /// told apart: on the win-x64 GPU, TopP with this TopK conversation's parameters gives the same text.
+    /// told apart on any backend: TopK samples as TopP with <c>TopP = 1</c> (pinned above), so TopP with this TopK
+    /// conversation's parameters gives the same text (measured on the win-x64 GPU).
     /// </summary>
     [SkippableFact]
     public void Greedy_ShouldBeArgmax_AfterASampledConversation_AndNextToALiveOne()

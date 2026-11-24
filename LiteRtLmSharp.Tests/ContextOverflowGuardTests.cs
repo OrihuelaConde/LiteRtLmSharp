@@ -130,6 +130,10 @@ public class ContextOverflowGuardTests
     [Theory]
     [InlineData(965, 966, true, false)]
     [InlineData(966, 966, true, true)]
+    [InlineData(967, 966, true, true)]
+    [InlineData(1, 16, true, false)]       // the floor of 1 applies to tokenized counts only
+    [InlineData(1, 17, false, true)]       // budget - 16 = 1
+    [InlineData(1, 18, false, false)]      // budget - 16 = 2
     [InlineData(949, 966, false, false)]   // budget - 17
     [InlineData(950, 966, false, true)]    // budget - 16
     [InlineData(966, 966, false, true)]
@@ -148,6 +152,10 @@ public class ContextOverflowGuardTests
     [InlineData(950, 966, false)]
     [InlineData(0, 16, true)]
     [InlineData(1, 16, false)]
+    [InlineData(0, 17, true)]
+    [InlineData(1, 17, false)]
+    [InlineData(1, 18, true)]
+    [InlineData(2, 18, false)]
     public void TooShortToHaveUsedBudget_MatchesTheTokenizedThreshold(int bytes, int budget, bool expected)
     {
         Assert.Equal(expected, LiteRtContextGuard.TooShortToHaveUsedBudget(bytes, budget));

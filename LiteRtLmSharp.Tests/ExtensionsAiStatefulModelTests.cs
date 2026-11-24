@@ -310,8 +310,9 @@ public sealed class ExtensionsAiStatefulModelTests(ITestOutputHelper output)
         // either the runtime defect these tests pin or a backend that does not decode greedily byte for byte.
         Assert.True(fresh == retry,
             "The re-sent message's reply differs from a fresh conversation's. Either the runtime again mixes in " +
-            "the other conversation's state, or this backend's greedy decode is not reproducible: compare a fresh " +
-            "conversation's reply with itself on this backend to tell them apart.");
+            "the other conversation's state, or this backend's greedy decode differs on the clone-and-rollback " +
+            "path: re-send the cut message on a checkpoint clone while no other conversation generates in between. " +
+            "If that reply also differs from the fresh one, the cause is the backend's numerics, not mixed state.");
     }
 
     /// <summary>

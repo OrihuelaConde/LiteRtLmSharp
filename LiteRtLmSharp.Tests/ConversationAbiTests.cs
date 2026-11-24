@@ -396,7 +396,10 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
 
     /// <summary>A send that the runtime rejects before its prefill records no prefill turn, so
     /// <see cref="LiteRtBenchmarkInfo.LastSendPrefillTokenCount"/> reads 0 after it rather than the previous
-    /// send's message. Reporting the last recorded turn instead would give the earlier send's value.</summary>
+    /// send's message. Reporting the last recorded turn instead would give the earlier send's value. The rejected
+    /// send is a JSON array, which the runtime rejects (pinned by
+    /// <see cref="SendRaw_WithAJsonArray_FailsWithInvalidArgument_AndTheConversationStaysUsable"/>); if the runtime
+    /// starts to accept arrays, this test fails at the <c>Assert.Throws</c>, not at the prefill count.</summary>
     [SkippableFact]
     public void LastSendPrefillTokenCount_AfterASendRejectedBeforeItsPrefill_IsZero()
     {
