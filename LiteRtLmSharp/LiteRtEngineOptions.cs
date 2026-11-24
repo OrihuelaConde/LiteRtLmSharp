@@ -600,12 +600,13 @@ public sealed record LiteRtConversationOptions
     /// <remarks>
     /// This is the canonical use of extra context for the Gemma reasoning builds: the chat
     /// template branches on <c>{% if enable_thinking %}</c>. On a model whose template does not
-    /// reference the key it is a harmless no-op. Pair with <see cref="FilterThinkingFromKvCache"/>
-    /// to keep the (often long) reasoning out of the KV cache on later turns. When both this and
+    /// reference the key it is a harmless no-op. The runtime keeps the (often long) reasoning out of the KV
+    /// cache on later turns by default (see <see cref="FilterThinkingFromKvCache"/>). When both this and
     /// <see cref="ExtraContext"/> set <c>enable_thinking</c>, this flag wins. Gemma 4's template applies the
     /// switch in the system turn, which the runtime prefills with the first send, so the mode of the first send
-    /// stays for the conversation; only a per-send <see cref="LiteRtSendOptions.EnableThinking"/> <c>false</c>
-    /// turns thinking off for a later send (see there).
+    /// stays for the conversation (LiteRT-LM v0.20.0, gemma-4 E2B, CPU and GPU). Only a per-send
+    /// <see cref="LiteRtSendOptions.EnableThinking"/> <c>false</c> turns thinking off for a later send; see there for
+    /// the sends that were measured.
     /// </remarks>
     public bool? EnableThinking { get; init; }
 
@@ -678,10 +679,14 @@ public sealed record LiteRtConversationOptions
 
     /// <summary>
     /// Drop channel content — in practice the thinking channel — from the KV cache, so a long
-    /// reasoning block does not eat into the context window on subsequent turns. Default
-    /// <c>false</c>. Only meaningful alongside <see cref="EnableThinking"/>.
+    /// reasoning block does not eat into the context window on subsequent turns. Only meaningful alongside
+    /// <see cref="EnableThinking"/>.
     /// </summary>
-    /// <remarks>Maps to the C API <c>conversation_config_set_filter_channel_content_from_kv_cache</c>.</remarks>
+    /// <remarks>The runtime already drops channel content when this is left <c>false</c>: the native default
+    /// is on, and the binding sends the setting only for <c>true</c>, so <c>false</c> cannot turn the filter
+    /// off (LiteRT-LM v0.20.0; measured on CPU, gemma-4 E2B: the token count after a reply with thinking leaves
+    /// the thinking out with this unset). Maps to the C API
+    /// <c>conversation_config_set_filter_channel_content_from_kv_cache</c>.</remarks>
     public bool FilterThinkingFromKvCache { get; init; }
 
     /// <summary>

@@ -76,10 +76,10 @@ public sealed record LiteRtSendOptions
     }
 
     /// <summary>
-    /// Per-send thinking override: <c>true</c>/<c>false</c> turns the model's reasoning mode on/off
-    /// for this send only, overriding the conversation-level
-    /// <see cref="LiteRtConversationOptions.EnableThinking"/>. <c>null</c> (default) = inherit the
-    /// conversation-level value.
+    /// Per-send thinking override for this send only, over the conversation-level
+    /// <see cref="LiteRtConversationOptions.EnableThinking"/>: <c>false</c> turns the model's reasoning off.
+    /// <c>true</c> turns it on only on the conversation's first send with Gemma 4 (see remarks).
+    /// <c>null</c> (default) = inherit the conversation-level value.
     /// </summary>
     /// <remarks>
     /// The native per-send thinking config replaces the conversation-level one wholesale, so the
@@ -90,9 +90,18 @@ public sealed record LiteRtSendOptions
     /// <para>Gemma 4's chat template switches thinking on in the system turn, which the runtime prefills with the
     /// conversation's first send, so on a later send the runtime alone does not change the mode. For <c>false</c>,
     /// the binding also suppresses the token that opens the thinking channel when the model's tokenizer has it
-    /// (<c>&lt;|channel&gt;</c>), so that send answers without thinking and later sends inherit again. <c>true</c>
-    /// on a later send of a conversation whose first send did not think gives no thinking (measured on LiteRT-LM
-    /// v0.20.0, gemma-4 E2B, CPU and GPU).</para>
+    /// (<c>&lt;|channel&gt;</c>).</para>
+    /// <para>Measured on LiteRT-LM v0.20.0, gemma-4 E2B, argmax, CPU and GPU, after a first reply with thinking:</para>
+    /// <list type="bullet">
+    /// <item>A text follow-up with <c>false</c> answers without thinking, also with
+    /// <see cref="LiteRtConversationOptions.EnableConstrainedDecoding"/> or
+    /// <see cref="LiteRtConversationOptions.EnableSpeculativeDecoding"/> on, and the next send without options thinks
+    /// again. A streamed follow-up was measured on CPU only.</item>
+    /// <item>A send of tool results with <c>false</c>, a follow-up with <c>false</c> that calls a tool, and a
+    /// follow-up with <c>false</c> and a regex or JSON-schema <see cref="Constraint"/> did not think without the
+    /// suppression either; the suppression gave the same reply.</item>
+    /// <item><c>true</c> on a later send of a conversation whose first send did not think gives no thinking.</item>
+    /// </list>
     /// </remarks>
     public bool? EnableThinking { get; init; }
 
