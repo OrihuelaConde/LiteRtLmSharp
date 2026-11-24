@@ -383,12 +383,37 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
 {
     private static readonly LiteRtSamplerParams Argmax = new() { Strategy = LiteRtSamplerType.TopP, TopK = 1 };
 
-    private static LiteRtEngine LoadEngine(int maxNumTokens)
+    private static LiteRtEngine LoadEngine(int maxNumTokens, bool benchmark = false)
     {
         string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
         Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model), "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
         LiteRtEngine.SetMinLogLevel(3);
-        return LiteRtEngine.Load(new LiteRtEngineOptions { ModelPath = model!, Backend = LiteRtBackend.Cpu, MaxNumTokens = maxNumTokens });
+        return LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = model!, Backend = LiteRtBackend.Cpu, MaxNumTokens = maxNumTokens, EnableBenchmark = benchmark,
+        });
+    }
+
+    /// <summary>A send that the runtime rejects before its prefill records no prefill turn, so
+    /// <see cref="LiteRtBenchmarkInfo.LastSendPrefillTokenCount"/> reads 0 after it rather than the previous
+    /// send's message. Reporting the last recorded turn instead would give the earlier send's value.</summary>
+    [SkippableFact]
+    public void LastSendPrefillTokenCount_AfterASendRejectedBeforeItsPrefill_IsZero()
+    {
+        using LiteRtEngine engine = LoadEngine(2048, benchmark: true);
+        using var chat = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax, MaxOutputTokens = 16 });
+
+        Assert.False(string.IsNullOrWhiteSpace(chat.Send("Reply with one word: hello").Text));
+        LiteRtBenchmarkInfo before = chat.GetBenchmarkInfo()!;
+        Assert.Throws<LiteRtException>(() => chat.SendRaw(
+            """[{"role":"user","content":[{"type":"text","text":"Reply with one word: hello"}]}]"""));
+        LiteRtBenchmarkInfo after = chat.GetBenchmarkInfo()!;
+        output.WriteLine($"before: prefill turns {before.NumPrefillTurns}, send prefill {before.LastSendPrefillTokenCount}; " +
+                         $"after: prefill turns {after.NumPrefillTurns}, send prefill {after.LastSendPrefillTokenCount}, " +
+                         $"last prefill {after.LastPrefillTokenCount}");
+        Assert.True(before.LastSendPrefillTokenCount > 0);
+        Assert.Equal(before.NumPrefillTurns, after.NumPrefillTurns);
+        Assert.Equal(0, after.LastSendPrefillTokenCount);
     }
 
     /// <summary>The runtime takes one message per send: a JSON array, which LiteRT-LM v0.18.0 accepted through
@@ -458,8 +483,8 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
     /// until the next send, so the count stayed at the ceiling, <see cref="LiteRtConversation.IsContextFull"/> read
     /// <c>true</c> and the next send threw <see cref="LiteRtContextOverflowException"/>), so the context has room
     /// again and the next send passes the guard. <see cref="LiteRtConversation.LastReplyReachedContextLimit"/>
-    /// still reports the cut (here from the tokenized reply, as benchmarking is off), and the next send, which ends
-    /// on its own, clears it.</summary>
+    /// still reports the cut (here from the tokenized reply, as benchmarking is off); a clone does not inherit it,
+    /// and the next send, which ends on its own under the caller's cap, clears it.</summary>
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
@@ -499,7 +524,13 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
         Assert.True(chat.LastReplyReachedContextLimit);
         Assert.True(count <= promptTokens + answerTokens + 16, $"count {count} must leave the thinking out");
 
-        Assert.False(string.IsNullOrWhiteSpace(chat.Send("Reply with one word: OK").Text));
+        using (LiteRtConversation clone = chat.Clone())
+            Assert.False(clone.LastReplyReachedContextLimit);
+
+        // A caller cap under the guard's budget arms no truncation check, so only the reset at the start of the
+        // send can clear the flag. The cap is above what this reply decodes (about 150 tokens, mostly thinking).
+        Assert.False(string.IsNullOrWhiteSpace(
+            chat.Send("Reply with one word: OK", attachments: null, new LiteRtSendOptions { MaxOutputTokens = 400 }).Text));
         Assert.False(chat.LastReplyReachedContextLimit);
     }
 

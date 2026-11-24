@@ -459,8 +459,9 @@ public sealed class LiteRtConversation : IDisposable
     /// message (attachments or an extra context), and when the engine was loaded without an explicit
     /// <see cref="LiteRtEngineOptions.MaxNumTokens"/>. With <see cref="LiteRtEngineOptions.EnableBenchmark"/> on,
     /// it compares the decoded token count with the budget. Otherwise it tokenizes the answer and thinking text the
-    /// send returned, which can count a few tokens fewer than were decoded, so a reply that ends on its own within
-    /// 16 tokens of the budget also reads as cut.</para>
+    /// send returned, which can count a few tokens fewer than were decoded, so a non-empty reply that ends on its
+    /// own within 16 tokens of the budget also reads as cut; tool calls in the reply are not counted then, so a
+    /// reply cut inside a tool call can read as not cut.</para>
     /// </remarks>
     public bool LastReplyReachedContextLimit => _lastReplyReachedLimit;
 
@@ -537,8 +538,9 @@ public sealed class LiteRtConversation : IDisposable
         }
 
         // After a reply with thinking, the runtime records the KV-cache refill as a second prefill turn of the
-        // same send, so the send's message is its first prefill turn, not the last one.
-        nuint sendPrefillTokens = lastPrefillTokens;
+        // same send, so the send's message is its first prefill turn, not the last one. A send that failed before
+        // its prefill recorded none, so it reports 0 rather than the previous send's last turn.
+        nuint sendPrefillTokens = sendFirstPrefillTurn < 0 ? lastPrefillTokens : 0;
         if (sendFirstPrefillTurn >= 0 && (nuint)sendFirstPrefillTurn < prefillTurns)
             NativeError.ThrowIfFailed(
                 LiteRtLmNative.litert_lm_benchmark_info_get_prefill_token_count_at(
@@ -835,8 +837,8 @@ public sealed class LiteRtConversation : IDisposable
     // while a send is in flight, hence volatile.
     private volatile int _cachedTokenCount;
 
-    // Set by GuardContextOverflow on each measured, ceiling-clamped send (pre-send token count, measured
-    // prefill, imposed decode budget) and consumed after the send completes to detect — exactly, not by
+    // Set by GuardContextOverflow on each measured send whose output cap is the guard's budget, which is every
+    // measured send without a tighter caller cap (pre-send token count, measured prefill, imposed decode budget) and consumed after the send completes to detect — exactly, not by
     // threshold — that the reply saturated its budget and the context is full. Conversations are not
     // thread-safe (documented), so plain fields are safe here.
     private (int Used, int Input, int Budget)? _ceilingProbe;
@@ -973,17 +975,18 @@ public sealed class LiteRtConversation : IDisposable
         _lastReplyReachedLimit = ReplyUsedBudget(probe.Budget, responseJson, stream);
     }
 
-    /// <summary>Whether the reply decoded the whole decode <paramref name="budget"/> the guard imposed. With
-    /// benchmarking on, the decode turn's token count is exact: it equals the budget when the reply was cut
-    /// (CPU and GPU, LiteRT-LM v0.20.0). Otherwise the answer and thinking text are tokenized again, which
-    /// measured 0 to 4 tokens fewer than were decoded (the thinking-channel markers), within the guard's safety
-    /// margin. Never throws: a failed read counts as not cut.</summary>
+    /// <summary>Whether the reply decoded the whole decode <paramref name="budget"/> the guard imposed
+    /// (<see cref="LiteRtContextGuard.ReplyUsedBudget"/>). With benchmarking on, the decode turn's token count is
+    /// exact: it equals the budget when the reply was cut (CPU and GPU, LiteRT-LM v0.20.0). Otherwise the answer
+    /// and thinking text are tokenized again, which measured 0 to 4 tokens fewer than were decoded (the
+    /// thinking-channel markers); tool calls are not counted. Never throws: a failed read counts as not
+    /// cut.</summary>
     private bool ReplyUsedBudget(int budget, string? responseJson, StreamState? stream)
     {
         try
         {
             if (_engineOwner.BenchmarkEnabled && GetBenchmarkInfo() is { NumDecodeTurns: > 0 } benchmark)
-                return benchmark.LastDecodeTokenCount >= budget;
+                return LiteRtContextGuard.ReplyUsedBudget(benchmark.LastDecodeTokenCount, budget, exactCount: true);
 
             string? answer, thinking;
             if (stream is not null)
@@ -1001,15 +1004,13 @@ public sealed class LiteRtConversation : IDisposable
             {
                 return false;
             }
-            // The tokenizer gives at most one token per UTF-8 byte of text (byte fallback is the worst case), so a
-            // reply with fewer bytes than the threshold cannot reach it, and most replies that end on their own
-            // skip the tokenizer.
-            int threshold = budget - LiteRtContextGuard.SafetyMargin;
-            if (Encoding.UTF8.GetByteCount(answer ?? "") + Encoding.UTF8.GetByteCount(thinking ?? "") < threshold)
+            // A reply with fewer UTF-8 bytes than the threshold skips the tokenizer.
+            int bytes = Encoding.UTF8.GetByteCount(answer ?? "") + Encoding.UTF8.GetByteCount(thinking ?? "");
+            if (LiteRtContextGuard.TooShortToHaveUsedBudget(bytes, budget))
                 return false;
             int decoded = (string.IsNullOrEmpty(answer) ? 0 : _engineOwner.CountTokens(answer))
                         + (string.IsNullOrEmpty(thinking) ? 0 : _engineOwner.CountTokens(thinking));
-            return decoded >= threshold;
+            return LiteRtContextGuard.ReplyUsedBudget(decoded, budget, exactCount: false);
         }
         catch (Exception)
         {

@@ -7,7 +7,8 @@ namespace LiteRtLmSharp;
 /// <para>
 /// Prefill and decode metrics accumulate one entry per native prefill or decode turn (a send records one of
 /// each, plus a second prefill turn after a reply with thinking); the <c>Last*</c> properties report
-/// the most recent turn (the headline number for "how fast was that reply"). Decode throughput
+/// the most recent turn (the headline number for "how fast was that reply"), except
+/// <see cref="LastSendPrefillTokenCount"/>, which reports the last send's own message. Decode throughput
 /// is the metric that <see cref="LiteRtEngineOptions.EnableSpeculativeDecoding"/> accelerates.
 /// </para>
 /// </summary>
@@ -33,8 +34,9 @@ public sealed record LiteRtBenchmarkInfo
     public int LastPrefillTokenCount { get; init; }
 
     /// <summary>Prefill token count of the most recent send's message: the first prefill turn that send recorded
-    /// (0 if none).</summary>
-    /// <remarks>A send records one prefill turn, its message. After a reply with thinking, the runtime records a
+    /// (0 before the first send, and after a send that failed before its prefill).</summary>
+    /// <remarks>A text send records one prefill turn, its message (sends with media or tool results were not
+    /// measured). After a reply with thinking, the runtime records a
     /// second one, the KV-cache refill, so <see cref="LastPrefillTokenCount"/> differs from this value
     /// (measured on LiteRT-LM v0.20.0, CPU and GPU). A <see cref="LiteRtConversation.Clone"/> carries its parent's
     /// benchmark turns and reports the parent's value until it sends.</remarks>

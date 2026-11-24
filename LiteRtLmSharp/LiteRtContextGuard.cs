@@ -131,4 +131,25 @@ internal static class LiteRtContextGuard
     /// </summary>
     internal static int EffectiveOutputCap(int decodeBudget, int callerCap)
         => callerCap > 0 && callerCap <= decodeBudget ? callerCap : decodeBudget;
+
+    /// <summary>
+    /// Whether a reply decoded the whole <paramref name="decodeBudget"/> the guard imposed, from
+    /// <paramref name="decodedTokens"/>. An <paramref name="exactCount"/> (the benchmark's decode count) equals the
+    /// budget when the reply was cut. A count from tokenizing the reply's text again is up to 4 tokens short of
+    /// what was decoded (measured, the thinking-channel markers), so it only has to reach
+    /// <see cref="TokenizedReplyThreshold"/>.
+    /// </summary>
+    internal static bool ReplyUsedBudget(int decodedTokens, int decodeBudget, bool exactCount)
+        => decodedTokens >= (exactCount ? decodeBudget : TokenizedReplyThreshold(decodeBudget));
+
+    /// <summary>The tokenized count at which a reply reads as cut: the budget less the
+    /// <see cref="SafetyMargin"/>, and at least 1, so an empty reply never reads as cut.</summary>
+    internal static int TokenizedReplyThreshold(int decodeBudget)
+        => Math.Max(1, decodeBudget - SafetyMargin);
+
+    /// <summary>Whether a reply of <paramref name="utf8Bytes"/> bytes of answer and thinking text cannot reach
+    /// <see cref="TokenizedReplyThreshold"/>: the tokenizer gives at most one token per UTF-8 byte (byte fallback
+    /// is the worst case), so the reply need not be tokenized.</summary>
+    internal static bool TooShortToHaveUsedBudget(int utf8Bytes, int decodeBudget)
+        => utf8Bytes < TokenizedReplyThreshold(decodeBudget);
 }

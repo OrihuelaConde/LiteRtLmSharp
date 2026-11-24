@@ -123,6 +123,39 @@ public class ContextOverflowGuardTests
     public void EffectiveOutputCap_TakesTheSmallerOfCallerCapAndBudget(int budget, int callerCap, int expected)
         => Assert.Equal(expected, LiteRtContextGuard.EffectiveOutputCap(budget, callerCap));
 
+    /// <summary>The truncation check behind <see cref="LiteRtConversation.LastReplyReachedContextLimit"/>: the
+    /// benchmark's exact decode count must reach the budget; a tokenized count, which is up to 4 tokens short of
+    /// what was decoded, must reach the budget less the safety margin, and at least 1, so a budget at or under
+    /// the margin does not mark an empty reply as cut.</summary>
+    [Theory]
+    [InlineData(965, 966, true, false)]
+    [InlineData(966, 966, true, true)]
+    [InlineData(949, 966, false, false)]   // budget - 17
+    [InlineData(950, 966, false, true)]    // budget - 16
+    [InlineData(966, 966, false, true)]
+    [InlineData(0, 16, false, false)]      // a budget at the margin: an empty reply is not cut
+    [InlineData(1, 16, false, true)]
+    [InlineData(0, 1, false, false)]
+    [InlineData(0, 1, true, false)]
+    [InlineData(1, 1, true, true)]
+    public void ReplyUsedBudget_ComparesTheCountWithTheBudget(int decoded, int budget, bool exact, bool expected)
+        => Assert.Equal(expected, LiteRtContextGuard.ReplyUsedBudget(decoded, budget, exact));
+
+    /// <summary>The byte shortcut skips the tokenizer only for a reply that cannot reach the tokenized threshold
+    /// (at most one token per UTF-8 byte), and never for one that can.</summary>
+    [Theory]
+    [InlineData(949, 966, true)]
+    [InlineData(950, 966, false)]
+    [InlineData(0, 16, true)]
+    [InlineData(1, 16, false)]
+    public void TooShortToHaveUsedBudget_MatchesTheTokenizedThreshold(int bytes, int budget, bool expected)
+    {
+        Assert.Equal(expected, LiteRtContextGuard.TooShortToHaveUsedBudget(bytes, budget));
+        // A reply skipped by the shortcut cannot read as cut even if every byte were a token.
+        if (expected)
+            Assert.False(LiteRtContextGuard.ReplyUsedBudget(bytes, budget, exactCount: false));
+    }
+
     /// <summary>The guard probes raw SendRaw JSON for media on every guarded send, so MessageHasMedia must
     /// tolerate every shape a raw caller can produce — valid JSON with a non-object root included
     /// (JsonElement.TryGetProperty throws InvalidOperationException on those, so the shape needs its own
