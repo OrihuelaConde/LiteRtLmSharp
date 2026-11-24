@@ -6,7 +6,7 @@ namespace LiteRtLmSharp;
 /// with <see cref="LiteRtEngineOptions.EnableBenchmark"/> = <c>true</c>.
 /// <para>
 /// Prefill and decode metrics accumulate one entry per native prefill or decode turn (a text send records one of
-/// each, plus a second prefill turn after a reply with thinking; measured on LiteRT-LM v0.20.0, CPU and GPU); the
+/// each, plus a second prefill turn after a reply with thinking; measured on LiteRT-LM v0.20.0, gemma-4 E2B, CPU and GPU); the
 /// <c>Last*</c> properties report
 /// the most recent turn (the headline number for "how fast was that reply"), except
 /// <see cref="LastSendPrefillTokenCount"/>, which reports the last send's own message. Decode throughput

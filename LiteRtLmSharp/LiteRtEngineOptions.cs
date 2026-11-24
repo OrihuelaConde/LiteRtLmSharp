@@ -464,7 +464,7 @@ public sealed record LiteRtEngineOptions
     /// <remarks>
     /// Maps to <c>engine_settings_set_enable_ynnpack</c>. Of the official libraries, only linux-arm64 carries
     /// the YNNPACK kernels. Elsewhere, <c>true</c> makes <see cref="LiteRtEngine.Load"/> fail with
-    /// <see cref="LiteRtStatusCode.Unimplemented"/> (native v0.18.0, and v0.20.0 measured on win-x64; v0.16.0
+    /// <see cref="LiteRtStatusCode.Unimplemented"/> (native v0.18.0, and v0.20.0 measured on win-x64 CPU with gemma-4 E2B; v0.16.0
     /// ignored the flag). Measure any
     /// speed-up on the target device rather than assume one.
     /// </remarks>
@@ -586,7 +586,7 @@ public sealed record LiteRtConversationOptions
     /// </summary>
     /// <remarks>
     /// The official LiteRT-LM prebuilts embed the constraint provider in the native library (from v0.16.0;
-    /// tool calls with it measured on LiteRT-LM v0.20.0, win-x64, CPU and GPU). Releases before 1.2.0 threw
+    /// tool calls with it measured on LiteRT-LM v0.20.0, gemma-4 E2B, win-x64, CPU and GPU). Releases before 1.2.0 threw
     /// <see cref="PlatformNotSupportedException"/> on linux-x64, where the separately shipped
     /// provider crashed the process (google-ai-edge/LiteRT-LM#2149); that guard is gone. Tools also
     /// work with this left <c>false</c>; arguments are then not grammar-constrained.

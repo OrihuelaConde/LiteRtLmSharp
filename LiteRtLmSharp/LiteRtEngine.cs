@@ -296,7 +296,7 @@ public sealed class LiteRtEngine : IDisposable
     /// <summary>Appended to a failed engine creation when <see cref="LiteRtEngineOptions.EnableYnnpack"/> is
     /// set: the official libraries carry the YNNPACK kernels only for linux-arm64, and the other platforms reject
     /// the flag at engine creation (UNIMPLEMENTED) instead of ignoring it (v0.18.0, and v0.20.0 measured on
-    /// win-x64).</summary>
+    /// win-x64 CPU with gemma-4 E2B).</summary>
     internal const string YnnpackUnavailableHint =
         "EnableYnnpack is set: the official native libraries carry the YNNPACK kernels only for linux-arm64, " +
         "and on other platforms engine creation fails with UNIMPLEMENTED. Leave EnableYnnpack unset there.";
