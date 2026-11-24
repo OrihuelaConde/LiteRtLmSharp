@@ -371,8 +371,10 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         int before = chat.TokenCountCached;
         await foreach (LiteRtStreamChunk _ in chat.SendStreamingAsync("Write one short sentence about the sea."))
         {
-            // Creating a conversation waits for the generation in flight, so the reply has ended after this.
+            // Creating a conversation waits for the generation in flight, so the reply has ended after this. The
+            // final chunk's callback runs just after that, so the pause lets it arrive before the break.
             using LiteRtConversation waited = engine.CreateConversation();
+            await Task.Delay(200);
             break;
         }
 

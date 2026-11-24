@@ -132,6 +132,11 @@ public sealed class ExtensionsAiStatefulModelTests
 
     private const string CountPrompt = "Count upward starting from 400, one number per line, and never stop.";
 
+    // Under constrained decoding, LiteRT-LM v0.20.0 ends a text reply at its first line break, so the cut of a
+    // constrained conversation counts on one line to keep generating past the cancellation.
+    private const string SingleLineCountPrompt =
+        "Count upward starting from 400, separated by commas on a single line, and never stop.";
+
     /// <summary>
     /// A cancelled continuation keeps its <c>ConversationId</c>: the client rolls the conversation back to the
     /// checkpoint it took before the turn, so the next request on the same id continues from the turn before the
@@ -329,8 +334,10 @@ public sealed class ExtensionsAiStatefulModelTests
             [new ChatMessage(ChatRole.User, "Write one short sentence about the sea.")],
             new ChatOptions { TopK = 1, MaxOutputTokens = 48, ConversationId = id }))
         {
-            // Creating a conversation waits for the generation in flight, so the reply has ended after this.
+            // Creating a conversation waits for the generation in flight, so the reply has ended after this. The
+            // final chunk's callback runs just after that, so the pause lets it arrive before the break.
             using LiteRtConversation waited = engine.CreateConversation();
+            await Task.Delay(200);
             break;
         }
 
@@ -362,7 +369,7 @@ public sealed class ExtensionsAiStatefulModelTests
             new ChatOptions { TopK = 1, MaxOutputTokens = 16 })).ConversationId!;
         Assert.True(client.Store!.Get(id)!.CloneIsSlow);
 
-        await CutTurnAsync(client, id);
+        await CutTurnAsync(client, id, SingleLineCountPrompt);
 
         var gone = await Assert.ThrowsAsync<ArgumentException>(() => client.GetResponseAsync(
             [new ChatMessage(ChatRole.User, "hi")], new ChatOptions { MaxOutputTokens = 8, ConversationId = id }));
@@ -390,7 +397,7 @@ public sealed class ExtensionsAiStatefulModelTests
             new ChatOptions { TopK = 1, MaxOutputTokens = 16 })).ConversationId!;
         int beforeTurn = client.Store!.Get(id)!.Conversation.TokenCount;
 
-        await CutTurnAsync(client, id);
+        await CutTurnAsync(client, id, SingleLineCountPrompt);
 
         Assert.Equal(beforeTurn, client.Store!.Get(id)!.Conversation.TokenCount);
         ChatResponse recall = await client.GetResponseAsync(

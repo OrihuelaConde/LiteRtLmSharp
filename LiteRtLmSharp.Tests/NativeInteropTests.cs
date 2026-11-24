@@ -31,11 +31,11 @@ public class NativeInteropTests
     /// Proves the multimodal conversation optional-args C ABI functions resolve and are callable
     /// without a model (create → set visual token budget → delete) — the native plumbing behind
     /// <see cref="LiteRtConversationOptions.VisualTokenBudget"/>. Mirrors
-    /// <see cref="NativeLibrary_Loads_And_LogLevelCallSucceeds"/>; throws
-    /// <see cref="EntryPointNotFoundException"/> on a native binary predating the multimodal API.
+    /// <see cref="NativeLibrary_Loads_And_LogLevelCallSucceeds"/>: the create writes a handle through its
+    /// out pointer and the setter returns OK on a version-matched binary.
     /// </summary>
     [Fact]
-    public void OptionalArgs_NativeEntrypoints_Resolve()
+    public unsafe void OptionalArgs_NativeEntrypoints_Resolve()
     {
         // Touch LiteRtEngine first so its static ctor runs NativeLibraryResolver.Initialize(): this
         // test calls the native lib DIRECTLY (not via LiteRtEngine), and on Linux the .so lives in
@@ -44,11 +44,18 @@ public class NativeInteropTests
         // use (real consumers always create an engine first, so this just mirrors that setup).
         LiteRtEngine.SetMinLogLevel(3);
 
-        nint args = LiteRtLmNative.litert_lm_conversation_optional_args_create();
+        nint args;
+        Assert.Equal(LiteRtStatusCode.Ok, LiteRtLmNative.litert_lm_conversation_optional_args_create(&args));
         Assert.NotEqual(nint.Zero, args);
-        // The only setter the C API exposes — must not throw on a version-matched binary.
-        LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget(args, 128);
-        LiteRtLmNative.litert_lm_conversation_optional_args_delete(args);
+        try
+        {
+            Assert.Equal(LiteRtStatusCode.Ok,
+                LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget(args, 128));
+        }
+        finally
+        {
+            LiteRtLmNative.litert_lm_conversation_optional_args_delete(args);
+        }
     }
 }
 
@@ -1934,14 +1941,12 @@ public sealed class LoraTextAdapterTests
     }
 
     /// <summary>
-    /// PINS AN UPSTREAM LIMITATION (LiteRT-LM v0.18.0): the adapter applies to the engine, not to its
-    /// conversation. After a conversation with the adapter has generated, a new conversation WITHOUT one
-    /// still generates the adapted text. The control first shows that generation without an adapter repeats
-    /// across conversations on this bundle. If this starts failing, upstream made adapters per conversation:
-    /// update the LoraRank / LoraPath docs and docs/engine-tuning.md.
+    /// The adapter applies to its conversation only (LiteRT-LM v0.20.0; v0.18.0 applied it to the whole engine,
+    /// so later conversations without one kept generating the adapted text). The control first shows that
+    /// generation without an adapter repeats across conversations on this bundle.
     /// </summary>
     [SkippableFact]
-    public void Lora_AdapterStaysOnTheEngine_AfterItsConversation()
+    public void Lora_AdapterAppliesOnlyToItsConversation()
     {
         Skip.If(Artifacts() is null, MissingArtifacts);
         var (loraModel, ones, _, _) = Artifacts()!.Value;
@@ -1954,35 +1959,35 @@ public sealed class LoraTextAdapterTests
         string afterwards = Generate(engine, adapter: null);
 
         Assert.NotEqual(baseline, adapted);
-        Assert.Equal(adapted, afterwards);
+        Assert.Equal(baseline, afterwards);
     }
 
     /// <summary>
-    /// PINS AN UPSTREAM LIMITATION (LiteRT-LM v0.18.0): while a conversation with an adapter exists, a send
-    /// on a conversation without one fails with INTERNAL ("No LoRA ID is set"), blocking or streamed.
+    /// While a conversation with an adapter exists, a conversation without one still generates its own text,
+    /// blocking or streamed, and the adapted conversation keeps its adapter (LiteRT-LM v0.20.0; v0.18.0 failed
+    /// the conversation without an adapter with INTERNAL "No LoRA ID is set").
     /// </summary>
     [SkippableFact]
-    public async Task Lora_SendWithoutAdapter_FailsWhileAnAdapterConversationExists()
+    public async Task Lora_SendWithoutAdapter_WorksWhileAnAdapterConversationExists()
     {
         Skip.If(Artifacts() is null, MissingArtifacts);
         var (loraModel, ones, _, _) = Artifacts()!.Value;
         LiteRtEngine.SetMinLogLevel(3);
         using var engine = LoadLoraEngine(loraModel);
+        string baseline = Generate(engine, adapter: null);
         using var plain = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
         using var adapted = engine.CreateConversation(new LiteRtConversationOptions { LoraPath = ones, MaxOutputTokens = 16 });
 
-        var ex = Assert.Throws<LiteRtException>(() => plain.Send(Prompt));
-        Assert.Equal(LiteRtStatusCode.Internal, ex.StatusCode);
-        Assert.Contains("LoRA", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(baseline, plain.Send(Prompt).Text ?? "");
+        string adaptedText = adapted.Send(Prompt).Text ?? "";
+        Assert.NotEqual(baseline, adaptedText);
 
-        // A fresh conversation: the one that just failed reports its failed task instead of the reason.
         using var streamedPlain = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
-        var streamed = await Assert.ThrowsAsync<LiteRtException>(async () =>
-        {
-            await foreach (var _ in streamedPlain.SendStreamingAsync(Prompt)) { }
-        });
-        Assert.Equal(LiteRtStatusCode.Internal, streamed.StatusCode);
-        Assert.Contains("LoRA", streamed.Message, StringComparison.Ordinal);
+        string streamed = "";
+        await foreach (LiteRtStreamChunk chunk in streamedPlain.SendStreamingAsync(Prompt))
+            if (chunk.Kind == LiteRtStreamChunkKind.Answer)
+                streamed += chunk.Text;
+        Assert.Equal(baseline, streamed);
     }
 
     /// <summary>

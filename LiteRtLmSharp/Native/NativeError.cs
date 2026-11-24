@@ -23,8 +23,7 @@ namespace LiteRtLmSharp.Native;
 internal static class NativeError
 {
     /// <summary>Clears the calling thread's message, for a failure the binding maps to a value instead of
-    /// reporting it. (TRANSITION: the conversation call sites also call it before a call until they are
-    /// migrated.)</summary>
+    /// reporting it.</summary>
     internal static void Clear() => LiteRtLmNative.litert_lm_clear_last_error();
 
     /// <summary>
@@ -80,37 +79,6 @@ internal static class NativeError
         Func<(LiteRtStatusCode Code, string Message)?, string?> hintFor, string? fallbackHint = null)
     {
         var report = Take(status);
-        return Build(failure, report, hintFor(HasReason(report) ? report : null), fallbackHint);
-    }
-
-    // TRANSITION: removed when the conversation area is migrated. The call sites of the conversation
-    // functions still use their pre-status declarations, which return no status; these members report the thread's message with an Unknown status, or no status when the
-    // runtime left no message. Their names differ from the status-first members on purpose: a call of
-    // Exception that passes a failure text without a status does not compile, so a migrated call site
-    // cannot report Unknown instead of the status it received; the LegacyException calls that remain can be
-    // found by name, and stop compiling when these members are deleted.
-
-    /// <summary>TRANSITION: removed when the conversation area is migrated. Reads and clears the calling
-    /// thread's message for a call that returned no status; <c>null</c> when the runtime left none.</summary>
-    internal static (LiteRtStatusCode Code, string Message)? LegacyTake()
-    {
-        string? message = TakeMessage();
-        if (string.IsNullOrEmpty(message))
-            return null;
-        return (LiteRtStatusCode.Unknown, Detail(LiteRtStatusCode.Unknown, message));
-    }
-
-    /// <summary>TRANSITION: removed when the conversation area is migrated. Builds the exception for a call
-    /// that returned no status, from the thread's message.</summary>
-    internal static LiteRtException LegacyException(string failure, string? hint = null, string? fallbackHint = null)
-        => Build(failure, LegacyTake(), hint, fallbackHint);
-
-    /// <summary>TRANSITION: removed when the conversation area is migrated. Builds the exception for a call
-    /// that returned no status, choosing the guidance from the thread's message.</summary>
-    internal static LiteRtException LegacyException(
-        string failure, Func<(LiteRtStatusCode Code, string Message)?, string?> hintFor, string? fallbackHint = null)
-    {
-        var report = LegacyTake();
         return Build(failure, report, hintFor(HasReason(report) ? report : null), fallbackHint);
     }
 

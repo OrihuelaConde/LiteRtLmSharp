@@ -300,99 +300,114 @@ internal static unsafe partial class LiteRtLmNative
     internal static partial void litert_lm_session_config_delete(nint config);
 
     // --- Conversation config --------------------------------------------
+    // Every setter copies its value into the config, and litert_lm_conversation_create copies the whole
+    // config, so the config may be deleted right after the create.
 
+    /// <summary>Allocates an empty conversation config. Caller frees <paramref name="out_config"/> with
+    /// <see cref="litert_lm_conversation_config_delete"/>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_conversation_config_create();
+    internal static partial LiteRtStatusCode litert_lm_conversation_config_create(nint* out_config);
 
+    /// <summary>Copies the session config into the conversation config; the caller keeps ownership of
+    /// <paramref name="session_config"/>. <c>INVALID_ARGUMENT</c> for a null session config.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_config_set_session_config(nint config, nint session_config);
+    internal static partial LiteRtStatusCode litert_lm_conversation_config_set_session_config(nint config, nint session_config);
 
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_config_set_system_message(nint config, string system_message_json);
+    internal static partial LiteRtStatusCode litert_lm_conversation_config_set_system_message(nint config, string system_message_json);
 
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_config_set_tools(nint config, string tools_json);
+    internal static partial LiteRtStatusCode litert_lm_conversation_config_set_tools(nint config, string tools_json);
 
     /// <summary>Sets the initial messages (conversation history / few-shot preface) as a JSON
     /// <b>array</b>. Consumed at <c>conversation_create</c>: parsed and appended to the preface after
     /// the system message, then prefilled into the KV cache.</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_config_set_messages(nint config, string messages_json);
+    internal static partial LiteRtStatusCode litert_lm_conversation_config_set_messages(nint config, string messages_json);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_config_set_enable_constrained_decoding(
-        nint config, [MarshalAs(UnmanagedType.U1)] bool enable);
+    internal static partial LiteRtStatusCode litert_lm_conversation_config_set_enable_constrained_decoding(
+        nint config, [MarshalAs(UnmanagedType.U1)] bool enable_constrained_decoding);
 
     /// <summary>Sets the conversation-preface extra context (a JSON object string) passed to the
     /// prompt-template renderer, e.g. <c>{"enable_thinking":true}</c> for Gemma reasoning mode.</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_config_set_extra_context(
+    internal static partial LiteRtStatusCode litert_lm_conversation_config_set_extra_context(
         nint config, string extra_context_json);
 
     /// <summary>Whether to drop channel content (in practice the thinking channel) from the KV cache,
-    /// so a long reasoning block does not consume the context window on later turns.</summary>
+    /// so a long reasoning block does not consume the context window on later turns. With it on, the
+    /// runtime rewinds the KV cache and schedules a background refill of the reply before it emits the
+    /// stream's final chunk; <see cref="litert_lm_conversation_wait_until_done"/> waits for that refill.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_config_set_filter_channel_content_from_kv_cache(
-        nint config, [MarshalAs(UnmanagedType.U1)] bool filter);
+    internal static partial LiteRtStatusCode litert_lm_conversation_config_set_filter_channel_content_from_kv_cache(
+        nint config, [MarshalAs(UnmanagedType.U1)] bool filter_channel_content_from_kv_cache);
 
     /// <summary>Streams the raw tool-call text incrementally on the named channel while it is being
     /// generated (default off: the callback stays silent during a tool-call block and delivers it whole
     /// at the end). The complete tool-call message still arrives as before — the channel chunks are an
     /// additional progress feed (internal_callback_util.cc streams up to a safe cursor that can never
-    /// contain a partial end delimiter). Requires native LiteRT-LM v0.14.0+.</summary>
+    /// contain a partial end delimiter). A null channel name keeps the native default
+    /// <c>"tool_call"</c>.</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_config_set_stream_tool_calls(
-        nint config, [MarshalAs(UnmanagedType.U1)] bool stream_tool_calls, string channel_name);
+    internal static partial LiteRtStatusCode litert_lm_conversation_config_set_stream_tool_calls(
+        nint config, [MarshalAs(UnmanagedType.U1)] bool stream_tool_calls, string? channel_name);
 
     /// <summary>Overrides the prompt template (e.g. a Jinja template string) for this conversation.
-    /// Unset = the model's / engine's default template (v0.15.0+).</summary>
+    /// Unset or empty = the model's / engine's default template.</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_config_set_prompt_template(nint config, string prompt_template);
+    internal static partial LiteRtStatusCode litert_lm_conversation_config_set_prompt_template(nint config, string prompt_template);
 
     /// <summary>Copies the opaque thinking config (enable flag + token budget) into the conversation
-    /// config; the caller keeps ownership and deletes it afterwards. Null clears (v0.15.0+).</summary>
+    /// config; the caller keeps ownership and deletes it afterwards. Null clears.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_config_set_thinking_config(nint config, nint thinking_config);
+    internal static partial LiteRtStatusCode litert_lm_conversation_config_set_thinking_config(nint config, nint thinking_config);
 
-    /// <summary>Selects the constraint provider for custom constrained decoding (LlGuidance). Takes a
-    /// POINTER to the enum value so null can unset it. Mutually exclusive with
+    /// <summary>Selects the constraint provider for custom constrained decoding (LlGuidance), BY VALUE;
+    /// <see cref="LiteRtLmConstraintProviderType.None"/> unsets it, and an undeclared value fails with
+    /// <c>INVALID_ARGUMENT</c>. Mutually exclusive with
     /// <see cref="litert_lm_conversation_config_set_enable_constrained_decoding"/> (tool-calling
-    /// constrained decoding) per upstream docs (v0.15.0+).</summary>
+    /// constrained decoding) per upstream docs.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_config_set_constraint_provider(nint config, int* provider_type);
+    internal static partial LiteRtStatusCode litert_lm_conversation_config_set_constraint_provider(
+        nint config, LiteRtLmConstraintProviderType provider_type);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_conversation_config_delete(nint config);
 
-    // --- Conversation optional args (multimodal) -------------------------
-    // Per-send overrides passed as the last argument to send_message / send_message_stream.
-    // The only setter the C API exposes is the visual token budget (image prefill budget).
+    // --- Conversation optional args --------------------------------------
+    // Per-send overrides passed as the last argument to send_message / send_message_stream. Both sends copy
+    // every field before they return, so the optional args may be deleted right after the call. Every
+    // setter fails only with INVALID_ARGUMENT (a null optional args, or a value the header rejects).
 
+    /// <summary>Allocates empty optional args. Caller frees <paramref name="out_optional_args"/> with
+    /// <see cref="litert_lm_conversation_optional_args_delete"/>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_conversation_optional_args_create();
+    internal static partial LiteRtStatusCode litert_lm_conversation_optional_args_create(nint* out_optional_args);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_conversation_optional_args_delete(nint optional_args);
 
-    /// <summary>Sets the visual token budget (number of tokens images may consume during prefill).</summary>
+    /// <summary>Sets the visual token budget (number of tokens images may consume during prefill). Not
+    /// range-checked here: the send validates it against the per-image cap.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_optional_args_set_visual_token_budget(
+    internal static partial LiteRtStatusCode litert_lm_conversation_optional_args_set_visual_token_budget(
         nint optional_args, int visual_token_budget);
 
     /// <summary>Sets a per-send max output-tokens cap. When present it overrides the session config's
@@ -402,45 +417,58 @@ internal static unsafe partial class LiteRtLmNative
     /// <see cref="litert_lm_session_config_set_max_output_tokens"/>, at per-send granularity.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_optional_args_set_max_output_tokens(
+    internal static partial LiteRtStatusCode litert_lm_conversation_optional_args_set_max_output_tokens(
         nint optional_args, int max_output_tokens);
 
     /// <summary>Copies the repetition-penalty config into the optional args (deep copy; the caller
-    /// keeps ownership of the config). Applies to this one send's decode. Null clears (v0.15.0+).</summary>
+    /// keeps ownership of the config). Applies to this one send's decode. Null, or a config whose
+    /// penalties are all off, clears.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_optional_args_set_repetition_penalty_config(
+    internal static partial LiteRtStatusCode litert_lm_conversation_optional_args_set_repetition_penalty_config(
         nint optional_args, nint repetition_penalty_config);
 
     /// <summary>Copies the no-repeat-ngram config into the optional args (deep copy). Applies to this
-    /// one send's decode. Null clears (v0.15.0+).</summary>
+    /// one send's decode. Null, or a disabled config, clears.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_optional_args_set_no_repeat_ngram_config(
+    internal static partial LiteRtStatusCode litert_lm_conversation_optional_args_set_no_repeat_ngram_config(
         nint optional_args, nint no_repeat_ngram_config);
 
     /// <summary>Copies the suppress-tokens config into the optional args (deep copy). Applies to this
-    /// one send's decode. Null or an empty inner set clears (v0.15.0+).</summary>
+    /// one send's decode. Null or an empty inner set clears.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_optional_args_set_suppress_tokens_config(
+    internal static partial LiteRtStatusCode litert_lm_conversation_optional_args_set_suppress_tokens_config(
         nint optional_args, nint suppress_tokens_config);
 
     /// <summary>Copies the thinking config into the optional args for this one send, overriding the
     /// conversation-level thinking config (conversation.cc ResolveThinkingConfig: per-send wins).
-    /// Null clears (v0.15.0+).</summary>
+    /// Null clears.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_optional_args_set_thinking_config(
+    internal static partial LiteRtStatusCode litert_lm_conversation_optional_args_set_thinking_config(
         nint optional_args, nint thinking_config);
 
     /// <summary>Sets a per-send output constraint (regex or JSON Schema string) enforced by the
     /// conversation's constraint provider. Only meaningful when the conversation was created with a
-    /// constraint provider (LlGuidance) (v0.15.0+).</summary>
+    /// constraint provider (LlGuidance). <c>INVALID_ARGUMENT</c> for an undeclared
+    /// <paramref name="constraint_type"/>, keeping the previous constraint. A null
+    /// <paramref name="constraint_string"/> sets the type and clears the pattern.</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_optional_args_set_constraint(
-        nint optional_args, LiteRtLmConstraintType constraint_type, string constraint_string);
+    internal static partial LiteRtStatusCode litert_lm_conversation_optional_args_set_constraint(
+        nint optional_args, LiteRtLmConstraintType constraint_type, string? constraint_string);
+
+    /// <summary>Sets the tool choice for one send (C API 1.1.0): an OpenAI Chat Completions tool choice as
+    /// JSON (<c>"\"auto\""</c>, <c>"\"none\""</c>, <c>"\"required\""</c>, a forced function or an
+    /// <c>allowed_tools</c> object). Used only with constrained decoding and tools. <c>INVALID_ARGUMENT</c>
+    /// for text that is not one of those, keeping the previous choice; null clears. The binding does not
+    /// call it: the declaration lets a test pin the export.</summary>
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial LiteRtStatusCode litert_lm_conversation_optional_args_set_tool_choice(
+        nint optional_args, string? tool_choice_json);
 
     // --- Decoding configs (v0.15.0 opaque builders) -----------------------
     // Same lifetime pattern as the sampler params: create, set fields, attach to the optional args /
@@ -542,98 +570,131 @@ internal static unsafe partial class LiteRtLmNative
     internal static partial LiteRtStatusCode litert_lm_thinking_config_set_thinking_token_budget(nint config, int thinking_token_budget);
 
     // --- Conversation ----------------------------------------------------
+    // engine.h "Threading model": calls that use the same conversation must not overlap; a stream callback
+    // may call only cancel_process, and only on a chunk that is not final; after cancel_process the
+    // conversation must not be reused, only deleted.
 
+    /// <summary>Creates a conversation on <paramref name="engine"/> with <paramref name="config"/> (null =
+    /// the default config). The config is copied, not retained. Caller frees
+    /// <paramref name="out_conversation"/> with <see cref="litert_lm_conversation_delete"/>, before the
+    /// engine.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_conversation_create(nint engine, nint config);
+    internal static partial LiteRtStatusCode litert_lm_conversation_create(nint engine, nint config, nint* out_conversation);
 
+    /// <summary>Deletes the conversation. It first waits for every task of the conversation's session and
+    /// every stream callback still running or pending for it.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void litert_lm_conversation_delete(nint conversation);
 
     /// <summary>Clones a conversation, duplicating its prefilled (KV-cache) state into a new,
-    /// independent conversation. Returns null on failure, including when the engine/backend does
-    /// not implement cloning (the native layer returns <c>Unimplemented</c>). The caller owns the
-    /// returned pointer and frees it with <see cref="litert_lm_conversation_delete"/>.</summary>
+    /// independent conversation. Fails with the runtime's status, for example <c>UNIMPLEMENTED</c> when the
+    /// engine/backend does not implement cloning. The caller owns <paramref name="out_conversation"/> and
+    /// frees it with <see cref="litert_lm_conversation_delete"/>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_conversation_clone(nint conversation);
+    internal static partial LiteRtStatusCode litert_lm_conversation_clone(nint conversation, nint* out_conversation);
 
+    /// <summary>Requests the cancellation of the conversation's in-flight work and returns without waiting:
+    /// a stream callback can still run afterwards. Fails only for an invalid handle.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial void litert_lm_conversation_cancel_process(nint conversation);
+    internal static partial LiteRtStatusCode litert_lm_conversation_cancel_process(nint conversation);
 
-    /// <summary>Tokens currently in the conversation KV cache (prefill + decode). Negative on failure.</summary>
+    /// <summary>Blocks until the conversation's session has no task in flight and no stream callback
+    /// running or pending, including the background KV-cache refill that channel filtering schedules after
+    /// a reply. Never call it from a stream callback, or after <see cref="litert_lm_conversation_cancel_process"/>.
+    /// A cancel from another thread can still arrive while it waits, so a caller that tracks cancels checks again
+    /// after it returns. <c>DEADLINE_EXCEEDED</c> after the runtime's fixed wait limit.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial int litert_lm_conversation_get_token_count(nint conversation);
+    internal static partial LiteRtStatusCode litert_lm_conversation_wait_until_done(nint conversation);
 
+    /// <summary>Tokens in the conversation KV cache (prefill + decode). It does not wait for the
+    /// conversation's tasks, so right after a reply whose channel content is filtered it can read the
+    /// count before the background refill. <paramref name="out_count"/> is written only on success.</summary>
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial LiteRtStatusCode litert_lm_conversation_get_token_count(nint conversation, nuint* out_count);
+
+    /// <summary>Blocking send. <paramref name="message_json"/> must be a JSON object. Caller frees
+    /// <paramref name="out_response"/> with <see cref="litert_lm_json_response_delete"/>; on failure it is
+    /// null and the status is the generation error. <paramref name="extra_context"/> and
+    /// <paramref name="optional_args"/> are copied before the send starts.</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_conversation_send_message(
-        nint conversation, string message_json, string? extra_context, nint optional_args);
+    internal static partial LiteRtStatusCode litert_lm_conversation_send_message(
+        nint conversation, string message_json, string? extra_context, nint optional_args, nint* out_response);
 
     /// <summary>Streaming send. <paramref name="callback"/> is an unmanaged function pointer with the
-    /// v0.15.0 <c>LiteRtLmStreamCallback</c> shape: <c>(void* callback_data,
-    /// const LiteRtLmStreamChunk* chunk)</c>. The chunk object is only valid for the duration of the
-    /// call — read it via the <c>litert_lm_stream_chunk_*</c> getters and copy the strings out.
-    /// (v0.14.0 passed <c>(callback_data, text, is_final, error_msg)</c> directly; v0.15.0 moved the
-    /// same three fields behind the opaque chunk.)</summary>
+    /// <c>LiteRtLmStreamCallback</c> shape: <c>(void* callback_data, const LiteRtLmStreamChunk* chunk)</c>.
+    /// The chunk object is only valid for the duration of the call — read it via the
+    /// <c>litert_lm_stream_chunk_*</c> getters and copy the strings out. A non-OK status means the stream
+    /// did not start and the callback is not called; a failure after the start arrives as the error text of
+    /// a final chunk. <paramref name="extra_context"/> and <paramref name="optional_args"/> are copied
+    /// before it returns.</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial int litert_lm_conversation_send_message_stream(
+    internal static partial LiteRtStatusCode litert_lm_conversation_send_message_stream(
         nint conversation, string message_json, string? extra_context, nint optional_args,
         delegate* unmanaged[Cdecl]<nint, nint, void> callback, nint callback_data);
 
-    // --- Stream chunk (v0.15.0) ------------------------------------------
-    // Read-only views into the chunk passed to the stream callback; the returned strings are owned
-    // by the chunk and only valid during the callback invocation.
+    // --- Stream chunk ----------------------------------------------------
+    // Read-only views into the chunk passed to the stream callback; the strings they lend are owned by the
+    // chunk and only valid during the callback invocation. Each getter fails only with INVALID_ARGUMENT for
+    // a null chunk or a null out pointer, and its out value is then not a chunk value.
 
-    // The three getters run on the per-token hot path (once each per streamed chunk) and are pure
-    // field reads on the native side (engine.cc: `return chunk ? chunk->text : nullptr;`) — never
-    // blocking, never calling back into managed — so they qualify for [SuppressGCTransition].
+    // The three getters run on the per-token hot path (once each per streamed chunk) and are pure field
+    // reads on the native side (c/engine.cc: null checks, then `*out_text = chunk->text`) — never
+    // blocking, never calling back into managed — so they qualify for [SuppressGCTransition]. Their out
+    // pointers point to stack locals, which the GC never moves.
 
     /// <summary>The chunk's text content (a full message-JSON piece), or null for error/metadata-only
-    /// chunks (including every is_final chunk, which carries no text).</summary>
+    /// chunks (including every is_final chunk, which carries no text). Lent by the chunk.</summary>
     [LibraryImport(Library)]
     [SuppressGCTransition]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_stream_chunk_get_text(nint chunk);
+    internal static partial LiteRtStatusCode litert_lm_stream_chunk_get_text(nint chunk, nint* out_text);
 
-    /// <summary>True on the last chunk of the stream (done, max-tokens, cancelled or error).</summary>
+    /// <summary>Whether this is the last chunk of the stream (done, max-tokens, cancelled or error). The out
+    /// value is a one-byte C <c>bool</c>, not written on failure.</summary>
     [LibraryImport(Library)]
     [SuppressGCTransition]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    [return: MarshalAs(UnmanagedType.U1)]
-    internal static partial bool litert_lm_stream_chunk_is_final(nint chunk);
+    internal static partial LiteRtStatusCode litert_lm_stream_chunk_is_final(nint chunk, byte* out_is_final);
 
-    /// <summary>The chunk's error message, or null when there is no error.</summary>
+    /// <summary>The chunk's error message, or null when there is no error. Lent by the chunk.</summary>
     [LibraryImport(Library)]
     [SuppressGCTransition]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_stream_chunk_get_error(nint chunk);
+    internal static partial LiteRtStatusCode litert_lm_stream_chunk_get_error(nint chunk, nint* out_error);
 
-    /// <summary>Renders a message JSON to its templated prompt string (does not send). The returned
-    /// pointer is owned by the conversation and valid only until the next render call or the
-    /// conversation's deletion — copy it out immediately. Null on failure.</summary>
+    /// <summary>Renders a message JSON to its templated prompt string (does not send). The string in
+    /// <paramref name="out_text"/> is owned by the conversation and valid only until the next message render
+    /// or the conversation's deletion — copy it out immediately. Not safe to call concurrently on one
+    /// conversation.</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_conversation_render_message_to_string(nint conversation, string message_json);
+    internal static partial LiteRtStatusCode litert_lm_conversation_render_message_to_string(
+        nint conversation, string message_json, nint* out_text);
 
     /// <summary>Renders the conversation's preface (system message + tools + history preamble) to its
-    /// templated string, without sending. The returned pointer is owned by the conversation (its own
-    /// <c>last_rendered_preface</c> buffer, separate from the message-render buffer) and valid only until
-    /// the next <b>preface</b> render or the conversation's deletion — copy it out immediately. Null on
-    /// failure.</summary>
+    /// templated string, without sending. The string in <paramref name="out_text"/> is owned by the
+    /// conversation (its own <c>last_rendered_preface</c> buffer, separate from the message-render buffer)
+    /// and valid only until the next <b>preface</b> render or the conversation's deletion — copy it out
+    /// immediately.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_conversation_render_preface_to_string(nint conversation);
+    internal static partial LiteRtStatusCode litert_lm_conversation_render_preface_to_string(nint conversation, nint* out_text);
 
     // --- JSON response ---------------------------------------------------
 
+    /// <summary>The response JSON, lent by <paramref name="response"/>: valid until
+    /// <see cref="litert_lm_json_response_delete"/>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_json_response_get_string(nint response);
+    internal static partial LiteRtStatusCode litert_lm_json_response_get_string(nint response, nint* out_json);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -644,11 +705,12 @@ internal static unsafe partial class LiteRtLmNative
     // (litert_lm_engine_settings_enable_benchmark). Prefill/decode metrics
     // accumulate per turn; the latest turn is index (num_*_turns - 1).
 
-    /// <summary>Returns the benchmark info for the conversation, or null when unavailable.
-    /// Caller owns it and must free with <see cref="litert_lm_benchmark_info_delete"/>.</summary>
+    /// <summary>The benchmark info for the conversation; fails with the runtime's status when it is not
+    /// available (for example when benchmarking is off). Caller owns <paramref name="out_benchmark_info"/>
+    /// and frees it with <see cref="litert_lm_benchmark_info_delete"/>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    internal static partial nint litert_lm_conversation_get_benchmark_info(nint conversation);
+    internal static partial LiteRtStatusCode litert_lm_conversation_get_benchmark_info(nint conversation, nint* out_benchmark_info);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -816,13 +878,21 @@ internal enum LiteRtLmTokenUnionType
     Ids = 1,
 }
 
-/// <summary>Mirrors <c>LiteRtLmConstraintType</c> in engine.h (v0.15.0): the shape of a per-send
+/// <summary>Mirrors <c>LiteRtLmConstraintType</c> in conversation.h: the shape of a per-send
 /// output constraint string.</summary>
 internal enum LiteRtLmConstraintType
 {
     None = 0,
     Regex = 1,
     JsonSchema = 2,
+}
+
+/// <summary>Mirrors <c>LiteRtLmConstraintProviderType</c> in conversation.h (C API 1.0.0 added
+/// <see cref="None"/>, which unsets the provider).</summary>
+internal enum LiteRtLmConstraintProviderType
+{
+    None = 0,
+    LlGuidance = 1,
 }
 
 
