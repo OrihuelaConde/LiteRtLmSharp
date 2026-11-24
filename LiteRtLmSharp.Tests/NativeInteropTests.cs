@@ -1388,10 +1388,10 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
 /// API) with the MTP drafter OFF vs ON, on the same fixed prompt, and confirms both runs still
 /// produce coherent, non-empty text. The speedup ratio is logged for the docs/CI record.
 /// <para>
-/// Sampler note: the v0.13.1 native build only implements the TopP sampler (Greedy/TopK return
-/// "not implemented yet"), so the runs are stochastic and the two outputs are NOT expected to be
-/// byte-identical — we therefore assert coherence + measured throughput (the real deliverable) and
-/// log output similarity rather than asserting equality. A fixed seed keeps each run reproducible.
+/// Sampler note: both runs use the same seeded TopP sampler, and with speculative decoding a sampled
+/// reply can differ from the plain one for the same seed (measured on LiteRT-LM v0.20.0, CPU), so the test
+/// asserts coherence and measured throughput (the real deliverable) and logs both outputs rather than
+/// asserting equality.
 /// </para>
 /// <para>
 /// This class loads its OWN engines (it does NOT take <see cref="EngineFixture"/>) and disposes each
@@ -1475,9 +1475,8 @@ public sealed class SpeculativeDecodingBenchmarkTests(ITestOutputHelper output)
         });
         using var conv = engine.CreateConversation(new LiteRtConversationOptions
         {
-            // TopP is the only sampler the v0.13.1 native build implements (Greedy/TopK return
-            // "not implemented yet"). A fixed seed keeps each run reproducible; speculative decoding
-            // preserves the output distribution, so coherence — not byte-equality — is what we check.
+            // A fixed seed keeps each run reproducible. The speculative and plain replies can differ for
+            // one seed, so coherence, not byte-equality, is what the test checks.
             Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 40, TopP = 0.95f, Temperature = 1.0f, Seed = 42 },
             MaxOutputTokens = MaxOutputTokens,
         });

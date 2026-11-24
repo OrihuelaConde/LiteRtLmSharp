@@ -30,23 +30,12 @@ public sealed class LiteRtEngine : IDisposable
     // deleted, and the slot freed, only after its last conversation is gone, whichever is disposed or
     // finalized first. Disposing conversations and the engine remains the contract.
 
-    private LiteRtEngine(EngineHandle engine, bool isMultimodal, int maxNumTokens, bool enableSpeculativeDecoding)
+    private LiteRtEngine(EngineHandle engine, bool isMultimodal, int maxNumTokens)
     {
         _engine = engine;
         _isMultimodal = isMultimodal;
         MaxNumTokens = maxNumTokens;
-        EnableSpeculativeDecoding = enableSpeculativeDecoding;
     }
-
-    /// <summary>The engine-level speculative-decoding setting (<see cref="LiteRtEngineOptions.EnableSpeculativeDecoding"/>).</summary>
-    internal bool EnableSpeculativeDecoding { get; }
-
-    /// <summary>
-    /// Set once a conversation turned speculative decoding on for an engine loaded without it. The executor
-    /// then keeps the lazily loaded drafter and uses it for every later session that leaves the flag unset,
-    /// so from then on conversations created with <c>null</c> pass the engine setting explicitly.
-    /// </summary>
-    internal volatile bool DrafterLoadedByAConversation;
 
     /// <summary>The native engine handle, for conversations spawned from this engine.</summary>
     internal EngineHandle Handle => _engine;
@@ -244,8 +233,7 @@ public sealed class LiteRtEngine : IDisposable
             return new LiteRtEngine(
                 handle,
                 isMultimodal: options.VisionBackend is not null || options.AudioBackend is not null,
-                maxNumTokens: options.MaxNumTokens,
-                enableSpeculativeDecoding: options.EnableSpeculativeDecoding);
+                maxNumTokens: options.MaxNumTokens);
         }
         catch
         {

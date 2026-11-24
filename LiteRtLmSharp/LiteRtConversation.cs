@@ -124,13 +124,7 @@ public sealed class LiteRtConversation : IDisposable
             // executor should not be null". A BARE session config is enough and is neutral for text, so
             // attach one whenever the engine has an encoder enabled — even if the caller passed no
             // sampler/output cap — so a plain CreateConversation() can send attachments without setup.
-            // Speculative decoding: null means the engine setting. A drafter that an earlier conversation loaded
-            // lazily stays on the engine and the executor uses it for every session that leaves the flag unset,
-            // so once that has happened the engine setting is passed explicitly.
-            bool? speculative = options?.EnableSpeculativeDecoding
-                ?? (engine.DrafterLoadedByAConversation ? engine.EnableSpeculativeDecoding : null);
-            if (speculative == true && !engine.EnableSpeculativeDecoding)
-                engine.DrafterLoadedByAConversation = true;
+            bool? speculative = options?.EnableSpeculativeDecoding;
 
             bool needsSessionConfig =
                 options?.Sampler is not null || options?.MaxOutputTokens > 0
@@ -235,9 +229,10 @@ public sealed class LiteRtConversation : IDisposable
                                 hint: "The path must point to a readable audio LoRA weights file.");
                     }
 
-                    // Per-conversation speculative decoding (v0.18.0): unset inherits the engine setting; true
-                    // on an engine loaded without it makes the executor load the MTP drafter lazily on this
-                    // conversation's first send; false turns it off here even when the engine enables it.
+                    // Per-conversation speculative decoding: unset inherits the engine setting, also after
+                    // another conversation loaded the drafter; true on an engine loaded without it makes the
+                    // executor load the MTP drafter lazily on this conversation's first send; false turns it
+                    // off here even when the engine enables it.
                     if (speculative is { } enableSpeculative)
                         NativeError.ThrowIfFailed(
                             LiteRtLmNative.litert_lm_session_config_set_enable_speculative_decoding(sessionPtr, enableSpeculative),

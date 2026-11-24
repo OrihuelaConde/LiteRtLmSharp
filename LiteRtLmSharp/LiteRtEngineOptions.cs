@@ -204,8 +204,8 @@ public sealed record LiteRtEngineOptions
     /// <see cref="LiteRtModelInfo.SupportsSpeculativeDecoding"/> tells before loading). On a model without
     /// one, engine creation fails with <see cref="LiteRtException"/> (Ministral 3 reports NOT_FOUND
     /// "tf_lite_mtp_drafter not found in the model"). The setting is fixed at engine creation;
-    /// <see cref="LiteRtConversationOptions.EnableSpeculativeDecoding"/> overrides it per conversation
-    /// (native v0.18.0+). Pair with <see cref="EnableBenchmark"/> to measure the effect (see
+    /// <see cref="LiteRtConversationOptions.EnableSpeculativeDecoding"/> overrides it per conversation.
+    /// Pair with <see cref="EnableBenchmark"/> to measure the effect (see
     /// <see cref="LiteRtConversation.GetBenchmarkInfo"/>).
     /// <para>
     /// Measured with gemma-4-E2B on LiteRT-LM v0.18.0 (see <c>docs/speculative-decoding.md</c>): it
@@ -215,10 +215,10 @@ public sealed record LiteRtEngineOptions
     /// v0.13.1).
     /// </para>
     /// <para>
-    /// In the LiteRT-LM v0.18.0 and v0.18.1 sources the main model verifies the drafted tokens greedily, so
-    /// with speculative decoding only the first token of each turn uses the conversation's sampler, and the
-    /// rest of the reply is decoded greedily (upstream changed this after v0.18.1). On the GPU backend the reply
-    /// can still differ from a plain argmax reply (measured on v0.18.0, win-x64).
+    /// Sampling with speculative decoding, measured on LiteRT-LM v0.20.0 (gemma-4 E2B, win-x64, CPU, turned
+    /// on per conversation): a sampled reply follows the conversation's seed (seeds 7, 8 and 9 give three
+    /// different replies), and an argmax reply equals the plain argmax reply. For one seed, the sampled
+    /// speculative reply differs from the plain one. Not measured on GPU.
     /// </para>
     /// </remarks>
     public bool EnableSpeculativeDecoding { get; init; }
@@ -543,8 +543,8 @@ public sealed record LiteRtConversationOptions
     /// Each explicit strategy works as named on the CPU and GPU backends: <see cref="LiteRtSamplerType.Greedy"/>
     /// decodes argmax and <see cref="LiteRtSamplerType.TopK"/> samples among the top-k tokens. Each
     /// conversation's parameters take effect, also on an engine where other
-    /// conversations already generated. <see cref="LiteRtSamplerParams"/> lists what was measured and where
-    /// the runtime decodes greedily instead (speculative decoding and the NPU backend).
+    /// conversations already generated. <see cref="LiteRtSamplerParams"/> lists what was measured, also with
+    /// speculative decoding.
     /// </remarks>
     public LiteRtSamplerParams? Sampler { get; init; }
 
@@ -752,13 +752,12 @@ public sealed record LiteRtConversationOptions
     /// <c>true</c> on an engine loaded without speculative decoding makes the runtime load the model's
     /// Multi-Token-Prediction (MTP) drafter lazily, on this conversation's first send, so you can enable it
     /// only where it pays off. <c>false</c> turns it off for this conversation even when the engine enables
-    /// it. The runtime keeps a lazily loaded drafter on the engine and would use it for every later
-    /// conversation that leaves this unset, so from then on the binding passes the engine setting to those
-    /// conversations explicitly. Requires a model that ships an MTP drafter (such as the Gemma 4 E-series):
-    /// on a model without one, <c>true</c> makes the first send fail with <see cref="LiteRtException"/>.
-    /// Maps to the C API <c>session_config_set_enable_speculative_decoding</c> (native LiteRT-LM v0.18.0+).
-    /// With speculative decoding on, only the first token of each turn uses the conversation's sampler (see
-    /// <see cref="LiteRtEngineOptions.EnableSpeculativeDecoding"/>).
+    /// it. <c>null</c> keeps the engine setting also after another conversation on the engine loaded the
+    /// drafter with <c>true</c> (measured on LiteRT-LM v0.20.0, win-x64, CPU and GPU). Requires a model that
+    /// ships an MTP drafter (such as the Gemma 4 E-series): on a model without one, <c>true</c> makes the
+    /// first send fail with <see cref="LiteRtException"/>. Maps to the C API
+    /// <c>session_config_set_enable_speculative_decoding</c>. With speculative decoding on, a sampled reply
+    /// follows the conversation's seed (see <see cref="LiteRtEngineOptions.EnableSpeculativeDecoding"/>).
     /// </remarks>
     public bool? EnableSpeculativeDecoding { get; init; }
 }

@@ -50,10 +50,10 @@ public enum LiteRtSamplerType
 /// conversations whose samplers differ, sent turn by turn.
 /// </para>
 /// <para>
-/// <b>Where the runtime decodes greedily.</b> In the LiteRT-LM v0.18.0 and v0.18.1 sources, speculative
-/// decoding (<see cref="LiteRtEngineOptions.EnableSpeculativeDecoding"/>) verifies the drafted tokens
-/// greedily, so only the first token of each turn uses the conversation's sampler (upstream changed this
-/// after v0.18.1), and the NPU backend always decodes greedily.
+/// <b>With speculative decoding.</b> Measured on LiteRT-LM v0.20.0 (gemma-4 E2B, win-x64, CPU) with
+/// <see cref="LiteRtConversationOptions.EnableSpeculativeDecoding"/> on: a sampled reply follows the seed
+/// (seeds 7, 8 and 9 give three different replies), and an argmax reply equals the plain argmax reply.
+/// Not measured on GPU.
 /// </para>
 /// </remarks>
 public sealed record LiteRtSamplerParams

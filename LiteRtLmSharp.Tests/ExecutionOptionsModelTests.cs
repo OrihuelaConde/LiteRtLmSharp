@@ -5,10 +5,10 @@ using Xunit.Abstractions;
 namespace LiteRtLmSharp.Tests;
 
 /// <summary>
-/// Engine and conversation options added by native LiteRT-LM v0.18.0: the Metal residency set, the per-image
-/// vision token cap and per-conversation speculative decoding. Each
-/// test loads its own engine (one engine alive at a time; the assembly disables parallelization). Skipped
-/// unless LITERTLM_TEST_MODEL is set; the vision cases also need LITERTLM_TEST_VISION=1.
+/// Engine and conversation options: the Metal residency set, the per-image vision token cap and
+/// per-conversation speculative decoding. Each test loads its own engine (one engine alive at a time; the
+/// assembly disables parallelization). Skipped unless LITERTLM_TEST_MODEL is set; the vision cases also need
+/// LITERTLM_TEST_VISION=1.
 /// </summary>
 public sealed class ExecutionOptionsModelTests(ITestOutputHelper output)
 {
@@ -41,11 +41,12 @@ public sealed class ExecutionOptionsModelTests(ITestOutputHelper output)
     /// <summary>
     /// Per-conversation speculative decoding on an engine loaded without it. <c>true</c> loads the MTP
     /// drafter for that conversation: on CPU the engine gets a cache directory of its own, and the drafter's
-    /// compiled cache must appear there only then. The drafter then stays on the engine, so the binding
-    /// passes the engine setting to later conversations that leave the option unset (the runtime would
-    /// otherwise keep drafting for them: 0.80× decode on CPU, measured). A conversation that opts out on a
-    /// speculative engine also answers. Timings are informational: speculative decoding does not speed up
-    /// desktop CPU or GPU (see docs/speculative-decoding.md).
+    /// compiled cache must appear there only then. A later conversation that leaves the option unset, and a
+    /// conversation that opts out on a speculative engine, also answer. Which path an unset conversation
+    /// takes after the drafter loaded is pinned by
+    /// <see cref="ConversationSpeculativeDecoding_Unset_DecodesPlainAfterAnotherConversationLoadedTheDrafter"/>.
+    /// Timings are informational: speculative decoding does not speed up desktop CPU or GPU (see
+    /// docs/speculative-decoding.md).
     /// </summary>
     [SkippableFact]
     public void ConversationSpeculativeDecoding_OverridesTheEngineSetting()
@@ -67,12 +68,10 @@ public sealed class ExecutionOptionsModelTests(ITestOutputHelper output)
             {
                 AskForPlanets(engine, null, "engine off, conversation inherits");
                 Assert.False(DrafterCached(), "The drafter loaded although no conversation asked for it.");
-                Assert.False(engine.DrafterLoadedByAConversation);
 
                 AskForPlanets(engine, true, "engine off, conversation on");
                 if (cacheDir is not null)
                     Assert.True(DrafterCached(), "EnableSpeculativeDecoding = true did not load the drafter.");
-                Assert.True(engine.DrafterLoadedByAConversation);
 
                 AskForPlanets(engine, null, "engine off, conversation inherits after the drafter loaded");
             }
@@ -103,6 +102,54 @@ public sealed class ExecutionOptionsModelTests(ITestOutputHelper output)
         string text = conv.Send("List the first five planets of the solar system, comma separated.").Text ?? "";
         output.WriteLine($"{label}: {conv.GetBenchmarkInfo()?.LastDecodeTokensPerSecond:F1} tok/s: {text}");
         Assert.Contains("Mercury", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// On an engine loaded without speculative decoding, a conversation that leaves
+    /// <see cref="LiteRtConversationOptions.EnableSpeculativeDecoding"/> unset decodes plain, also after another
+    /// conversation loaded the drafter with <c>true</c>. A hot sampler with a fixed seed tells the two paths
+    /// apart by the text: the plain and the speculative replies differ, and each is reproducible. If the
+    /// runtime kept drafting for unset conversations once a drafter was loaded, the last reply would equal the
+    /// speculative one instead of the first. Skips where the plain and speculative replies are equal, since
+    /// the text then cannot tell the paths apart. Every conversation here sets a sampler, so it carries a
+    /// session config; a conversation created with no options at all is not covered by this test (the engine
+    /// default is argmax, whose reply is the same on both paths), only by a decode-rate measurement on
+    /// Windows CPU.
+    /// </summary>
+    [SkippableFact]
+    public void ConversationSpeculativeDecoding_Unset_DecodesPlainAfterAnotherConversationLoadedTheDrafter()
+    {
+        SkipWithoutModel();
+        Skip.IfNot(LiteRtModelInfo.Read(Model!).SupportsSpeculativeDecoding, "The test model has no MTP drafter.");
+        LiteRtEngine.SetMinLogLevel(3);
+
+        using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = Model!, Backend = Backend, MaxNumTokens = 2048, EnableBenchmark = true,
+        });
+
+        string plain = WriteAboutPlanets(engine, null, "unset, before the drafter loaded");
+        string spec = WriteAboutPlanets(engine, true, "true, loads the drafter");
+        Skip.If(plain == spec,
+            "The plain and speculative replies are equal on this backend, so the text cannot tell the paths apart.");
+        string after = WriteAboutPlanets(engine, null, "unset, after the drafter loaded");
+
+        Assert.Equal(plain, after);
+    }
+
+    private string WriteAboutPlanets(LiteRtEngine engine, bool? speculative, string label)
+    {
+        using var conv = engine.CreateConversation(new LiteRtConversationOptions
+        {
+            Sampler = new LiteRtSamplerParams
+            {
+                Strategy = LiteRtSamplerType.TopP, TopK = 64, TopP = 1.0f, Temperature = 1.5f, Seed = 7,
+            },
+            MaxOutputTokens = 64, EnableSpeculativeDecoding = speculative,
+        });
+        string text = conv.Send("Write a short paragraph about the planets of the solar system.").Text ?? "";
+        output.WriteLine($"{label}: {conv.GetBenchmarkInfo()?.LastDecodeTokensPerSecond:F1} tok/s: {text}");
+        return text;
     }
 
     /// <summary>
