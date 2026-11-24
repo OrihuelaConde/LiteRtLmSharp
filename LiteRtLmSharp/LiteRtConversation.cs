@@ -446,15 +446,19 @@ public sealed class LiteRtConversation : IDisposable
         => _sawCeiling || LiteRtContextGuard.IsContextFull(_cachedTokenCount, _engineOwner.MaxNumTokens);
 
     /// <summary>
-    /// Gets a value indicating whether the reply of the last completed send ran to the limit of the context: the
-    /// KV overflow guard capped the reply at the room left in the context, and the reply used that whole budget,
-    /// so it was likely cut mid-sentence.
+    /// Gets a value indicating whether the reply of the last send ran to the limit of the context: the KV overflow
+    /// guard capped the reply at the room left in the context, and the reply used that whole budget, so it was
+    /// likely cut mid-sentence.
     /// </summary>
     /// <remarks>
     /// <para>Unlike <see cref="IsContextFull"/>, it does not mean that the next send fails. After a reply with
     /// thinking, the runtime removes the thinking from the KV cache, so the context has room again: this property
     /// is <c>true</c> and <see cref="IsContextFull"/> is <c>false</c>.</para>
-    /// <para>Each send resets it. It stays <c>false</c> when the reply ended on its own, when a
+    /// <para>Each send that reaches the runtime resets it, including one the runtime then fails. A send that the
+    /// binding rejects before calling the runtime, such as one that throws
+    /// <see cref="LiteRtContextOverflowException"/>, leaves it as it was, as it leaves
+    /// <see cref="LiteRtBenchmarkInfo.LastSendPrefillTokenCount"/>. A <see cref="Clone"/> starts at <c>false</c>.
+    /// It stays <c>false</c> when the reply ended on its own, when a
     /// <c>MaxOutputTokens</c> cap set by the caller was the tighter limit, when the guard could not measure the
     /// message (attachments or an extra context), and when the engine was loaded without an explicit
     /// <see cref="LiteRtEngineOptions.MaxNumTokens"/>. With <see cref="LiteRtEngineOptions.EnableBenchmark"/> on,
@@ -846,18 +850,24 @@ public sealed class LiteRtConversation : IDisposable
     // margin of measurement drift). A context never shrinks, so the latch never resets. Volatile for the same
     // reason as _cachedTokenCount (IsContextFull reads it).
     private volatile bool _sawCeiling;
-    // LastReplyReachedContextLimit: set by CompleteCeilingProbe, cleared when a send starts. Volatile for the same
+    // LastReplyReachedContextLimit: set by CompleteCeilingProbe, cleared right before the native send. Volatile for the same
     // reason as _sawCeiling.
     private volatile bool _lastReplyReachedLimit;
     // The number of prefill turns the native benchmark had recorded when the last send started, which is the
     // index of that send's own prefill turn; -1 when not tracked (benchmarking off, or no send yet).
     private int _sendFirstPrefillTurn = -1;
 
-    /// <summary>Clears the per-send state at the start of a send, before the guard runs.</summary>
-    private void BeginSend() => _lastReplyReachedLimit = false;
+    /// <summary>Resets the per-send state right before the native send, after the guard and the optional args, so
+    /// that a send the binding rejects leaves both <see cref="LastReplyReachedContextLimit"/> and the send's prefill
+    /// index as they were: clears the truncation flag and records the index of the send's first prefill turn.</summary>
+    private void BeginSend()
+    {
+        _lastReplyReachedLimit = false;
+        MarkSendPrefillTurn();
+    }
 
-    /// <summary>Records, right before the native send, the index the send's first prefill turn will take. Reads
-    /// the native benchmark only when the engine has benchmarking on.</summary>
+    /// <summary>Records the index the send's first prefill turn will take. Reads the native benchmark only when the
+    /// engine has benchmarking on.</summary>
     private unsafe void MarkSendPrefillTurn()
     {
         if (!_engineOwner.BenchmarkEnabled)
@@ -1050,11 +1060,10 @@ public sealed class LiteRtConversation : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(messageJson);
 
-        BeginSend();
         options = GuardContextOverflow(messageJson, options, unmeasured);
         bool hasMedia = MessageHasMedia(messageJson);
         using ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs(options, hasMedia);
-        MarkSendPrefillTurn();
+        BeginSend();
         int cancelRequestsAtStart = Volatile.Read(ref _cancelRequests);
         nint responsePtr;
         LiteRtStatusCode status;
@@ -1526,7 +1535,6 @@ public sealed class LiteRtConversation : IDisposable
         ArgumentNullException.ThrowIfNull(text);
 
         string messageJson = LiteRtJson.UserMessage(text, attachments);
-        BeginSend();
         // Same KV overflow guard as the blocking path; throws (on the consumer's first MoveNext)
         // before any native state is touched. The typed signature knows whether media is attached.
         options = GuardContextOverflow(messageJson, options, unmeasured: attachments is { Count: > 0 });
@@ -1545,7 +1553,7 @@ public sealed class LiteRtConversation : IDisposable
         // after the channel completes. Built before the GCHandle so that if native allocation fails we
         // don't leak a pinned handle.
         ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs(options, attachments is { Count: > 0 });
-        MarkSendPrefillTurn();
+        BeginSend();
         var gcHandle = GCHandle.Alloc(state);
         // A CancelProcess while the stream runs makes the teardown skip the wait (see the finally).
         int cancelRequestsAtStart = Volatile.Read(ref _cancelRequests);

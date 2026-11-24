@@ -529,9 +529,76 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
 
         // A caller cap under the guard's budget arms no truncation check, so only the reset at the start of the
         // send can clear the flag. The cap is above what this reply decodes (about 150 tokens, mostly thinking).
+        // If the cut reply's answer left the guard a budget of 400 or less, the guard would cap the follow-up
+        // itself and its truncation check could clear the flag without the reset.
+        int followUpBudget = Limit - chat.TokenCount - engine.CountTokens(chat.RenderMessage("Reply with one word: OK"))
+                             - LiteRtContextGuard.SafetyMargin;
+        output.WriteLine($"follow-up budget {followUpBudget}");
+        Skip.If(followUpBudget <= 400,
+            $"The guard's budget for the follow-up is {followUpBudget}, not above the 400-token cap, so the " +
+            "follow-up cannot show that the start of a send clears the flag.");
         Assert.False(string.IsNullOrWhiteSpace(
             chat.Send("Reply with one word: OK", attachments: null, new LiteRtSendOptions { MaxOutputTokens = 400 }).Text));
         Assert.False(chat.LastReplyReachedContextLimit);
+    }
+
+    /// <summary>A send that the binding rejects before calling the runtime leaves the values of the last send that
+    /// reached it: <see cref="LiteRtConversation.LastReplyReachedContextLimit"/> stays <c>true</c> and
+    /// <see cref="LiteRtBenchmarkInfo.LastSendPrefillTokenCount"/> keeps its value. A long message leaves the guard a
+    /// small budget, the reply (a count that never stops) runs to it and fills the context, and the next send throws
+    /// <see cref="LiteRtContextOverflowException"/>. Clearing the flag at the start of every send, before the guard,
+    /// would read <c>false</c> here.</summary>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ASendTheBindingRejects_KeepsTheLastSendsValues(bool stream)
+    {
+        const int Limit = 1024;
+        using LiteRtEngine engine = LoadEngine(Limit, benchmark: true);
+        using var chat = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax });
+        string Block(int words) => string.Join(' ', Enumerable.Range(0, words).Select(i => $"w{i}"));
+
+        // Grow the list until the message leaves a budget of about 150 tokens.
+        string prompt;
+        int words = 100, input;
+        do
+        {
+            prompt = "Here is a list: " + Block(words) +
+                     ". Ignore the list. Count upward from 1, one number per line, and never stop.";
+            input = engine.CountTokens(chat.RenderMessage(prompt));
+            words += 10;
+        }
+        while (input < Limit - LiteRtContextGuard.SafetyMargin - 160);
+
+        string cut = "";
+        if (stream)
+        {
+            await foreach (LiteRtStreamChunk chunk in chat.SendStreamingAsync(prompt))
+                if (chunk.Kind == LiteRtStreamChunkKind.Answer) cut += chunk.Text;
+        }
+        else
+        {
+            cut = chat.Send(prompt).Text ?? "";
+        }
+        LiteRtBenchmarkInfo before = chat.GetBenchmarkInfo()!;
+        output.WriteLine($"input {input}, count {chat.TokenCount}, decoded {before.LastDecodeTokenCount}, send prefill " +
+                         $"{before.LastSendPrefillTokenCount}, cut {chat.LastReplyReachedContextLimit}, full {chat.IsContextFull}");
+        Assert.True(chat.LastReplyReachedContextLimit, $"the reply must run to the guard's budget: '{cut}'");
+        Assert.True(chat.IsContextFull);
+        Assert.True(before.LastSendPrefillTokenCount > 0);
+
+        if (stream)
+            await Assert.ThrowsAsync<LiteRtContextOverflowException>(async () =>
+            {
+                await foreach (LiteRtStreamChunk _ in chat.SendStreamingAsync("Reply with one word: OK")) { }
+            });
+        else
+            Assert.Throws<LiteRtContextOverflowException>(() => chat.Send("Reply with one word: OK"));
+
+        LiteRtBenchmarkInfo after = chat.GetBenchmarkInfo()!;
+        Assert.True(chat.LastReplyReachedContextLimit, "a send the binding rejected cleared the flag");
+        Assert.Equal(before.LastSendPrefillTokenCount, after.LastSendPrefillTokenCount);
+        Assert.Equal(before.NumPrefillTurns, after.NumPrefillTurns);
     }
 
     /// <summary>A <see cref="LiteRtConstraintProvider"/> value the runtime does not declare fails conversation
