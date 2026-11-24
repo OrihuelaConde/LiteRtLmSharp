@@ -112,8 +112,8 @@ public sealed class ExecutionOptionsModelTests(ITestOutputHelper output)
     /// runtime kept drafting for unset conversations once a drafter was loaded, the last reply would equal the
     /// speculative one instead of the first. Skips where the plain and speculative replies are equal, since
     /// the text then cannot tell the paths apart. Every conversation here sets a sampler, so it carries a
-    /// session config; a conversation created with no options at all is not covered by this test (the engine
-    /// default is argmax, whose reply is the same on both paths), only by a decode-rate measurement on
+    /// session config; a conversation created with no options at all is not covered by this test (with gemma-4
+    /// E2B the engine default is argmax, whose reply is the same on both paths), only by a decode-rate measurement on
     /// Windows CPU.
     /// </summary>
     [SkippableFact]

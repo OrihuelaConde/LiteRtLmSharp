@@ -120,13 +120,13 @@ internal static unsafe partial class LiteRtLmNative
     /// <summary>Caps the vision tokens generated per image: the engine picks the smallest vision
     /// encoder/adapter signature that fits (engine_advanced_impl.cc). Must be positive; only applies when
     /// a vision executor is configured and the model declares vision tokens per image. Per-send visual
-    /// token budgets above it are then rejected (conversation.cc ValidateVisualTokenBudget) (v0.18.0+).</summary>
+    /// token budgets above it are then rejected (conversation.cc ValidateVisualTokenBudget).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial LiteRtStatusCode litert_lm_engine_settings_set_max_vision_tokens_per_image(nint settings, int max_vision_tokens_per_image);
 
     /// <summary>Keeps model weights and allocations resident in GPU memory through Apple's MTLResidencySet
-    /// API. Apple platforms with the Metal GPU backend only; ignored elsewhere (v0.18.0+).</summary>
+    /// API. Apple platforms with the Metal GPU backend only; ignored elsewhere.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial LiteRtStatusCode litert_lm_engine_settings_set_gpu_enable_metal_residency_set(
@@ -157,7 +157,7 @@ internal static unsafe partial class LiteRtLmNative
     internal static partial LiteRtStatusCode litert_lm_engine_settings_set_parallel_file_section_loading(
         nint settings, [MarshalAs(UnmanagedType.U1)] bool parallel_file_section_loading);
 
-    /// <summary>Whether YNNPACK delegates supported CPU operations before XNNPACK (experimental). Native v0.16.0+.</summary>
+    /// <summary>Whether YNNPACK delegates supported CPU operations before XNNPACK (experimental).</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial LiteRtStatusCode litert_lm_engine_settings_set_enable_ynnpack(
@@ -184,12 +184,12 @@ internal static unsafe partial class LiteRtLmNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial LiteRtStatusCode litert_lm_engine_settings_set_num_decode_tokens(nint settings, int num_decode_tokens);
 
-    /// <summary>Decode steps per GPU sync. Only honored by the Artisan GPU backend (v0.15.0+).</summary>
+    /// <summary>Decode steps per GPU sync. Only honored by the Artisan GPU backend.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial LiteRtStatusCode litert_lm_engine_settings_set_gpu_decode_steps_per_sync(nint settings, int num_decode_steps_per_sync);
 
-    /// <summary>Whether to wait for GPU weight uploads. Only honored by the Artisan GPU backend (v0.15.0+).</summary>
+    /// <summary>Whether to wait for GPU weight uploads. Only honored by the Artisan GPU backend.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial LiteRtStatusCode litert_lm_engine_settings_set_gpu_wait_for_weight_uploads(
@@ -197,7 +197,7 @@ internal static unsafe partial class LiteRtLmNative
 
     /// <summary>Ringbuffer KV cache for local-attention layers (lower memory, no instant rewind).
     /// Backend-agnostic in interface but only the Artisan GPU backend implements it; unsupported
-    /// models/backends log a warning and ignore it (v0.15.0+).</summary>
+    /// models/backends log a warning and ignore it.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial LiteRtStatusCode litert_lm_engine_settings_set_use_ringbuffers_local_attention(

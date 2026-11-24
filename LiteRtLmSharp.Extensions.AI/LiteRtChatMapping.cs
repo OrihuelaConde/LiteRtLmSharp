@@ -424,7 +424,7 @@ internal static class LiteRtChatMapping
         int maxOutput = options?.MaxOutputTokens ?? 0;
 
         // MEAI's FrequencyPenalty / PresencePenalty are the OpenAI-style subtractive penalties — the
-        // exact semantics of the native repetition-penalty config's matching fields (v0.15.0+).
+        // exact semantics of the native repetition-penalty config's matching fields.
         LiteRtRepetitionPenaltyOptions? penalties =
             options is { FrequencyPenalty: not null } or { PresencePenalty: not null }
                 ? new LiteRtRepetitionPenaltyOptions
@@ -457,13 +457,12 @@ internal static class LiteRtChatMapping
     }
 
     /// <summary>
-    /// Maps a JSON-schema <see cref="ChatOptions.ResponseFormat"/> to a native LlGuidance constraint
-    /// (v0.15.0+): the schema is enforced during sampling, so the reply is guaranteed to be a
+    /// Maps a JSON-schema <see cref="ChatOptions.ResponseFormat"/> to a native LlGuidance constraint:
+    /// the schema is enforced during sampling, so the reply is guaranteed to be a
     /// conforming JSON document — real structured output, not prompt hope. Schema-less
     /// <see cref="ChatResponseFormatJson"/> ("JSON mode") and text format map to <c>null</c>
-    /// (unconstrained): without a schema there is nothing precise to enforce, and the pre-v0.15.0
-    /// behavior (prompt-driven) is preserved. In stateful mode the constraint requires the
-    /// conversation to have the provider from its first call (see <see cref="ToConversationOptions"/>).
+    /// (unconstrained, prompt-driven): without a schema there is nothing precise to enforce. In stateful
+    /// mode the constraint requires the conversation to have the provider from its first call (see <see cref="ToConversationOptions"/>).
     /// </summary>
     internal static LiteRtConstraint? ToConstraint(ChatOptions? options) =>
         options?.ResponseFormat is ChatResponseFormatJson { Schema: { } schema }

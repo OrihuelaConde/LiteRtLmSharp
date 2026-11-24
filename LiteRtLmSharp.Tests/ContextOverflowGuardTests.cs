@@ -7,12 +7,12 @@ namespace LiteRtLmSharp.Tests;
 /// Pure unit tests for the KV overflow guard's arithmetic (<see cref="LiteRtContextGuard"/>) — the
 /// thresholds behind <see cref="LiteRtContextOverflowException"/>. No model needed, so these always
 /// run in CI. The live end-to-end behavior (a conversation grown to the limit throws instead of
-/// crashing the native runtime) is covered by <see cref="ContextOverflowModelTests"/>.
+/// reaching the runtime) is covered by <see cref="ContextOverflowModelTests"/>.
 /// </summary>
 public class ContextOverflowGuardTests
 {
     // The full/not-full boundary: full once fewer than MinPrefillReserve entries remain (the
-    // v0.15.0+ executor rejects any prefill below the model's smallest prefill-signature length).
+    // executor rejects any prefill below the model's smallest prefill-signature length).
     // LastSendable is the highest count that is still not full; shared by the pre-send hard stop and
     // the public IsContextFull signal so the two can never disagree.
     private const int LastSendable = 4096 - LiteRtContextGuard.MinPrefillReserve;
@@ -28,7 +28,7 @@ public class ContextOverflowGuardTests
     [InlineData(FullAt, 4096)]      // one entry short of the reserve — the executor would reject the prefill
     [InlineData(4096 - LiteRtContextGuard.SafetyMargin, 4096)] // where a clamped send lands by construction
     [InlineData(4096, 4096)]        // at the hard limit
-    [InlineData(4440, 4096)]        // past the limit — the exact field-reported state (crashed 0xC0000005 unguarded)
+    [InlineData(4440, 4096)]        // past the limit
     public void ThrowIfContextFull_AtOrPastTheCeiling_Throws(int used, int limit)
     {
         var ex = Assert.Throws<LiteRtContextOverflowException>(
@@ -172,9 +172,7 @@ public class ContextOverflowGuardTests
 }
 
 /// <summary>
-/// End-to-end regression tests for the KV-overflow crash (a stateful tool loop grew the live conversation past
-/// MaxNumTokens = 4096 and the next call killed the process with 0xC0000005 / 0xC0000374 heap
-/// corruption). With the guard, a conversation driven into its context limit throws
+/// End-to-end tests of the KV overflow guard: a conversation driven into its context limit throws
 /// <see cref="LiteRtContextOverflowException"/> and the engine stays healthy. Uses its OWN small
 /// engine (tiny context) rather than the shared fixture, so it loads/disposes per test.
 /// Set LITERTLM_TEST_MODEL to a .litertlm file to run.
@@ -205,7 +203,7 @@ public sealed class ContextOverflowModelTests
     /// <summary>
     /// Drives a conversation into its context limit with repeated sends. Every send must either
     /// complete with the KV cache still inside the limit (the decode clamp at work) or throw the
-    /// overflow exception — never crash the process (the unguarded outcome). Afterwards the engine
+    /// overflow exception — never reach the runtime with a send it would reject. Afterwards the engine
     /// must still serve a fresh conversation.
     /// </summary>
     [SkippableFact]

@@ -86,8 +86,9 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// approaches the engine's <see cref="LiteRtEngineOptions.MaxNumTokens"/> — watch
 /// <see cref="UsageDetails.TotalTokenCount"/> against it. Load the engine with an <b>explicit</b>
 /// <c>MaxNumTokens</c> to arm the binding's KV overflow guard: replies are clamped to the remaining context
-/// and a send on a full conversation throws <see cref="LiteRtContextOverflowException"/> instead of
-/// corrupting the native runtime (unguarded, the overflow crashes the process on a later call). A reply that
+/// and a send on a full conversation throws <see cref="LiteRtContextOverflowException"/> instead of reaching
+/// the runtime (unguarded, the runtime rejects it, and a rejected prefill leaves the conversation failing every
+/// later send). A reply that
 /// the guard cut at the context limit carries <see cref="ChatFinishReason.Length"/> <b>in the same turn</b>
 /// (deliberately overriding <see cref="ChatFinishReason.ToolCalls"/>). Usually the context is then full and the
 /// thread is over. After a reply with thinking, the runtime removes the thinking from the KV cache, so the

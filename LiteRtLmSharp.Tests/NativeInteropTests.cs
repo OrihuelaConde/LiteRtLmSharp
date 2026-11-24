@@ -156,8 +156,8 @@ public class ApiGuardsTests
     [Fact]
     public void SamplerType_KeepsUnspecifiedMember_ForPublicCompat()
     {
-        // The native v0.14.0 enum dropped its "unspecified" member, but the PUBLIC enum must keep it at 0
-        // (removing it would be a breaking change); the binding maps it to TopP at the native boundary.
+        // The PUBLIC enum keeps "unspecified" at 0 (removing it would be a breaking change); the binding sends
+        // no sampler parameters for it, so the engine's default sampler applies.
         Assert.Equal(0, (int)LiteRtSamplerType.Unspecified);
         Assert.Equal(LiteRtSamplerType.Unspecified, default(LiteRtSamplerType));
     }
@@ -1167,7 +1167,7 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     /// Preface rendering: <see cref="LiteRtConversation.RenderPreface"/> returns the templated preamble
     /// (system message + tools + history) without sending, and does not change conversation state. A
     /// conversation created with a system message renders a non-empty preface that includes the system
-    /// text; a bare conversation renders without throwing. Requires native LiteRT-LM v0.14.0+. Skipped
+    /// text; a bare conversation renders without throwing. Skipped
     /// unless LITERTLM_TEST_MODEL is set.
     /// </summary>
     [SkippableFact]
@@ -1195,8 +1195,7 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     /// pointing at a nonexistent file must fail with a coherent <see cref="LiteRtException"/> at creation
     /// (the native side opens the adapter file at set time), not crash the process. We cannot assert the
     /// SUCCESS path — no LoRA adapter artifact is available — so this pins only the honest failure mode.
-    /// Requires native LiteRT-LM v0.14.0+ (older binaries lack the entry point). Skipped unless
-    /// LITERTLM_TEST_MODEL is set.
+    /// Skipped unless LITERTLM_TEST_MODEL is set.
     /// </summary>
     [SkippableFact]
     public void Lora_NonexistentAdapterPath_ThrowsCoherentException()
@@ -1300,8 +1299,7 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     /// <summary>
     /// StreamToolCalls: with the flag on, the streaming path yields raw ToolCallDelta progress
     /// fragments while the model generates the tool call, and the complete parsed ToolCall chunk
-    /// still arrives after them; concatenated deltas must correspond to the same call. Requires
-    /// native v0.14.0+ (the config setter is new).
+    /// still arrives after them; concatenated deltas must correspond to the same call.
     /// </summary>
     [SkippableFact]
     public async Task ToolCalling_StreamToolCalls_YieldsDeltasBeforeCompleteCall()
@@ -1892,7 +1890,7 @@ public sealed class UpstreamSuspendedStateSentinelTests
 {
     /// <summary>
     /// Interleave two live conversations from one engine: seed a fact on A, advance B, then ask A for the
-    /// fact. With suspended-state preservation working (native v0.15.0+), A recalls the number even though B
+    /// fact. With suspended-state preservation working, A recalls the number even though B
     /// advanced in between. (Until v0.15.0 this test asserted the OPPOSITE — the loss — as the tripwire that
     /// told us the day upstream fixed it. It fired on 2026-08-09.)
     /// </summary>

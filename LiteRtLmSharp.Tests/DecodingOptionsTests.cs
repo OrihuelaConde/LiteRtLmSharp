@@ -446,7 +446,7 @@ public sealed class DecodingConnectorModelTests
         Assert.DoesNotContain("Paris", suppressed[0].Content ?? "", StringComparison.Ordinal);
     }
 
-    /// <summary>The experimental YNNPACK toggle (native v0.16.0+) reaches the engine settings. Only the
+    /// <summary>The experimental YNNPACK toggle reaches the engine settings. Only the
     /// linux-arm64 library carries the YNNPACK kernels: there an engine loaded with it on the CPU backend
     /// creates and generates (CI's arm64 leg). The other official v0.18.0 libraries reject the flag at engine
     /// creation with UNIMPLEMENTED (v0.16.0 ignored it), and the exception names the setting.</summary>

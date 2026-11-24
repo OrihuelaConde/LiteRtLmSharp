@@ -349,8 +349,8 @@ public sealed class LiteRtConversation : IDisposable
     /// turns). When this approaches the engine's <see cref="LiteRtEngineOptions.MaxNumTokens"/> the
     /// context is full and further generation degrades — manage history before that point. When the
     /// engine was loaded with an explicit <c>MaxNumTokens</c>, the send methods guard the limit and
-    /// throw <see cref="LiteRtContextOverflowException"/> rather than let a send overflow the cache
-    /// (which corrupts the native runtime).
+    /// throw <see cref="LiteRtContextOverflowException"/> rather than let the runtime reject a send at the
+    /// end of the cache (a rejected prefill leaves the conversation failing every later send).
     /// </summary>
     /// <remarks>
     /// <b>This read is a native call and can block.</b> The C API reads the count through the engine, so it
@@ -715,7 +715,7 @@ public sealed class LiteRtConversation : IDisposable
     /// </summary>
     /// <exception cref="LiteRtContextOverflowException">Sending would overflow the KV cache sized by
     /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> — the guard that keeps a long tool loop from
-    /// crashing the native runtime. Only thrown when the engine was loaded with an explicit
+    /// running into the end of the context. Only thrown when the engine was loaded with an explicit
     /// <c>MaxNumTokens</c>.</exception>
     public LiteRtResponse SendToolResults(IEnumerable<LiteRtToolResult> results, LiteRtSendOptions? options = null)
     {
@@ -887,13 +887,13 @@ public sealed class LiteRtConversation : IDisposable
     /// Two layers:
     /// (1) a hard stop — a conversation at the guard ceiling (the shared predicate behind
     ///     <see cref="IsContextFull"/>, so signal and stop can never disagree) throws instead of reaching
-    ///     native code, which is the exact state that crashes the runtime on the next send;
+    ///     native code, which is the state in which the runtime rejects the next send;
     /// (2) a decode clamp — the message's real prefill cost is measured (render + tokenize, no inference)
     ///     and the remaining context becomes this send's <c>max_output_tokens</c>, so decode physically
     ///     cannot grow the KV cache past the limit. A message whose prefill alone leaves no room throws.
     /// The measurement is best-effort: sends flagged <paramref name="unmeasured"/> (media attachments or a
-    /// per-send extra context, whose token costs are not measurable managed-side) and natives that cannot
-    /// render/tokenize fall back to layer (1) alone — leave headroom under the limit for those.
+    /// per-send extra context, whose token costs are not measurable managed-side) and sends whose render or
+    /// tokenize fails fall back to layer (1) alone — leave headroom under the limit for those.
     /// </summary>
     private LiteRtSendOptions? GuardContextOverflow(string messageJson, LiteRtSendOptions? options, bool unmeasured)
     {
@@ -1026,7 +1026,7 @@ public sealed class LiteRtConversation : IDisposable
     /// </summary>
     /// <exception cref="LiteRtContextOverflowException">Sending would overflow the KV cache sized by
     /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> — the conversation is full (or the message's
-    /// prefill leaves no room to reply); continuing would corrupt the native runtime. Only thrown when
+    /// prefill leaves no room to reply); the runtime would reject the send. Only thrown when
     /// the engine was loaded with an explicit <c>MaxNumTokens</c>. A send carrying media or a non-null
     /// <paramref name="extraContext"/> gets only the conversation-full check (its prefill cost is not
     /// measurable managed-side) — leave headroom under the limit for those.</exception>
