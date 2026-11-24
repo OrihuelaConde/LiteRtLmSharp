@@ -447,7 +447,8 @@ public sealed class LiteRtConversation : IDisposable
         => _sawCeiling || LiteRtContextGuard.IsContextFull(_cachedTokenCount, _engineOwner.MaxNumTokens);
 
     /// <summary>
-    /// Gets a value indicating whether the reply of the last send ran to the limit of the context: the KV overflow
+    /// Gets a value indicating whether the reply of the last send that reached the runtime ran to the limit of the
+    /// context: the KV overflow
     /// guard capped the reply at the room left in the context, and the reply used that whole budget, so it was
     /// likely cut mid-sentence.
     /// </summary>

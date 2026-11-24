@@ -91,13 +91,14 @@ public sealed record LiteRtSendOptions
     /// conversation's first send, so on a later send the runtime alone does not change the mode. For <c>false</c>,
     /// the binding also suppresses the token that opens the thinking channel when the model's tokenizer has it
     /// (<c>&lt;|channel&gt;</c>).</para>
-    /// <para>Measured on LiteRT-LM v0.20.0, gemma-4 E2B, argmax, CPU and GPU, after a first reply with thinking:</para>
+    /// <para>Measured on LiteRT-LM v0.20.0, gemma-4 E2B, argmax, CPU and GPU:</para>
     /// <list type="bullet">
-    /// <item>A text follow-up with <c>false</c> answers without thinking, also with
+    /// <item>After a first reply with thinking, a text follow-up with <c>false</c> answers without thinking, also with
     /// <see cref="LiteRtConversationOptions.EnableConstrainedDecoding"/> or
-    /// <see cref="LiteRtConversationOptions.EnableSpeculativeDecoding"/> on, and the next send without options thinks
-    /// again. A streamed follow-up was measured on CPU only.</item>
-    /// <item>A send of tool results with <c>false</c>, a follow-up with <c>false</c> that calls a tool, and a
+    /// <see cref="LiteRtConversationOptions.EnableSpeculativeDecoding"/> on. The next send without options thinks
+    /// again; this was measured with neither option and with speculative decoding, not with constrained decoding. A
+    /// streamed follow-up was measured on CPU only.</item>
+    /// <item>After a first reply with thinking, a send of tool results with <c>false</c>, a follow-up with <c>false</c> that calls a tool, and a
     /// follow-up with <c>false</c> and a regex or JSON-schema <see cref="Constraint"/> did not think without the
     /// suppression either; the suppression gave the same reply.</item>
     /// <item><c>true</c> on a later send of a conversation whose first send did not think gives no thinking.</item>
