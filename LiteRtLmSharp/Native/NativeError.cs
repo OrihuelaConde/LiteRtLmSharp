@@ -83,6 +83,18 @@ internal static class NativeError
     }
 
     /// <summary>
+    /// Builds the exception like the overload that takes <c>hintFor</c> and a fallback hint, with <paramref name="innerException"/> as its cause: a managed exception that made the native call fail,
+    /// such as one a callback caught and reported to the runtime as a status.
+    /// </summary>
+    internal static LiteRtException Exception(
+        LiteRtStatusCode status, string failure, Exception? innerException,
+        Func<(LiteRtStatusCode Code, string Message)?, string?> hintFor)
+    {
+        var report = Take(status);
+        return Build(failure, report, hintFor(HasReason(report) ? report : null), fallbackHint: null, innerException);
+    }
+
+    /// <summary>
     /// Reads a status the runtime delivered as text, such as the error string of a stream chunk
     /// (<c>"INVALID_ARGUMENT: reason"</c>): the status from its leading canonical name, and the detail
     /// normalized like <see cref="Take(LiteRtStatusCode)"/>. <c>null</c> when the text starts with no
@@ -174,7 +186,8 @@ internal static class NativeError
     private static bool HasReason((LiteRtStatusCode Code, string Message)? report) => report is { Message.Length: > 0 };
 
     private static LiteRtException Build(
-        string failure, (LiteRtStatusCode Code, string Message)? report, string? hint, string? fallbackHint)
+        string failure, (LiteRtStatusCode Code, string Message)? report, string? hint, string? fallbackHint,
+        Exception? innerException = null)
     {
         var sb = new StringBuilder(failure.TrimEnd('.', ' '));
         if (report is { } r)
@@ -195,6 +208,10 @@ internal static class NativeError
             sb.Append(' ').Append(hint);
         }
         string message = sb.ToString();
+        if (innerException is not null)
+            return report is { } withInner
+                ? new LiteRtException(message, withInner.Code, innerException)
+                : new LiteRtException(message, innerException);
         return report is { } rep ? new LiteRtException(message, rep.Code) : new LiteRtException(message);
     }
 

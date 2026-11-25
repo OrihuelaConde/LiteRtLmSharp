@@ -300,7 +300,8 @@ public sealed class LiteRtEngine : IDisposable
                     "corrupt or incomplete model file, or a backend the model does not support: some published " +
                     ".litertlm files carry a backend constraint (for example GPU-only) and refuse to load on CPU.");
 
-            handle = new EngineHandle(enginePtr, options.AllowMultipleEngines);
+            // The model file counts as held until the native engine is deleted (see LoadedModelPaths).
+            handle = new EngineHandle(enginePtr, options.AllowMultipleEngines, LoadedModelPaths.Default.Add(options.ModelPath));
             return new LiteRtEngine(
                 handle,
                 isMultimodal: options.VisionBackend is not null || options.AudioBackend is not null,

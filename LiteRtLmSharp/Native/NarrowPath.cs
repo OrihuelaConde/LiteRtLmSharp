@@ -76,6 +76,53 @@ internal static partial class NarrowPath
         return @"\\?\" + fullPath;
     }
 
+    /// <summary>
+    /// Encodes a full path for the model sync functions as null-terminated bytes. On Windows each of their opens
+    /// that was observed (the local header and its checksum, the temporary file, the rename and the up-to-date
+    /// copy) decodes the bytes in the active ANSI code page, and none decodes them as UTF-8 (measured on LiteRT-LM
+    /// v0.20.0, win-x64, code pages 1252 and 65001).
+    /// </summary>
+    /// <remarks>Off Windows, for an ASCII path and when the ANSI code page is UTF-8 (65001): UTF-8. Otherwise the
+    /// bytes of the ANSI code page, converted without best-fit mapping, so a character the code page lacks is
+    /// never replaced by a similar one that names another file.</remarks>
+    /// <exception cref="ArgumentException">The path has characters outside the active code page.</exception>
+    internal static byte[] EncodeForModelSync(string fullPath, string paramName)
+    {
+        if (!OperatingSystem.IsWindows() || IsAscii(fullPath))
+            return NullTerminated(Encoding.UTF8.GetBytes(fullPath));
+        uint codePage = GetACP();
+        if (codePage == CP_UTF8)
+            return NullTerminated(Encoding.UTF8.GetBytes(fullPath));
+        return AnsiBytes(fullPath, codePage)
+            ?? throw new ArgumentException(
+                $"The path '{fullPath}' contains characters outside the active code page ({codePage}), and the native " +
+                "runtime opens model sync paths in that code page. Move the model to a folder whose name the code page " +
+                "can represent, or run the app with the UTF-8 code page.", paramName);
+    }
+
+    /// <summary>The active ANSI code page on Windows, or <c>null</c> elsewhere.</summary>
+    internal static uint? ActiveCodePage => OperatingSystem.IsWindows() ? GetACP() : null;
+
+    [SupportedOSPlatform("windows")]
+    private static unsafe byte[]? AnsiBytes(string path, uint codePage)
+    {
+        const uint WC_NO_BEST_FIT_CHARS = 0x400;
+        fixed (char* wide = path)
+        {
+            int usedDefault = 0;
+            int length = WideCharToMultiByte(codePage, WC_NO_BEST_FIT_CHARS, wide, path.Length, null, 0, null, &usedDefault);
+            if (length <= 0 || usedDefault != 0)
+                return null;
+            byte[] bytes = new byte[length + 1];
+            fixed (byte* narrow = bytes)
+            {
+                usedDefault = 0;
+                int written = WideCharToMultiByte(codePage, WC_NO_BEST_FIT_CHARS, wide, path.Length, narrow, length, null, &usedDefault);
+                return written == length && usedDefault == 0 ? bytes : null;
+            }
+        }
+    }
+
     /// <summary>Whether a path reaches native narrow-API code unchanged on every platform.</summary>
     internal static bool IsAscii(string path)
     {
@@ -148,6 +195,12 @@ internal static partial class NarrowPath
     [LibraryImport("kernel32.dll", EntryPoint = "GetACP")]
     [SupportedOSPlatform("windows")]
     private static partial uint GetACP();
+
+    [LibraryImport("kernel32.dll", EntryPoint = "WideCharToMultiByte")]
+    [SupportedOSPlatform("windows")]
+    private static unsafe partial int WideCharToMultiByte(
+        uint codePage, uint flags, char* wideChars, int wideCount, byte* multiBytes, int multiByteCount,
+        byte* defaultChar, int* usedDefaultChar);
 
     [LibraryImport("kernel32.dll", EntryPoint = "GetShortPathNameW", StringMarshalling = StringMarshalling.Utf16)]
     [SupportedOSPlatform("windows")]

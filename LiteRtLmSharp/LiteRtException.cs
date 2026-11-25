@@ -20,6 +20,11 @@ public class LiteRtException : Exception
     /// <summary>Creates the exception with a message and the status the native runtime reported.</summary>
     public LiteRtException(string message, LiteRtStatusCode statusCode) : base(message) => StatusCode = statusCode;
 
+    /// <summary>Creates the exception with a message, the status the native runtime reported, and the exception
+    /// that caused the native failure, or <c>null</c>.</summary>
+    internal LiteRtException(string message, LiteRtStatusCode statusCode, Exception? innerException)
+        : base(message, innerException) => StatusCode = statusCode;
+
     /// <summary>
     /// Gets the status the native runtime reported for the failed call, or <c>null</c> when it reported
     /// none or the binding detected the failure itself.

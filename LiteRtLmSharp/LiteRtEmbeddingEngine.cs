@@ -84,7 +84,9 @@ public sealed class LiteRtEmbeddingEngine : IDisposable
                 "needs an embedding model, such as EmbeddingGemma 2.", nameof(options));
 
         nint enginePtr = CreateNativeEngine(options);
-        return new LiteRtEmbeddingEngine(new EmbeddingEngineHandle(enginePtr), info?.EmbeddingDimension);
+        // The model file counts as held until the native engine is deleted (see LoadedModelPaths).
+        return new LiteRtEmbeddingEngine(
+            new EmbeddingEngineHandle(enginePtr, LoadedModelPaths.Default.Add(options.ModelPath)), info?.EmbeddingDimension);
     }
 
     private static unsafe nint CreateNativeEngine(LiteRtEmbeddingEngineOptions options)

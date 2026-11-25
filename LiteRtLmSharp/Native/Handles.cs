@@ -101,7 +101,10 @@ internal sealed class EngineLiveness
     }
 }
 
-internal sealed class EngineHandle(nint handle, bool allowMultiple) : LiteRtLmHandle(handle)
+/// <summary>The native chat engine. <paramref name="modelPathKey"/> is the key
+/// <see cref="LoadedModelPaths.Add"/> returned for the engine's model file, or <c>null</c> when nothing was
+/// counted.</summary>
+internal sealed class EngineHandle(nint handle, bool allowMultiple, string? modelPathKey = null) : LiteRtLmHandle(handle)
 {
     protected override bool ReleaseHandle()
     {
@@ -113,6 +116,9 @@ internal sealed class EngineHandle(nint handle, bool allowMultiple) : LiteRtLmHa
         // conversations or sessions is alive. The
         // handle carries the engine's opt-in because a finalizer must not depend on other managed objects.
         EngineLiveness.Default.Release(allowMultiple);
+        // The model file stops counting as held only once the native engine is gone.
+        if (modelPathKey is not null)
+            LoadedModelPaths.Default.Release(modelPathKey);
         return true;
     }
 }
@@ -287,12 +293,16 @@ internal sealed class EmbeddingEngineSettingsHandle(nint handle) : LiteRtLmHandl
 
 /// <summary>The native embedding engine. Unlike <see cref="EngineHandle"/> it takes no part in the
 /// one-live-engine gate (<see cref="EngineLiveness"/>): an embedding engine coexists with a chat engine, and
-/// releasing it must never free the chat engine's slot.</summary>
-internal sealed class EmbeddingEngineHandle(nint handle) : LiteRtLmHandle(handle)
+/// releasing it must never free the chat engine's slot. <paramref name="modelPathKey"/> is the key
+/// <see cref="LoadedModelPaths.Add"/> returned for the engine's model file, or <c>null</c> when nothing was
+/// counted.</summary>
+internal sealed class EmbeddingEngineHandle(nint handle, string? modelPathKey = null) : LiteRtLmHandle(handle)
 {
     protected override bool ReleaseHandle()
     {
         LiteRtLmNative.litert_lm_embedding_engine_delete(handle);
+        if (modelPathKey is not null)
+            LoadedModelPaths.Default.Release(modelPathKey);
         return true;
     }
 }
@@ -340,6 +350,26 @@ internal sealed class LoadedFileHandle(nint handle) : LiteRtLmHandle(handle)
     protected override bool ReleaseHandle()
     {
         LiteRtLmNative.litert_lm_loaded_file_delete(handle);
+        return true;
+    }
+}
+
+/// <summary>Model sync options. Each sync call creates its own and releases it when the call ends.</summary>
+internal sealed class ModelSyncOptionsHandle(nint handle) : LiteRtLmHandle(handle)
+{
+    protected override bool ReleaseHandle()
+    {
+        LiteRtLmNative.litert_lm_model_sync_options_delete(handle);
+        return true;
+    }
+}
+
+/// <summary>A model sync plan. It owns its summary string, so the summary is copied before the release.</summary>
+internal sealed class ModelSyncPlanHandle(nint handle) : LiteRtLmHandle(handle)
+{
+    protected override bool ReleaseHandle()
+    {
+        LiteRtLmNative.litert_lm_model_sync_plan_delete(handle);
         return true;
     }
 }
