@@ -384,11 +384,16 @@ public sealed class LiteRtEngine : IDisposable
     /// engine's default sampling and sends no output cap.</param>
     /// <returns>A new session in the <see cref="LiteRtSessionState.Fresh"/> state. Dispose it when done.</returns>
     /// <remarks>
+    /// <para>
     /// The native session is created through the engine, as a conversation is (see
-    /// <see cref="CreateConversation"/>); whether and how long the call waits for a generation in flight on the
-    /// engine is not measured for sessions. The session keeps the native engine alive: disposing this engine
-    /// first is safe, and the native engine is released when its last conversation or session is
-    /// disposed.
+    /// <see cref="CreateConversation"/>), so the call waits for a generation in flight on the engine to end.
+    /// Behind a 160-token conversation send or session decode it took 4.5 to 4.9 s on CPU and 1.2 s on GPU; on an
+    /// idle engine, 0.1 ms or less (measured on LiteRT-LM v0.20.0, win-x64, gemma-4 E2B).
+    /// </para>
+    /// <para>
+    /// The session keeps the native engine alive: disposing this engine first is safe, and the native engine is
+    /// released when its last conversation or session is disposed.
+    /// </para>
     /// </remarks>
     /// <exception cref="ObjectDisposedException">The engine has been disposed.</exception>
     /// <exception cref="LiteRtException">The native session could not be created.</exception>

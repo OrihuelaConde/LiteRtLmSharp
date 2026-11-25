@@ -260,7 +260,8 @@ public sealed class LiteRtSession : IDisposable
     /// end-of-turn token is inferred from the count. So the next turn starts with the user turn and no
     /// end-of-turn marker: on Gemma 4, prefill exactly <c>&lt;|turn&gt;user\n{text}&lt;turn|&gt;\n&lt;|turn&gt;model\n</c>,
     /// with no <c>&lt;turn|&gt;</c> or line break in front, which gave the replies of a conversation. With
-    /// <c>&lt;turn|&gt;\n</c> in front, as a rendered history shows it, the replies differed.
+    /// <c>&lt;turn|&gt;\n</c> in front, as a rendered history shows it, most replies differed from the
+    /// conversation's.
     /// </para>
     /// <para>
     /// A reply that reaches the <see cref="LiteRtSessionOptions.MaxOutputTokens"/> cap ends without an error, the

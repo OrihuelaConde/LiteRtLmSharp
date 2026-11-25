@@ -11,9 +11,9 @@ namespace LiteRtLmSharp;
 /// A stateful conversation over a <see cref="LiteRtEngine"/>. Handles chat templating
 /// internally (mirrors the Gemini Chat APIs). Not thread-safe: serialize calls per instance — and
 /// serialize <b>sends per engine</b>, not just per conversation: multiple live conversations may be
-/// interleaved freely, but concurrent generation on different conversations of one engine is not
-/// supported by the native runtime (non-deterministic output and GPU-backend errors, upstream
-/// LiteRT-LM#2807). The C API's threading model (<c>c/engine.h</c>) forbids overlapping calls on one
+/// interleaved freely, but keep one generation in flight per engine. Upstream reports non-deterministic
+/// output and GPU-backend errors for concurrent generation on different conversations of one engine
+/// (LiteRT-LM#2807). The C API's threading model (<c>c/engine.h</c>) forbids overlapping calls on one
 /// conversation.
 /// </summary>
 /// <remarks>
@@ -24,7 +24,10 @@ namespace LiteRtLmSharp;
 /// engine, such as <see cref="TokenCount"/> and creating a conversation, also wait for a generation in
 /// flight on any conversation of the engine. Do the scheduling at the application level: keep one send in
 /// flight per engine, and cut the running one with <see cref="CancelProcess"/> when something more urgent
-/// arrives (see <see cref="Clone"/> for keeping a checkpoint to continue from).
+/// arrives (see <see cref="Clone"/> for keeping a checkpoint to continue from). With a
+/// <see cref="LiteRtSession"/> and a conversation on one engine, LiteRT-LM v0.20.0 ran an overlapping session
+/// decode and send one after the other, and both replies equaled their replies alone (measured on win-x64,
+/// gemma-4 E2B, CPU and GPU); that does not show that generation at the same time is safe.
 /// </remarks>
 public sealed class LiteRtConversation : IDisposable
 {
