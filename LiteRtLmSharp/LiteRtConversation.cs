@@ -167,45 +167,7 @@ public sealed class LiteRtConversation : IDisposable
                             LiteRtLmNative.litert_lm_session_config_set_max_output_tokens(sessionPtr, options.MaxOutputTokens),
                             nameof(LiteRtLmNative.litert_lm_session_config_set_max_output_tokens));
 
-                    // Unspecified = "let the engine choose": no sampler params are sent at all, so the
-                    // engine's own default sampling applies and the record's numeric fields go unused.
-                    // The C API also declares an unspecified type (0), but sending it would carry those
-                    // fields along; sending nothing leaves the engine default untouched. Forcing TopP here
-                    // would switch decoding to an explicit top-p sampler.
-                    if (options?.Sampler is { Strategy: not LiteRtSamplerType.Unspecified } s)
-                    {
-                        // Build the opaque sampler params, set ALL four fields (create() zeroes them, not
-                        // the ecosystem defaults our record always carries), copy them into the session
-                        // config, then delete immediately (try/finally so it can't leak). The strategy goes
-                        // as given: on v0.20.0 the runtime decodes Greedy as argmax and TopK as top-k
-                        // sampling (measured on CPU and GPU).
-                        nint samplerParams;
-                        unsafe
-                        {
-                            NativeError.ThrowIfFailed(
-                                LiteRtLmNative.litert_lm_sampler_params_create((LiteRtLmSamplerType)s.Strategy, &samplerParams),
-                                nameof(LiteRtLmNative.litert_lm_sampler_params_create));
-                        }
-                        try
-                        {
-                            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_top_k(samplerParams, s.TopK),
-                                nameof(LiteRtLmNative.litert_lm_sampler_params_set_top_k));
-                            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_top_p(samplerParams, s.TopP),
-                                nameof(LiteRtLmNative.litert_lm_sampler_params_set_top_p));
-                            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_temperature(samplerParams, s.Temperature),
-                                nameof(LiteRtLmNative.litert_lm_sampler_params_set_temperature));
-                            // Seed 0 (the default) = deterministic, matching the engine default and
-                            // Google's official bindings (Kotlin defaults 0; python maps unset -> 0).
-                            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_seed(samplerParams, s.Seed),
-                                nameof(LiteRtLmNative.litert_lm_sampler_params_set_seed));
-                            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_session_config_set_sampler_params(sessionPtr, samplerParams),
-                                nameof(LiteRtLmNative.litert_lm_session_config_set_sampler_params));
-                        }
-                        finally
-                        {
-                            LiteRtLmNative.litert_lm_sampler_params_delete(samplerParams);
-                        }
-                    }
+                    NativeSampler.Apply(sessionPtr, options?.Sampler);
 
                     // LoRA adapters (text / audio). The native side opens the file at set time, so a bad
                     // path surfaces here as a clear LiteRtException rather than a later create failure.

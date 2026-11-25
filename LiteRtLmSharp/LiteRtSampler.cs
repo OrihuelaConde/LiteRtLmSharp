@@ -1,3 +1,5 @@
+using LiteRtLmSharp.Native;
+
 namespace LiteRtLmSharp;
 
 /// <summary>Token sampling strategy. Mirrors LiteRT-LM's <c>LiteRtLmSamplerType</c>.</summary>
@@ -117,4 +119,51 @@ public sealed record LiteRtSamplerParams
     /// output that varies between runs.
     /// </summary>
     public int Seed { get; init; }
+}
+
+/// <summary>Copies <see cref="LiteRtSamplerParams"/> into a native session config, for conversations and
+/// sessions alike.</summary>
+internal static class NativeSampler
+{
+    /// <summary>Sets <paramref name="sampler"/> on the native session config <paramref name="sessionConfig"/>.
+    /// <c>null</c> and <see cref="LiteRtSamplerType.Unspecified"/> send nothing.</summary>
+    /// <exception cref="LiteRtException">A native sampler call failed.</exception>
+    internal static unsafe void Apply(nint sessionConfig, LiteRtSamplerParams? sampler)
+    {
+        // Unspecified = "let the engine choose": no sampler params are sent at all, so the engine's own default
+        // sampling applies and the record's numeric fields go unused. The C API also declares an unspecified
+        // type (0), but sending it would carry those fields along; sending nothing leaves the engine default
+        // untouched. Forcing TopP here would switch decoding to an explicit top-p sampler.
+        if (sampler is null || sampler.Strategy == LiteRtSamplerType.Unspecified)
+            return;
+        LiteRtSamplerParams s = sampler;
+
+        // Build the opaque sampler params, set ALL four fields (create() zeroes them, not the ecosystem defaults
+        // the record always carries), copy them into the session config, then delete immediately (try/finally so
+        // it can't leak). The strategy goes as given: on v0.20.0 the runtime decodes Greedy as argmax and TopK as
+        // top-k sampling (measured on CPU and GPU).
+        nint samplerParams;
+        NativeError.ThrowIfFailed(
+            LiteRtLmNative.litert_lm_sampler_params_create((LiteRtLmSamplerType)s.Strategy, &samplerParams),
+            nameof(LiteRtLmNative.litert_lm_sampler_params_create));
+        try
+        {
+            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_top_k(samplerParams, s.TopK),
+                nameof(LiteRtLmNative.litert_lm_sampler_params_set_top_k));
+            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_top_p(samplerParams, s.TopP),
+                nameof(LiteRtLmNative.litert_lm_sampler_params_set_top_p));
+            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_temperature(samplerParams, s.Temperature),
+                nameof(LiteRtLmNative.litert_lm_sampler_params_set_temperature));
+            // Seed 0 (the default) = deterministic, matching the engine default and Google's official bindings
+            // (Kotlin defaults 0; python maps unset -> 0).
+            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_seed(samplerParams, s.Seed),
+                nameof(LiteRtLmNative.litert_lm_sampler_params_set_seed));
+            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_session_config_set_sampler_params(sessionConfig, samplerParams),
+                nameof(LiteRtLmNative.litert_lm_session_config_set_sampler_params));
+        }
+        finally
+        {
+            LiteRtLmNative.litert_lm_sampler_params_delete(samplerParams);
+        }
+    }
 }
