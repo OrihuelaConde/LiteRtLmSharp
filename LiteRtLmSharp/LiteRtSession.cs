@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
@@ -9,8 +10,14 @@ namespace LiteRtLmSharp;
 /// <remarks>
 /// <para>
 /// A session applies no template, keeps no message history and parses no tool calls or reasoning channels: the
-/// text it prefills is tokenized as given, and the runtime adds the model's start token before the first prefill
-/// (see <see cref="Prefill"/>). Create one with <see cref="LiteRtEngine.CreateSession"/>.
+/// text you prefill reaches the tokenizer as given. The runtime adds one position before the first prefill, for
+/// the model's start token (see <see cref="Prefill"/>). Create a session with
+/// <see cref="LiteRtEngine.CreateSession"/>.
+/// </para>
+/// <para>
+/// <b>What was measured.</b> The runtime behavior these docs describe was measured on LiteRT-LM v0.20.0, win-x64,
+/// gemma-4 E2B, on CPU and GPU. A sentence that names another model was measured on the same version, platform
+/// and backends. Other platforms and models were not measured.
 /// </para>
 /// <para>
 /// <b>Prefill, then decode.</b> Add the prompt text with <see cref="Prefill"/>, then generate the reply with
@@ -18,7 +25,13 @@ namespace LiteRtLmSharp;
 /// more text before the next decode. A cancel, from a token, from leaving a stream early or from
 /// <see cref="Dispose"/>, is sent to the runtime at the next piece of the reply and leaves the session
 /// <see cref="LiteRtSessionState.Cancelled"/>, unless the reply had already reached its last piece. The runtime
-/// was measured to stop at that piece on LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and GPU.
+/// stops at that piece.
+/// </para>
+/// <para>
+/// <b>Counting the context.</b> <see cref="LiteRtEngine.Tokenize"/> does not always give the positions a prefill
+/// takes. On Phi-4-mini a text that starts with a marker token, such as <c>&lt;|user|&gt;</c>, took 3 to 4
+/// positions more than its tokens, and the start token takes one position although the model reports it as 7
+/// tokens.
 /// </para>
 /// <para>
 /// <b>One call at a time.</b> A session runs one call at a time and refuses a second call with
@@ -27,9 +40,15 @@ namespace LiteRtLmSharp;
 /// </para>
 /// <para>
 /// <b>Lifetime.</b> The session keeps the native engine alive, so the engine can be disposed first. A session that
-/// reaches <see cref="LiteRtSessionState.ContextFull"/>, <see cref="LiteRtSessionState.Faulted"/> or
-/// <see cref="LiteRtSessionState.Cancelled"/> accepts only <see cref="Dispose"/>: dispose it and create a new
-/// session.
+/// reaches <see cref="LiteRtSessionState.Cancelled"/>, or <see cref="LiteRtSessionState.Faulted"/> after any
+/// failure other than a failed prefill, accepts only <see cref="Dispose"/>: dispose it and create a new session.
+/// From <see cref="LiteRtSessionState.ContextFull"/>, and from <see cref="LiteRtSessionState.Faulted"/> after a
+/// failed prefill, <see cref="RewindTo"/> and <see cref="Reset"/> recover the session.
+/// </para>
+/// <para>
+/// <b>Checkpoints, rewind and reset.</b> <see cref="SaveCheckpoint"/>, <see cref="RewindTo"/> and
+/// <see cref="Reset"/> are experimental: a call to them is the compile error LITERTLM001 until you suppress it,
+/// and they can change or be removed in a later version.
 /// </para>
 /// </remarks>
 public sealed class LiteRtSession : IDisposable
@@ -44,6 +63,10 @@ public sealed class LiteRtSession : IDisposable
     // that prefills from inside its own read loop.
     private int _callInProgress;
     private int _disposed;
+    // The number of checkpoints saved on the session. Each save takes the next number for its label, so a label
+    // never repeats on a session, also across Reset: the runtime accepts a second save under a label it holds and
+    // then rewinds that label to the later save. Changed only with the gate held.
+    private long _checkpointCount;
     // The decode that holds the gate, from before its native call until settlement, so that Dispose can request
     // its cancel. Written with a full fence on both sides (here and in Dispose), so a decode that starts while
     // Dispose runs either sees the disposal or is seen by it.
@@ -52,8 +75,8 @@ public sealed class LiteRtSession : IDisposable
     /// <summary>The hint added to a prefill failure that says the input does not fit the remaining
     /// context.</summary>
     internal const string DoesNotFitHint =
-        "The input does not fit the remaining context. Dispose the session and prefill a shorter context on a " +
-        "new one, or load the engine with a larger LiteRtEngineOptions.MaxNumTokens.";
+        "The input does not fit the remaining context. Prefill a shorter text after RewindTo or Reset, or on a " +
+        "new session, or load the engine with a larger LiteRtEngineOptions.MaxNumTokens.";
 
     internal LiteRtSession(SessionHandle session, string? startTokenText)
         : this(session, startTokenText, LiteRtSessionState.Fresh)
@@ -62,7 +85,7 @@ public sealed class LiteRtSession : IDisposable
 
     /// <summary>Initializes a session in <paramref name="initialState"/>. Only tests start a session in another
     /// state than <see cref="LiteRtSessionState.Fresh"/>.</summary>
-    internal LiteRtSession(SessionHandle session, string? startTokenText, LiteRtSessionState initialState)
+    internal LiteRtSession(SessionHandle session, string? startTokenText, SessionMachineState initialState)
     {
         _session = session;
         _startTokenText = startTokenText;
@@ -88,8 +111,8 @@ public sealed class LiteRtSession : IDisposable
                 LiteRtLmNative.litert_lm_session_config_create(&configPtr),
                 nameof(LiteRtLmNative.litert_lm_session_config_create));
             using var config = new SessionConfigHandle(configPtr);
-            // Always off: the text reaches the model as given, and the runtime then adds the start token on the
-            // first prefill of a fresh session (measured on v0.20.0, win-x64, gemma-4 E2B, CPU and GPU).
+            // Always off: the text reaches the tokenizer as given, and the runtime then adds the start token on
+            // the first prefill of a fresh session.
             NativeError.ThrowIfFailed(
                 LiteRtLmNative.litert_lm_session_config_set_apply_prompt_template(config.Ptr, false),
                 nameof(LiteRtLmNative.litert_lm_session_config_set_apply_prompt_template));
@@ -122,6 +145,8 @@ public sealed class LiteRtSession : IDisposable
 
     /// <summary>Gets the state of the session. It can be read from any thread, also after
     /// <see cref="Dispose"/>.</summary>
+    /// <remarks><see cref="Dispose"/> does not change the state: after it, the state is the one the session had,
+    /// or <see cref="LiteRtSessionState.Cancelled"/> when the disposal cancelled a running decode.</remarks>
     public LiteRtSessionState State => _machine.State;
 
     /// <summary>Appends <paramref name="text"/> to the session's context as given, and blocks until the runtime
@@ -129,19 +154,29 @@ public sealed class LiteRtSession : IDisposable
     /// <param name="text">The text to add, with any markup the model expects already in it.</param>
     /// <remarks>
     /// <para>
-    /// On a <see cref="LiteRtSessionState.Fresh"/> session the runtime adds the model's start token before the
-    /// text, so the text must not start with it (measured on LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and
-    /// GPU). When the model's start token is a single token, such as <c>&lt;bos&gt;</c> on Gemma 4, the session
-    /// refuses such a text. Later prefills pass the text unchanged.
+    /// On a <see cref="LiteRtSessionState.Fresh"/> session the runtime adds one position before the text, for the
+    /// model's start token, so the text must not start with the start token's text. When the model's start token
+    /// is a single token, such as <c>&lt;bos&gt;</c> on Gemma 4, the session refuses such a text. A session is
+    /// Fresh again after <see cref="Reset"/>, and after a <see cref="RewindTo"/> a checkpoint saved while it was
+    /// Fresh; the runtime then adds the start token again on the next prefill.
     /// </para>
     /// <para>
-    /// A prefill can't be cut once it starts. Any failure leaves the session
-    /// <see cref="LiteRtSessionState.Faulted"/>, because after a failed prefill the runtime returns OK for later
-    /// prefills and decodes on the session, and a decode then delivers no reply. Input that does not fit the
+    /// A later prefill is not checked, but the start token's text does not belong in it either. On gemma-4 E2B
+    /// and E4B a later prefill that starts with <c>&lt;bos&gt;</c> takes one position, not the three of its plain
+    /// tokens, as a second start token would. On Ministral-3-3B the tokenizer itself turns <c>&lt;s&gt;</c> into
+    /// the start token.
+    /// </para>
+    /// <para>
+    /// The call blocks the calling thread, and a prefill can't be cut once it starts. It waits while another
+    /// session of the engine decodes: behind a 160-token decode it took 4.6 to 5.1 s on CPU and 1.3 s on GPU.
+    /// </para>
+    /// <para>
+    /// Any failure leaves the session <see cref="LiteRtSessionState.Faulted"/>, because after a failed prefill the
+    /// runtime returns OK for later prefills and decodes on the session, and a decode then delivers no reply. From
+    /// that state <see cref="RewindTo"/> and <see cref="Reset"/> recover the session. Input that does not fit the
     /// remaining context fails with <see cref="LiteRtStatusCode.ResourceExhausted"/>,
     /// <see cref="LiteRtStatusCode.InvalidArgument"/> or <see cref="LiteRtStatusCode.FailedPrecondition"/>,
-    /// depending on how it does not fit. This behavior and these three statuses were measured on LiteRT-LM
-    /// v0.20.0, win-x64, gemma-4 E2B, CPU and GPU.
+    /// depending on how it does not fit.
     /// </para>
     /// </remarks>
     /// <exception cref="ObjectDisposedException">The session has been disposed.</exception>
@@ -153,8 +188,9 @@ public sealed class LiteRtSession : IDisposable
     /// <see cref="LiteRtSessionState.ContextFull"/>, <see cref="LiteRtSessionState.Faulted"/> or
     /// <see cref="LiteRtSessionState.Cancelled"/>.</exception>
     /// <exception cref="LiteRtException">The runtime rejected the input. <see cref="State"/> is then
-    /// <see cref="LiteRtSessionState.Faulted"/>, and <see cref="LiteRtException.StatusCode"/> holds the status
-    /// the runtime returned.</exception>
+    /// <see cref="LiteRtSessionState.Faulted"/>, from which <see cref="RewindTo"/> and <see cref="Reset"/>
+    /// recover the session, and <see cref="LiteRtException.StatusCode"/> holds the status the runtime
+    /// returned.</exception>
     public void Prefill(string text)
     {
         CheckPrefillArguments(text);
@@ -209,8 +245,8 @@ public sealed class LiteRtSession : IDisposable
 
     /// <summary>Generates a reply to the prefilled input and returns its text.</summary>
     /// <returns>The reply. When the context filled during the decode, the text up to that point, and
-    /// <see cref="State"/> is <see cref="LiteRtSessionState.ContextFull"/>. The runtime's report of a full context
-    /// that this relies on was measured on LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and GPU.</returns>
+    /// <see cref="State"/> is <see cref="LiteRtSessionState.ContextFull"/>, from which <see cref="RewindTo"/> and
+    /// <see cref="Reset"/> recover the session.</returns>
     /// <remarks>
     /// <para>
     /// The call blocks the calling thread until the decode ends. No token can cut it; a
@@ -219,10 +255,17 @@ public sealed class LiteRtSession : IDisposable
     /// the next decode.
     /// </para>
     /// <para>
-    /// The reply is the text the model generates, with no template markup removed or added. A reply that reaches
-    /// the <see cref="LiteRtSessionOptions.MaxOutputTokens"/> cap ends without an error, and the session is
-    /// <see cref="LiteRtSessionState.Decoded"/> (measured on LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and
-    /// GPU).
+    /// The reply is the text the model generates, with no template markup removed or added. After a reply that
+    /// ends by itself, the context holds one position more than the prompt and the reply; that it holds the
+    /// end-of-turn token is inferred from the count. So the next turn starts with the user turn and no
+    /// end-of-turn marker: on Gemma 4, prefill exactly <c>&lt;|turn&gt;user\n{text}&lt;turn|&gt;\n&lt;|turn&gt;model\n</c>,
+    /// with no <c>&lt;turn|&gt;</c> or line break in front, which gave the replies of a conversation. With
+    /// <c>&lt;turn|&gt;\n</c> in front, as a rendered history shows it, the replies differed.
+    /// </para>
+    /// <para>
+    /// A reply that reaches the <see cref="LiteRtSessionOptions.MaxOutputTokens"/> cap ends without an error, the
+    /// session is <see cref="LiteRtSessionState.Decoded"/>, and the context holds no extra position after it. The
+    /// same next-turn text gave the replies of a conversation after a capped reply too.
     /// </para>
     /// </remarks>
     /// <exception cref="ObjectDisposedException">The session has been disposed, or <see cref="Dispose"/> cancelled
@@ -230,7 +273,7 @@ public sealed class LiteRtSession : IDisposable
     /// <exception cref="InvalidOperationException">Another call on the session is in progress, or the session is
     /// not <see cref="LiteRtSessionState.Prefilled"/>.</exception>
     /// <exception cref="LiteRtException">The runtime reported an error. <see cref="State"/> is then
-    /// <see cref="LiteRtSessionState.Faulted"/>.</exception>
+    /// <see cref="LiteRtSessionState.Faulted"/>, and the session accepts only <see cref="Dispose"/>.</exception>
     public string Decode()
     {
         SessionStream stream = BeginDecode(SessionCall.Decode, CancellationToken.None);
@@ -261,7 +304,7 @@ public sealed class LiteRtSession : IDisposable
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled. When it was
     /// cancelled before the call, the session is unchanged.</exception>
     /// <exception cref="LiteRtException">The runtime reported an error. <see cref="State"/> is then
-    /// <see cref="LiteRtSessionState.Faulted"/>.</exception>
+    /// <see cref="LiteRtSessionState.Faulted"/>, and the session accepts only <see cref="Dispose"/>.</exception>
     public async Task<string> DecodeAsync(CancellationToken cancellationToken = default)
     {
         SessionStream stream = BeginDecode(SessionCall.DecodeAsync, cancellationToken);
@@ -304,7 +347,7 @@ public sealed class LiteRtSession : IDisposable
     /// not <see cref="LiteRtSessionState.Prefilled"/>.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
     /// <exception cref="LiteRtException">The runtime reported an error. <see cref="State"/> is then
-    /// <see cref="LiteRtSessionState.Faulted"/>.</exception>
+    /// <see cref="LiteRtSessionState.Faulted"/>, and the session accepts only <see cref="Dispose"/>.</exception>
     public async IAsyncEnumerable<string> DecodeStreamingAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -332,6 +375,141 @@ public sealed class LiteRtSession : IDisposable
                 await stream.Settled.ConfigureAwait(false);
             }
             stream.DisposeRegistration();
+        }
+    }
+
+    /// <summary>Records the session's current point, so that <see cref="RewindTo"/> can return to it.</summary>
+    /// <returns>A checkpoint, valid only on this session.</returns>
+    /// <remarks>
+    /// <para>
+    /// Accepted when the session is <see cref="LiteRtSessionState.Fresh"/>, <see cref="LiteRtSessionState.Prefilled"/>
+    /// or <see cref="LiteRtSessionState.Decoded"/>; the state does not change. A checkpoint saved on a Fresh session
+    /// survives <see cref="Reset"/>. <see cref="LiteRtSessionCheckpoint"/> says what drops a checkpoint.
+    /// </para>
+    /// <para>
+    /// The call blocks the calling thread. On an idle engine a save took at most 0.1 ms, and about 1 ms on a Fresh
+    /// session. The first <see cref="SaveCheckpoint"/> or <see cref="RewindTo"/> on this session after another
+    /// session or a conversation used the engine took 5 to 14 ms on CPU and 285 to 392 ms on GPU. Whether the call
+    /// waits while another session generates was not measured.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ObjectDisposedException">The session has been disposed.</exception>
+    /// <exception cref="InvalidOperationException">Another call on the session is in progress, or the session is
+    /// <see cref="LiteRtSessionState.ContextFull"/>, <see cref="LiteRtSessionState.Faulted"/> or
+    /// <see cref="LiteRtSessionState.Cancelled"/>.</exception>
+    /// <exception cref="LiteRtException">The runtime failed to save the checkpoint. <see cref="State"/> is then
+    /// <see cref="LiteRtSessionState.Faulted"/>, and the session accepts only <see cref="Dispose"/>.</exception>
+    [Experimental(ExperimentalApis.SessionCheckpoints, UrlFormat = ExperimentalApis.SessionCheckpointsUrl)]
+    public LiteRtSessionCheckpoint SaveCheckpoint()
+    {
+        ObjectDisposedException.ThrowIf(IsDisposed, this);
+        EnterCall();
+        try
+        {
+            _machine.ThrowIfRefused(SessionCall.SaveCheckpoint);
+            // Numbered before the native call, so that no label is used twice, a failed save's included.
+            var checkpoint = new LiteRtSessionCheckpoint(this, _checkpointCount++, _machine.State);
+            RunCheckpointNative(SessionCall.SaveCheckpoint, checkpoint.Label, rewoundTo: null);
+            return checkpoint;
+        }
+        finally
+        {
+            ExitCall();
+        }
+    }
+
+    /// <summary>Returns the session to the point that <paramref name="checkpoint"/> recorded.</summary>
+    /// <param name="checkpoint">A checkpoint that <see cref="SaveCheckpoint"/> returned on this session.</param>
+    /// <remarks>
+    /// <para>
+    /// The session's context and <see cref="State"/> become the ones the checkpoint recorded:
+    /// <see cref="LiteRtSessionState.Fresh"/>, <see cref="LiteRtSessionState.Prefilled"/> or
+    /// <see cref="LiteRtSessionState.Decoded"/>. The runtime drops the checkpoints saved at a later point. After a
+    /// rewind to a checkpoint saved on a Fresh session, the runtime adds the start token again on the next prefill
+    /// (see <see cref="Prefill"/>). A decode after the rewind gave the same reply as the first decode from that
+    /// point, and as a new session that reached the point the same way, also when another session or a
+    /// conversation used the engine in between.
+    /// </para>
+    /// <para>
+    /// Accepted when the session is Fresh, Prefilled, Decoded or <see cref="LiteRtSessionState.ContextFull"/>, and
+    /// when it is <see cref="LiteRtSessionState.Faulted"/> because a prefill failed. From those last two states
+    /// the rewind recovers the session. A session Faulted by any other failure, or
+    /// <see cref="LiteRtSessionState.Cancelled"/>, accepts only <see cref="Dispose"/>.
+    /// </para>
+    /// <para>
+    /// The call blocks the calling thread. Its cost is the one <see cref="SaveCheckpoint"/> describes. Whether the
+    /// call waits while another session generates was not measured.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ObjectDisposedException">The session has been disposed.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="checkpoint"/> is <c>null</c>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="checkpoint"/> was saved on another session.</exception>
+    /// <exception cref="InvalidOperationException">Another call on the session is in progress; the session's state
+    /// does not accept the call; or the runtime has dropped the checkpoint, as
+    /// <see cref="LiteRtSessionCheckpoint"/> describes. In the last case
+    /// <see cref="Exception.InnerException"/> is the <see cref="LiteRtException"/> with
+    /// <see cref="LiteRtStatusCode.NotFound"/>, and the session is unchanged.</exception>
+    /// <exception cref="LiteRtException">The runtime failed to rewind for another reason. <see cref="State"/> is
+    /// then <see cref="LiteRtSessionState.Faulted"/>, and the session accepts only <see cref="Dispose"/>.</exception>
+    [Experimental(ExperimentalApis.SessionCheckpoints, UrlFormat = ExperimentalApis.SessionCheckpointsUrl)]
+    public void RewindTo(LiteRtSessionCheckpoint checkpoint)
+    {
+        ObjectDisposedException.ThrowIf(IsDisposed, this);
+        ArgumentNullException.ThrowIfNull(checkpoint);
+        if (!ReferenceEquals(checkpoint.Owner, this))
+            throw new ArgumentException(
+                "The checkpoint was saved on another session. A checkpoint is valid only on the session that saved it.",
+                nameof(checkpoint));
+        EnterCall();
+        try
+        {
+            _machine.ThrowIfRefused(SessionCall.RewindTo);
+            RunCheckpointNative(SessionCall.RewindTo, checkpoint.Label, checkpoint.Recorded);
+        }
+        finally
+        {
+            ExitCall();
+        }
+    }
+
+    /// <summary>Clears the session's context and returns the session to
+    /// <see cref="LiteRtSessionState.Fresh"/>.</summary>
+    /// <remarks>
+    /// <para>
+    /// After a reset the runtime adds the start token again on the next prefill (see <see cref="Prefill"/>), and
+    /// the next turn gave the same reply as on a new session. The runtime drops every checkpoint except those saved
+    /// while the session was Fresh.
+    /// </para>
+    /// <para>
+    /// Accepted in the same states as <see cref="RewindTo"/>: Fresh, <see cref="LiteRtSessionState.Prefilled"/>,
+    /// <see cref="LiteRtSessionState.Decoded"/>, <see cref="LiteRtSessionState.ContextFull"/>, and
+    /// <see cref="LiteRtSessionState.Faulted"/> because a prefill failed.
+    /// </para>
+    /// <para>
+    /// The call blocks the calling thread. On an idle engine it took about 1 ms, and 12 to 16 ms on GPU after a
+    /// prefill. Like <see cref="Prefill"/> and <see cref="LiteRtEngine.CreateSession"/>, it waits while another
+    /// session of the engine generates: behind a 160-token decode it took 4.4 to 4.7 s on CPU and 1.4 to 1.5 s on
+    /// GPU.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ObjectDisposedException">The session has been disposed.</exception>
+    /// <exception cref="InvalidOperationException">Another call on the session is in progress, or the session's
+    /// state does not accept the call.</exception>
+    /// <exception cref="LiteRtException">The runtime failed to reset the session. <see cref="State"/> is then
+    /// <see cref="LiteRtSessionState.Faulted"/>, and the session accepts only <see cref="Dispose"/>.</exception>
+    [Experimental(ExperimentalApis.SessionCheckpoints, UrlFormat = ExperimentalApis.SessionCheckpointsUrl)]
+    public void Reset()
+    {
+        ObjectDisposedException.ThrowIf(IsDisposed, this);
+        EnterCall();
+        try
+        {
+            _machine.ThrowIfRefused(SessionCall.Reset);
+            RunCheckpointNative(SessionCall.Reset, label: null, rewoundTo: null);
+        }
+        finally
+        {
+            ExitCall();
         }
     }
 
@@ -431,6 +609,9 @@ public sealed class LiteRtSession : IDisposable
     /// <summary>Whether a call holds the one-call-at-a-time gate, for tests.</summary>
     internal bool IsCallInProgress => Volatile.Read(ref _callInProgress) != 0;
 
+    /// <summary>The number of saves the session has numbered, for tests.</summary>
+    internal long CheckpointCount => Volatile.Read(ref _checkpointCount);
+
     /// <summary>The native session, for the calls that hold a reference on it.</summary>
     internal SessionHandle Handle => _session;
 
@@ -476,6 +657,7 @@ public sealed class LiteRtSession : IDisposable
             // the state stays as it is.
             _session.DangerousAddRef(ref referenced);
             bool succeeded = false;
+            LiteRtStatusCode? failedStatus = null;
             try
             {
                 using InputDataHandle input = LiteRtEmbeddingEngine.CreateTextInput(text);
@@ -484,15 +666,94 @@ public sealed class LiteRtSession : IDisposable
                 // The exception reads the report before the input is deleted and before the release below, which
                 // can delete the session and the engine.
                 if (status != LiteRtStatusCode.Ok)
+                {
+                    failedStatus = status;
                     throw NativeError.Exception(
                         status, "litert_lm_session_run_prefill failed.", report => PrefillFailureHint(status, report?.Message));
+                }
                 succeeded = true;
             }
             finally
             {
                 // Any failure latches Faulted: after a failed prefill, a later prefill returned OK at once and a
-                // decode stream did not call back within 30 s (measured on v0.20.0, win-x64, gemma-4 E2B).
-                _machine.Complete(SessionCall.Prefill, succeeded ? SessionCallOutcome.Succeeded : SessionCallOutcome.Failed);
+                // decode stream did not call back within 30 s (measured, as the class remarks say). The
+                // fault records the status, for the rule on which faults a rewind or a reset recovers.
+                _machine.Complete(
+                    SessionCall.Prefill, succeeded ? SessionCallOutcome.Succeeded : SessionCallOutcome.Failed, failedStatus);
+            }
+        }
+        finally
+        {
+            if (referenced)
+                _session.DangerousRelease();
+        }
+    }
+
+    /// <summary>Runs the native save, rewind or reset (<c>rewind_to_step(0)</c>) of <paramref name="call"/> with
+    /// the gate held and the state already checked, and moves the state to its outcome.</summary>
+    /// <param name="call"><see cref="SessionCall.SaveCheckpoint"/>, <see cref="SessionCall.RewindTo"/> or
+    /// <see cref="SessionCall.Reset"/>.</param>
+    /// <param name="label">The checkpoint's NUL-terminated label, for a save or a rewind; <c>null</c> for a
+    /// reset.</param>
+    /// <param name="rewoundTo">For a rewind, the state the checkpoint recorded.</param>
+    private unsafe void RunCheckpointNative(SessionCall call, byte[]? label, LiteRtSessionState? rewoundTo)
+    {
+        bool referenced = false;
+        try
+        {
+            // Throws ObjectDisposedException when Dispose ran after the entry check; no native call was made, so
+            // the state stays as it is.
+            _session.DangerousAddRef(ref referenced);
+            SessionCallOutcome outcome = SessionCallOutcome.Failed;
+            LiteRtStatusCode? failedStatus = null;
+            try
+            {
+                LiteRtStatusCode status;
+                string function;
+                // The runtime copies the label during the call, so the buffer is pinned only for its duration.
+                fixed (byte* labelPtr = label)
+                {
+                    switch (call)
+                    {
+                        case SessionCall.SaveCheckpoint:
+                            function = nameof(LiteRtLmNative.litert_lm_session_save_checkpoint);
+                            status = LiteRtLmNative.litert_lm_session_save_checkpoint(_session.Ptr, labelPtr);
+                            break;
+                        case SessionCall.RewindTo:
+                            function = nameof(LiteRtLmNative.litert_lm_session_rewind_to_checkpoint);
+                            status = LiteRtLmNative.litert_lm_session_rewind_to_checkpoint(_session.Ptr, labelPtr);
+                            break;
+                        case SessionCall.Reset:
+                            function = nameof(LiteRtLmNative.litert_lm_session_rewind_to_step);
+                            status = LiteRtLmNative.litert_lm_session_rewind_to_step(_session.Ptr, 0);
+                            break;
+                        default:
+                            throw new ArgumentOutOfRangeException(nameof(call), call, null);
+                    }
+                }
+                if (status == LiteRtStatusCode.Ok)
+                {
+                    outcome = SessionCallOutcome.Succeeded;
+                    return;
+                }
+                failedStatus = status;
+                // The exception reads the report here, before the release below, which can delete the session and
+                // the engine.
+                LiteRtException error = NativeError.Exception(status, $"{function} failed.");
+                // A rewind to a checkpoint the runtime dropped answers NOT_FOUND and was measured to change neither
+                // the session's position nor its next decode, so the state stays.
+                if (call == SessionCall.RewindTo && status == LiteRtStatusCode.NotFound)
+                {
+                    outcome = SessionCallOutcome.NotFound;
+                    throw new InvalidOperationException(
+                        "The session no longer holds the checkpoint: a RewindTo an earlier checkpoint or a Reset " +
+                        "dropped it. The session is unchanged.", error);
+                }
+                throw error;
+            }
+            finally
+            {
+                _machine.Complete(call, outcome, failedStatus, outcome == SessionCallOutcome.Succeeded ? rewoundTo : null);
             }
         }
         finally
@@ -533,9 +794,8 @@ public sealed class LiteRtSession : IDisposable
     /// </summary>
     /// <remarks>An id start token is not required to come back from <paramref name="tokenize"/>: Gemma 4's
     /// <c>&lt;bos&gt;</c> (id 2) tokenizes as plain text into three ids, yet a first prefill that starts with it
-    /// takes one position more than the same text without it, which reads as a second start token (positions
-    /// measured on LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and GPU; the second start token is inferred from
-    /// them).</remarks>
+    /// takes one position more than the same text without it, which reads as a second start token (the positions
+    /// were measured, as the class remarks say; the second start token is inferred from them).</remarks>
     internal static string? StartTokenText(
         LiteRtTokenUnion? startToken, Func<string, int[]> tokenize, Func<int[], string> detokenize)
     {
