@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text;
 using LiteRtLmSharp.Native;
 using Xunit;
@@ -430,6 +431,102 @@ public sealed class SessionStreamTests
         Assert.Equal("done", stream.TakeResult());
         Assert.Equal(LiteRtSessionState.Decoded, session.State);
         Assert.Equal(1, session.Handle.RetiredCount);
+    }
+
+    /// <summary>A chunk that arrives after a native start that failed is ignored, even with a cancel requested:
+    /// by then the stream released its reference on the native session, so it must make no native call.</summary>
+    [Fact]
+    public async Task Chunks_AfterAFailedStart_AreIgnored()
+    {
+        LiteRtSession session = NullSession(LiteRtSessionState.Prefilled);
+        SessionStream stream = session.BeginDecode(SessionCall.DecodeAsync, CancellationToken.None);
+        session.Dispose();
+        Assert.Equal(CancelRequester.Dispose, stream.Requester);
+        session.StartDecode(stream);
+        await stream.Settled.WaitAsync(Limit);
+        Assert.Equal(LiteRtSessionState.Faulted, session.State);
+        Assert.True(stream.FinalSeen);
+
+        stream.OnChunk(Encoding.UTF8.GetBytes("late"), isFinal: false, error: null);
+        Assert.False(stream.CancelIssued);
+        Assert.Throws<LiteRtException>(() => stream.TakeResult());
+    }
+
+    /// <summary>Settlement ends the token registration itself, so a stream whose caller never disposes it (an
+    /// enumerator that is dropped) leaves nothing registered on a token that lives longer.</summary>
+    [Fact]
+    public async Task Settlement_EndsTheTokenRegistration()
+    {
+        using LiteRtSession session = NullSession(LiteRtSessionState.Prefilled);
+        using var cts = new CancellationTokenSource();
+        SessionStream stream = session.BeginDecode(SessionCall.DecodeStreamingAsync, cts.Token);
+        await Feed(stream, Utf8("done"), null);
+        cts.Cancel();
+        Assert.Equal(CancelRequester.None, stream.Requester);
+        stream.ThrowIfFailed();
+        Assert.Equal(LiteRtSessionState.Decoded, session.State);
+    }
+
+    /// <summary>A <see cref="LiteRtSession.Dispose"/> during the blocking <see cref="LiteRtSession.Decode"/> is
+    /// issued at the next chunk, and the blocking wait then throws <see cref="ObjectDisposedException"/> with the
+    /// session Cancelled.</summary>
+    [Fact]
+    public void Dispose_DuringABlockingDecode_ThrowsObjectDisposed()
+    {
+        LiteRtSession session = NullSession(LiteRtSessionState.Prefilled);
+        SessionStream stream = session.BeginDecode(SessionCall.Decode, CancellationToken.None);
+        session.Dispose();
+        stream.OnChunk(Encoding.UTF8.GetBytes("cut"), isFinal: false, error: null);
+        Assert.True(stream.CancelIssued);
+        stream.OnChunk([], isFinal: true, FinalChunkClassifier.CancelledError);
+        stream.OnCallReturned();
+        stream.WaitAndSettle();
+        Assert.Throws<ObjectDisposedException>(() => stream.TakeResult());
+        Assert.Equal(LiteRtSessionState.Cancelled, session.State);
+        Assert.False(session.IsCallInProgress);
+    }
+
+    /// <summary>A consumer that leaves the stream after its last piece requests a cancel that no later chunk
+    /// issues: the reply ends as a normal result, Decoded, with no exception.</summary>
+    [Fact]
+    public async Task LeavingTheStreamAfterItsLastPiece_LeavesANormalResult()
+    {
+        using LiteRtSession session = NullSession(LiteRtSessionState.Prefilled);
+        SessionStream stream = session.BeginDecode(SessionCall.DecodeStreamingAsync, CancellationToken.None);
+        stream.OnChunk(Encoding.UTF8.GetBytes("all of it"), isFinal: false, error: null);
+        stream.RequestCancel(CancelRequester.Caller);
+        stream.OnChunk([], isFinal: true, error: null);
+        stream.OnCallReturned();
+        await stream.Settled.WaitAsync(Limit);
+        Assert.False(stream.CancelIssued);
+        stream.ThrowIfFailed();
+        Assert.Equal(LiteRtSessionState.Decoded, session.State);
+        Assert.False(session.IsCallInProgress);
+    }
+
+    /// <summary>The native callback entry with a chunk it cannot read (null) counts it as the final chunk with a
+    /// fault: the decode settles Faulted instead of waiting, and the process keeps running.</summary>
+    [Fact]
+    public async Task CallbackEntry_WithAChunkItCannotRead_SettlesAsFaulted()
+    {
+        using LiteRtSession session = NullSession(LiteRtSessionState.Prefilled);
+        SessionStream stream = session.BeginDecode(SessionCall.DecodeAsync, CancellationToken.None);
+        CallTheCallbackEntry(GCHandle.ToIntPtr(stream.Handle), chunk: nint.Zero);
+        Assert.True(stream.FinalSeen);
+        stream.OnCallReturned();
+        await stream.Settled.WaitAsync(Limit);
+        var ex = Assert.Throws<LiteRtException>(() => stream.TakeResult());
+        Assert.Equal(LiteRtStatusCode.InvalidArgument, ex.StatusCode);
+        Assert.Equal(LiteRtSessionState.Faulted, session.State);
+        Assert.False(session.IsCallInProgress);
+    }
+
+    /// <summary>Calls the <c>[UnmanagedCallersOnly]</c> callback through its native entry point, as the runtime
+    /// does.</summary>
+    private static unsafe void CallTheCallbackEntry(nint callbackData, nint chunk)
+    {
+        delegate* unmanaged[Cdecl]<nint, nint, void> entry = &SessionStream.OnChunk;
+        entry(callbackData, chunk);
     }
 
     /// <summary>The gate is held from the start of a decode until its settlement: a prefill or a second decode in

@@ -107,7 +107,8 @@ internal sealed class SessionStream
     /// <summary>Whether the callback issued <c>litert_lm_session_cancel_process</c>.</summary>
     internal bool CancelIssued => _cancelIssued;
 
-    /// <summary>Whether the final chunk, or a read failure that counts as one, arrived.</summary>
+    /// <summary>Whether the final chunk, or a read failure that counts as one, arrived, or the decode settled
+    /// without one after a failed start. Chunks are ignored from then on.</summary>
     internal bool FinalSeen => Volatile.Read(ref _final) != 0;
 
     /// <summary>The first requester of a cancel, or <see cref="CancelRequester.None"/>.</summary>
@@ -133,7 +134,8 @@ internal sealed class SessionStream
     }
 
     /// <summary>Registers the caller's token: when it fires, it requests the cancel. Registered before
-    /// <c>run_decode_async</c> and disposed by the caller that awaits the stream.</summary>
+    /// <c>run_decode_async</c>, unregistered at settlement, and disposed by the caller that awaits the
+    /// stream.</summary>
     internal void RegisterToken()
     {
         if (_token.CanBeCanceled)
@@ -327,6 +329,9 @@ internal sealed class SessionStream
     {
         if (Interlocked.Exchange(ref _settledFlag, 1) != 0)
             return;
+        // Marks the decode finished without a second arrival, so that a chunk after this point, which only a
+        // failed start can leave possible, makes no native call: the reference on the session goes below.
+        Volatile.Write(ref _final, 1);
         LiteRtSession owner = _owner!;
         string? result = null;
         Exception? exception = null;
@@ -344,6 +349,11 @@ internal sealed class SessionStream
         {
             _result = result;
             _exception = exception;
+            // After the classification has read whether the token fired. Unregister does not wait for a token
+            // callback that is running, so settlement never blocks on the token's thread; a callback that runs
+            // late only sets flags on this settled stream. The caller's DisposeRegistration stays, and does
+            // nothing more.
+            _registration.Unregister();
             _text = null;
             _token = default;
             _owner = null;
