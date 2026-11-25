@@ -13,4 +13,12 @@ internal static class ExperimentalApis
     /// <summary>The guide section on <see cref="SessionCheckpoints"/>.</summary>
     public const string SessionCheckpointsUrl =
         "https://orihuelaconde.github.io/LiteRtLmSharp/sessions.html#experimental-checkpoints-rewind-and-reset";
+
+    /// <summary>Model download and update: <see cref="LiteRtModelSync"/>, <see cref="LiteRtModelSyncSource"/>,
+    /// <see cref="LiteRtModelSyncPlan"/>, <see cref="LiteRtModelSyncOptions"/> and
+    /// <see cref="LiteRtModelUpdateResult"/>. The id <c>LITERTLM002</c> is not assigned.</summary>
+    public const string ModelSync = "LITERTLM003";
+
+    /// <summary>The guide section on <see cref="ModelSync"/>.</summary>
+    public const string ModelSyncUrl = "https://orihuelaconde.github.io/LiteRtLmSharp/model-sync.html#experimental-status";
 }
