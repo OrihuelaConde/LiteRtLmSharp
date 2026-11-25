@@ -88,7 +88,7 @@ internal static unsafe partial class LiteRtLmNative
     /// <paramref name="out_responses"/> and frees it with <see cref="litert_lm_responses_delete"/>; it is set
     /// to NULL on failure. Fails with <c>INVALID_ARGUMENT</c> for a null session or out pointer, otherwise
     /// with the runtime's error. The binding does not call it: it is declared so that the export check
-    /// covers it and a later test can compare it with
+    /// covers it and a regression test can compare its reply with the reply of
     /// <see cref="litert_lm_session_run_decode_async"/>.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -140,8 +140,9 @@ internal static unsafe partial class LiteRtLmNative
     internal static partial LiteRtStatusCode litert_lm_responses_get_num_candidates(nint responses, nuint* out_num_candidates);
 
     /// <summary>The response text at <paramref name="index"/>, lent by the responses object until it is
-    /// deleted; <paramref name="out_text"/> is set to NULL on failure. The binding does not call it: it is
-    /// declared for a later test that reads the reply of the blocking decode.</summary>
+    /// deleted; <paramref name="out_text"/> is set to NULL on failure. The binding does not call it: the
+    /// regression test of <see cref="litert_lm_session_run_decode"/> reads the blocking decode's reply with
+    /// it.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial LiteRtStatusCode litert_lm_responses_get_response_text_at(nint responses, nuint index, nint* out_text);

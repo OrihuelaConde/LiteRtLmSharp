@@ -9,14 +9,16 @@ namespace LiteRtLmSharp;
 /// <remarks>
 /// <para>
 /// A session applies no template, keeps no message history and parses no tool calls or reasoning channels: the
-/// text it prefills reaches the model as given. Create one with <see cref="LiteRtEngine.CreateSession"/>.
+/// text it prefills is tokenized as given, and the runtime adds the model's start token before the first prefill
+/// (see <see cref="Prefill"/>). Create one with <see cref="LiteRtEngine.CreateSession"/>.
 /// </para>
 /// <para>
 /// <b>Prefill, then decode.</b> Add the prompt text with <see cref="Prefill"/>, then generate the reply with
 /// <see cref="Decode"/>, <see cref="DecodeAsync"/> or <see cref="DecodeStreamingAsync"/>. After a reply, prefill
 /// more text before the next decode. A cancel, from a token, from leaving a stream early or from
-/// <see cref="Dispose"/>, takes effect at the next piece of the reply and leaves the session
-/// <see cref="LiteRtSessionState.Cancelled"/>, unless the reply had already reached its last piece.
+/// <see cref="Dispose"/>, is sent to the runtime at the next piece of the reply and leaves the session
+/// <see cref="LiteRtSessionState.Cancelled"/>, unless the reply had already reached its last piece. The runtime
+/// was measured to stop at that piece on LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and GPU.
 /// </para>
 /// <para>
 /// <b>One call at a time.</b> A session runs one call at a time and refuses a second call with
@@ -134,12 +136,12 @@ public sealed class LiteRtSession : IDisposable
     /// </para>
     /// <para>
     /// A prefill can't be cut once it starts. Any failure leaves the session
-    /// <see cref="LiteRtSessionState.Faulted"/>: after a failed prefill the runtime returns OK for later prefills
-    /// and decodes on the session, and a decode then delivers no reply. Input that does not fit the remaining
-    /// context fails with <see cref="LiteRtStatusCode.ResourceExhausted"/>,
+    /// <see cref="LiteRtSessionState.Faulted"/>, because after a failed prefill the runtime returns OK for later
+    /// prefills and decodes on the session, and a decode then delivers no reply. Input that does not fit the
+    /// remaining context fails with <see cref="LiteRtStatusCode.ResourceExhausted"/>,
     /// <see cref="LiteRtStatusCode.InvalidArgument"/> or <see cref="LiteRtStatusCode.FailedPrecondition"/>,
-    /// depending on how it does not fit. Both were measured on LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and
-    /// GPU.
+    /// depending on how it does not fit. This behavior and these three statuses were measured on LiteRT-LM
+    /// v0.20.0, win-x64, gemma-4 E2B, CPU and GPU.
     /// </para>
     /// </remarks>
     /// <exception cref="ObjectDisposedException">The session has been disposed.</exception>
@@ -212,7 +214,7 @@ public sealed class LiteRtSession : IDisposable
     /// <remarks>
     /// <para>
     /// The call blocks the calling thread until the decode ends. No token can cut it; a
-    /// <see cref="Dispose"/> from another thread cancels it at the next piece of the reply. After a reply that
+    /// <see cref="Dispose"/> from another thread cancels it, as the class remarks describe. After a reply that
     /// ends normally, <see cref="State"/> is <see cref="LiteRtSessionState.Decoded"/>: prefill more text before
     /// the next decode.
     /// </para>
@@ -239,14 +241,16 @@ public sealed class LiteRtSession : IDisposable
     }
 
     /// <summary>Generates a reply to the prefilled input without blocking a thread.</summary>
-    /// <param name="cancellationToken">Cancels the decode at the next piece of the reply. The session is then
-    /// <see cref="LiteRtSessionState.Cancelled"/>, unless the reply had already reached its last piece.</param>
+    /// <param name="cancellationToken">Cancels the decode: the cancel is sent to the runtime at the next piece of
+    /// the reply, and the session is then <see cref="LiteRtSessionState.Cancelled"/>, unless the reply had
+    /// already reached its last piece.</param>
     /// <returns>A task whose result is the reply, as <see cref="Decode"/> returns it.</returns>
     /// <remarks>
     /// <para>
     /// The session counts as busy from this call until the task completes. A token that fires after the reply
-    /// reached its last piece does not cancel the decode: <see cref="State"/> then follows how the reply ended,
-    /// and the task still throws <see cref="OperationCanceledException"/>.
+    /// reached its last piece, and before the decode ends, does not cancel the decode: <see cref="State"/> then
+    /// follows how the reply ended, and the task still throws <see cref="OperationCanceledException"/>. A token
+    /// that fires after the decode ended changes nothing.
     /// </para>
     /// <para>See <see cref="Decode"/> for the other outcomes.</para>
     /// </remarks>
@@ -274,10 +278,11 @@ public sealed class LiteRtSession : IDisposable
     }
 
     /// <summary>Generates a reply to the prefilled input and streams it as text pieces.</summary>
-    /// <param name="cancellationToken">Cancels the decode at the next piece of the reply. The session is then
-    /// <see cref="LiteRtSessionState.Cancelled"/>, unless the reply had already reached its last piece.</param>
-    /// <returns>The pieces of the reply, in order. Their concatenation is the text <see cref="Decode"/>
-    /// returns.</returns>
+    /// <param name="cancellationToken">Cancels the decode: the cancel is sent to the runtime at the next piece of
+    /// the reply, and the session is then <see cref="LiteRtSessionState.Cancelled"/>, unless the reply had
+    /// already reached its last piece.</param>
+    /// <returns>The pieces of the reply, in order. Their concatenation is the reply, as <see cref="Decode"/>
+    /// returns it.</returns>
     /// <remarks>
     /// <para>
     /// The decode starts at the first <see cref="IAsyncEnumerator{T}.MoveNextAsync"/>, and the session counts as
@@ -332,7 +337,7 @@ public sealed class LiteRtSession : IDisposable
 
     /// <summary>Releases the session. It doesn't wait for a call in progress on the session: the native session
     /// is released when that call ends.</summary>
-    /// <remarks>A running decode is cancelled at the next piece of its reply and then throws
+    /// <remarks>A running decode is cancelled as the class remarks describe, and then throws
     /// <see cref="ObjectDisposedException"/>, unless the reply had already reached its last piece. A call in
     /// progress holds a reference on the native session, so the native delete runs on the thread that ends that
     /// call. The native engine is released after its last conversation or session is deleted.</remarks>
