@@ -18,8 +18,9 @@ internal static class SessionCheckpointHelpers
     public const string SecondUser = "Now do the same for three secondary colors.";
 
     /// <summary>A turn that changes every later reply. When a rewind or reset that does nothing leaves it in the
-    /// context, the next reply is in French from its first token; this was measured on win-x64, CPU and GPU, with
-    /// caps of 16 and 24, after one turn and after three, and as a prefill that was not decoded.</summary>
+    /// context, the next reply is in French from its first token. This was measured on win-x64, CPU and GPU: with
+    /// caps of 16 and 24 after one decoded turn and after three, and with a cap of 16 when the French turn was
+    /// prefilled and not decoded before the next prefill.</summary>
     public const string FrenchUser = "From now on, answer every question only in French.";
 
     public const string ResetUser = "What is the capital of France? Answer in two full sentences.";
@@ -220,7 +221,7 @@ public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, IT
     /// next turn. It equals the first pass of that turn and a new session's. Without the rewind the repeated turn
     /// follows the French turn and gets a French reply, which a new session that runs the same turns checks before
     /// the rewind. The French turn is there because, after the next turn alone, the same turn was measured to give
-    /// the same text without the rewind: in full on CPU, and in its first 8 tokens on CPU and GPU.</summary>
+    /// the same text without the rewind: in full on CPU, and with an output cap of 8 tokens on CPU and GPU.</summary>
     [SkippableFact]
     public async Task RewindTo_ACheckpointAfterADecode_RunsTheSameNextTurnAgain()
     {
