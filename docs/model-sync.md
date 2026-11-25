@@ -1,12 +1,13 @@
 # Download and update models
 
 `LiteRtModelSync` downloads a `.litertlm` model file from an HTTP server and brings a local copy up to date
-with a newer remote file. A `.litertlm` file starts with a header that lists the file's sections, the parts of
-the model stored one after another, and the header can record a SHA-256 hash of each section. The runtime
-compares the section hashes that the headers of the local and the remote file record. It copies the sections
-whose hashes match from the local file and downloads the others. When more than 80% of the section bytes
-changed, or when either file has no section hashes, it downloads the whole file. The calls load no model and
-need no engine.
+with a newer remote file. The calls load no model and need no engine.
+
+A `.litertlm` file starts with a header that lists the file's sections, the parts of the model stored one after
+another, and the header can record a SHA-256 hash of each section. The runtime compares the section hashes
+that the headers of the local and the remote file record. It copies the sections whose hashes match from the
+local file and downloads the others. When more than 80% of the section bytes changed, or when either file has
+no section hashes, it downloads the whole file.
 
 Three members do the work:
 
@@ -58,8 +59,8 @@ Two rules follow:
 `LiteRtModelUpdateResult` carry `[Experimental("LITERTLM003")]`. These types and their members can change or
 be removed in a minor version. They're experimental for three reasons:
 
-- The runtime's model sync functions are new in C API version 1.1.0, which LiteRT-LM v0.20.0 carries, and the
-  binding was tested against that version only.
+- The runtime's model sync functions first appear in C API version 1.1.0, which LiteRT-LM v0.20.0 carries,
+  and the binding was tested against that version only.
 - The calls ran on one platform only (see [Limitations](#limitations)).
 - Differential updates depend on files with section hashes, and none of the files that were checked has them.
 
@@ -147,7 +148,8 @@ that throws fails the update with `LiteRtStatusCode.Unknown`.
 fetches included. On a first download it's a little more than the file size: the runtime reads the header
 with a fetch of the first 16 KiB (16,384 bytes) of the file, and then fetches the file from the end of the
 header. For a 129,024-byte test file with a 1,184-byte header, a first download received 144,224 bytes. To
-show a percentage, take `TotalRemoteSize` from a plan (see the next section), and cap the value at 100%.
+show a percentage, take `TotalRemoteSize` from a plan (see
+[Check for an update before downloading](#check-for-an-update-before-downloading)), and cap the value at 100%.
 
 ## Pin the model to a revision
 
@@ -304,9 +306,9 @@ happens with a file downloaded before you added this code, for example with the 
 [Download a model](#download-a-model), and when the process ends between the update and the line that writes
 the revision file. A first launch without a network fails, because there is no file to fall back on.
 
-The example updates the file before the process loads it, and a process that updates a model this way and only
-then loads it computes with the new model. A process that loaded the file before it was replaced needs the
-step in [Delete the compiled cache after you replace a model](#delete-the-compiled-cache-after-you-replace-a-model).
+The example updates the file before the process loads it. For a process that loaded the file before it was
+replaced, see
+[Delete the compiled cache after you replace a model](#delete-the-compiled-cache-after-you-replace-a-model).
 
 ## Update a model that an engine is using
 
@@ -345,10 +347,13 @@ engine.Dispose();
 File.Move(nextPath, modelPath, overwrite: true);
 
 // This process loaded the old version, so delete its compiled cache files before you load the new one.
-foreach (string file in Directory.EnumerateFiles(folder, Path.GetFileName(modelPath) + "*"))
+string modelName = Path.GetFileName(modelPath);
+foreach (string file in Directory.GetFiles(folder))
 {
-    if (file.EndsWith("xnnpack_cache", StringComparison.Ordinal)
-        || file.EndsWith("_cache.bin", StringComparison.Ordinal))
+    string name = Path.GetFileName(file);
+    if (name.StartsWith(modelName, StringComparison.Ordinal)
+        && (name.EndsWith("xnnpack_cache", StringComparison.Ordinal)
+            || name.EndsWith("_cache.bin", StringComparison.Ordinal)))
         File.Delete(file);
 }
 
@@ -382,12 +387,12 @@ Before such a process loads the file again, do one of the following:
 
 - Delete the cache files next to the model. Their names start with the model file's name and end with
   `xnnpack_cache` or `_cache.bin`, as the example above does.
-- Load the engine with `Cache = LiteRtCache.Disabled`. Later loads then compile the model again each time.
+- Load the engine with `Cache = LiteRtCache.Disabled`.
 - Load the engine with `Cache = LiteRtCache.Directory(PATH)`, where `PATH` is an existing folder that holds no
   cache of the file. This was measured after a move over the file, not after an in-place update.
 
-A process that hadn't loaded the file before an in-place update, such as an app that updates the model at
-startup and then loads it, built a new cache and computed with the new model. On GPU, the old cache files
+In a process that hadn't loaded the file before an in-place update, such as an app that updates the model at
+startup and then loads it, the embedding engine built a new cache and computed with the new model. On GPU, the old cache files
 stayed next to the model; delete them to recover their disk space.
 
 ## Cancel a download or an update
