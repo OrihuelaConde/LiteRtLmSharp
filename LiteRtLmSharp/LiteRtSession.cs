@@ -212,7 +212,7 @@ public sealed class LiteRtSession : IDisposable
     /// </para>
     /// </remarks>
     /// <exception cref="ObjectDisposedException">The session has been disposed, or <see cref="Dispose"/> cancelled
-    /// the decode. <see cref="State"/> is then <see cref="LiteRtSessionState.Cancelled"/>.</exception>
+    /// the decode; in the second case <see cref="State"/> is <see cref="LiteRtSessionState.Cancelled"/>.</exception>
     /// <exception cref="InvalidOperationException">Another call on the session is in progress, or the session is
     /// not <see cref="LiteRtSessionState.Prefilled"/>.</exception>
     /// <exception cref="LiteRtException">The runtime reported an error. <see cref="State"/> is then
