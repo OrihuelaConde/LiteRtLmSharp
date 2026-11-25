@@ -463,6 +463,37 @@ engine settings; the binding maps the three known values and skips any newer one
 `min_runtime_version` returns a string owned by the file, or `NULL`. The NPU queries (`npu_brand`,
 `soc_name`) are not bound.
 
+## Session API (v0.20.0, C API 1.1.0, `c/engine.h`)
+
+A session prefills and decodes raw text on an engine, without the conversation layer's template, history, tool
+parsing, or reasoning channels. The declarations are in `Native/LiteRtLmNative.Session.cs`; the session config
+functions that conversations also use, and `input_data_create`/`_delete`, are declared with those features.
+The public surface is `LiteRtSession` (see [sessions.md](sessions.md)).
+
+| Function | Used by | Notes |
+|---|---|---|
+| `engine_create_session` | `LiteRtEngine.CreateSession` | The session holds a reference on the native engine until it is deleted. |
+| `session_config_set_apply_prompt_template` | `LiteRtEngine.CreateSession` | Always `false`: the text reaches the tokenizer as given. |
+| `session_run_prefill` | `Prefill`, `PrefillAsync` | One text input per call; blocking. |
+| `session_run_decode_async` | `Decode`, `DecodeAsync`, `DecodeStreamingAsync` | Every decode takes this path; the final chunk settles it. |
+| `session_cancel_process` | Cancel from a token, a stream left early, or `Dispose` | Called from the stream callback on a chunk that is not final. Afterwards the session is only deleted. |
+| `session_delete` | `Dispose` (through the session handle) | Never from a stream callback, and always before the engine. |
+| `session_save_checkpoint` | `SaveCheckpoint` (experimental) | The binding passes a NUL-terminated ASCII label that never repeats on a session; the runtime copies it. |
+| `session_rewind_to_checkpoint` | `RewindTo` (experimental) | `NOT_FOUND` (`Checkpoint not found: <label>`) for a dropped checkpoint becomes `InvalidOperationException`, and the session is unchanged. |
+| `session_rewind_to_step` | `Reset` (experimental) | Called only with step 0. The C API reports no current step. |
+| `session_run_decode` | Declared only | Blocking decode, kept for the export check and a regression test that compares its reply with the async decode's. |
+| `session_run_text_scoring` | Declared only | Not wrapped: after a save, a score of a one-token target, and a rewind, the next decode fails with `INVALID_ARGUMENT: Unprocessed token is null.` and the session is unusable (CPU and GPU). |
+| `responses_delete`, `responses_get_num_candidates`, `responses_get_response_text_at`, `responses_get_score_at`, `responses_get_token_length_at` | Declared only | The responses object of the blocking decode and of scoring. |
+
+The header's threading and lifetime rules apply: calls on one session must not overlap (the binding refuses a
+second call with `InvalidOperationException`), a stream callback may call only `session_cancel_process`, and
+every session is deleted before its engine. After a failed prefill the runtime returns OK for later prefills and
+decodes on the session, but a streamed decode then delivered no chunk in 30 s and a blocking one returned an
+empty text. The
+binding refuses those calls. After a prefill whose input did not fit, a rewind or `rewind_to_step(0)` recovered
+the session; after other prefill failures the binding accepts both, but that was not measured. Measured on
+LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and GPU.
+
 ## Official shared-library status
 - **Upstream published official C API prebuilts with v0.16.0** (`litert_lm_c_api-<version>.zip` for
   linux/windows/macos/android, `CLiteRTLM.xcframework.zip` for iOS), and 1.2.0 ships those. v0.17.x and

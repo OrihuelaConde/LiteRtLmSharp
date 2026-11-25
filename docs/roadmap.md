@@ -51,6 +51,7 @@ new features, **patch** for binding-only fixes; tag the repo `v<version>` per pu
 | Native error reporting (v0.18.0 `error_reporter.h`): every failed native call surfaces the runtime's own status and reason in `LiteRtException` (+ `StatusCode`, `LiteRtStatusCode`) instead of a bare "returned null" | ✅ (1.3.0) |
 | v0.18.0 options: per-image vision token cap (`MaxVisionTokensPerImage`), Metal residency (`EnableMetalResidencySet`), per-conversation speculative decoding (`LiteRtConversationOptions.EnableSpeculativeDecoding`) | ✅ (1.3.0) |
 | KV overflow guard (`LiteRtContextOverflowException`): sends clamp their reply to the remaining context and throw instead of overflowing the KV cache, which the native runtime does not police (heap corruption + deferred `0xC0000005`/`0xC0000374` crash — found by a downstream consumer app, 2026-07-13, in a stateful tool loop). Same-turn signal: `LiteRtConversation.IsContextFull` (true exactly when the next send would throw) → `ChatFinishReason.Length` in the MEAI client, overriding `ToolCalls` on a full conversation. Armed by an explicit `MaxNumTokens`; pure binding, no new native surface. **Done 2026-07-15** | ✅ |
+| Raw sessions: `LiteRtSession` (`LiteRtEngine.CreateSession`, `LiteRtSessionOptions`, `LiteRtSessionState`): prefill and decode of text you write, no template; blocking, async, and streamed decode; cancel; a state machine that refuses the calls the runtime mishandles. Experimental, behind `[Experimental("LITERTLM001")]`: `SaveCheckpoint`, `RewindTo`, `Reset`, and `LiteRtSessionCheckpoint`, which also accept a session whose context filled or whose prefill failed (recovery measured after full contexts and prefills whose input did not fit). Text scoring is not wrapped (see the Raw Session API row below). See [sessions](sessions.md) | ✅ (1.4.0, not yet published) |
 
 Known constraints (documented in the README): one chat engine ALIVE at a time (an embedding engine does
 not count; reloading after
@@ -89,7 +90,8 @@ metadata (19 of 21). Per header: `engine.h` 83/110, `conversation.h` 38/38, `emb
 - The raw Session API (14: `engine_create_session`, the `session_*` calls including the checkpoint/rewind
   trio, and `session_config_set_apply_prompt_template`), responses introspection (10), the raw-FD engine
   load (#3139 kills the process on Windows when the caller does not share the DLL's CRT) and the NPU
-  dispatch dir (NPU is unsupported on our side).
+  dispatch dir (NPU is unsupported on our side). 1.4.0 (LiteRT-LM v0.20.0, not yet published) declares 16
+  session and responses functions and wraps 9 of them in `LiteRtSession`; see the Raw Session API row below.
 - Embedding engine (11): the image and audio inputs (`set_vision_tokens_per_image` on the settings and
   the options, `set_audio_num_threads`) wait for multimodal embeddings; the three dispatch-lib-dir setters
   are NPU-only; the five `embedding_options_get_*` getters would only read back what the binding set.
@@ -97,8 +99,8 @@ metadata (19 of 21). Per header: `engine.h` 83/110, `conversation.h` 38/38, `emb
 
 Previous audit (2026-09-05, header v0.16.0): **116 of 144 `litert_lm_*` functions bound** against the
 v0.16.0 official prebuilt (everything we bind exists in the header, no drift; the 1.2.0 docs said 117). v0.16.0 added 4 functions with no removals or signature changes:
-`set_enable_ynnpack` (bound in the repin) and the session checkpoint/rewind trio (out of scope for
-now). The 3 `capabilities` functions declared in the v0.16.0 header are absent from the shipped zip
+`set_enable_ynnpack` (bound in the repin) and the session checkpoint/rewind trio (out of scope then;
+1.4.0 wraps it as the experimental `SaveCheckpoint`, `RewindTo`, and `Reset`). The 3 `capabilities` functions declared in the v0.16.0 header are absent from the shipped zip
 (upstream PR #3273, post-release) and are not bound. Previous audit (2026-08-09, header v0.15.0):
 **115 of 140** —
 v0.15.0 grew the surface 109 → 140 with zero removals; the only signature changes formalize two
@@ -134,7 +136,8 @@ parameters), which is why the managed assembly requires same-version natives fro
 
 The v0.14.0 audit below is kept for history (denominators are the 109-function header). The
 remaining 25 unbound functions are unchanged: the raw Session API (13), responses introspection
-(10), the raw-FD engine load, and the NPU dispatch dir.
+(10), the raw-FD engine load, and the NPU dispatch dir. (1.4.0, not yet published, declares 16 session and
+responses functions and wraps 9 of them in `LiteRtSession`; see the Raw Session API row below.)
 
 ### High value (user-facing features)
 
@@ -167,8 +170,8 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
 
 | Feature | Functions | Notes |
 |---|---|---|
-| Raw Session API (14) | `engine_create_session`, `session_run_prefill`, `session_run_decode(_async)`, `session_generate_content(_stream)`, `session_run_text_scoring`, `session_cancel_process`, `session_config_set_apply_prompt_template`, `session_delete`, `session_get_benchmark_info`, `session_save_checkpoint`, `session_rewind_to_checkpoint`/`_to_step` | Low-level prefill/decode bypassing chat templates; includes text scoring (log-prob ranking), the raw no-template mode and (v0.16.0) checkpoint/rewind. v0.14.0 changed the `run_prefill`/`generate_content` signatures; still out of scope (the Conversation API covers our use cases). Its `input_data_create`/`_delete` are bound since the embedding engine, which takes the same inputs. |
-| Responses introspection (10) | `responses_*` | Candidates, scores, per-token logits — only meaningful with the Session API. |
+| ✅ Raw Session API | Used by the public API: `engine_create_session`, `session_config_set_apply_prompt_template` (always off), `session_run_prefill`, `session_run_decode_async`, `session_cancel_process`, `session_delete`; experimental tier: `session_save_checkpoint`, `session_rewind_to_checkpoint`, `session_rewind_to_step` (called only with 0, for `Reset`). Declared only: `session_run_decode` (blocking; a regression test compares it with the async decode) and `session_run_text_scoring`. Not imported: `session_generate_content(_stream)`, `session_get_benchmark_info` | **1.4.0, not yet published** (LiteRT-LM v0.20.0): `LiteRtSession` with stable prefill, decode, streaming, and cancel, and the experimental (`LITERTLM001`) `SaveCheckpoint`, `RewindTo`, `Reset`, and `LiteRtSessionCheckpoint`. Measured on win-x64 with gemma-4 E2B, CPU and GPU. **Text scoring is not wrapped:** after a save, a score of a one-token target, and a rewind, the next decode failed with `INVALID_ARGUMENT: Unprocessed token is null.` and the session was unusable, on CPU and GPU; and a score after a rewind that undid a prefill returned a wrong value. Its `input_data_create`/`_delete` are bound since the embedding engine, which takes the same inputs. See [sessions](sessions.md). |
+| Responses introspection | `responses_*` | Declared only, for the declarations that the blocking decode and text scoring need: `responses_delete`, `get_num_candidates`, `get_response_text_at`, `get_score_at`, `get_token_length_at`. No public member reads a responses object; the rest of `responses_*` is not imported. |
 | Raw-FD engine load | `engine_settings_create_from_raw_file_descriptor` | **Deferred** (new in v0.14.0). Loads a model from an open file descriptor (mainly Android `content://` scenarios); the path-based `engine_settings_create` covers the desktop/MAUI paths we ship. |
 | ✅ Benchmark fake tokens | `engine_settings_set_num_prefill_tokens`, `set_num_decode_tokens` | **Done 2026-06-20** (`LiteRtEngineOptions.BenchmarkPrefillTokens` / `BenchmarkDecodeTokens`). Synthetic-token benchmarking: the prompt is padded/truncated to the prefill count and decode runs exactly the decode count (ignoring the stop token), so `GetBenchmarkInfo` reports throughput at FIXED counts — content-independent device benchmarking. **Confirmed observable through the Conversation API** (not a benchmark-main-only path): both fields feed `EngineSettings::benchmark_params_`, read by the default `EngineAdvancedImpl`/`SessionAdvanced` (source trace + win-x64 probe: a tiny "Hi" reports 256/64). Setting either also flips benchmark mode on; the reply is not a real answer. |
 | NPU dispatch dir | `engine_settings_set_litert_dispatch_lib_dir` | Qualcomm/Intel NPU dispatch library location. |
@@ -530,7 +533,9 @@ remaining 25 unbound functions are unchanged: the raw Session API (13), response
    landed the new C-API surface**: LoRA adapters, CPU thread counts, per-send max-output-tokens,
    tool-call streaming and preface rendering, taking coverage to **84/109**. FD-based load
    (`engine_settings_create_from_raw_file_descriptor`, mainly Android `content://`) is the one
-   deferred item left; the raw Session API and responses introspection stay out of scope.
+   deferred item left. 1.4.0 (not yet published) declares 16 session and responses functions and wraps 9 of
+   them in `LiteRtSession` (see the Raw Session API row above); text scoring and the responses introspection
+   stay unwrapped.
    ~~`android-x64` for emulators~~ (1.3.0); Desktop meta-package;
    ✅ ~~CONTRIBUTING + issue templates~~ (2026-06-11: CONTRIBUTING.md, issue forms, PR template,
    SECURITY.md, Discussions enabled); scheduled smoke-test workflow that consumes the published

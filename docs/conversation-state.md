@@ -284,9 +284,10 @@ sampler settings or two phrasings from the same context.
 | Continue a chat after cancelling a send | `Clone()` before the send | Copies state, no re-prefill |
 | Branch a live conversation into variants | `Clone()` | Copies state, no re-prefill |
 | Checkpoint before a risky turn, then retry | `Clone()` (reword the retry on the GPU backend) | Copies state, no re-prefill |
+| Do the same on a raw session, where you write the prompt text | `LiteRtSession.SaveCheckpoint` and `RewindTo`, experimental (see [Sessions](sessions.md#experimental-checkpoints-rewind-and-reset)) | No re-prefill; not after a cancel |
 
-The two compose: clone is the cheap same-process fork of live state, and the checkpoint that survives a
-cancellation; restore is the durable cross-session reload.
+On a conversation, `Clone()` and `History` compose: clone is the cheap same-process fork of live state, and the
+checkpoint that survives a cancellation; restore is the durable cross-session reload.
 
 ## Cap a single send: per-send `MaxOutputTokens`
 

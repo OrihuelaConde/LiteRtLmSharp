@@ -2,7 +2,9 @@
 
 A session runs the model on text that you write. You prefill text into the model's context, and then you
 decode a reply. Everything you prefill and every reply stays in the context, so you can add turns, but the
-session keeps no list of messages that you can read back, restore, or clone.
+session keeps no list of messages that you can read back, restore, or clone. The experimental
+[checkpoints](#experimental-checkpoints-rewind-and-reset) return the context to a point that you saved earlier on
+the same session.
 
 A session applies no chat template, so you write the prompt with the markup the model expects. It takes text
 only, and it doesn't parse tool calls or reasoning. Create a session with `LiteRtEngine.CreateSession`.
@@ -16,7 +18,7 @@ example to continue a reply that was cut.
 | | Conversation | Session |
 |---|---|---|
 | Prompt template | Applied by the runtime | None: you write the text |
-| Message history | Kept; restore it with `History`, fork it with `Clone()` | The context holds every prefill and reply; no list of messages, clone, or restore |
+| Message history | Kept; restore it with `History`, fork it with `Clone()` | The context holds every prefill and reply; no list of messages, clone, or restore. Experimental: rewind to a saved checkpoint, or reset |
 | Tools, reasoning, constrained decoding | Supported | Not available |
 | Images and audio | Supported | Text only |
 | Reply | `LiteRtResponse`, or chunks tagged as answer, thinking, or tool call | A string, or a stream of text pieces |
@@ -160,9 +162,12 @@ starts with that token's text: `<bos>` on Gemma 4 E2B and E4B, `<s>` on Ministra
 token (on Gemma 4 this is inferred from the positions it takes; on Ministral 3 the tokenizer itself maps `<s>`
 to the start token ID), and it changed the reply in 1 or 2 of 3 prompts on each model.
 
-The session checks only the first prefill. Keep the start token's text out of later prefills too: on Gemma 4
-a later `<bos>` also takes the one position of a start token, and on Ministral 3 the tokenizer turns a later
-`<s>` into the start token ID.
+The session checks only the first prefill of a `Fresh` session. A session is `Fresh` again after the
+experimental `Reset`, and after a rewind to a checkpoint saved while it was `Fresh`: the runtime then adds the
+start position again, and the check applies again (see
+[The start token after a reset](#the-start-token-after-a-reset)). Keep the start token's text out of later
+prefills too: on Gemma 4 a later `<bos>` also takes the one position of a start token, and on Ministral 3 the
+tokenizer turns a later `<s>` into the start token ID.
 
 ### Other models
 
@@ -284,24 +289,34 @@ turns, this guide has no recipe.
 
 ## Session states
 
-`LiteRtSession.State` says which calls the session accepts next:
+`LiteRtSession.State` says which calls the session accepts next. The last column lists experimental members,
+which need an opt-in (see [Turn on the experimental members](#turn-on-the-experimental-members)). Without the
+opt-in, only the **Accepts** column applies.
 
-| State | The session holds | Accepts |
-|---|---|---|
-| `Fresh` | Nothing yet | `Prefill`, `PrefillAsync`, `Dispose` |
-| `Prefilled` | Input that waits for a decode | `Prefill`, `PrefillAsync`, `Decode`, `DecodeAsync`, `DecodeStreamingAsync`, `Dispose` |
-| `Decoded` | A reply that ended by itself or at `MaxOutputTokens` | `Prefill`, `PrefillAsync`, `Dispose` |
-| `ContextFull` | A reply that stopped at the end of the context | `Dispose` |
-| `Faulted` | A failed prefill, or a decode that the runtime ended with an error | `Dispose` |
-| `Cancelled` | A reply that a cancel stopped | `Dispose` |
+| State | The session holds | Accepts | Also accepts, experimental |
+|---|---|---|---|
+| `Fresh` | Nothing yet | `Prefill`, `PrefillAsync`, `Dispose` | `SaveCheckpoint`, `RewindTo`, `Reset` |
+| `Prefilled` | Input that waits for a decode | `Prefill`, `PrefillAsync`, `Decode`, `DecodeAsync`, `DecodeStreamingAsync`, `Dispose` | `SaveCheckpoint`, `RewindTo`, `Reset` |
+| `Decoded` | A reply that ended by itself or at `MaxOutputTokens` | `Prefill`, `PrefillAsync`, `Dispose` | `SaveCheckpoint`, `RewindTo`, `Reset` |
+| `ContextFull` | A reply that stopped at the end of the context | `Dispose` | `RewindTo`, `Reset` |
+| `Faulted` | A call that the runtime failed: a prefill, a decode, or an experimental member | `Dispose` | After a failed prefill: `RewindTo`, `Reset`. After any other failure: nothing |
+| `Cancelled` | A reply that a cancel stopped | `Dispose` | Nothing |
 
 A call that the state doesn't accept throws `InvalidOperationException` before it reaches the runtime, and the
 state doesn't change. A decode on a `Fresh` or `Decoded` session is refused that way: prefill first.
 
-`ContextFull`, `Faulted`, and `Cancelled` accept only `Dispose`. After a cancel, a failed prefill, or a full
-context, the runtime skipped later prefills on the session without an error, and a decode gave no reply. The
-session refuses that work instead, and it refuses the same work after a failed decode as a precaution. To go
-on, dispose the session, create another one, and prefill the context again.
+Without the experimental members, `ContextFull`, `Faulted`, and `Cancelled` accept only `Dispose`. After a
+cancel, a failed prefill, or a full context, the runtime skipped later prefills on the session without an error,
+and a decode gave no reply. The session refuses that work instead, and it refuses the same work after a failed
+decode as a precaution. Dispose the session, create another one, and prefill the context again. With the
+experimental members, `RewindTo` and `Reset` also accept a `ContextFull` session and a session that a failed
+prefill left `Faulted`, and return it to a state that accepts a prefill (see
+[Recover a full or failed session](#recover-a-full-or-failed-session)). `SaveCheckpoint` needs `Fresh`,
+`Prefilled`, or `Decoded`, so save the checkpoint before the call that can fail.
+
+`State` doesn't say which call left a session `Faulted`. The exception does: a `LiteRtException` from `Prefill`
+or `PrefillAsync` leaves a session that `RewindTo` and `Reset` accept. Any other call that leaves the session
+`Faulted`, including a decode that throws `OperationCanceledException`, leaves one that accepts only `Dispose`.
 
 When `Decode` returns, the state is `Decoded` or `ContextFull`:
 
@@ -315,33 +330,41 @@ switch (session.State)
         // The reply ended. Prefill the next turn to go on.
         break;
     case LiteRtSessionState.ContextFull:
-        // reply holds the text up to the end of the context. The session accepts only Dispose.
+        // reply holds the text up to the end of the context. Of the stable members, the session
+        // accepts only Dispose.
         break;
 }
 ```
 
-`State` can be read from any thread. After `Dispose`, it keeps its value, except that a prefill or a decode
-still running moves it to its outcome when it ends (`Cancelled` for a decode that the dispose stopped).
+`State` can be read from any thread. After `Dispose`, it keeps its value, except that a call still running (a
+prefill, a decode, or an experimental `SaveCheckpoint`, `RewindTo`, or `Reset`) moves it to its outcome when it
+ends (`Cancelled` for a decode that the dispose stopped).
 
 ### Exceptions and the state they leave
 
 | Exception | When | State afterwards |
 |---|---|---|
-| `ArgumentNullException`, `ArgumentException` | A prefill with a `null` or empty text, or a first prefill that starts with the start token's text | Unchanged |
+| `ArgumentNullException`, `ArgumentException` | A prefill with a `null` or empty text, or a first prefill that starts with the start token's text. Experimental: `RewindTo` with `null` or with a checkpoint saved on another session | Unchanged |
 | `InvalidOperationException` | Another call on the session is running, or the state doesn't accept the call | Unchanged |
-| `LiteRtException` | The runtime rejected a prefill, or a decode ended with an error | `Faulted` |
+| `InvalidOperationException` from the experimental `RewindTo` | The runtime has dropped the checkpoint. `InnerException` is a `LiteRtException` whose `StatusCode` is `NotFound` | Unchanged |
+| `LiteRtException` from `Prefill` or `PrefillAsync` | The runtime rejected the prefill | `Faulted`; also accepts the experimental `RewindTo` and `Reset` |
+| `LiteRtException` from any other member | A decode didn't start or ended with an error, or the experimental `SaveCheckpoint`, `RewindTo`, or `Reset` failed | `Faulted`; accepts only `Dispose` |
 | `OperationCanceledException` from `DecodeAsync` or `DecodeStreamingAsync` | The token fired | `Cancelled`; or `Decoded`, `ContextFull`, or `Faulted` when the token fired after the last piece; unchanged (`Prefilled`) when the token was cancelled before the decode started |
 | `OperationCanceledException` from `PrefillAsync` | The token was cancelled before the prefill started | Unchanged |
 | `ObjectDisposedException` from a decode that was running | A `Dispose` stopped the decode | `Cancelled` |
 | `ObjectDisposedException` from any other call | The session was disposed before the call reached the runtime | Unchanged |
 
-Two cases need a closer look:
+Three cases need a closer look:
 
 - **`Dispose` during a blocking `Prefill`.** A prefill that has reached the runtime runs to its end, and
   `Prefill` returns, or throws `LiteRtException` if the runtime rejects the text. A `Dispose` that comes before
   the prefill reaches the runtime makes `Prefill` throw `ObjectDisposedException`.
 - **`Dispose` after the last piece of a blocking `Decode`.** Nothing is cancelled: `Decode` returns the reply,
   and the state follows how the reply ended.
+- **`Dispose` during an experimental call.** A `SaveCheckpoint`, `RewindTo`, or `Reset` that has reached the
+  runtime runs to its end the same way, and the state follows its outcome. A `Reset` can wait for seconds
+  behind another session's generation (see [Cost and waiting](#cost-and-waiting)). After a `Dispose` in that
+  time, a `Reset` that succeeds still leaves the session `Fresh`.
 
 ## Cancel a generation
 
@@ -409,7 +432,7 @@ alone to tell this from another failure: it can be `ResourceExhausted`, `Invalid
 `FailedPrecondition`, depending on how the input doesn't fit. The message says that the input doesn't fit the
 remaining context. For `InvalidArgument` and `FailedPrecondition`, it says so only when the runtime gives its
 reason, and the runtime drops the reason when its log is silenced with `LiteRtEngine.SetMinLogLevel` above 5.
-Whatever the cause, the session accepts only `Dispose`.
+Whatever the cause, the session is `Faulted`, and of the stable members it accepts only `Dispose`.
 
 ```csharp
 string? Generate(LiteRtEngine engine, string prompt)
@@ -421,7 +444,8 @@ string? Generate(LiteRtEngine engine, string prompt)
     }
     catch (LiteRtException e)
     {
-        // The runtime rejected the prompt. The session is Faulted and accepts only Dispose.
+        // The runtime rejected the prompt. The session is Faulted: of the stable members, it
+        // accepts only Dispose.
         Console.WriteLine($"{e.StatusCode}: {e.Message}");
         return null;
     }
@@ -429,12 +453,15 @@ string? Generate(LiteRtEngine engine, string prompt)
 }
 ```
 
-To go on, prefill a shorter context on a new session, or load the engine with a larger `MaxNumTokens`.
+To go on, prefill a shorter context on a new session, or load the engine with a larger `MaxNumTokens`. With the
+experimental members, you can also keep this session (see
+[Recover a full or failed session](#recover-a-full-or-failed-session)).
 
 ### A decode that fills the context
 
 A decode that fills the context doesn't throw. It returns the text up to the end of the context and leaves the
-session `ContextFull`, which accepts only `Dispose`.
+session `ContextFull`. Of the stable members, `ContextFull` accepts only `Dispose` (for the experimental ones, see
+[Recover a full or failed session](#recover-a-full-or-failed-session)).
 
 ### Count the context yourself
 
@@ -446,6 +473,9 @@ itself.
 session doesn't tell you which one you have. A reply whose `Tokenize` count equals `MaxOutputTokens` most
 likely reached the cap: in the measurements, a capped reply of N tokens re-tokenized to exactly N. To stay on
 the safe side, count one extra position for every reply.
+
+With the experimental members, store your position count with each checkpoint. After a `RewindTo`, the context
+holds the positions it held at the save. After a `Reset`, the count starts again at the one start position.
 
 Leave a margin, because a prefill can be refused before its tokens fill the space left, and some text takes
 more positions than `Tokenize` counts:
@@ -465,30 +495,229 @@ that long has exactly N tokens. It ends without an error, and the state is `Deco
 ended by itself. The next turn takes the same text as after any reply (see
 [Later turns on Gemma 4](#later-turns-on-gemma-4)).
 
-A session can't decode on from a capped reply: `Decoded` accepts only a prefill, and `Prefill` refuses an empty
-text. To get the rest of a capped reply, you can try the recipe in
+A session can't decode on from a capped reply: `Decoded` refuses a decode, and `Prefill` refuses an empty text.
+To get the rest of a capped reply, you can try the recipe in
 [Continue a reply that was cut](#continue-a-reply-that-was-cut) on a new session. It was not measured with a
 capped reply from a session.
 
 With 0, the default, the session sends no cap to the runtime. A negative value throws
 `ArgumentOutOfRangeException`.
 
+## Experimental: checkpoints, rewind, and reset
+
+A checkpoint records a point in a session's context. `RewindTo` returns the session to that point, and `Reset`
+clears the context. With them you can try a turn, drop it, and try another one. You can also go on with a
+session whose context filled or whose prefill failed, without creating a new session and prefilling the context
+again.
+
+### Turn on the experimental members
+
+`LiteRtSession.SaveCheckpoint`, `LiteRtSession.RewindTo`, `LiteRtSession.Reset`, and the
+`LiteRtSessionCheckpoint` type carry `[Experimental("LITERTLM001")]`. The C# compiler reports every use of them as
+error LITERTLM001, and the error's help link opens this section. They're experimental because their behavior was
+measured on one platform and one model only (see [Limitations](#limitations)), so they can change or be removed
+in a minor version. The stable members don't depend on them.
+
+To use them, suppress the diagnostic in the files that call them:
+
+```csharp
+#pragma warning disable LITERTLM001
+```
+
+Or suppress it for the whole project:
+
+```xml
+<PropertyGroup>
+  <NoWarn>$(NoWarn);LITERTLM001</NoWarn>
+</PropertyGroup>
+```
+
+In a check of the same attribute with another diagnostic ID, Visual Basic reported a warning, not an error, with
+the ID and the link. F# reported its generic warning FS0057, with no ID and no link.
+
+### Try a turn and go back
+
+`SaveCheckpoint` returns a `LiteRtSessionCheckpoint` for the session's current point, and the state doesn't
+change. `RewindTo` returns the context and `State` to the ones the checkpoint recorded: `Fresh`, `Prefilled`, or
+`Decoded`. After a rewind to a checkpoint saved after a reply, as in the following example, the session is
+`Decoded` and accepts a prefill. After a rewind to one saved after a prefill, it is `Prefilled` and accepts a
+decode or another prefill.
+
+The following example saves the point after the first reply, tries a turn, and, when the reply doesn't fit what
+the app needs, drops that turn and asks again with other wording:
+
+```csharp
+#pragma warning disable LITERTLM001   // SaveCheckpoint, RewindTo, and Reset are experimental.
+
+static string NextTurn(string text) => $"<|turn>user\n{text}<turn|>\n<|turn>model\n";
+
+var greedy = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.Greedy };
+using LiteRtSession session = engine.CreateSession(new LiteRtSessionOptions { Sampler = greedy });
+
+session.Prefill(firstPrompt);   // firstPrompt holds the text built as in "The first turn".
+Console.WriteLine(session.Decode());
+
+// The session is Decoded. Save the point after the first reply.
+LiteRtSessionCheckpoint afterFirstReply = session.SaveCheckpoint();
+
+session.Prefill(NextTurn("Reply with one word: which city is the Eiffel Tower in?"));
+string answer = session.Decode().Trim();
+
+if (answer.Contains(' '))
+{
+    // Not one word. Drop the attempt from the context, and ask the same turn another way.
+    session.RewindTo(afterFirstReply);   // Decoded again, with only the first turn in the context.
+    session.Prefill(NextTurn("Which city is the Eiffel Tower in? Answer with the city name only."));
+    answer = session.Decode().Trim();
+}
+
+Console.WriteLine(answer);
+```
+
+In the measurements, the same work run again after a rewind gave the same reply, byte for byte, as the first
+pass from that point and as a new session that reached the point the same way. This held on the CPU and on the
+GPU, and also when another session or a conversation used the engine between the save and the rewind. On the
+GPU this differs from re-prefilling a reply on a new session (see
+[Continue a reply that was cut](#continue-a-reply-that-was-cut)).
+
+The sampler is fixed for the session's lifetime, so a rewind can't give you a second reply with other sampling
+settings. With greedy sampling the same turn gives the same reply again, which is why the example rewords it.
+Every measurement used argmax sampling; whether another strategy gives a different reply after a rewind was not
+measured.
+
+### What drops a checkpoint
+
+The runtime keeps the saved points inside the session, and it drops them in two cases:
+
+- **A rewind** drops every checkpoint saved at a later point than the one it returns to. Checkpoints saved at
+  that same point stay, the one you rewound to included.
+- **A reset** drops every checkpoint except those saved while the session was `Fresh`.
+
+A rewind to a dropped checkpoint throws `InvalidOperationException`, whose `InnerException` is a
+`LiteRtException` with `StatusCode` `NotFound`. The session doesn't change: in the measurements, neither its
+position nor its next reply changed. The state didn't change either on a `ContextFull` session or on one that a
+failed prefill left `Faulted`, and a rewind to a checkpoint the session still held then recovered it.
+
+A checkpoint is valid only on the session that saved it. `RewindTo` with a checkpoint of another session throws
+`ArgumentException`, and with `null`, `ArgumentNullException`. The three members check in this order: disposal
+(`ObjectDisposedException`), then the argument, then another call in progress, then the state
+(`InvalidOperationException` for both).
+
+A checkpoint has nothing to dispose, and the C API has no call that drops one checkpoint. The memory that saved
+points take was not measured.
+
+### Reset a session
+
+`Reset` clears the context and returns the session to `Fresh`. It changes only the context: the
+`LiteRtSessionOptions` stay the ones the session was created with. In the measurements, after one turn and after
+three, the next prompt took the same positions and gave the same reply as on a new session. The output cap after
+a reset wasn't measured.
+
+`Reset` is not faster than a new session, and it can wait for another session's generation (see
+[Cost and waiting](#cost-and-waiting)). What it keeps is the session object and the checkpoints saved while the
+session was `Fresh`.
+
+### Recover a full or failed session
+
+`RewindTo` and `Reset` accept these states, besides `Fresh`, `Prefilled`, and `Decoded`:
+
+- `ContextFull`.
+- `Faulted` after a `LiteRtException` from `Prefill` or `PrefillAsync`, whatever its `StatusCode`.
+
+They refuse, with `InvalidOperationException`, a session that any other failure left `Faulted`: a decode that
+didn't start or ended with an error, or a failed `SaveCheckpoint`, `RewindTo`, or `Reset`. They also refuse a
+`Cancelled` session, because after a cancel the C API allows only deleting the session. Those sessions accept
+only `Dispose`.
+
+A rewind needs a checkpoint saved before the call that filled the context or failed. `Reset` needs none.
+
+```csharp
+#pragma warning disable LITERTLM001
+
+// session is Decoded after a reply. NextTurn is the function from the previous example, and longText and
+// shortText hold two versions of the next user message.
+LiteRtSessionCheckpoint beforeTurn = session.SaveCheckpoint();
+try
+{
+    session.Prefill(NextTurn(longText));
+}
+catch (LiteRtException)
+{
+    // The prefill failed, and the session is Faulted. Return to the point before it.
+    session.RewindTo(beforeTurn);
+    session.Prefill(NextTurn(shortText));
+}
+
+string reply = session.Decode();
+if (session.State == LiteRtSessionState.ContextFull)
+{
+    // The reply filled the context. Drop this turn, and keep the session for another one.
+    session.RewindTo(beforeTurn);
+}
+```
+
+In the measurements, after a full context and after a failed later prefill, both a rewind and a reset were
+followed by a decode with the same reply as a new session that reached the same point without the failure, on
+the CPU and on the GPU. After a failed first prefill, both a reset and a rewind to a checkpoint saved while the
+session was `Fresh` gave the same reply as a new session. Every failed prefill measured was input that didn't fit:
+the `InvalidArgument` "too long" form, `ResourceExhausted`, and the input-length form of `FailedPrecondition`. The
+session also accepts a rewind or a reset after any other prefill failure, but that case wasn't measured.
+
+A rewind to a point from which the reply fills the context fills it again. In the measurements, after a rewind to
+a checkpoint saved right after a long prefill, the next decode filled the context again with the same reply. Rewind
+to a checkpoint saved before the long input instead.
+
+### The start token after a reset
+
+After a `Reset`, or a rewind to a checkpoint saved while the session was `Fresh`, the session is `Fresh`. The
+runtime adds the start position again on the next prefill, so prefill the first-turn text, as in
+[The first turn](#the-first-turn), and not a later-turn text. The session refuses a first prefill that starts with
+the start token's text again, as described in [The start token](#the-start-token).
+
+### Cost and waiting
+
+In the measurements, on an idle engine, a `SaveCheckpoint` or a `RewindTo` took at most 0.1 ms, and a save on a
+`Fresh` session about 1 ms. A `Reset` took about 1 ms, and 12 to 16 ms on the GPU after a prefill. The first
+`SaveCheckpoint` or `RewindTo` on a session after another session or a conversation used the engine took 5 to
+14 ms on the CPU and 285 to 392 ms on the GPU.
+
+Like `Prefill` and `CreateSession`, `Reset` waits while another session of the engine generates: behind a
+160-token decode, it took 4.4 to 4.7 s on the CPU and 1.4 to 1.5 s on the GPU. Whether `SaveCheckpoint` and
+`RewindTo` wait the same way was not measured. On an idle engine, `CreateSession` took at most 0.4 ms after the
+engine's first session.
+
+### What the binding doesn't wrap
+
+- **Text scoring.** The C API can score a target text: the log likelihood of the text after the prefilled
+  context. Scoring writes to the context, so the session has to rewind after each score. The binding doesn't wrap
+  it, because in the measurements it failed in two ways. After a save, a score of a one-token target,
+  and a rewind, the next decode failed with `INVALID_ARGUMENT: Unprocessed token is null.` and left the session
+  unusable, on the CPU and on the GPU. A score taken after a rewind that undid a prefill returned a different
+  value than the same score on a new session.
+- **Rewind to a position.** The C API can rewind to a numbered position, but it reports no current position, so
+  a caller can't choose a valid one. `Reset` is the rewind to position 0.
+
 ## Threads, lifetime, and the engine
 
 - **One call at a time.** A session runs one call at a time. A second call while one runs throws
   `InvalidOperationException` at once; it doesn't wait. A decode, streamed or not, counts as running until it
-  ends. `State` and `Dispose` can be called from any thread at any time.
+  ends. The experimental `SaveCheckpoint`, `RewindTo`, and `Reset` follow the same rule. `State` and `Dispose`
+  can be called from any thread at any time.
 - **Other sessions and conversations on the engine.** In the measurements, the runtime ran overlapping calls
   on one engine one after the other, and every reply was the same as when it ran alone. `CreateSession`
   waited until a running session decode or conversation send ended, and so did a `Prefill` on another session
   while a session decoded. A conversation's stream that started first gave its last piece, but in all but one
-  run its loop ended only after a session decode that started during it. `Dispose` of an idle session didn't
-  wait. These results come from one model, one pair of prompts, and 5 to 10 runs per case, so treat them as
-  observations, not as a guarantee. Create the sessions you need before you start a long generation, and don't
-  call `CreateSession` or `Prefill` on a UI thread while something generates on the engine.
-- **Session lifetime.** Keep one session per dialog while you add turns. Dispose it when the dialog ends, and
-  as soon as it is `ContextFull`, `Faulted`, or `Cancelled`, because it accepts nothing else. The memory that
-  an idle session holds was not measured.
+  run its loop ended only after a session decode that started during it. The experimental `Reset` waited the
+  same way for another session's decode; behind a conversation send it wasn't measured (see
+  [Cost and waiting](#cost-and-waiting)). `Dispose` of an idle session didn't wait. These results come from one
+  model, one pair of prompts, and 5 to 10 runs per case, so treat them as observations, not as a guarantee.
+  Create the sessions you need before you start a long generation, and don't call `CreateSession` or `Prefill`
+  on a UI thread while something generates on the engine.
+- **Session lifetime.** Keep one session per dialog while you add turns, and dispose it when the dialog ends.
+  Without the experimental members, dispose it as soon as it is `ContextFull`, `Faulted`, or `Cancelled`. With
+  them, you can keep a `ContextFull` session, or one that a failed prefill left `Faulted` (see
+  [Recover a full or failed session](#recover-a-full-or-failed-session)). The memory that an idle session holds
+  was not measured.
 - **Dispose.** `Dispose` doesn't wait for a call in progress: it cancels a running decode, and the native
   session is released when that call ends. Calls after `Dispose` throw `ObjectDisposedException`. Calling
   `Dispose` again does nothing.
@@ -514,12 +743,18 @@ Console.WriteLine(session.Decode());
   with LiteRT-LM v0.20.0 on Windows x64, on the CPU and on an NVIDIA GPU. Apart from the comparison of sampler
   settings, every comparison of two replies used argmax sampling (top-k 1), which gave the same replies as
   `Greedy`. Linux, macOS, Android, and other GPU vendors were not measured.
-- **Models.** The later-turn text, the continuation of a cut reply, the cancel, and the context limits were
-  measured on Gemma 4 E2B only. The start-token rule and the first-turn text were also measured on Gemma 4
-  E4B, Ministral 3, and Phi-4-mini. Prompts with reasoning or tool markup were not measured.
+- **Models.** The later-turn text, the continuation of a cut reply, the cancel, the context limits, and the
+  experimental checkpoints, rewind, and reset were measured on Gemma 4 E2B only. The start-token rule and the
+  first-turn text were also measured on Gemma 4 E4B, Ministral 3, and Phi-4-mini. Prompts with reasoning or tool
+  markup were not measured.
 - **Continuing a cut reply.** It was measured with partial replies from a conversation's stream, cut after one
   prompt, with no system message, with a system message, or with a one-turn history. Continuing a cut reply in
   a session that already held earlier turns was not measured, and neither was going on with the chat after a
   continuation. Whether a continuation on the GPU reads as one coherent reply was not measured either.
 - **Concurrency.** Two conversations generating at the same time, and overlapping calls on other models, were
   not measured.
+- **Checkpoints, rewind, and reset.** Not measured: a save or a rewind while another session generates, many
+  checkpoints held at the same time, and any rewind or reset with
+  `LiteRtEngineOptions.UseRingbuffersLocalAttention` on. The recovery was measured only after prefills whose
+  input didn't fit and after full contexts; a rewind or a reset after another prefill failure is accepted but
+  wasn't measured (see [Recover a full or failed session](#recover-a-full-or-failed-session)).
