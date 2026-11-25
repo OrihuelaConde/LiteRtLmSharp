@@ -487,7 +487,7 @@ The public surface is `LiteRtSession` (see [sessions.md](sessions.md)).
 
 The header's threading and lifetime rules apply: calls on one session must not overlap (the binding refuses a
 second call with `InvalidOperationException`), a stream callback may call only `session_cancel_process`, and
-every session is deleted before its engine. After a failed prefill the runtime returns OK for later prefills and
+every session is deleted before its engine. After a failed prefill the runtime returned OK for later prefills and
 decodes on the session, but a streamed decode then delivered no chunk in 30 s and a blocking one returned an
 empty text. The
 binding refuses those calls. After a prefill whose input did not fit, a rewind or `rewind_to_step(0)` recovered

@@ -608,8 +608,8 @@ points take was not measured.
 
 ### Reset a session
 
-`Reset` clears the context and returns the session to `Fresh`. It changes only the context: the
-`LiteRtSessionOptions` stay the ones the session was created with. In the measurements, after one turn and after
+`Reset` clears the context and returns the session to `Fresh`. The `LiteRtSessionOptions` stay the ones the
+session was created with. In the measurements, after one turn and after
 three, the next prompt took the same positions and gave the same reply as on a new session. The output cap after
 a reset wasn't measured.
 
