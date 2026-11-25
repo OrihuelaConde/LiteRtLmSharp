@@ -8,8 +8,8 @@ namespace LiteRtLmSharp.Native;
 /// A count is taken after a successful native engine create and given back in the handle's
 /// <c>ReleaseHandle</c>, which runs on Dispose and on finalization, like the slot of <see cref="EngineLiveness"/>.
 /// The handle carries the key this class returned, because a finalizer must not depend on other managed objects.
-/// Paths are compared like <see cref="Comparer"/>. <see cref="Default"/> is the registry the engines use; tests
-/// create their own instances.
+/// Keys are <see cref="ModelFilePath.Key"/> spellings, compared like <see cref="Comparer"/>. <see cref="Default"/>
+/// is the registry the engines use; tests create their own instances.
 /// </remarks>
 internal sealed class LoadedModelPaths
 {
@@ -17,7 +17,9 @@ internal sealed class LoadedModelPaths
     public static LoadedModelPaths Default { get; } = new();
 
     /// <summary>Ordinal and case-insensitive on Windows and macOS, whose default file systems ignore case, and
-    /// ordinal elsewhere.</summary>
+    /// ordinal elsewhere. In a case-sensitive folder on those systems it matches two files whose names differ only
+    /// in case, so the registries refuse more, never less; the in-place check uses
+    /// <see cref="ModelFilePath.SameFile"/> instead.</summary>
     public static StringComparer Comparer { get; } =
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() || OperatingSystem.IsIOS()
             ? StringComparer.OrdinalIgnoreCase
@@ -27,10 +29,10 @@ internal sealed class LoadedModelPaths
     private readonly Dictionary<string, int> _counts = new(Comparer);
 
     /// <summary>Counts one more engine for <paramref name="modelPath"/> and returns the key to pass to
-    /// <see cref="Release"/>: the full path.</summary>
+    /// <see cref="Release"/>. Never throws for the path of an existing file.</summary>
     public string Add(string modelPath)
     {
-        string key = Path.GetFullPath(modelPath);
+        string key = ModelFilePath.Key(modelPath);
         lock (_lock)
         {
             _counts[key] = _counts.TryGetValue(key, out int count) ? count + 1 : 1;
@@ -53,13 +55,14 @@ internal sealed class LoadedModelPaths
         }
     }
 
-    /// <summary>How many live engines loaded the file at <paramref name="fullPath"/>, a path that
-    /// <see cref="Path.GetFullPath(string)"/> has normalized.</summary>
-    public int Count(string fullPath)
+    /// <summary>How many live engines loaded the file at <paramref name="modelPath"/>, under any spelling that
+    /// <see cref="ModelFilePath.Key"/> makes equal.</summary>
+    public int Count(string modelPath)
     {
+        string key = ModelFilePath.Key(modelPath);
         lock (_lock)
         {
-            return _counts.TryGetValue(fullPath, out int count) ? count : 0;
+            return _counts.TryGetValue(key, out int count) ? count : 0;
         }
     }
 }

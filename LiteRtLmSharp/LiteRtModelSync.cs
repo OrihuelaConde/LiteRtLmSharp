@@ -16,15 +16,19 @@ namespace LiteRtLmSharp;
 /// the bytes of a remote without section hashes are not verified. Statements marked as measured were measured
 /// on LiteRT-LM v0.20.0, win-x64.</para>
 /// <para>Each call runs the native work on a thread of its own and completes only when the native call has
-/// returned. The methods are safe to call from several threads; calls that read or write the same file at the
-/// same time are refused (see the exceptions). Other processes are not checked.</para>
+/// returned. The methods are safe to call from several threads. A call that writes a file that another call of
+/// this process reads or writes is refused, and so is a call that reads a file another call writes (see the
+/// exceptions); calls that only read one file run together. Other processes are not checked.</para>
 /// <para>Paths on Windows: unless the process runs under the UTF-8 code page (65001), the runtime decodes paths in
 /// the active ANSI code page (measured), so the binding refuses a path with characters outside that code page
 /// before any native call. Under the UTF-8 code page, non-ASCII folder names work (measured with Latin, Japanese
 /// and emoji names). When a
 /// path of the call, or the temporary file next to the output, reaches 260 characters, the binding passes every
 /// path of the call in its extended-length form (<c>\\?\</c>), because the runtime fails on plain paths of that
-/// length (measured); a UNC path in such a call is refused.</para>
+/// length (measured); a UNC path in such a call is refused. A path that starts with <c>\\?\</c> or <c>\\.\</c>
+/// is compared and passed in its plain form when that form names the same file, so both spellings count as one
+/// file; a device path that names no drive letter and no UNC share, such as a volume GUID path, is
+/// refused.</para>
 /// </remarks>
 [Experimental(ExperimentalApis.ModelSync, UrlFormat = ExperimentalApis.ModelSyncUrl)]
 public static class LiteRtModelSync
@@ -68,7 +72,8 @@ public static class LiteRtModelSync
     /// <exception cref="InvalidOperationException">An update of this process is writing
     /// <paramref name="localModelPath"/>.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled before the
-    /// call, or before a fetch that then failed.</exception>
+    /// call, or the call failed while the token was cancelled, whatever the cause of the failure. The
+    /// <see cref="LiteRtException"/> of the failure is the <see cref="Exception.InnerException"/>.</exception>
     /// <exception cref="LiteRtException">The runtime could not make the plan, for example because a fetch failed
     /// or the remote is not a <c>.litertlm</c> file; <see cref="LiteRtException.StatusCode"/> says why. Also
     /// thrown when the native library's C API version does not match this binding.</exception>
@@ -105,7 +110,7 @@ public static class LiteRtModelSync
     /// <remarks>
     /// <para>Replacing the file: the runtime writes the new file to <c>OUTPUT.tmp_updating</c> next to the output
     /// and renames it over the output at the end; the C API describes an update of one path as atomic. On a failed
-    /// fetch, on bytes the binding refuses, and on a cancel during a fetch, the runtime removes the temporary file
+    /// fetch, on bytes the binding refuses, and on a cancel during a fetch, the runtime deletes the temporary file
     /// and leaves the old output (measured). A process that ends during an update is not measured. When the local
     /// file is already up to date and is the output, nothing is written; when the output is another file, the
     /// runtime copies the local file to it.</para>
@@ -119,8 +124,13 @@ public static class LiteRtModelSync
     /// section hashes. Call <see cref="CreatePlanAsync"/> first, and update when the plan shows sections to reuse
     /// or when the user accepts <see cref="LiteRtModelSyncPlan.BytesToDownload"/>.</para>
     /// <para>In place: pass the same string for both paths to update a file in place. The runtime compares the path
-    /// strings, and paths that <see cref="Path.GetFullPath(string)"/> makes equal count as the same. Another
-    /// spelling of the file, such as a hard link or a short 8.3 name, does not.</para>
+    /// strings, and paths that <see cref="Path.GetFullPath(string)"/> makes equal count as the same, with or without
+    /// a <c>\\?\</c> prefix. On Windows and macOS, paths that differ only in case count as the same when the folder
+    /// ignores case; in a case-sensitive folder they name two files. Another spelling of the file, such as a hard
+    /// link or a short 8.3 name, does not count as the same.</para>
+    /// <para>Engines: the call refuses an output that a live engine of this process loaded, and checks that only
+    /// when it starts. An engine that loads the output while the update runs is not detected, so do not load the
+    /// output until the update completes.</para>
     /// <para>Cancel: the token is checked before the call and at each fetch, and it interrupts a fetch that waits
     /// for the remote or copies its bytes. The runtime's own work between fetches, such as reading the local file,
     /// copying reused sections or renaming the temporary file, has no callback, so a cancel during that work takes
@@ -149,10 +159,13 @@ public static class LiteRtModelSync
     /// <exception cref="InvalidOperationException">Another model sync call of this process reads or writes
     /// <paramref name="outputModelPath"/> or writes <paramref name="localModelPath"/>, or a live
     /// <see cref="LiteRtEngine"/> or <see cref="LiteRtEmbeddingEngine"/> of this process loaded
-    /// <paramref name="outputModelPath"/>. Write the update to another path, dispose the engine, then replace the
-    /// file.</exception>
+    /// <paramref name="outputModelPath"/>. An engine stays alive until it and every conversation and session
+    /// created from it are disposed. Write the update to another path, dispose the engine with its conversations
+    /// and sessions, then replace the file. Engines that loaded the file under another spelling, such as a hard
+    /// link or a short 8.3 name, are not detected.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled before the
-    /// call, or before a fetch that then failed.</exception>
+    /// call, or the call failed while the token was cancelled, whatever the cause of the failure. The
+    /// <see cref="LiteRtException"/> of the failure is the <see cref="Exception.InnerException"/>.</exception>
     /// <exception cref="LiteRtException">The runtime could not complete the update; <see cref="LiteRtException.StatusCode"/>
     /// says why, and <see cref="Exception.InnerException"/> holds the source's exception when a fetch failed with
     /// one. Also thrown when the native library's C API version does not match this binding.</exception>
@@ -162,10 +175,11 @@ public static class LiteRtModelSync
     {
         ArgumentException.ThrowIfNullOrEmpty(outputModelPath);
         ArgumentNullException.ThrowIfNull(remote);
-        string output = Path.GetFullPath(outputModelPath);
+        string output = ModelFilePath.Normalize(outputModelPath, nameof(outputModelPath));
         string? local = NormalizeLocal(localModelPath);
-        bool inPlace = local is not null && LoadedModelPaths.Comparer.Equals(local, output);
-        if (inPlace && !File.Exists(local) && !Directory.Exists(local))
+        bool inPlace = local is not null && ModelFilePath.SameFile(local, output);
+        if (local is not null && string.Equals(local, output, StringComparison.Ordinal)
+            && !File.Exists(local) && !Directory.Exists(local))
         {
             // A first download into the path that later updates will use in place. The runtime gets no local
             // file, the case that was measured.
@@ -179,8 +193,9 @@ public static class LiteRtModelSync
         if (LoadedModelPaths.Default.Count(output) > 0)
             throw new InvalidOperationException(
                 $"'{output}' is the model file of a LiteRtEngine or LiteRtEmbeddingEngine that is still alive in this " +
-                "process, and replacing it could fail after the whole download. Write the update to another path, " +
-                "dispose the engine, then replace the file.");
+                "process, and replacing it could fail after the whole download. An engine stays alive until it and " +
+                "every conversation and session created from it are disposed. Write the update to another path, " +
+                "dispose the engine with its conversations and sessions, then replace the file.");
         using ModelSyncInFlight.Lease lease = ModelSyncInFlight.Enter(reader: local, writer: output);
         cancellationToken.ThrowIfCancellationRequested();
         NativeLibraryResolver.EnsureCompatible();
@@ -297,36 +312,49 @@ public static class LiteRtModelSync
     {
         Exception? sourceException = call.LastFetchException;
         LiteRtException exception = NativeError.Exception(
-            status, failure, sourceException, report => Hint(report?.Code ?? status, report?.Message, call.LastFetchFailed, paths));
+            status, failure, sourceException,
+            report => Hint(report?.Code ?? status, report?.Message, call.LastFetchFailed, call.LastWriterFailed,
+                update: paths.Output is not null, paths.AnsiNonAscii));
         // As the conversation sends do: a failure while the caller's token is cancelled is the cancel.
         return cancellationToken.IsCancellationRequested
             ? new OperationCanceledException("The model sync was cancelled.", exception, cancellationToken)
             : exception;
     }
 
-    private static string? Hint(LiteRtStatusCode code, string? reason, bool fetchFailed, CallPaths paths)
+    /// <summary>The hint added to a failed call's message, or <c>null</c>.</summary>
+    /// <param name="code">The status of the runtime's message, or the call's status.</param>
+    /// <param name="reason">The runtime's message.</param>
+    /// <param name="fetchFailed">Whether the last fetch failed for a reason the source or the bridge reported: the
+    /// runtime then reports that status, and the hints about the runtime's own checks do not apply.</param>
+    /// <param name="writerFailed">Whether the runtime's writer refused bytes of the last fetch: the failure is in
+    /// the runtime's storage of the bytes, not in the remote.</param>
+    /// <param name="update">Whether the call is an update, which writes files.</param>
+    /// <param name="ansiNonAscii">Whether a non-ASCII path went to the runtime in an ANSI code page.</param>
+    internal static string? Hint(
+        LiteRtStatusCode code, string? reason, bool fetchFailed, bool writerFailed, bool update, bool ansiNonAscii)
     {
+        bool runtimeCheck = !fetchFailed && !writerFailed;
         string? hint = code switch
         {
             LiteRtStatusCode.ResourceExhausted =>
                 "The output's volume needs free space at least equal to the remote file's size, because the update " +
                 "writes a full temporary copy next to the output. The runtime's reason can mention a --clean flag; " +
                 "the binding has no equivalent.",
-            LiteRtStatusCode.PermissionDenied when !fetchFailed =>
-                "The runtime reports a file it cannot create or open, the temporary OUTPUT.tmp_updating included, as " +
-                "PERMISSION_DENIED, whatever the cause. Check that the output's folder is writable.",
-            LiteRtStatusCode.Internal when paths.Output is not null =>
-                "The runtime could not move the result onto the output path, for example because a folder or " +
-                "another spelling of the local file is there.",
-            LiteRtStatusCode.DataLoss when !fetchFailed && reason?.Contains("SHA-256", StringComparison.Ordinal) == true =>
+            LiteRtStatusCode.PermissionDenied when runtimeCheck && update =>
+                "The runtime reports a file it cannot create, such as the temporary OUTPUT.tmp_updating next to the " +
+                "output, as PERMISSION_DENIED, whatever the cause. Check that the output's folder is writable.",
+            LiteRtStatusCode.Internal when update =>
+                "The runtime could not write the output path. If the output is another spelling of the local file, " +
+                "such as a hard link or a short 8.3 name, pass the same path for both.",
+            LiteRtStatusCode.DataLoss when runtimeCheck && reason?.Contains("SHA-256", StringComparison.Ordinal) == true =>
                 "A downloaded section does not match the hash in the remote header: the remote file may have changed " +
                 "during the call, or it is corrupt.",
-            LiteRtStatusCode.InvalidArgument or LiteRtStatusCode.DataLoss when !fetchFailed =>
+            LiteRtStatusCode.InvalidArgument or LiteRtStatusCode.DataLoss when runtimeCheck =>
                 "The remote may not be a .litertlm file, or it returned a different number of bytes than its header " +
                 "declares.",
             _ => null,
         };
-        if (!paths.AnsiNonAscii)
+        if (!ansiNonAscii)
             return hint;
         const string ansi = "The runtime's reason can show non-ASCII characters of a path wrongly: the binding passes " +
                             "paths in the ANSI code page, and the reason is read as UTF-8. The path at the start of this " +
@@ -334,9 +362,9 @@ public static class LiteRtModelSync
         return hint is null ? ansi : hint + " " + ansi;
     }
 
-    /// <summary><c>null</c> for a missing local file, else its full path.</summary>
+    /// <summary><c>null</c> for a missing local file, else its full path in the binding's spelling.</summary>
     private static string? NormalizeLocal(string? localModelPath) =>
-        string.IsNullOrEmpty(localModelPath) ? null : Path.GetFullPath(localModelPath);
+        string.IsNullOrEmpty(localModelPath) ? null : ModelFilePath.Normalize(localModelPath, nameof(localModelPath));
 
     private static void CheckReadableLocal(string local, string paramName)
     {
@@ -406,9 +434,12 @@ public static class LiteRtModelSync
             return new CallPaths(localBytes, outputBytes, ansiNonAscii);
         }
 
+        /// <summary>The spelling the runtime gets for a path that <see cref="ModelFilePath.Normalize"/> returned:
+        /// only a path that no plain path can name still starts with <c>\\?\</c>, and none with <c>\\.\</c> or
+        /// <c>\\?\UNC\</c>.</summary>
         private static string Native(string fullPath, bool extended, string paramName)
         {
-            if (!extended || fullPath.StartsWith(@"\\?\", StringComparison.Ordinal) || fullPath.StartsWith(@"\\.\", StringComparison.Ordinal))
+            if (!extended || fullPath.StartsWith(@"\\?\", StringComparison.Ordinal))
                 return fullPath;
             if (fullPath.StartsWith(@"\\", StringComparison.Ordinal))
                 throw new ArgumentException(

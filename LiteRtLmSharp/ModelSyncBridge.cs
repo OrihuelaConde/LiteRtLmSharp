@@ -73,6 +73,10 @@ internal sealed class ModelSyncCall
     /// apply.</summary>
     internal bool LastFetchFailed { get; private set; }
 
+    /// <summary>Whether the runtime's writer refused bytes of the fetch that ran last. The call then fails in the
+    /// runtime's storage of the bytes, so a hint about the remote does not apply.</summary>
+    internal bool LastWriterFailed { get; private set; }
+
     /// <summary>The callback, for the native calls.</summary>
     internal static unsafe delegate* unmanaged[Cdecl]<ulong, ulong, nint, nint, LiteRtStatusCode> Fetcher => &Fetch;
 
@@ -140,6 +144,7 @@ internal sealed class ModelSyncCall
             Interlocked.Increment(ref _lateFetches);
         LastFetchException = null;
         LastFetchFailed = false;
+        LastWriterFailed = false;
 
         // The runtime skips empty sections and never asks for 0 bytes (measured); this is a defence.
         if (length == 0)
@@ -215,7 +220,10 @@ internal sealed class ModelSyncCall
                 }
                 // The writer's own status, with its own message: a failure of the runtime's sink, not of the source.
                 if (written != LiteRtStatusCode.Ok)
+                {
+                    LastWriterFailed = true;
                     return written;
+                }
                 _bytesReceived += chunk.Count;
                 if (ReportProgress(force: false) is { } progressFailure)
                     return Fail(writer, LiteRtStatusCode.Unknown, progressFailure.Message, progressFailure);
@@ -372,6 +380,7 @@ internal sealed class ModelSyncDestination : Stream
     private readonly long _length;
     private readonly CancellationToken _token;
     private long _written;
+    private long _reserved;
     private volatile bool _closed;
     private volatile bool _overflowed;
 
@@ -455,13 +464,21 @@ internal sealed class ModelSyncDestination : Stream
         }
     }
 
+    /// <summary>Reserves <paramref name="count"/> bytes of the range before any of them is queued. The reservation
+    /// is atomic, so writes that overlap cannot together pass the requested length.</summary>
     private void CheckWrite(int count)
     {
         ObjectDisposedException.ThrowIf(_closed, this);
-        if (_overflowed || count > _length - Written)
+        while (true)
         {
-            _overflowed = true;
-            throw new InvalidOperationException("The write goes past the end of the requested range.");
+            long reserved = Interlocked.Read(ref _reserved);
+            if (_overflowed || count > _length - reserved)
+            {
+                _overflowed = true;
+                throw new InvalidOperationException("The write goes past the end of the requested range.");
+            }
+            if (Interlocked.CompareExchange(ref _reserved, reserved + count, reserved) == reserved)
+                return;
         }
     }
 

@@ -85,19 +85,39 @@ internal static partial class NarrowPath
     /// <remarks>Off Windows, for an ASCII path and when the ANSI code page is UTF-8 (65001): UTF-8. Otherwise the
     /// bytes of the ANSI code page, converted without best-fit mapping, so a character the code page lacks is
     /// never replaced by a similar one that names another file.</remarks>
-    /// <exception cref="ArgumentException">The path has characters outside the active code page.</exception>
+    /// <exception cref="ArgumentException">The path has characters outside the active code page, or an unpaired
+    /// surrogate.</exception>
     internal static byte[] EncodeForModelSync(string fullPath, string paramName)
     {
         if (!OperatingSystem.IsWindows() || IsAscii(fullPath))
-            return NullTerminated(Encoding.UTF8.GetBytes(fullPath));
+            return StrictUtf8(fullPath, paramName);
         uint codePage = GetACP();
         if (codePage == CP_UTF8)
-            return NullTerminated(Encoding.UTF8.GetBytes(fullPath));
+            return StrictUtf8(fullPath, paramName);
         return AnsiBytes(fullPath, codePage)
             ?? throw new ArgumentException(
                 $"The path '{fullPath}' contains characters outside the active code page ({codePage}), and the native " +
                 "runtime opens model sync paths in that code page. Move the model to a folder whose name the code page " +
                 "can represent, or run the app with the UTF-8 code page.", paramName);
+    }
+
+    private static readonly UTF8Encoding StrictUtf8Encoding = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+    /// <summary>The null-terminated UTF-8 bytes of a model sync path. A path with an unpaired surrogate is refused:
+    /// the replacing encoder would turn it into U+FFFD, the bytes of another file name.</summary>
+    /// <exception cref="ArgumentException">The path is not valid UTF-16.</exception>
+    internal static byte[] StrictUtf8(string fullPath, string paramName)
+    {
+        try
+        {
+            return NullTerminated(StrictUtf8Encoding.GetBytes(fullPath));
+        }
+        catch (EncoderFallbackException e)
+        {
+            throw new ArgumentException(
+                $"The path '{fullPath}' contains an unpaired surrogate character, which no UTF-8 file name can " +
+                "represent. Pass a path of valid Unicode characters.", paramName, e);
+        }
     }
 
     /// <summary>The active ANSI code page on Windows, or <c>null</c> elsewhere.</summary>
