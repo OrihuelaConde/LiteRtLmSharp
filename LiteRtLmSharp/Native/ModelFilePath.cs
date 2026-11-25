@@ -8,7 +8,7 @@ namespace LiteRtLmSharp.Native;
 /// <see cref="Path.GetFullPath(string)"/> keeps a <c>\\?\</c> or <c>\\.\</c> prefix, so on Windows
 /// <c>\\?\C:\m\a.litertlm</c> and <c>C:\m\a.litertlm</c> would count as two files. <see cref="Normalize"/> removes
 /// the prefix when the plain path names the same file. The binding adds <c>\\?\</c> again where the native call needs
-/// it.
+/// it. Statements marked as measured were measured on LiteRT-LM v0.20.0, win-x64.
 /// </remarks>
 internal static class ModelFilePath
 {
@@ -60,15 +60,15 @@ internal static class ModelFilePath
     }
 
     /// <summary>The key of <paramref name="path"/> in the registries of model files: its <see cref="Normalize"/>d
-    /// form, or its full path when <see cref="Normalize"/> refuses it. Never throws for a path that names an
-    /// existing file, so an engine can register its file after the native engine exists.</summary>
+    /// form, its full path when <see cref="Normalize"/> refuses it, or the path as given when neither can be
+    /// computed. Never throws, so an engine can register its file after the native engine exists.</summary>
     internal static string Key(string path)
     {
         try
         {
             return Normalize(path, nameof(path));
         }
-        catch (ArgumentException)
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
         {
         }
         try

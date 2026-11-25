@@ -7,7 +7,8 @@ namespace LiteRtLmSharp;
 
 /// <summary>
 /// The source <see cref="LiteRtModelSyncSource.FromHttp"/> creates: it serves each range the runtime asks for
-/// with one HTTP <c>GET</c> and a closed <c>Range</c> header.
+/// with an HTTP <c>GET</c> and a closed <c>Range</c> header, and with more <c>GET</c>s for the rest of the range
+/// when an answer carries only a part of it.
 /// </summary>
 /// <remarks>
 /// <para>A 206 must carry a byte <c>Content-Range</c> that starts at the requested offset. A 206 with fewer bytes

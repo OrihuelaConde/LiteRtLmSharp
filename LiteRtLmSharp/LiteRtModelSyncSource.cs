@@ -25,9 +25,10 @@ public abstract class LiteRtModelSyncSource
     /// disposes a client you pass: keep it alive while a call uses the source.</param>
     /// <returns>The source. One source can serve several calls, one after another or at the same time.</returns>
     /// <remarks>
-    /// <para>Each range the runtime asks for is one <c>GET</c> with a closed <c>Range: bytes=FIRST-LAST</c>
-    /// header. The source reads the response headers first, then copies the body in chunks, and never passes the
-    /// runtime more bytes than it asked for. It does not retry: a failed request fails the call.</para>
+    /// <para>Each range the runtime asks for is a <c>GET</c> with a closed <c>Range: bytes=FIRST-LAST</c>
+    /// header, and more than one only when the server answers with a part of the range (see 206 below). The source
+    /// reads the response headers first, then copies the body in chunks, and never passes the runtime more bytes
+    /// than it asked for. It does not retry: a failed request fails the call.</para>
     /// <para>Responses:</para>
     /// <list type="bullet">
     /// <item><description>206: the <c>Content-Range</c> header must start at the requested byte, or the call
