@@ -10,8 +10,8 @@ namespace LiteRtLmSharp;
 /// <remarks>
 /// <para>
 /// A session applies no template, keeps no message history and parses no tool calls or reasoning channels: the
-/// text you prefill reaches the tokenizer as given. The runtime adds one position before the first prefill, for
-/// the model's start token (see <see cref="Prefill"/>). Create a session with
+/// text you prefill reaches the tokenizer as given. The runtime adds one position before the first prefill, which on
+/// Gemma 4 holds the start token, as the position counts indicate (see <see cref="Prefill"/>). Create a session with
 /// <see cref="LiteRtEngine.CreateSession"/>.
 /// </para>
 /// <para>
@@ -30,8 +30,8 @@ namespace LiteRtLmSharp;
 /// <para>
 /// <b>Counting the context.</b> <see cref="LiteRtEngine.Tokenize"/> does not always give the positions a prefill
 /// takes. On Phi-4-mini a text that starts with a marker token, such as <c>&lt;|user|&gt;</c>, took 3 to 4
-/// positions more than its tokens, and the start token takes one position although the model reports it as 7
-/// tokens.
+/// positions more than its tokens, and the runtime adds one position at the start, not the 7 tokens that the model
+/// reports as its start token.
 /// </para>
 /// <para>
 /// <b>One call at a time.</b> A session runs one call at a time and refuses a second call with
@@ -154,11 +154,12 @@ public sealed class LiteRtSession : IDisposable
     /// <param name="text">The text to add, with any markup the model expects already in it.</param>
     /// <remarks>
     /// <para>
-    /// On a <see cref="LiteRtSessionState.Fresh"/> session the runtime adds one position before the text, for the
-    /// model's start token, so the text must not start with the start token's text. When the model's start token
-    /// is a single token, such as <c>&lt;bos&gt;</c> on Gemma 4, the session refuses such a text. A session is
-    /// Fresh again after <see cref="Reset"/>, and after a <see cref="RewindTo"/> a checkpoint saved while it was
-    /// Fresh; the runtime then adds the start token again on the next prefill.
+    /// On a <see cref="LiteRtSessionState.Fresh"/> session the runtime adds one position before the text. On Gemma
+    /// 4 the position counts indicate that it holds the start token, so the text must not start with the start
+    /// token's text. When the model's start token is a single token, such as <c>&lt;bos&gt;</c> on Gemma 4, the
+    /// session refuses such a text. A session is Fresh again after <see cref="Reset"/>, and after a
+    /// <see cref="RewindTo"/> a checkpoint saved while it was Fresh; the runtime then adds the position again on
+    /// the next prefill.
     /// </para>
     /// <para>
     /// A later prefill is not checked, but the start token's text does not belong in it either. On gemma-4 E2B
