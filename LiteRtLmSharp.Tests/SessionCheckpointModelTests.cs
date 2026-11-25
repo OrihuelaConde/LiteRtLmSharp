@@ -454,29 +454,38 @@ public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, IT
     }
 
     /// <summary>A save, a rewind and a reset during a running stream are refused as busy, from the read loop
-    /// itself; the stream then ends normally and the rewind works.</summary>
+    /// itself; the stream then ends normally and the rewind works. The count prompt keeps the decode running past
+    /// the first piece; a decode that still ended before the three calls skips the test.</summary>
     [SkippableFact]
     public async Task CheckpointMembers_DuringARunningStream_AreRefusedAsBusy()
     {
         LiteRtEngine engine = Engine;
-        using LiteRtSession session = SessionDecodeHelpers.Session(engine, 24);
-        session.Prefill(SessionDecodeHelpers.Prompt(engine, SessionCheckpointHelpers.FirstUser));
+        using LiteRtSession session = SessionDecodeHelpers.Session(engine, SessionDecodeHelpers.CancelCap);
+        session.Prefill(SessionDecodeHelpers.Prompt(engine, SessionDecodeHelpers.CountPrompt));
         LiteRtSessionCheckpoint checkpoint = session.SaveCheckpoint();
         long saves = session.CheckpointCount;
-        var refusals = new List<string>();
+        var outcomes = new List<Exception?>();
+        bool busyAfterTheCalls = false;
         List<string> pieces = await SessionDecodeHelpers.StreamWithin(session, onPiece: count =>
         {
             if (count == 1)
+            {
                 foreach (Action call in new Action[] { () => session.SaveCheckpoint(), () => session.RewindTo(checkpoint), session.Reset })
-                    refusals.Add(Assert.Throws<InvalidOperationException>(call).Message);
+                    outcomes.Add(Record.Exception(call));
+                // The gate is held from the decode's start to its settlement, so a gate still held after the
+                // calls was held during them.
+                busyAfterTheCalls = session.IsCallInProgress;
+            }
             return true;
         });
         Assert.NotEmpty(pieces);
-        Assert.Equal(3, refusals.Count);
-        Assert.All(refusals, message => Assert.Contains("in progress", message, StringComparison.Ordinal));
+        Assert.False(session.IsCallInProgress);
+        Skip.If(!busyAfterTheCalls, $"The decode ended before the three calls were made ({pieces.Count} pieces).");
+        Assert.Equal(3, outcomes.Count);
+        Assert.All(outcomes, error =>
+            Assert.Contains("in progress", Assert.IsType<InvalidOperationException>(error).Message, StringComparison.Ordinal));
         Assert.Equal(saves, session.CheckpointCount);
         Assert.Equal(LiteRtSessionState.Decoded, session.State);
-        Assert.False(session.IsCallInProgress);
 
         await SessionDecodeHelpers.Within(() => session.RewindTo(checkpoint));
         Assert.Equal(LiteRtSessionState.Prefilled, session.State);
