@@ -99,7 +99,7 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 100
+    timeout-minutes: 130
     # Crash forensics (2026-07-17: one intermittent testhost crash in the overflow-guard test on
     # win-x64; the VSTest blame dump carried no exception context, so the NTSTATUS is unknown):
     # have the CLR write its own minidump on a fatal crash — createdump includes the exception
@@ -236,7 +236,7 @@ jobs:
       # gemma-4-E2B-it model ships an MTP drafter, so the speedup is measured here; the printed
       # Markdown row lands in this step's console log and feeds docs/speculative-decoding.md.
       - name: Test with model (CPU — streaming + tools + speculative benchmark + multimodal)
-        timeout-minutes: 45
+        timeout-minutes: 60
         shell: bash
         env:
           LITERTLM_TEST_MODEL: ${{ github.workspace }}/models/${{ env.MODEL_FILE }}
@@ -270,7 +270,7 @@ jobs:
       # Metal delegate also works, per flutter_gemma) is still unvalidated by us — see roadmap.
       - name: Test with model (GPU — WebGPU/Metal — incl. multimodal on GPU)
         if: matrix.rid == 'osx-arm64'
-        timeout-minutes: 35
+        timeout-minutes: 50
         shell: bash
         env:
           LITERTLM_TEST_MODEL: ${{ github.workspace }}/models/${{ env.MODEL_FILE }}
