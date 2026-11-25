@@ -28,8 +28,8 @@ internal static unsafe partial class LiteRtLmNative
 
     /// <summary>Creates a session on <paramref name="engine"/>. A null <paramref name="config"/> uses the
     /// default session config. The header does not say whether the session keeps a reference to
-    /// <paramref name="config"/> after the call. The caller owns <paramref name="out_session"/> and frees it with <see cref="litert_lm_session_delete"/>, before
-    /// the engine; it is set to NULL on failure. Fails with <c>INVALID_ARGUMENT</c> for a null engine or a
+    /// <paramref name="config"/> after the call. The caller owns <paramref name="out_session"/> and frees it
+    /// with <see cref="litert_lm_session_delete"/>, before the engine; it is set to NULL on failure. Fails with <c>INVALID_ARGUMENT</c> for a null engine or a
     /// null out pointer, otherwise with the error the runtime met while creating the session.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -58,8 +58,8 @@ internal static unsafe partial class LiteRtLmNative
     internal static partial LiteRtStatusCode litert_lm_session_save_checkpoint(nint session, byte* label);
 
     /// <summary>Returns the session to the checkpoint saved under <paramref name="label"/>, a NUL-terminated
-    /// string. Fails with <c>INVALID_ARGUMENT</c> for a null session or label, otherwise
-    /// with the runtime's error, for example when no checkpoint has that label.</summary>
+    /// string. Fails with <c>INVALID_ARGUMENT</c> for a null session or label, otherwise with the runtime's
+    /// error, for example when no checkpoint has that label.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial LiteRtStatusCode litert_lm_session_rewind_to_checkpoint(nint session, byte* label);
@@ -77,8 +77,9 @@ internal static unsafe partial class LiteRtLmNative
     /// <summary>Adds <paramref name="num_inputs"/> input items to the session's context and blocks until the
     /// prefill ends. <paramref name="inputs"/> points at an array of <c>LiteRtLmInputData*</c> built with
     /// <see cref="litert_lm_input_data_create"/>. The header does not say how long the session uses the
-    /// items; the binding keeps them alive until the call returns and deletes them afterwards. Fails with <c>INVALID_ARGUMENT</c> for a null session, null inputs or a zero count,
-    /// otherwise with the runtime's error.</summary>
+    /// items; the binding keeps them alive until the call returns and deletes them afterwards. Fails with
+    /// <c>INVALID_ARGUMENT</c> for a null session, null inputs or a zero count, otherwise with the runtime's
+    /// error.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial LiteRtStatusCode litert_lm_session_run_prefill(nint session, nint* inputs, nuint num_inputs);
@@ -97,8 +98,8 @@ internal static unsafe partial class LiteRtLmNative
     /// as chunks through <paramref name="callback"/>, an unmanaged function pointer with the
     /// <c>LiteRtLmStreamCallback</c> shape <c>(void* callback_data, const LiteRtLmStreamChunk* chunk)</c>,
     /// which receives <paramref name="callback_data"/>. The "Threading model" section of <c>c/engine.h</c>
-    /// says where the callback runs and what it may call. Each chunk is valid only during its callback. A non-OK status is the
-    /// error that kept the stream from starting (<c>INVALID_ARGUMENT</c> for a null session or callback);
+    /// says where the callback runs and what it may call. Each chunk is valid only during its callback. A
+    /// non-OK status is the error that kept the stream from starting (<c>INVALID_ARGUMENT</c> for a null session or callback);
     /// errors after the start arrive as the error of a final chunk.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
