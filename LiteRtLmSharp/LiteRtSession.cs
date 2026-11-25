@@ -1,3 +1,6 @@
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Threading.Channels;
 using LiteRtLmSharp.Native;
 
 namespace LiteRtLmSharp;
@@ -7,6 +10,13 @@ namespace LiteRtLmSharp;
 /// <para>
 /// A session applies no template, keeps no message history and parses no tool calls or reasoning channels: the
 /// text it prefills reaches the model as given. Create one with <see cref="LiteRtEngine.CreateSession"/>.
+/// </para>
+/// <para>
+/// <b>Prefill, then decode.</b> Add the prompt text with <see cref="Prefill"/>, then generate the reply with
+/// <see cref="Decode"/>, <see cref="DecodeAsync"/> or <see cref="DecodeStreamingAsync"/>. After a reply, prefill
+/// more text before the next decode. A cancel, from a token, from leaving a stream early or from
+/// <see cref="Dispose"/>, takes effect at the next piece of the reply and leaves the session
+/// <see cref="LiteRtSessionState.Cancelled"/>.
 /// </para>
 /// <para>
 /// <b>One call at a time.</b> A session runs one call at a time and refuses a second call with
@@ -23,7 +33,7 @@ namespace LiteRtLmSharp;
 public sealed class LiteRtSession : IDisposable
 {
     private readonly SessionHandle _session;
-    private readonly SessionStateMachine _machine = new();
+    private readonly SessionStateMachine _machine;
     // The text of the model's start token that the first prefill refuses at its head, or null when the rule does
     // not apply. Read from the engine at creation, so it holds after the engine object is disposed.
     private readonly string? _startTokenText;
@@ -32,6 +42,10 @@ public sealed class LiteRtSession : IDisposable
     // that prefills from inside its own read loop.
     private int _callInProgress;
     private int _disposed;
+    // The decode that holds the gate, from before its native call until settlement, so that Dispose can request
+    // its cancel. Written with a full fence on both sides (here and in Dispose), so a decode that starts while
+    // Dispose runs either sees the disposal or is seen by it.
+    private SessionStream? _runningDecode;
 
     /// <summary>The hint added to a prefill failure that says the input does not fit the remaining
     /// context.</summary>
@@ -40,9 +54,17 @@ public sealed class LiteRtSession : IDisposable
         "new one, or load the engine with a larger LiteRtEngineOptions.MaxNumTokens.";
 
     internal LiteRtSession(SessionHandle session, string? startTokenText)
+        : this(session, startTokenText, LiteRtSessionState.Fresh)
+    {
+    }
+
+    /// <summary>Initializes a session in <paramref name="initialState"/>. Only tests start a session in another
+    /// state than <see cref="LiteRtSessionState.Fresh"/>.</summary>
+    internal LiteRtSession(SessionHandle session, string? startTokenText, LiteRtSessionState initialState)
     {
         _session = session;
         _startTokenText = startTokenText;
+        _machine = new SessionStateMachine(initialState);
     }
 
     internal static unsafe LiteRtSession Create(LiteRtEngine engine, LiteRtSessionOptions? options)
@@ -172,17 +194,219 @@ public sealed class LiteRtSession : IDisposable
         }
     }
 
+    /// <summary>Generates a reply to the prefilled input and returns its text.</summary>
+    /// <returns>The reply. When the context filled during the decode, the text up to that point, and
+    /// <see cref="State"/> is <see cref="LiteRtSessionState.ContextFull"/>.</returns>
+    /// <remarks>
+    /// <para>
+    /// The call blocks the calling thread until the decode ends. No token can cut it; a
+    /// <see cref="Dispose"/> from another thread cancels it at the next piece of the reply. After a reply that
+    /// ends normally, <see cref="State"/> is <see cref="LiteRtSessionState.Decoded"/>: prefill more text before
+    /// the next decode.
+    /// </para>
+    /// <para>
+    /// The reply is the text the model generates, with no template markup removed or added. A reply that reaches
+    /// the <see cref="LiteRtSessionOptions.MaxOutputTokens"/> cap ends without an error, and the session is
+    /// <see cref="LiteRtSessionState.Decoded"/> (measured on LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and
+    /// GPU).
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ObjectDisposedException">The session has been disposed, or <see cref="Dispose"/> cancelled
+    /// the decode. <see cref="State"/> is then <see cref="LiteRtSessionState.Cancelled"/>.</exception>
+    /// <exception cref="InvalidOperationException">Another call on the session is in progress, or the session is
+    /// not <see cref="LiteRtSessionState.Prefilled"/>.</exception>
+    /// <exception cref="LiteRtException">The runtime reported an error. <see cref="State"/> is then
+    /// <see cref="LiteRtSessionState.Faulted"/>.</exception>
+    public string Decode()
+    {
+        SessionStream stream = BeginDecode(SessionCall.Decode, CancellationToken.None);
+        StartDecode(stream);
+        // The final chunk can arrive inside run_decode_async on this thread; the wait then returns at once.
+        stream.WaitAndSettle();
+        return stream.TakeResult();
+    }
+
+    /// <summary>Generates a reply to the prefilled input without blocking a thread.</summary>
+    /// <param name="cancellationToken">Cancels the decode at the next piece of the reply. The session is then
+    /// <see cref="LiteRtSessionState.Cancelled"/>.</param>
+    /// <returns>A task whose result is the reply, as <see cref="Decode"/> returns it.</returns>
+    /// <remarks>
+    /// <para>
+    /// The session counts as busy from this call until the task completes. A token that fires after the reply
+    /// reached its last piece does not cancel the decode: <see cref="State"/> then follows how the reply ended,
+    /// and the task still throws <see cref="OperationCanceledException"/>.
+    /// </para>
+    /// <para>See <see cref="Decode"/> for the other outcomes.</para>
+    /// </remarks>
+    /// <exception cref="ObjectDisposedException">The session has been disposed, or <see cref="Dispose"/> cancelled
+    /// the decode.</exception>
+    /// <exception cref="InvalidOperationException">Another call on the session is in progress, or the session is
+    /// not <see cref="LiteRtSessionState.Prefilled"/>.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled. When it was
+    /// cancelled before the call, the session is unchanged.</exception>
+    /// <exception cref="LiteRtException">The runtime reported an error. <see cref="State"/> is then
+    /// <see cref="LiteRtSessionState.Faulted"/>.</exception>
+    public async Task<string> DecodeAsync(CancellationToken cancellationToken = default)
+    {
+        SessionStream stream = BeginDecode(SessionCall.DecodeAsync, cancellationToken);
+        try
+        {
+            StartDecode(stream);
+            await stream.Settled.ConfigureAwait(false);
+        }
+        finally
+        {
+            stream.DisposeRegistration();
+        }
+        return stream.TakeResult();
+    }
+
+    /// <summary>Generates a reply to the prefilled input and streams it as text pieces.</summary>
+    /// <param name="cancellationToken">Cancels the decode at the next piece of the reply. The session is then
+    /// <see cref="LiteRtSessionState.Cancelled"/>.</param>
+    /// <returns>The pieces of the reply, in order. Their concatenation is the text <see cref="Decode"/>
+    /// returns.</returns>
+    /// <remarks>
+    /// <para>
+    /// The decode starts at the first <see cref="IAsyncEnumerator{T}.MoveNextAsync"/>, and the session counts as
+    /// busy until the decode ends. A piece holds whole characters: the bytes of a character that the runtime
+    /// splits are kept until the character is complete.
+    /// </para>
+    /// <para>
+    /// Leaving the loop before the last piece, with <c>break</c> or an exception, cancels the decode, and the
+    /// enumerator's disposal waits until the runtime has stopped. The session is then
+    /// <see cref="LiteRtSessionState.Cancelled"/>, unless the reply had already reached its last piece. An
+    /// enumerator that is dropped without disposal does not cancel: the decode runs to its end and releases the
+    /// session then.
+    /// </para>
+    /// <para>See <see cref="Decode"/> and <see cref="DecodeAsync"/> for the other outcomes.</para>
+    /// </remarks>
+    /// <exception cref="ObjectDisposedException">The session has been disposed, or <see cref="Dispose"/> cancelled
+    /// the decode.</exception>
+    /// <exception cref="InvalidOperationException">Another call on the session is in progress, or the session is
+    /// not <see cref="LiteRtSessionState.Prefilled"/>.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
+    /// <exception cref="LiteRtException">The runtime reported an error. <see cref="State"/> is then
+    /// <see cref="LiteRtSessionState.Faulted"/>.</exception>
+    public async IAsyncEnumerable<string> DecodeStreamingAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        SessionStream stream = BeginDecode(SessionCall.DecodeStreamingAsync, cancellationToken);
+        ChannelReader<string> reader = stream.Reader;
+        try
+        {
+            StartDecode(stream);
+            while (await reader.WaitToReadAsync().ConfigureAwait(false))
+            {
+                while (reader.TryRead(out string? piece))
+                    yield return piece;
+            }
+            await stream.Settled.ConfigureAwait(false);
+            stream.ThrowIfFailed();
+        }
+        finally
+        {
+            // Nothing to do after settlement. Otherwise the consumer left before the end: request the cancel,
+            // which the callback issues at the next chunk that is not final, and wait for the final chunk. No
+            // timeout: settlement is the only point after which the session can be used or deleted safely.
+            if (!stream.Settled.IsCompleted)
+            {
+                stream.RequestCancel(CancelRequester.Caller);
+                await stream.Settled.ConfigureAwait(false);
+            }
+            stream.DisposeRegistration();
+        }
+    }
+
     /// <summary>Releases the session. It doesn't wait for a call in progress on the session: the native session
     /// is released when that call ends.</summary>
-    /// <remarks>A call in progress holds a reference on the native session, so the native delete runs on the
-    /// thread of that call when it ends. The native engine is released after its last conversation or session is
-    /// deleted.</remarks>
+    /// <remarks>A running decode is cancelled at the next piece of its reply and then throws
+    /// <see cref="ObjectDisposedException"/>, unless the reply had already reached its last piece. A call in
+    /// progress holds a reference on the native session, so the native delete runs on the thread that ends that
+    /// call. The native engine is released after its last conversation or session is deleted.</remarks>
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
+        // Before the handle's disposal, so that a running decode stops at its next chunk and its settlement runs
+        // the native delete.
+        Volatile.Read(ref _runningDecode)?.RequestCancel(CancelRequester.Dispose);
         _session.Dispose();
     }
+
+    /// <summary>The state machine, for the decode settlement.</summary>
+    internal SessionStateMachine Machine => _machine;
+
+    /// <summary>
+    /// Checks a decode call and prepares its stream, without calling native code: disposed, then the token, then
+    /// busy, then the state. On success the caller holds the gate, the stream is the running decode, holds a
+    /// reference on the native session and has a <see cref="GCHandle"/>, and the token is registered. On failure
+    /// nothing is held.
+    /// </summary>
+    internal SessionStream BeginDecode(SessionCall call, CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(IsDisposed, this);
+        cancellationToken.ThrowIfCancellationRequested();
+        EnterCall();
+        SessionStream? stream = null;
+        bool referenced = false;
+        try
+        {
+            _machine.ThrowIfRefused(call);
+            stream = new SessionStream(this, call, cancellationToken);
+            Interlocked.Exchange(ref _runningDecode, stream);
+            // Throws ObjectDisposedException when the handle is already disposed.
+            _session.DangerousAddRef(ref referenced);
+            // A Dispose that read the running decode before it was set has already marked the session disposed.
+            ObjectDisposedException.ThrowIf(IsDisposed, this);
+            stream.Attach(GCHandle.Alloc(stream), referenced);
+            stream.RegisterToken();
+            return stream;
+        }
+        catch
+        {
+            if (stream is not null)
+            {
+                stream.DisposeRegistration();
+                // Native code never saw the handle, so it is freed at once.
+                stream.FreeUnusedHandle();
+                Interlocked.CompareExchange(ref _runningDecode, null, stream);
+            }
+            if (referenced)
+                _session.DangerousRelease();
+            ExitCall();
+            throw;
+        }
+    }
+
+    /// <summary>Starts the native decode of a stream from <see cref="BeginDecode"/>. A start that fails settles
+    /// the stream at once as <see cref="LiteRtSessionState.Faulted"/>.</summary>
+    internal unsafe void StartDecode(SessionStream stream)
+    {
+        LiteRtStatusCode status;
+        try
+        {
+            status = LiteRtLmNative.litert_lm_session_run_decode_async(
+                _session.Ptr, &SessionStream.OnChunk, GCHandle.ToIntPtr(stream.Handle));
+        }
+        catch (Exception ex)
+        {
+            stream.SettleFailedStart(ex);
+            return;
+        }
+        if (status != LiteRtStatusCode.Ok)
+        {
+            // Read the report first, on this thread, before settlement releases the reference.
+            stream.SettleFailedStart(NativeError.Exception(status, "litert_lm_session_run_decode_async failed."));
+            return;
+        }
+        // Settlement may run as soon as this returns, so nothing of the stream is touched after it.
+        stream.OnCallReturned();
+    }
+
+    /// <summary>Clears the running decode at its settlement.</summary>
+    internal void ClearRunningDecode(SessionStream stream)
+        => Interlocked.CompareExchange(ref _runningDecode, null, stream);
 
     /// <summary>Whether <see cref="Dispose"/> has run.</summary>
     internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;

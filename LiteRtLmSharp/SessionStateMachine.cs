@@ -47,7 +47,17 @@ internal enum SessionCallOutcome
 /// </remarks>
 internal sealed class SessionStateMachine
 {
-    private int _state = (int)LiteRtSessionState.Fresh;
+    private int _state;
+
+    /// <summary>Initializes a new instance of the <see cref="SessionStateMachine"/> class in
+    /// <see cref="LiteRtSessionState.Fresh"/>.</summary>
+    public SessionStateMachine() : this(LiteRtSessionState.Fresh)
+    {
+    }
+
+    /// <summary>Initializes a new instance of the <see cref="SessionStateMachine"/> class in
+    /// <paramref name="initial"/>, for tests that start a session in a state its native handle can't reach.</summary>
+    public SessionStateMachine(LiteRtSessionState initial) => _state = (int)initial;
 
     /// <summary>Gets the current state. It can be read from any thread.</summary>
     public LiteRtSessionState State => (LiteRtSessionState)Volatile.Read(ref _state);
