@@ -25,8 +25,8 @@ public enum LiteRtSamplerType
 }
 
 /// <summary>
-/// Sampler parameters for a conversation. Construct one and set it on
-/// <see cref="LiteRtConversationOptions.Sampler"/>. A constructed instance sends <b>all</b> fields to
+/// Sampler parameters for a conversation or a session. Construct one and set it on
+/// <see cref="LiteRtConversationOptions.Sampler"/> or <see cref="LiteRtSessionOptions.Sampler"/>. A constructed instance sends <b>all</b> fields to
 /// the engine — replacing any sampler parameters the model file itself carries — so set the ones you
 /// care about and leave the rest at their defaults. The defaults below (<see cref="LiteRtSamplerType.TopP"/>,
 /// 40, 0.95, 1.0, seed 0) are the same values Google's official bindings fill in for unset fields, so a

@@ -355,7 +355,9 @@ public sealed class LiteRtEmbeddingEngine : IDisposable
         return new ReadOnlySpan<float>(values, checked((int)size)).ToArray();
     }
 
-    private static unsafe InputDataHandle CreateTextInput(string text)
+    /// <summary>Creates a text input item, UTF-8 without a terminator, for an embedding or a session
+    /// prefill.</summary>
+    internal static unsafe InputDataHandle CreateTextInput(string text)
     {
         byte[] utf8 = Encoding.UTF8.GetBytes(text);
         nint ptr;

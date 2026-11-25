@@ -1,8 +1,8 @@
 namespace LiteRtLmSharp;
 
-/// <summary>Describes which calls a session accepts next.</summary>
+/// <summary>Describes which calls a <see cref="LiteRtSession"/> accepts next.</summary>
 /// <remarks>A session that reaches <see cref="ContextFull"/>, <see cref="Faulted"/> or <see cref="Cancelled"/>
-/// accepts only Dispose. To continue, dispose it and create a new session.</remarks>
+/// accepts only <see cref="LiteRtSession.Dispose"/>. To continue, dispose it and create a new session.</remarks>
 public enum LiteRtSessionState
 {
     /// <summary>Holds no input. The next prefill is the session's first.</summary>
@@ -17,12 +17,12 @@ public enum LiteRtSessionState
     Decoded = 2,
 
     /// <summary>A decode stopped because the context is full. The session accepts only
-    /// Dispose.</summary>
+    /// <see cref="LiteRtSession.Dispose"/>.</summary>
     ContextFull = 3,
 
-    /// <summary>A native call failed. The session accepts only Dispose.</summary>
+    /// <summary>A native call failed. The session accepts only <see cref="LiteRtSession.Dispose"/>.</summary>
     Faulted = 4,
 
-    /// <summary>A decode was cancelled. The session accepts only Dispose.</summary>
+    /// <summary>A decode was cancelled. The session accepts only <see cref="LiteRtSession.Dispose"/>.</summary>
     Cancelled = 5,
 }

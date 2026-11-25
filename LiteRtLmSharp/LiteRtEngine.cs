@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using LiteRtLmSharp.Native;
 
@@ -5,7 +6,7 @@ namespace LiteRtLmSharp;
 
 /// <summary>
 /// A LiteRT-LM inference engine. Heavyweight: holds the model weights. Create one per
-/// model and spawn lightweight <see cref="LiteRtConversation"/> objects from it.
+/// model and spawn lightweight <see cref="LiteRtConversation"/> or <see cref="LiteRtSession"/> objects from it.
 /// </summary>
 public sealed class LiteRtEngine : IDisposable
 {
@@ -26,9 +27,10 @@ public sealed class LiteRtEngine : IDisposable
     // (EngineLiveness.Default) is acquired here and released when the native engine is destroyed
     // (EngineHandle.ReleaseHandle), so a forgotten/GC'd engine also frees its slot. Every conversation holds a
     // strong reference to its engine (it needs the tokenizer and context limit for the KV overflow
-    // guard), and its native handle holds a reference on the engine's handle, so the native engine is
-    // deleted, and the slot freed, only after its last conversation is gone, whichever is disposed or
-    // finalized first. Disposing conversations and the engine remains the contract.
+    // guard), and the native handle of every conversation or session holds a reference on the engine's
+    // handle, so the native engine is deleted, and the slot freed, only after its last conversation or
+    // session is gone, whichever is disposed or finalized first. Disposing conversations, sessions and the
+    // engine remains the contract.
 
     private LiteRtEngine(EngineHandle engine, bool isMultimodal, int maxNumTokens, bool benchmarkEnabled)
     {
@@ -90,11 +92,35 @@ public sealed class LiteRtEngine : IDisposable
     private const int UnresolvedToken = -2, NoToken = -1;
     private int _thinkingChannelOpenToken = UnresolvedToken;
 
+    /// <summary>The text of the model's start token that a session refuses at the head of its first prefill
+    /// (<see cref="LiteRtSession.StartTokenText"/>), or <c>null</c> when the rule does not apply to this model.
+    /// Resolved on first use and kept; it does not check that this object is disposed, as
+    /// <see cref="CountTokens"/>.</summary>
+    internal string? SessionStartTokenText
+    {
+        get
+        {
+            StrongBox<string?>? box = Volatile.Read(ref _sessionStartTokenText);
+            if (box is null)
+            {
+                LiteRtTokenUnion? token;
+                try { token = ReadStartToken(); }
+                catch (LiteRtException) { token = null; }
+                box = new StrongBox<string?>(LiteRtSession.StartTokenText(token, TokenizeIds, ids => DetokenizeIds(ids)));
+                // Two first uses at once compute the same value.
+                Volatile.Write(ref _sessionStartTokenText, box);
+            }
+            return box.Value;
+        }
+    }
+
+    private StrongBox<string?>? _sessionStartTokenText;
+
     /// <summary>
     /// Gets how many chat engines are alive in this process: 0 or 1 unless the live engines were loaded
     /// with <see cref="LiteRtEngineOptions.AllowMultipleEngines"/>. A <see cref="LiteRtEmbeddingEngine"/> is
-    /// not counted. A disposed engine counts until its last conversation is disposed too, because the native
-    /// engine lives until then.
+    /// not counted. A disposed engine counts until its last conversation or session is disposed too, because
+    /// the native engine lives until then.
     /// </summary>
     public static int LiveEngineCount => EngineLiveness.Default.LiveCount;
 
@@ -130,14 +156,14 @@ public sealed class LiteRtEngine : IDisposable
     /// <summary>
     /// Loads a model and creates the engine. By default only ONE chat engine may be alive at a time; a
     /// <see cref="LiteRtEmbeddingEngine"/> does not count. To switch model or backend, dispose every
-    /// conversation and the engine first, then call <see cref="Load"/> again. To keep several chat engines
-    /// alive, load each of them with <see cref="LiteRtEngineOptions.AllowMultipleEngines"/> (see its remarks
-    /// for what has been measured).
+    /// conversation, every session and the engine first, then call <see cref="Load"/> again. To keep several
+    /// chat engines alive, load each of them with <see cref="LiteRtEngineOptions.AllowMultipleEngines"/> (see its
+    /// remarks for what has been measured).
     /// </summary>
     /// <exception cref="ArgumentException">The model file does not exist.</exception>
     /// <exception cref="InvalidOperationException">Another chat engine is alive in this process, and this
     /// engine or a live one was loaded without <see cref="LiteRtEngineOptions.AllowMultipleEngines"/>. An engine
-    /// already disposed is still alive while one of its conversations is.</exception>
+    /// already disposed is still alive while one of its conversations or sessions is.</exception>
     /// <exception cref="DllNotFoundException">The native LiteRT-LM library could not be loaded; the
     /// message names the fix (the missing <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package, a runtime
     /// package for another architecture, or a missing system library).</exception>
@@ -352,6 +378,25 @@ public sealed class LiteRtEngine : IDisposable
         return LiteRtConversation.Create(this, options, _isMultimodal);
     }
 
+    /// <summary>Creates a session that prefills and decodes raw text, without the conversation template, history,
+    /// tool parsing or reasoning channels.</summary>
+    /// <param name="options">The session's sampler and output cap, fixed for its lifetime; <c>null</c> uses the
+    /// engine's default sampling and no output cap other than the context.</param>
+    /// <returns>A new session in the <see cref="LiteRtSessionState.Fresh"/> state. Dispose it when done.</returns>
+    /// <remarks>
+    /// The native session is created through the engine, as a conversation is, so the call can wait for a
+    /// generation in flight on the engine (see <see cref="CreateConversation"/>); how long a session waits is not
+    /// measured. The session keeps the native engine alive: disposing this engine first is safe, and the native
+    /// engine is released when its last conversation or session is disposed.
+    /// </remarks>
+    /// <exception cref="ObjectDisposedException">The engine has been disposed.</exception>
+    /// <exception cref="LiteRtException">The native session could not be created.</exception>
+    public LiteRtSession CreateSession(LiteRtSessionOptions? options = null)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return LiteRtSession.Create(this, options);
+    }
+
     /// <summary>
     /// Tokenizes <paramref name="text"/> with the model's own tokenizer and returns the token ids,
     /// without running inference. Use it to measure a prompt's exact token cost or to budget a
@@ -461,10 +506,15 @@ public sealed class LiteRtEngine : IDisposable
     /// either as a literal string or a token-id sequence — see <see cref="LiteRtTokenUnion.Kind"/>.
     /// </summary>
     /// <exception cref="LiteRtException">The runtime could not report the token's kind.</exception>
-    public unsafe LiteRtTokenUnion? GetStartToken()
+    public LiteRtTokenUnion? GetStartToken()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        return ReadStartToken();
+    }
 
+    /// <summary>The body of <see cref="GetStartToken"/>, without the disposed check (see <see cref="CountTokens"/>).</summary>
+    private unsafe LiteRtTokenUnion? ReadStartToken()
+    {
         nint ptr;
         if (LiteRtLmNative.litert_lm_engine_get_start_token(_engine.Ptr, &ptr) != LiteRtStatusCode.Ok)
         {
@@ -529,16 +579,17 @@ public sealed class LiteRtEngine : IDisposable
     }
 
     /// <summary>Disposes the engine, freeing the native model weights and releasing the process-wide
-    /// one-engine slot so another model can be loaded. Dispose every conversation first: while one of them is
-    /// alive, the weights and the slot stay in use, <see cref="Load"/> refuses another engine unless both opted
-    /// in, and the last conversation releases them when it is disposed.</summary>
+    /// one-engine slot so another model can be loaded. Dispose every conversation and session first: while one
+    /// of them is alive, the weights and the slot stay in use, <see cref="Load"/> refuses another engine unless
+    /// both opted in, and the last conversation or session releases them when it is disposed.</summary>
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         // Disposing the handle deletes the native engine and frees the one-engine slot
         // (EngineHandle.ReleaseHandle → EngineLiveness.Default.Release), so a new engine can be loaded. A
-        // conversation still alive holds a reference on the handle and defers both until it is disposed.
+        // conversation or session still alive holds a reference on the handle and defers both until it is
+        // disposed.
         _engine.Dispose();
     }
 }

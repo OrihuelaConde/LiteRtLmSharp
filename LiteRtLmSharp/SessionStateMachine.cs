@@ -1,6 +1,6 @@
 namespace LiteRtLmSharp;
 
-/// <summary>A call on a <c>LiteRtSession</c> that the state machine decides on. The three decode members
+/// <summary>A call on a <see cref="LiteRtSession"/> that the state machine decides on. The three decode members
 /// are separate values so that a refusal names the member the caller used.</summary>
 internal enum SessionCall
 {
@@ -29,7 +29,7 @@ internal enum SessionCallOutcome
 }
 
 /// <summary>
-/// The state of a <c>LiteRtSession</c> and the rules for which call it accepts next. A pure type: it makes
+/// The state of a <see cref="LiteRtSession"/> and the rules for which call it accepts next. A pure type: it makes
 /// no native call. The session checks <see cref="ThrowIfRefused"/> before a native call and reports the call's
 /// outcome with <see cref="Complete"/>.
 /// </summary>
