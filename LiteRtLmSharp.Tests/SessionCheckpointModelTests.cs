@@ -6,14 +6,28 @@ namespace LiteRtLmSharp.Tests;
 /// <summary>Shared pieces of the checkpoint, rewind and reset tests on a model.</summary>
 internal static class SessionCheckpointHelpers
 {
-    /// <summary>The output cap of these tests: long enough for whole replies to the prompts below, short enough
-    /// that a few turns fit the fixture's context.</summary>
-    public const int Cap = 160;
+    /// <summary>The output cap of these tests. The decoded tokens are almost all of their cost, and no test needs a
+    /// whole reply: a rewind or reset that does nothing shows as a refused decode, a decode that never returns, a
+    /// dropped checkpoint that is not refused, or a reply that differs from its first tokens, because the turn
+    /// before it is <see cref="FrenchUser"/> or the turn after it is <see cref="PreviousUser"/>.</summary>
+    public const int Cap = 16;
 
     public const string FirstUser = "Name three primary colors and say one thing about each, in three short sentences.";
     public const string SecondUser = "Now do the same for three secondary colors.";
-    public const string ThirdUser = "Which of all six colors do you like best, and why? Answer in two sentences.";
+
+    /// <summary>A turn that changes every later reply. When a rewind or reset that does nothing leaves it in the
+    /// context, the next reply is in French from its first token; this was measured on win-x64, CPU and GPU, with
+    /// caps of 16 and 24, after one turn and after three.</summary>
+    public const string FrenchUser = "From now on, answer every question only in French.";
+
     public const string ResetUser = "What is the capital of France? Answer in two full sentences.";
+
+    /// <summary>A turn whose reply on a fresh session differs from its reply after an earlier turn: on a fresh
+    /// session the model names this question, after a turn it names that turn. Measured on win-x64, CPU and GPU, as
+    /// a first turn and after one or three turns; as a repeated later turn the reply did not always change, so it is
+    /// used only as the first turn of a fresh point.</summary>
+    public const string PreviousUser = "What was my previous question? Answer in one short sentence.";
+
     public const string OtherUser = "Say hello in five words.";
 
     public static LiteRtSession Session(LiteRtEngine engine, int cap = Cap) => SessionDecodeHelpers.Session(engine, cap);
@@ -171,16 +185,17 @@ public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, IT
         Assert.Equal(LiteRtSessionState.Decoded, session.State);
     }
 
-    /// <summary>A checkpoint saved after a decode: run the next turn and one more, rewind, run the same next turn.
-    /// It equals the first pass of that turn and a new session's. Two turns run before the rewind because after
-    /// one the same turn was measured to give the same text on CPU even without the rewind.</summary>
+    /// <summary>A checkpoint saved after a decode: run the next turn, then the French turn, rewind, run the same
+    /// next turn. It equals the first pass of that turn and a new session's. Without the rewind the repeated turn
+    /// follows the French turn and gets a French reply; the French turn is there because, after the next turn
+    /// alone, the same turn was measured to give the same text on CPU even without the rewind.</summary>
     [SkippableFact]
     public async Task RewindTo_ACheckpointAfterADecode_RunsTheSameNextTurnAgain()
     {
         LiteRtEngine engine = Engine;
         string prompt = SessionDecodeHelpers.Prompt(engine, SessionCheckpointHelpers.FirstUser);
         string second = SessionDecodeHelpers.NextTurn(SessionCheckpointHelpers.SecondUser);
-        string third = SessionDecodeHelpers.NextTurn(SessionCheckpointHelpers.ThirdUser);
+        string third = SessionDecodeHelpers.NextTurn(SessionCheckpointHelpers.FrenchUser);
         string twin = await SessionCheckpointHelpers.Twin(engine, prompt, second);
 
         using LiteRtSession session = SessionCheckpointHelpers.Session(engine);
@@ -291,30 +306,36 @@ public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, IT
     }
 
     /// <summary>A reset after one turn and after three returns the session to Fresh: the start-token rule of a
-    /// first prefill applies again, and the next turn equals a new session's.</summary>
+    /// first prefill applies again, and the next turn equals a new session's. The last turn before each reset is
+    /// the French turn, so a reset that does nothing gives a French reply.</summary>
     [SkippableFact]
     public async Task Reset_AfterOneTurnAndAfterSeveral_GivesAFreshSession()
     {
         LiteRtEngine engine = Engine;
-        string prompt = SessionDecodeHelpers.Prompt(engine, SessionCheckpointHelpers.FirstUser);
         string resetPrompt = SessionDecodeHelpers.Prompt(engine, SessionCheckpointHelpers.ResetUser);
         string twin = await SessionCheckpointHelpers.Twin(engine, resetPrompt);
+        string[] oneTurn = [SessionDecodeHelpers.Prompt(engine, SessionCheckpointHelpers.FrenchUser)];
+        string[] threeTurns =
+        [
+            SessionDecodeHelpers.Prompt(engine, SessionCheckpointHelpers.FirstUser),
+            SessionDecodeHelpers.NextTurn(SessionCheckpointHelpers.SecondUser),
+            SessionDecodeHelpers.NextTurn(SessionCheckpointHelpers.FrenchUser),
+        ];
 
-        foreach (int turns in new[] { 1, 3 })
+        foreach (string[] texts in new[] { oneTurn, threeTurns })
         {
             using LiteRtSession session = SessionCheckpointHelpers.Session(engine);
-            string[] texts = [prompt, SessionDecodeHelpers.NextTurn(SessionCheckpointHelpers.SecondUser), SessionDecodeHelpers.NextTurn(SessionCheckpointHelpers.ThirdUser)];
-            for (int i = 0; i < turns; i++)
+            foreach (string text in texts)
             {
-                await SessionCheckpointHelpers.Prefill(session, texts[i]);
+                await SessionCheckpointHelpers.Prefill(session, text);
                 await SessionDecodeHelpers.DecodeWithin(session);
             }
             await SessionDecodeHelpers.Within(session.Reset);
             SessionCheckpointHelpers.AssertFirstPrefillRule(session);
             await SessionCheckpointHelpers.Prefill(session, resetPrompt);
             string reply = await SessionDecodeHelpers.DecodeWithin(session);
-            output.WriteLine($"after {turns} turn(s): {reply}");
-            Assert.Equal(twin, reply);
+            output.WriteLine($"after {texts.Length} turn(s): {reply}");
+            Assert.True(twin == reply, $"After {texts.Length} turn(s) and a reset, expected \"{twin}\", got \"{reply}\".");
         }
     }
 
@@ -351,20 +372,24 @@ public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, IT
     /// <summary>A save after a reset gets a label that no earlier save had. The runtime accepts a second save under
     /// a label it holds and then rewinds that label to the later save, so a repeated label would move the
     /// checkpoint saved on the Fresh session to the later point. The turn after the reset equals a new
-    /// session's.</summary>
+    /// session's. Before the reset the session holds the French turn, so a reset that does nothing gives a French
+    /// reply; after the rewind to the Fresh checkpoint the turn asks for the previous question, so a rewind that
+    /// goes to the later save, or does nothing, gives a reply about the turn before it.</summary>
     [SkippableFact]
     public async Task SaveCheckpoint_AfterAReset_NeverReusesALabel()
     {
         LiteRtEngine engine = Engine;
+        string french = SessionDecodeHelpers.Prompt(engine, SessionCheckpointHelpers.FrenchUser);
         string prompt = SessionDecodeHelpers.Prompt(engine, SessionCheckpointHelpers.FirstUser);
-        string resetPrompt = SessionDecodeHelpers.Prompt(engine, SessionCheckpointHelpers.ResetUser);
+        string previous = SessionDecodeHelpers.Prompt(engine, SessionCheckpointHelpers.PreviousUser);
         string promptTwin = await SessionCheckpointHelpers.Twin(engine, prompt);
-        string twin = await SessionCheckpointHelpers.Twin(engine, resetPrompt);
+        string twin = await SessionCheckpointHelpers.Twin(engine, previous);
 
         using LiteRtSession session = SessionCheckpointHelpers.Session(engine);
         LiteRtSessionCheckpoint fresh = await SessionCheckpointHelpers.Save(session);
-        await SessionCheckpointHelpers.Prefill(session, prompt);
+        await SessionCheckpointHelpers.Prefill(session, french);
         LiteRtSessionCheckpoint beforeTheReset = await SessionCheckpointHelpers.Save(session);
+        await SessionDecodeHelpers.DecodeWithin(session);
         await SessionDecodeHelpers.Within(session.Reset);
         await SessionCheckpointHelpers.Prefill(session, prompt);
         LiteRtSessionCheckpoint afterTheReset = await SessionCheckpointHelpers.Save(session);
@@ -375,20 +400,23 @@ public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, IT
         Assert.Equal(3, new[] { fresh, beforeTheReset, afterTheReset }.Select(c => Convert.ToHexString(c.Label)).Distinct().Count());
         await SessionDecodeHelpers.Within(() => session.RewindTo(fresh));
         SessionCheckpointHelpers.AssertFirstPrefillRule(session);
-        await SessionCheckpointHelpers.Prefill(session, resetPrompt);
-        Assert.Equal(twin, await SessionDecodeHelpers.DecodeWithin(session));
+        await SessionCheckpointHelpers.Prefill(session, previous);
+        string afterRewind = await SessionDecodeHelpers.DecodeWithin(session);
+        output.WriteLine($"after the rewind to the Fresh checkpoint: {afterRewind}");
+        Assert.Equal(twin, afterRewind);
     }
 
     /// <summary>A full context recovers by a rewind: save after the first turn's prefill, decode, prefill raw text
     /// that leaves the end of the context to the next decode, decode until the context is full, rewind. The
     /// decode after the rewind equals the session's first decode and a new session's. A checkpoint dropped by an
     /// earlier rewind is refused from ContextFull too, and changes nothing. A filler prefill that fails, or a
-    /// decode that does not fill the context, fails the test as an unmet precondition.</summary>
+    /// decode that does not fill the context, fails the test as an unmet precondition. The session has no output
+    /// cap, so that the decode can fill the context; the first turn is the reset prompt, whose reply is short.</summary>
     [SkippableFact]
     public async Task ContextFull_RewindTo_RecoversTheSession()
     {
         LiteRtEngine engine = Engine;
-        string prompt = SessionDecodeHelpers.Prompt(engine, SessionCheckpointHelpers.FirstUser);
+        string prompt = SessionDecodeHelpers.Prompt(engine, SessionCheckpointHelpers.ResetUser);
         string twin = await SessionCheckpointHelpers.TwinWith(0, engine, prompt);
 
         using LiteRtSession session = SessionCheckpointHelpers.Session(engine, 0);
