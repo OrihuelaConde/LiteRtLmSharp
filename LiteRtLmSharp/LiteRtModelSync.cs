@@ -11,7 +11,8 @@ namespace LiteRtLmSharp;
 /// sections whose hashes match from the local file and downloads the others; when more than 80% of the section
 /// bytes changed, or when either file has no section hashes, it downloads the whole file. It verifies the SHA-256
 /// of each downloaded section that the remote header hashes, so the bytes of a remote without section hashes are
-/// not verified. See <see cref="LiteRtModelSyncPlan"/> for what that means for the files published today.</para>
+/// not verified. See <see cref="LiteRtModelSyncPlan"/> for what that means for files published without section
+/// hashes.</para>
 /// <para>Each call runs the native work on a thread of its own and completes only when the native call has
 /// returned. The methods are safe to call from several threads; calls that read or write the same file at the
 /// same time are refused (see the exceptions). Other processes are not checked.</para>
@@ -38,8 +39,8 @@ public static class LiteRtModelSync
     /// <returns>The plan.</returns>
     /// <remarks>
     /// <para>The runtime fetches the remote header (the first 16 KiB, then the rest of a longer header) and reads
-    /// the local header. When the headers match, it also checks the local sections' bytes against their hashes,
-    /// which reads the local file.</para>
+    /// the local header. When the headers match, the result also depends on the local sections' bytes: a local
+    /// section whose bytes do not match the hash its header records makes the file not up to date.</para>
     /// <para>A remote that cannot serve byte ranges fails the plan when its header is longer than 16 KiB.</para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="remote"/> is <c>null</c>.</exception>

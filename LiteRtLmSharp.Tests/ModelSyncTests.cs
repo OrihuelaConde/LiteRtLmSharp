@@ -632,6 +632,8 @@ public sealed class ModelSyncTests : IDisposable
     {
         var reports = new List<ModelSyncCallReport>();
         ModelSyncCall.Completed = r => { lock (reports) reports.Add(r); };
+        // Keeps each call's handle valid after the return, so a late fetcher call would be counted.
+        ModelSyncCall.LateCallbackWindow = TimeSpan.FromMilliseconds(300);
         try
         {
             string local = Put("a.litertlm", ModelSyncFixtures.A);
@@ -639,12 +641,27 @@ public sealed class ModelSyncTests : IDisposable
             await LiteRtModelSync.UpdateAsync(local, local, new ModelSyncMemorySource(ModelSyncFixtures.A1));
             await LiteRtModelSync.UpdateAsync(null, PathIn("first.litertlm"), new ModelSyncMemorySource(ModelSyncFixtures.LongHeader));
             await LiteRtModelSync.UpdateAsync(local, local, new ModelSyncMemorySource(ModelSyncFixtures.B) { ServesRanges = false });
+
+            // A cancel during a fetch whose source ignores its token.
+            var gate = new TaskCompletionSource();
+            var stalled = new ModelSyncMemorySource(ModelSyncFixtures.A1)
+            {
+                Script = (_, offset, _) => offset == 81920 ? new SourceAction { Gate = gate.Task, IgnoreToken = true } : null,
+            };
+            using var cts = new CancellationTokenSource();
+            Task<LiteRtModelUpdateResult> update = LiteRtModelSync.UpdateAsync(PathIn("first.litertlm"), PathIn("next.litertlm"), stalled, cancellationToken: cts.Token);
+            await stalled.Waiting.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            cts.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => update.WaitAsync(TimeSpan.FromSeconds(30)));
+            gate.SetResult();
+            await stalled.IgnoredTokenRequestEnded.Task.WaitAsync(TimeSpan.FromSeconds(30));
         }
         finally
         {
             ModelSyncCall.Completed = null;
+            ModelSyncCall.LateCallbackWindow = TimeSpan.Zero;
         }
-        Assert.Equal(4, reports.Count);
+        Assert.Equal(5, reports.Count);
         Assert.All(reports, r =>
         {
             Assert.True(r.Fetches > 0);

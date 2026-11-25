@@ -57,6 +57,11 @@ internal sealed class ModelSyncCall
     /// <summary>Receives a report after each native call returns, for tests and diagnostics.</summary>
     internal static Action<ModelSyncCallReport>? Completed { get; set; }
 
+    /// <summary>For tests: how long <see cref="End"/> keeps the handle allocated after the native call returns,
+    /// so <see cref="ModelSyncCallReport.LateFetches"/> can see a fetcher call that comes after the return. Zero,
+    /// the default, frees it at once.</summary>
+    internal static TimeSpan LateCallbackWindow { get; set; }
+
     /// <summary>The bytes passed to the native writer so far.</summary>
     internal long BytesReceived => _bytesReceived;
 
@@ -87,6 +92,10 @@ internal sealed class ModelSyncCall
     internal void End(LiteRtStatusCode status)
     {
         _returned = true;
+        // For tests: keep the handle valid for a while, so a fetcher call after the return would be counted
+        // instead of reading a freed handle.
+        if (LateCallbackWindow > TimeSpan.Zero)
+            Thread.Sleep(LateCallbackWindow);
         if (_handle.IsAllocated)
         {
             _handle.Free();

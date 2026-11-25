@@ -298,7 +298,8 @@ public sealed unsafe class ModelSyncAbiTests(ITestOutputHelper output)
         try
         {
             remote.CallingThread = Environment.CurrentManagedThreadId;
-            byte[]? path = local is null ? null : Encoding.UTF8.GetBytes(Path.GetFullPath(local) + "\0");
+            // Encoded like the binding, so a non-ASCII temporary folder still reaches the runtime.
+            byte[]? path = local is null ? null : NarrowPath.EncodeForModelSync(Path.GetFullPath(local), nameof(local));
             nint plan;
             fixed (byte* p = path)
                 status = LiteRtLmNative.litert_lm_model_sync_plan_create_from_file(p, &RawRemote.Fetch, GCHandle.ToIntPtr(gc), 0, &plan);

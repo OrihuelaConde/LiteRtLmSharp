@@ -6,10 +6,9 @@ namespace LiteRtLmSharp;
 /// <remarks>
 /// <para>The runtime reuses a section of the local file only when the local file's header records a SHA-256 for
 /// it and the remote header records the same one. Without section hashes on both sides an update downloads the
-/// whole file and the local file is never up to date, even when it is identical to the remote one. The
-/// <c>.litertlm</c> files published on Hugging Face carry no section hashes (gemma-4-E2B-it, gemma-4-E4B-it
-/// and embeddinggemma-2-text-270m, read on November 25, 2026), so every update of those files is a full
-/// download.</para>
+/// whole file and the local file is never up to date, even when it is identical to the remote one. A file
+/// published without section hashes, such as the gemma-4-E2B-it, gemma-4-E4B-it and embeddinggemma-2-text-270m
+/// files read on Hugging Face, is therefore downloaded whole at every update.</para>
 /// <para>The values are the runtime's (measured on LiteRT-LM v0.20.0, win-x64). The plan holds no native
 /// resources.</para>
 /// </remarks>
