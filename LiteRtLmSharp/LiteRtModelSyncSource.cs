@@ -18,7 +18,8 @@ public abstract class LiteRtModelSyncSource
     /// requests.</summary>
     /// <param name="uri">The absolute <c>http</c> or <c>https</c> address of the file. Prefer an address that names
     /// one revision of the file, such as a Hugging Face <c>resolve/COMMIT/FILE</c> address, over one that names a
-    /// branch: a branch can move to a new version during a call, which fails the call (see the remarks).</param>
+    /// branch: a branch can move to a new version during a call, and the source detects that only when the server
+    /// sends strong entity tags (see the remarks).</param>
     /// <param name="httpClient">The client that sends the requests, with its redirect, proxy, header and handler
     /// settings, or <c>null</c> to use a client that the binding shares between sources. The source never
     /// disposes a client you pass: keep it alive while a call uses the source.</param>
@@ -31,7 +32,9 @@ public abstract class LiteRtModelSyncSource
     /// <list type="bullet">
     /// <item><description>206: the <c>Content-Range</c> header must start at the requested byte, or the call
     /// fails with <see cref="LiteRtStatusCode.DataLoss"/>. A body that ends before the range it declares fails the
-    /// call with <see cref="LiteRtStatusCode.Unavailable"/>.</description></item>
+    /// call with <see cref="LiteRtStatusCode.Unavailable"/>. A 206 that carries fewer bytes than asked is complete
+    /// when it ends at the end of the file, or when its <c>Content-Range</c> gives no file size; otherwise the
+    /// source asks for the rest of the range with another <c>GET</c>.</description></item>
     /// <item><description>200, the whole file: the source serves a request at byte 0 from the first bytes of the
     /// body, and reports any other request as a remote that cannot serve byte ranges. The runtime then downloads
     /// the whole file from byte 0, after one refused request for a first download and two for an update that
@@ -60,7 +63,9 @@ public abstract class LiteRtModelSyncSource
     /// overall timeout.</para>
     /// <para>Credentials: with <see cref="SocketsHttpHandler"/> on .NET 10, an <c>Authorization</c> header set on
     /// <see cref="HttpClient.DefaultRequestHeaders"/> is not sent again after a redirect, to the same host or to
-    /// another one, so the address a redirect leads to does not receive it.</para>
+    /// another one, so the address a redirect leads to does not receive it. Other request headers, such as an
+    /// API key header or a <c>Cookie</c> header set by hand, are sent again to the address a redirect leads to:
+    /// send credentials in <c>Authorization</c>, or use a handler that removes them on a redirect.</para>
     /// <para>The <see cref="SocketsHttpHandler"/> statements above were measured on .NET 10.0.15, win-x64, against
     /// a server on the loopback address. Other handlers, such as the Android one, are not measured.</para>
     /// </remarks>

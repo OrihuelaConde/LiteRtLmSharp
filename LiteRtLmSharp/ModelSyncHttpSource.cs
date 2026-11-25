@@ -10,7 +10,9 @@ namespace LiteRtLmSharp;
 /// with one HTTP <c>GET</c> and a closed <c>Range</c> header.
 /// </summary>
 /// <remarks>
-/// <para>A 206 must carry a byte <c>Content-Range</c> that starts at the requested offset. A 200 answers a
+/// <para>A 206 must carry a byte <c>Content-Range</c> that starts at the requested offset. A 206 with fewer bytes
+/// than asked that ends before the end of the file, which RFC 9110 allows, is followed by a request for the rest,
+/// within the same fetch. A 200 answers a
 /// request at byte 0 with its first bytes, because the server ignored <c>Range</c>; a 200 to a request after
 /// byte 0 reports "ranges unsupported", which makes the runtime fall back to a full download for any fetch after
 /// the header. Every copy stops at the requested length, because the runtime accepts a whole-file write past it
@@ -71,45 +73,64 @@ internal sealed class ModelSyncHttpSource : LiteRtModelSyncSource
         long offset, long length, Stream destination, CancellationToken cancellationToken)
     {
         long last = offset + length - 1;
-        using var request = new HttpRequestMessage(HttpMethod.Get, Uri);
-        request.Headers.Range = new RangeHeaderValue(offset, last);
-
-        using HttpResponseMessage response = await SendAsync(request, cancellationToken).ConfigureAwait(false);
-        int status = (int)response.StatusCode;
-        if (status is not (200 or 206))
-            throw new HttpRequestException(
-                $"The remote answered {status} ({response.ReasonPhrase}) to the request for bytes {offset}-{last}.",
-                null, response.StatusCode);
-
-        // The pin comes before the 200 rule: a file that changed fails the call instead of starting a full
-        // download of the new version.
-        CheckETag(response);
-
-        long? expected;
-        if (response.StatusCode == HttpStatusCode.PartialContent)
+        long next = offset;
+        while (true)
         {
-            ContentRangeHeaderValue? range = response.Content.Headers.ContentRange;
-            if (range is not { From: { } from, To: { } to } || !string.Equals(range.Unit, "bytes", StringComparison.OrdinalIgnoreCase))
-                throw new ModelSyncSourceException(LiteRtStatusCode.DataLoss,
-                    $"The remote answered 206 to the request for bytes {offset}-{last} without a byte range in its Content-Range header.");
-            if (from != offset || to < from)
-                throw new ModelSyncSourceException(LiteRtStatusCode.DataLoss,
-                    $"The remote answered the request for bytes {offset}-{last} with bytes {from}-{to}.");
-            expected = Math.Min(length, to - from + 1);
-        }
-        else
-        {
-            // 200: the server ignored Range and sends the file from byte 0.
-            if (offset > 0)
-                return false;
-            expected = response.Content.Headers.ContentLength is { } contentLength ? Math.Min(length, contentLength) : null;
-        }
+            using var request = new HttpRequestMessage(HttpMethod.Get, Uri);
+            request.Headers.Range = new RangeHeaderValue(next, last);
 
-        long copied = await CopyAsync(response, destination, expected ?? length, cancellationToken).ConfigureAwait(false);
-        if (expected is { } count && copied < count)
-            throw new IOException(
-                $"The response to the request for bytes {offset}-{last} ended after {copied} of {count} bytes.");
-        return true;
+            using HttpResponseMessage response = await SendAsync(request, cancellationToken).ConfigureAwait(false);
+            int status = (int)response.StatusCode;
+            if (status is not (200 or 206))
+                throw new HttpRequestException(
+                    $"The remote answered {status} ({response.ReasonPhrase}) to the request for bytes {next}-{last}.",
+                    null, response.StatusCode);
+
+            // The pin comes before the 200 rule: a file that changed fails the call instead of starting a full
+            // download of the new version.
+            CheckETag(response);
+
+            long? expected;
+            long? fileLength = null;
+            if (response.StatusCode == HttpStatusCode.PartialContent)
+            {
+                ContentRangeHeaderValue? range = response.Content.Headers.ContentRange;
+                if (range is not { From: { } from, To: { } to } || !string.Equals(range.Unit, "bytes", StringComparison.OrdinalIgnoreCase))
+                    throw new ModelSyncSourceException(LiteRtStatusCode.DataLoss,
+                        $"The remote answered 206 to the request for bytes {next}-{last} without a byte range in its Content-Range header.");
+                if (from != next || to < from)
+                    throw new ModelSyncSourceException(LiteRtStatusCode.DataLoss,
+                        $"The remote answered the request for bytes {next}-{last} with bytes {from}-{to}.");
+                expected = Math.Min(last - next + 1, to - from + 1);
+                fileLength = range.Length;
+            }
+            else if (next == offset)
+            {
+                // 200: the server ignored Range and sends the file from byte 0.
+                if (offset > 0)
+                    return false;
+                expected = response.Content.Headers.ContentLength is { } contentLength ? Math.Min(length, contentLength) : null;
+            }
+            else
+            {
+                // A 200 after a short 206: the server stopped honouring Range in the middle of the range.
+                throw new HttpRequestException(
+                    $"The remote answered 200 to the request for the rest of bytes {offset}-{last}, from byte {next}, " +
+                    "after a partial answer.", null, response.StatusCode);
+            }
+
+            long want = expected ?? last - next + 1;
+            long copied = await CopyAsync(response, destination, want, cancellationToken).ConfigureAwait(false);
+            if (expected is { } count && copied < count)
+                throw new IOException(
+                    $"The response to the request for bytes {next}-{last} ended after {copied} of {count} bytes.");
+            next += copied;
+            // A 206 may carry less than asked (RFC 9110, section 15.3.7). It completes the range only when it ends
+            // at the end of the file, or when the remote does not say where the file ends; otherwise the source
+            // asks for the rest.
+            if (next > last || response.StatusCode != HttpStatusCode.PartialContent || fileLength is not { } size || next >= size)
+                return true;
+        }
     }
 
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
