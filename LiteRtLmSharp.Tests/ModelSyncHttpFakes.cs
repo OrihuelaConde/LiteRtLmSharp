@@ -73,6 +73,13 @@ internal sealed class FakeModelServer(byte[] data) : HttpMessageHandler
     /// <summary>Whether the server honours <c>Range</c>.</summary>
     public bool ServesRanges { get; set; } = true;
 
+    /// <summary>The most bytes one 206 carries, as a server that sends a part of the range (RFC 9110 allows it),
+    /// with a true <c>Content-Range</c>; <c>null</c> for no cap.</summary>
+    public long? MaxPartial { get; set; }
+
+    /// <summary>Whether a 206 declares the file size as unknown (<c>bytes FIRST-LAST/*</c>).</summary>
+    public bool UnknownLength { get; set; }
+
     /// <summary>Picks the answer for a request from its index; <c>null</c> answers normally.</summary>
     public Func<int, HttpRequestMessage, FakeHttpAction?>? Script { get; set; }
 
@@ -130,6 +137,8 @@ internal sealed class FakeModelServer(byte[] data) : HttpMessageHandler
             bool partial = ServesRanges && action?.Whole != true && item is { From: { } };
             long from = partial ? item!.From!.Value : 0;
             long to = partial ? Math.Min(item!.To ?? file.Length - 1, file.Length - 1) : file.Length - 1;
+            if (partial && MaxPartial is { } cap)
+                to = Math.Min(to, from + cap - 1);
             int extra = action?.ExtraBytes ?? 0;
             byte[] declared = new byte[to - from + 1 + extra];
             Array.Copy(file, from, declared, 0, to - from + 1);
@@ -148,7 +157,9 @@ internal sealed class FakeModelServer(byte[] data) : HttpMessageHandler
                 long first = action?.ContentRangeFrom ?? from;
                 long last = first + declared.Length - 1;
                 // A server that sends extra bytes declares a size that holds them.
-                content.Headers.ContentRange = new ContentRangeHeaderValue(first, last, Math.Max(file.Length, last + 1));
+                content.Headers.ContentRange = UnknownLength
+                    ? new ContentRangeHeaderValue(first, last)
+                    : new ContentRangeHeaderValue(first, last, Math.Max(file.Length, last + 1));
             }
         }
         string? etag = action?.ETag ?? ETag;

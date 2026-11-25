@@ -23,7 +23,7 @@ public sealed class ModelSyncPathTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_dir, recursive: true); } catch (IOException) { }
+        ModelSyncAsserts.DeleteFolder(_dir);
     }
 
     /// <summary>Whether the runtime can open <paramref name="text"/> in a path: always off Windows and under the
@@ -178,6 +178,169 @@ public sealed class ModelSyncPathTests : IDisposable
         string longUnc = share + Path.Combine(longFolder, "o.litertlm")[3..];
         var source = new ModelSyncMemorySource(ModelSyncFixtures.A);
         var e = await Assert.ThrowsAsync<ArgumentException>(() => LiteRtModelSync.UpdateAsync(null, longUnc, source));
+        Assert.Contains("UNC path", e.Message, StringComparison.Ordinal);
+        Assert.Empty(source.Requests);
+    }
+
+    /// <summary>The extended-length spelling of a file is the same file: in place, for the live-engine guard and
+    /// for the calls in flight. Given one spelling per path, the runtime fails an up-to-date update with INTERNAL
+    /// "File exists", and two updates under the two spellings share one temporary file and fail (measured).</summary>
+    [SkippableFact]
+    public async Task ExtendedLengthSpelling_IsTheSameFile()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows only.");
+        string plain = Path.Combine(_dir, "a.litertlm");
+        File.WriteAllBytes(plain, ModelSyncFixtures.A);
+        string prefixed = @"\\?\" + plain;
+
+        var upToDate = new ModelSyncMemorySource(ModelSyncFixtures.A);
+        await LiteRtModelSync.UpdateAsync(prefixed, plain, upToDate);
+        Assert.Equal(16384, Assert.Single(upToDate.Requests).Length);
+
+        foreach (var (loaded, updated) in new[] { (plain, prefixed), (prefixed, plain) })
+        {
+            string key = LoadedModelPaths.Default.Add(loaded);
+            var source = new ModelSyncMemorySource(ModelSyncFixtures.A1);
+            try
+            {
+                await Assert.ThrowsAsync<InvalidOperationException>(() => LiteRtModelSync.UpdateAsync(null, updated, source));
+            }
+            finally
+            {
+                LoadedModelPaths.Default.Release(key);
+            }
+            Assert.Empty(source.Requests);
+        }
+
+        var gate = new TaskCompletionSource();
+        var slow = new ModelSyncMemorySource(ModelSyncFixtures.A1)
+        {
+            Script = (_, offset, _) => offset == 81920 ? new SourceAction { Gate = gate.Task } : null,
+        };
+        Task<LiteRtModelUpdateResult> first = LiteRtModelSync.UpdateAsync(plain, plain, slow);
+        try
+        {
+            await slow.Waiting.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            var second = new ModelSyncMemorySource(ModelSyncFixtures.A);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => LiteRtModelSync.UpdateAsync(null, prefixed, second));
+            Assert.Empty(second.Requests);
+        }
+        finally
+        {
+            gate.TrySetResult();
+        }
+        await first.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.True(File.ReadAllBytes(plain).AsSpan().SequenceEqual(ModelSyncFixtures.A1));
+    }
+
+    /// <summary>A path that only the extended form can name (a folder whose name ends in a dot) keeps its prefix
+    /// and reads its own file.</summary>
+    [SkippableFact]
+    public async Task ExtendedLengthPath_ThatNoPlainPathNames_KeepsItsPrefix()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows only.");
+        string folder = @"\\?\" + Path.Combine(_dir, "x.");
+        Directory.CreateDirectory(folder);
+        string path = folder + @"\a.litertlm";
+        File.WriteAllBytes(path, ModelSyncFixtures.A);
+        try
+        {
+            Assert.True((await LiteRtModelSync.CreatePlanAsync(path, new ModelSyncMemorySource(ModelSyncFixtures.A))).IsUpToDate);
+            var source = new ModelSyncMemorySource(ModelSyncFixtures.A1);
+            await LiteRtModelSync.UpdateAsync(path, path, source);
+            Assert.Equal([0L, 81920L], source.Requests.Select(r => r.Offset));
+            Assert.True(File.ReadAllBytes(path).AsSpan().SequenceEqual(ModelSyncFixtures.A1));
+        }
+        finally
+        {
+            // The plain API cannot delete a folder whose name ends in a dot.
+            File.Delete(path);
+            Directory.Delete(folder);
+        }
+    }
+
+    /// <summary>The device spelling (<c>\\.\</c>) of a local path of 270 characters: .NET does not find the
+    /// file under that spelling (measured), so the binding passes the plain form, in its extended-length
+    /// form.</summary>
+    [SkippableFact]
+    public async Task DeviceSpelling_OfALongLocalPath_ReadsTheFile()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows only.");
+        string path = PathOfLength("D", 270);
+        File.WriteAllBytes(path, ModelSyncFixtures.A);
+        Assert.True((await LiteRtModelSync.CreatePlanAsync(@"\\.\" + path, new ModelSyncMemorySource(ModelSyncFixtures.A))).IsUpToDate);
+    }
+
+    /// <summary>Spellings that differ only in case: one file in a folder that ignores case, two files in a
+    /// case-sensitive folder. There, given the output's spelling as the local path, the runtime ignores the missing
+    /// local file and downloads the whole file instead of reusing the local one (measured).</summary>
+    [SkippableFact]
+    public async Task CaseDifferingSpellings_AreOneFile_OnlyWhereTheFolderIgnoresCase()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows() || OperatingSystem.IsMacOS(), "Paths are compared ordinally here.");
+        string upper = Path.Combine(_dir, "Model.litertlm");
+        File.WriteAllBytes(upper, ModelSyncFixtures.A);
+        string lower = Path.Combine(_dir, "model.litertlm");
+        Skip.IfNot(File.Exists(lower), "The temporary folder is case-sensitive.");
+        var upToDate = new ModelSyncMemorySource(ModelSyncFixtures.A);
+        await LiteRtModelSync.UpdateAsync(upper, lower, upToDate);
+        Assert.Equal(16384, Assert.Single(upToDate.Requests).Length);
+
+        Skip.IfNot(OperatingSystem.IsWindows(), "No case-sensitive folder can be made here.");
+        string folder = Directory.CreateDirectory(Path.Combine(_dir, "cs")).FullName;
+        Skip.IfNot(MakeCaseSensitive(folder), "This machine does not let the user mark a folder case-sensitive.");
+        string csUpper = Path.Combine(folder, "Model.litertlm");
+        File.WriteAllBytes(csUpper, ModelSyncFixtures.A);
+        string csLower = Path.Combine(folder, "model.litertlm");
+        Assert.False(File.Exists(csLower));
+        var source = new ModelSyncMemorySource(ModelSyncFixtures.A1);
+        await LiteRtModelSync.UpdateAsync(csUpper, csLower, source);
+        // The local file was used: the header and the changed section only.
+        Assert.Equal([0L, 81920L], source.Requests.Select(r => r.Offset));
+        Assert.True(File.ReadAllBytes(csLower).AsSpan().SequenceEqual(ModelSyncFixtures.A1));
+        Assert.True(File.ReadAllBytes(csUpper).AsSpan().SequenceEqual(ModelSyncFixtures.A));
+    }
+
+    private static bool MakeCaseSensitive(string folder)
+    {
+        var start = new System.Diagnostics.ProcessStartInfo("fsutil.exe", ["file", "setCaseSensitiveInfo", folder, "enable"])
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        try
+        {
+            using var process = System.Diagnostics.Process.Start(start)!;
+            process.StandardOutput.ReadToEnd();
+            process.StandardError.ReadToEnd();
+            if (!process.WaitForExit(15_000))
+            {
+                process.Kill();
+                return false;
+            }
+            return process.ExitCode == 0;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>A UNC path in extended form that needs extended-length paths is refused like a plain UNC
+    /// path.</summary>
+    [SkippableFact]
+    public async Task ExtendedUncPath_ThatNeedsExtendedLength_IsRefused()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows only.");
+        string root = Path.GetPathRoot(_dir)!;
+        Skip.IfNot(root.Length == 3 && root[1] == ':', "The temporary folder is not on a drive letter.");
+        string share = $@"\\localhost\{char.ToLowerInvariant(root[0])}$\";
+        Skip.IfNot(Directory.Exists(share), "The administrative share is not reachable.");
+        string longFolder = Path.GetDirectoryName(PathOfLength("V", 265))!;
+        string unc = @"\\?\UNC" + share[1..] + Path.Combine(longFolder, "o.litertlm")[3..];
+        var source = new ModelSyncMemorySource(ModelSyncFixtures.A);
+        var e = await Assert.ThrowsAsync<ArgumentException>(() => LiteRtModelSync.UpdateAsync(null, unc, source));
         Assert.Contains("UNC path", e.Message, StringComparison.Ordinal);
         Assert.Empty(source.Requests);
     }

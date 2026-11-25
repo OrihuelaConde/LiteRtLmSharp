@@ -158,6 +158,131 @@ public sealed class ModelSyncInternalsTests
     }
 
     [Fact]
+    public async Task Destination_OverlappingWrites_CannotTogetherPassTheLength()
+    {
+        // Room for five chunks; four fill the channel, then two writes of one chunk each start before either is
+        // queued. Only one of them fits.
+        int chunk = ModelSyncDestination.ChunkSize;
+        var destination = new ModelSyncDestination(5L * chunk, CancellationToken.None);
+        for (int i = 0; i < ModelSyncDestination.Capacity; i++)
+            await destination.WriteAsync(new byte[chunk]);
+        Task first = destination.WriteAsync(new byte[chunk]).AsTask();
+        Task second = destination.WriteAsync(new byte[chunk]).AsTask();
+        long drained = 0;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (!(first.IsCompleted && second.IsCompleted) && clock.Elapsed < TimeSpan.FromSeconds(10))
+        {
+            while (destination.Reader.TryRead(out ModelSyncDestination.Chunk c))
+            {
+                drained += c.Count;
+                System.Buffers.ArrayPool<byte>.Shared.Return(c.Buffer);
+            }
+            await Task.Delay(10);
+        }
+        destination.CompleteWriting();
+        while (destination.Reader.TryRead(out ModelSyncDestination.Chunk c))
+        {
+            drained += c.Count;
+            System.Buffers.ArrayPool<byte>.Shared.Return(c.Buffer);
+        }
+        Assert.True(destination.Overflowed);
+        Assert.Equal(5L * chunk, drained);
+        Assert.Equal(1, new[] { first, second }.Count(t => t.IsFaulted && t.Exception!.InnerException is InvalidOperationException));
+    }
+
+    [Fact]
+    public void Encoder_UnpairedSurrogate_IsRefusedOnEveryPlatform()
+    {
+        const string path = "C:/d/\uD800.litertlm";
+        // The ANSI branch on Windows and the UTF-8 branch elsewhere: the replacing encoder would write U+FFFD.
+        Assert.Throws<ArgumentException>(() => NarrowPath.EncodeForModelSync(path, "p"));
+        var e = Assert.Throws<ArgumentException>(() => NarrowPath.StrictUtf8(path, "p"));
+        Assert.Equal("p", e.ParamName);
+        Assert.Equal(Encoding.UTF8.GetBytes("C:/d/a\0"), NarrowPath.StrictUtf8("C:/d/a", "p"));
+    }
+
+    [Fact]
+    public void ModelFilePath_PlainPaths_AreTheirFullPath_AndKeyNeverThrows()
+    {
+        string plain = Path.Combine(Path.GetTempPath(), "spelling.litertlm");
+        Assert.Equal(Path.GetFullPath(plain), ModelFilePath.Normalize(plain, "p"));
+        Assert.Equal(Path.GetFullPath(plain), ModelFilePath.Key(Path.Combine(Path.GetTempPath(), ".", "spelling.litertlm")));
+        if (!OperatingSystem.IsWindows())
+            return;
+        string full = Path.GetFullPath(plain);
+        Assert.Equal(full, ModelFilePath.Normalize(@"\\?\" + full, "p"));
+        Assert.Equal(full, ModelFilePath.Normalize(@"\\.\" + full, "p"));
+        Assert.Equal(@"\\server\share\m.litertlm", ModelFilePath.Normalize(@"\\?\UNC\server\share\m.litertlm", "p"));
+        Assert.Equal(@"\\server\share\m.litertlm", ModelFilePath.Normalize(@"\\.\UNC\server\share\m.litertlm", "p"));
+        // A folder whose name ends in a dot exists only in the extended form: the prefix stays.
+        Assert.Equal(@"\\?\C:\m.\a.litertlm", ModelFilePath.Normalize(@"\\?\C:\m.\a.litertlm", "p"));
+        Assert.Throws<ArgumentException>(() => ModelFilePath.Normalize(@"\\?\UNC\server\share\m.\a.litertlm", "p"));
+        Assert.Throws<ArgumentException>(() => ModelFilePath.Normalize(@"\\?\Volume{00000000-0000-0000-0000-000000000000}\a.litertlm", "p"));
+        Assert.Throws<ArgumentException>(() => ModelFilePath.Normalize(@"\\.\pipe\a", "p"));
+        // The registry key of a path that Normalize refuses is its full path.
+        Assert.Equal(Path.GetFullPath(@"\\.\pipe\a"), ModelFilePath.Key(@"\\.\pipe\a"));
+    }
+
+    [Fact]
+    public void ModelFilePath_SameFile_InACaseSensitiveFolder_IsTwoFiles()
+    {
+        string folder = Path.Combine(Path.GetTempPath(), "case-folder");
+        string upper = Path.Combine(folder, "Model.litertlm");
+        string lower = Path.Combine(folder, "model.litertlm");
+        Assert.True(ModelFilePath.SameFile(upper, upper));
+        if (!(OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()))
+        {
+            // Ordinal comparison: two names are two files.
+            Assert.False(ModelFilePath.SameFile(upper, lower));
+            return;
+        }
+        string[] one = ["Model.litertlm"];
+        string[] two = ["Model.litertlm", "model.litertlm"];
+        // A folder that ignores case: one entry, both spellings exist.
+        Assert.True(ModelFilePath.SameFile(upper, lower, _ => one, _ => true));
+        // A case-sensitive folder with both files.
+        Assert.False(ModelFilePath.SameFile(upper, lower, _ => two, _ => true));
+        // A case-sensitive folder with only one of them.
+        Assert.False(ModelFilePath.SameFile(upper, lower, _ => one, p => p == upper));
+        // A folder that cannot be listed.
+        Assert.False(ModelFilePath.SameFile(upper, lower, _ => throw new UnauthorizedAccessException(), _ => true));
+        // Names that differ in more than case are never the same file.
+        Assert.False(ModelFilePath.SameFile(upper, Path.Combine(folder, "Other.litertlm"), _ => one, _ => true));
+    }
+
+    public static TheoryData<LiteRtStatusCode, string?, bool, bool, bool, string?> Hints => new()
+    {
+        // Status, reason, the last fetch failed, the writer failed, update, expected text (null: no hint).
+        { LiteRtStatusCode.ResourceExhausted, null, false, false, true, "free space" },
+        { LiteRtStatusCode.PermissionDenied, "Cannot open output file", false, false, true, "cannot create" },
+        { LiteRtStatusCode.PermissionDenied, "HTTP 403", true, false, true, null },
+        { LiteRtStatusCode.PermissionDenied, "x", false, false, false, null },
+        { LiteRtStatusCode.Internal, "File exists", false, false, true, "pass the same path for both" },
+        { LiteRtStatusCode.Internal, "x", false, false, false, null },
+        { LiteRtStatusCode.DataLoss, "Section SHA-256 verification failed", false, false, true, "may have changed during the call" },
+        { LiteRtStatusCode.DataLoss, "Section payload truncated", false, false, true, "may not be a .litertlm file" },
+        { LiteRtStatusCode.InvalidArgument, "magic bytes", false, false, false, "may not be a .litertlm file" },
+        { LiteRtStatusCode.DataLoss, "Content-Range", true, false, true, null },
+        // A failure of the runtime's own writer is not the remote's.
+        { LiteRtStatusCode.DataLoss, "write failed", false, true, true, null },
+        { LiteRtStatusCode.InvalidArgument, "x", false, true, false, null },
+        { LiteRtStatusCode.Unavailable, "x", true, false, true, null },
+    };
+
+    [Theory]
+    [MemberData(nameof(Hints))]
+    public void Hint_AppliesOnlyToTheFailuresItExplains(
+        LiteRtStatusCode code, string? reason, bool fetchFailed, bool writerFailed, bool update, string? expected)
+    {
+        string? hint = LiteRtModelSync.Hint(code, reason, fetchFailed, writerFailed, update, ansiNonAscii: false);
+        if (expected is null)
+            Assert.Null(hint);
+        else
+            Assert.Contains(expected, hint, StringComparison.Ordinal);
+        Assert.Contains("ANSI code page", LiteRtModelSync.Hint(code, reason, fetchFailed, writerFailed, update, ansiNonAscii: true), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LiteRtException_InternalConstructor_CarriesTheStatusAndTheCause()
     {
         var cause = new IOException("cause");

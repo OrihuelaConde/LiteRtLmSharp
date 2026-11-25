@@ -18,13 +18,20 @@ public sealed class ModelSyncEngineModelTests
     private static void SkipWithout(string? model, string variable) =>
         Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model), $"Set {variable} to a .litertlm model to run.");
 
+    /// <summary>A source that fails its first request, so an update the guard fails to refuse ends at the header
+    /// fetch and never replaces the model file the other tests load.</summary>
+    private static ModelSyncMemorySource FailingSource() => new(ModelSyncFixtures.A)
+    {
+        Script = (index, _, _) => index == 0 ? new SourceAction { Throw = new IOException("This source never serves.") } : null,
+    };
+
     [SkippableFact]
     public async Task ChatEngine_HoldsItsModelFile_UntilDisposed()
     {
         SkipWithout(ChatModel, "LITERTLM_TEST_MODEL");
         string full = Path.GetFullPath(ChatModel!);
         int before = LoadedModelPaths.Default.Count(full);
-        var source = new ModelSyncMemorySource(ModelSyncFixtures.A);
+        var source = FailingSource();
         using (LiteRtEngine engine = LiteRtEngine.Load(new LiteRtEngineOptions { ModelPath = ChatModel!, Backend = LiteRtBackend.Cpu }))
         {
             Assert.Equal(before + 1, LoadedModelPaths.Default.Count(full));
@@ -53,7 +60,7 @@ public sealed class ModelSyncEngineModelTests
         SkipWithout(EmbeddingModel, "LITERTLM_TEST_EMBEDDING_MODEL");
         string full = Path.GetFullPath(EmbeddingModel!);
         int before = LoadedModelPaths.Default.Count(full);
-        var source = new ModelSyncMemorySource(ModelSyncFixtures.A);
+        var source = FailingSource();
         using (LiteRtEmbeddingEngine engine = LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions { ModelPath = EmbeddingModel! }))
         {
             Assert.Equal(before + 1, LoadedModelPaths.Default.Count(full));

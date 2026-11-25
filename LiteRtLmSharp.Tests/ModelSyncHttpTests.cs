@@ -28,7 +28,7 @@ public sealed class ModelSyncHttpTests : IDisposable
     {
         foreach (HttpClient client in _clients)
             client.Dispose();
-        try { Directory.Delete(_dir, recursive: true); } catch (IOException) { }
+        ModelSyncAsserts.DeleteFolder(_dir);
     }
 
     private string Put(string name, byte[] data)
@@ -39,8 +39,6 @@ public sealed class ModelSyncHttpTests : IDisposable
     }
 
     private string PathIn(string name) => Path.Combine(_dir, name);
-
-    private string[] Temporaries() => Directory.GetFiles(_dir, "*.tmp_updating", SearchOption.AllDirectories);
 
     private static void AssertBytes(byte[] expected, string path) => Assert.True(File.ReadAllBytes(path).AsSpan().SequenceEqual(expected), path);
 
@@ -103,7 +101,7 @@ public sealed class ModelSyncHttpTests : IDisposable
         Assert.All(server.Messages, m => Assert.Equal(HttpMethod.Get, m.Method));
         Assert.Equal(144224, result.BytesReceived);
         AssertBytes(remote, output);
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     [Fact]
@@ -143,6 +141,67 @@ public sealed class ModelSyncHttpTests : IDisposable
         AssertBytes(remote, output);
     }
 
+    /// <summary>The ranges a source asks for when every 206 carries at most <paramref name="cap"/> bytes.</summary>
+    private static IEnumerable<string> CappedRanges(long offset, long length, long cap)
+    {
+        for (long next = offset; next < offset + length; next += cap)
+            yield return Range(next, offset + length - next);
+    }
+
+    [Fact]
+    public async Task PartialAnswers_AreCompletedWithRequestsForTheRest()
+    {
+        // RFC 9110 lets a server send a part of the range. Each answer here carries at most 8,000 bytes.
+        byte[] remote = ModelSyncFixtures.A;
+        var server = new FakeModelServer(remote) { MaxPartial = 8000 };
+        string output = PathIn("first.litertlm");
+        LiteRtModelUpdateResult result = await LiteRtModelSync.UpdateAsync(null, output, Source(server));
+        _output.WriteLine(server.Sequence());
+        Assert.Equal([.. CappedRanges(0, 16384, 8000), .. CappedRanges(1184, 127840, 8000)], server.Requests.Select(r => r.Range));
+        Assert.All(server.Requests, r => Assert.Equal(206, r.Status));
+        Assert.Equal(144224, result.BytesReceived);
+        AssertBytes(remote, output);
+
+        string local = Put("a.litertlm", ModelSyncFixtures.A);
+        var diff = new FakeModelServer(ModelSyncFixtures.A1) { MaxPartial = 8000 };
+        await LiteRtModelSync.UpdateAsync(local, local, Source(diff));
+        Assert.Equal([.. CappedRanges(0, 16384, 8000), .. CappedRanges(81920, 8192, 8000)], diff.Requests.Select(r => r.Range));
+        AssertBytes(ModelSyncFixtures.A1, local);
+        ModelSyncAsserts.NoTemporaries(_dir);
+    }
+
+    [Fact]
+    public async Task PartialAnswer_WithoutAFileSize_IsComplete()
+    {
+        // "bytes 0-3715/*": the remote does not say where the file ends, so the answer is taken as the whole range.
+        byte[] remote = ModelSyncFixtures.Small;
+        var server = new FakeModelServer(remote) { UnknownLength = true };
+        string output = PathIn("small.litertlm");
+        LiteRtModelUpdateResult result = await LiteRtModelSync.UpdateAsync(null, output, Source(server));
+        Assert.Equal(["bytes=0-16383", "bytes=912-3715"], server.Requests.Select(r => r.Range));
+        Assert.Equal(6520, result.BytesReceived);
+        AssertBytes(remote, output);
+    }
+
+    [Fact]
+    public async Task WholeFileAnswer_AfterAPartialOne_FailsWithUnknown()
+    {
+        string local = Put("a.litertlm", ModelSyncFixtures.A);
+        var server = new FakeModelServer(ModelSyncFixtures.A1)
+        {
+            MaxPartial = 8000,
+            Script = (index, _) => index == 1 ? new FakeHttpAction { Whole = true } : null,
+        };
+        var e = await Assert.ThrowsAsync<LiteRtException>(() => LiteRtModelSync.UpdateAsync(local, local, Source(server)));
+        _output.WriteLine(e.Message);
+        // Never a status that makes the runtime download the whole file: the bytes already written are kept.
+        Assert.Equal(LiteRtStatusCode.Unknown, e.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, Assert.IsType<HttpRequestException>(e.InnerException).StatusCode);
+        Assert.Equal($"{Range(0, 16384)}:206 {Range(8000, 8384)}:200", server.Sequence());
+        AssertBytes(ModelSyncFixtures.A, local);
+        ModelSyncAsserts.NoTemporaries(_dir);
+    }
+
     [Fact]
     public async Task ContentRange_AtAnotherOffset_OrMissing_FailsWithDataLoss()
     {
@@ -156,7 +215,7 @@ public sealed class ModelSyncHttpTests : IDisposable
             Assert.IsType<ModelSyncSourceException>(e.InnerException);
             Assert.Equal(2, server.Requests.Count);
             AssertBytes(ModelSyncFixtures.A, local);
-            Assert.Empty(Temporaries());
+            ModelSyncAsserts.NoTemporaries(_dir);
         }
     }
 
@@ -172,7 +231,7 @@ public sealed class ModelSyncHttpTests : IDisposable
         Assert.Contains("ended after 8092 of 8192 bytes", e.Message, StringComparison.Ordinal);
         Assert.Equal(2, server.Requests.Count);
         AssertBytes(ModelSyncFixtures.A, local);
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     [Fact]
@@ -196,7 +255,7 @@ public sealed class ModelSyncHttpTests : IDisposable
         Assert.Equal(16384 + remote.Length, result.BytesReceived);
         AssertBytes(remote, wholeOutput);
         Assert.Equal($"bytes=0-{remote.Length - 1}", whole.Requests[^1].Range);
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     [Fact]
@@ -253,7 +312,7 @@ public sealed class ModelSyncHttpTests : IDisposable
         var ue = await Assert.ThrowsAsync<LiteRtException>(() => LiteRtModelSync.UpdateAsync(null, output, Source(server)));
         Assert.Equal(LiteRtStatusCode.Unimplemented, ue.StatusCode);
         Assert.False(File.Exists(output));
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     [Fact]
@@ -305,10 +364,10 @@ public sealed class ModelSyncHttpTests : IDisposable
         Assert.Contains($"answered {status}", e.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(Remote.Host, e.Message, StringComparison.Ordinal);
         // The hint about files the runtime cannot open is for the runtime's own PERMISSION_DENIED, not a 403.
-        Assert.DoesNotContain("cannot create or open", e.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("cannot create", e.Message, StringComparison.Ordinal);
         Assert.Equal(2, server.Requests.Count);
         AssertBytes(ModelSyncFixtures.A, local);
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     [Fact]
@@ -346,7 +405,7 @@ public sealed class ModelSyncHttpTests : IDisposable
         Assert.Contains("changed during the sync", e.Message, StringComparison.Ordinal);
         Assert.Equal(2, server.Requests.Count);
         AssertBytes(ModelSyncFixtures.A, local);
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     [Fact]
@@ -446,7 +505,7 @@ public sealed class ModelSyncHttpTests : IDisposable
         Assert.IsType<TimeoutException>(e.InnerException);
         Assert.Contains("sent no data for 2 seconds", e.Message, StringComparison.Ordinal);
         AssertBytes(ModelSyncFixtures.A, local);
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     [Fact]
@@ -489,7 +548,7 @@ public sealed class ModelSyncHttpTests : IDisposable
         Assert.Equal(cts.Token, e.CancellationToken);
         Assert.Equal(LiteRtStatusCode.Cancelled, Assert.IsType<LiteRtException>(e.InnerException).StatusCode);
         AssertBytes(ModelSyncFixtures.A, local);
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     // ---------------------------------------------------------------- the caller's client

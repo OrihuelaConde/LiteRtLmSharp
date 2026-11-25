@@ -271,7 +271,8 @@ public sealed unsafe class ModelSyncAbiTests(ITestOutputHelper output)
         }
         finally
         {
-            Directory.Delete(dir, recursive: true);
+            // A cleanup failure must not hide the test's own exception.
+            ModelSyncAsserts.DeleteFolder(dir);
         }
     }
 

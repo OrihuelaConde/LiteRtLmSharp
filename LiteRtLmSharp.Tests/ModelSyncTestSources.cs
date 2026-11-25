@@ -215,3 +215,111 @@ internal sealed class ModelSyncFileSource(string path) : LiteRtModelSyncSource
         return true;
     }
 }
+
+/// <summary>Checks and cleanup that the model sync test classes share.</summary>
+internal static class ModelSyncAsserts
+{
+    /// <summary>How many times a temporary file was still listed right after a call and gone within the wait of
+    /// <see cref="NoTemporaries"/>, for a runner that reports it.</summary>
+    public static int LingeredTemporaries;
+
+    /// <summary>Asserts that no <c>*.tmp_updating</c> file is left under <paramref name="folder"/>. A file that is
+    /// still listed right after the call gets up to 2 seconds to go away, so a deletion that the operating system
+    /// completes late does not fail the test. A file that stays fails the test with its size and whether it
+    /// opens.</summary>
+    public static void NoTemporaries(string folder)
+    {
+        string[] found = Find(folder);
+        if (found.Length == 0)
+            return;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (found.Length > 0 && clock.Elapsed < TimeSpan.FromSeconds(2))
+        {
+            Thread.Sleep(20);
+            found = Find(folder);
+        }
+        if (found.Length == 0)
+        {
+            Interlocked.Increment(ref LingeredTemporaries);
+            return;
+        }
+        Xunit.Assert.Fail("Temporary file left after the call: " + string.Join("; ", found.Select(Describe)));
+    }
+
+    /// <summary>Deletes a test folder, ignoring a file that another process still holds.</summary>
+    public static void DeleteFolder(string folder)
+    {
+        try
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static string[] Find(string folder) => Directory.GetFiles(folder, "*.tmp_updating", SearchOption.AllDirectories);
+
+    private static string Describe(string path)
+    {
+        string size;
+        try { size = new FileInfo(path).Length.ToString(System.Globalization.CultureInfo.InvariantCulture); }
+        catch (Exception e) { size = e.GetType().Name; }
+        string open;
+        try
+        {
+            using var _ = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            open = "opens";
+        }
+        catch (Exception e)
+        {
+            open = $"does not open ({e.GetType().Name}, 0x{e.HResult:X8})";
+        }
+        return $"{path}: {size} bytes, {open}";
+    }
+}
+
+/// <summary>Takes away the right to create files in a folder for the current user, and gives it back on
+/// Dispose.</summary>
+internal static class ModelSyncFolderAccess
+{
+    public static IDisposable DenyFileCreation(string folder)
+    {
+        return OperatingSystem.IsWindows() ? WindowsDeny(folder) : UnixDeny(folder);
+    }
+
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    private static IDisposable UnixDeny(string folder)
+    {
+        UnixFileMode mode = File.GetUnixFileMode(folder);
+        File.SetUnixFileMode(folder, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        return new Restore(() => File.SetUnixFileMode(folder, mode));
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static IDisposable WindowsDeny(string folder)
+    {
+        var info = new DirectoryInfo(folder);
+        var user = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+        var deny = new System.Security.AccessControl.FileSystemAccessRule(
+            user, System.Security.AccessControl.FileSystemRights.CreateFiles,
+            System.Security.AccessControl.InheritanceFlags.None, System.Security.AccessControl.PropagationFlags.None,
+            System.Security.AccessControl.AccessControlType.Deny);
+        System.Security.AccessControl.DirectorySecurity security = info.GetAccessControl();
+        security.AddAccessRule(deny);
+        info.SetAccessControl(security);
+        return new Restore(() =>
+        {
+            System.Security.AccessControl.DirectorySecurity current = info.GetAccessControl();
+            current.RemoveAccessRule(deny);
+            info.SetAccessControl(current);
+        });
+    }
+
+    private sealed class Restore(Action undo) : IDisposable
+    {
+        private Action? _undo = undo;
+
+        public void Dispose() => Interlocked.Exchange(ref _undo, null)?.Invoke();
+    }
+}

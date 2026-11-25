@@ -23,7 +23,7 @@ public sealed class ModelSyncTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_dir, recursive: true); } catch (IOException) { }
+        ModelSyncAsserts.DeleteFolder(_dir);
     }
 
     private string Put(string name, byte[] data)
@@ -34,8 +34,6 @@ public sealed class ModelSyncTests : IDisposable
     }
 
     private string PathIn(string name) => Path.Combine(_dir, name);
-
-    private string[] Temporaries() => Directory.GetFiles(_dir, "*.tmp_updating", SearchOption.AllDirectories);
 
     private static string Sequence(ModelSyncMemorySource source) =>
         string.Join(" ", source.Requests.Select(r => $"[{r.Offset},+{r.Length}]{(r.Outcome == "served" ? "" : ":" + r.Outcome)}"));
@@ -67,7 +65,7 @@ public sealed class ModelSyncTests : IDisposable
         Assert.Equal(total, plan.TotalRemoteSize);
         Assert.Equal("[0,+16384]", Sequence(source));
         Assert.False(string.IsNullOrWhiteSpace(plan.ToString()));
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     [Fact]
@@ -118,7 +116,7 @@ public sealed class ModelSyncTests : IDisposable
         _output.WriteLine(Sequence(source));
         AssertBytes(remote, output);
         Assert.Equal(ModelSyncFixtures.FirstDownloadBytes(remote), result.BytesReceived);
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     [Fact]
@@ -169,7 +167,7 @@ public sealed class ModelSyncTests : IDisposable
         await LiteRtModelSync.UpdateAsync(local, local, inPlace);
         Assert.Equal("[0,+16384] [81920,+20480]", Sequence(inPlace));
         AssertBytes(ModelSyncFixtures.B, local);
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     [Fact]
@@ -312,7 +310,7 @@ public sealed class ModelSyncTests : IDisposable
         // No fallback and no retry for a failure: the header and the section.
         Assert.Equal(2, source.Requests.Count);
         AssertBytes(ModelSyncFixtures.A, local);
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     [Fact]
@@ -336,9 +334,59 @@ public sealed class ModelSyncTests : IDisposable
         var e = await Assert.ThrowsAsync<LiteRtException>(() => LiteRtModelSync.UpdateAsync(local, local, source));
         Assert.Equal(LiteRtStatusCode.DataLoss, e.StatusCode);
         Assert.Contains("SHA-256", e.Message, StringComparison.Ordinal);
+        // The binding's hint, after the runtime's reason.
+        Assert.Contains("may have changed during the call", e.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("may not be a .litertlm file", e.Message, StringComparison.Ordinal);
         Assert.Null(e.InnerException);
         AssertBytes(ModelSyncFixtures.A, local);
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RemoteThatIsNotAContainer_FailsWithInvalidArgument_AndTheHint(bool plan)
+    {
+        // Measured: "INVALID_ARGUMENT: Remote file does not start with LITERTLM magic bytes".
+        var source = new ModelSyncMemorySource(ModelSyncFixtures.Payload(77, 129024));
+        string output = PathIn("out.litertlm");
+        var e = await Assert.ThrowsAsync<LiteRtException>(() =>
+            plan ? LiteRtModelSync.CreatePlanAsync(null, source) : LiteRtModelSync.UpdateAsync(null, output, source));
+        _output.WriteLine(e.Message);
+        Assert.Equal(LiteRtStatusCode.InvalidArgument, e.StatusCode);
+        Assert.Contains("LITERTLM magic", e.Message, StringComparison.Ordinal);
+        Assert.Contains("may not be a .litertlm file", e.Message, StringComparison.Ordinal);
+        Assert.Equal("[0,+16384]", Sequence(source));
+        Assert.False(File.Exists(output));
+        ModelSyncAsserts.NoTemporaries(_dir);
+    }
+
+    /// <summary>A folder the runtime cannot create the temporary file in: on Windows a deny rule for creating
+    /// files (measured on win-x64), elsewhere a folder without write permission (not measured).</summary>
+    [SkippableFact]
+    public async Task OutputFolderWithoutWriteAccess_FailsWithPermissionDenied_AndTheHint()
+    {
+        string folder = Directory.CreateDirectory(PathIn("nowrite")).FullName;
+        using IDisposable restore = ModelSyncFolderAccess.DenyFileCreation(folder);
+        bool blocked;
+        try
+        {
+            File.WriteAllBytes(Path.Combine(folder, "check.bin"), [1]);
+            blocked = false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            blocked = true;
+        }
+        Skip.IfNot(blocked, "This user can create files in a folder without write permission (for example root).");
+
+        var source = new ModelSyncMemorySource(ModelSyncFixtures.A);
+        var e = await Assert.ThrowsAsync<LiteRtException>(() => LiteRtModelSync.UpdateAsync(null, Path.Combine(folder, "o.litertlm"), source));
+        _output.WriteLine(e.Message);
+        Assert.Equal(LiteRtStatusCode.PermissionDenied, e.StatusCode);
+        Assert.Contains("cannot create", e.Message, StringComparison.Ordinal);
+        Assert.Contains("writable", e.Message, StringComparison.Ordinal);
+        Assert.Null(e.InnerException);
     }
 
     // ---------------------------------------------------------------- the contract the bridge enforces
@@ -357,7 +405,7 @@ public sealed class ModelSyncTests : IDisposable
         Assert.Contains("more bytes than the requested range", e.Message, StringComparison.Ordinal);
         Assert.Equal("[0,+16384] [1184,+127840]:InvalidOperationException", Sequence(source));
         Assert.False(File.Exists(output));
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     [Fact]
@@ -440,7 +488,7 @@ public sealed class ModelSyncTests : IDisposable
         var inner = Assert.IsType<LiteRtException>(e.InnerException);
         Assert.Equal(LiteRtStatusCode.Cancelled, inner.StatusCode);
         AssertBytes(ModelSyncFixtures.A, local);
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     [Fact]
@@ -462,7 +510,7 @@ public sealed class ModelSyncTests : IDisposable
         await source.IgnoredTokenRequestEnded.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.IsType<ObjectDisposedException>(Assert.Single(source.LateWriteFailures));
         AssertBytes(ModelSyncFixtures.A, local);
-        Assert.Empty(Temporaries());
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     [Fact]
@@ -631,7 +679,14 @@ public sealed class ModelSyncTests : IDisposable
     public async Task Callbacks_RunOnTheCallingThread_AndNoneAfterTheReturn()
     {
         var reports = new List<ModelSyncCallReport>();
-        ModelSyncCall.Completed = r => { lock (reports) reports.Add(r); };
+        // The hooks are process-wide: keep a receiver that is already there, and put both back afterwards.
+        Action<ModelSyncCallReport>? previous = ModelSyncCall.Completed;
+        TimeSpan previousWindow = ModelSyncCall.LateCallbackWindow;
+        ModelSyncCall.Completed = r =>
+        {
+            lock (reports) reports.Add(r);
+            previous?.Invoke(r);
+        };
         // Keeps each call's handle valid after the return, so a late fetcher call would be counted.
         ModelSyncCall.LateCallbackWindow = TimeSpan.FromMilliseconds(300);
         try
@@ -658,8 +713,8 @@ public sealed class ModelSyncTests : IDisposable
         }
         finally
         {
-            ModelSyncCall.Completed = null;
-            ModelSyncCall.LateCallbackWindow = TimeSpan.Zero;
+            ModelSyncCall.Completed = previous;
+            ModelSyncCall.LateCallbackWindow = previousWindow;
         }
         Assert.Equal(5, reports.Count);
         Assert.All(reports, r =>
