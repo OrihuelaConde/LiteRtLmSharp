@@ -114,11 +114,10 @@ public static class LiteRtModelSync
     /// <para>Replacing the file: the runtime writes the new file to <c>OUTPUT.tmp_updating</c> next to the output
     /// and renames it over the output at the end; the C API describes an update of one path as atomic. On a failed
     /// fetch, on bytes the binding refuses, and on a cancel during a fetch, the runtime deletes the temporary file
-    /// and leaves the old output (measured). When the process ends during an update, the temporary file stays next to
-    /// the output and the old output is intact; the next update of that output overwrites the temporary file
-    /// (measured). When the local
-    /// file is already up to date and is the output, nothing is written; when the output is another file, the
-    /// runtime copies the local file to it.</para>
+    /// and leaves the old output (measured). When the process ends during an update, the temporary file stays
+    /// next to the output and the old output is intact; the next update of that output overwrites the temporary
+    /// file (measured). When the local file is already up to date and is the output, nothing is written; when the
+    /// output is another file, the runtime copies the local file to it.</para>
     /// <para>Disk space: the temporary file is a full copy of the remote file, and it sits next to the old output
     /// until the rename. The binding turns on the runtime's check of free space before the download: when the
     /// output's volume has less free space than the remote file's size, the update fails with
