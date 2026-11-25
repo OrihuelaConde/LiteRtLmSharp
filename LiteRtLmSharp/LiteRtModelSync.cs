@@ -142,13 +142,14 @@ public static class LiteRtModelSync
     /// load the output until the update completes. A <see cref="LiteRtModelInfo.Read"/> of the output that runs
     /// when the runtime replaces it makes the update fail the same way, and the read can fail with
     /// <see cref="LiteRtStatusCode.Internal"/> too (measured), so do not read the output during an update.</para>
-    /// <para>Compiled cache: after an in-place update, an engine that this process loads from the same path with
-    /// <see cref="LiteRtCache.Default"/> can use the compiled cache of the old file and compute with the old
-    /// model. A <see cref="LiteRtEmbeddingEngine"/> on CPU and on GPU returned the old model's embeddings
-    /// (measured). Before you load the file again in the same process, delete the cache files next to it, whose
-    /// names start with the model file's name, or load it with <see cref="LiteRtCache.Disabled"/>. A new process
-    /// built a new cache and computed with the new model; on GPU it left the old cache files next to the
-    /// model.</para>
+    /// <para>Compiled cache: when a process loaded the file before an in-place update, an engine that the same
+    /// process loads from that path afterwards with <see cref="LiteRtCache.Default"/> can use the compiled cache
+    /// of the old file and compute with the old model. A <see cref="LiteRtEmbeddingEngine"/> on CPU and on GPU
+    /// returned the old model's embeddings (measured on Windows). Before such a process loads the file again,
+    /// delete the cache files next to it, whose names are the model file's name followed by <c>_</c> or
+    /// <c>.</c>, or load it with <see cref="LiteRtCache.Disabled"/>. A process that had not loaded the file before
+    /// the update, whether it ran the update or not, built a new cache and computed with the new model; on GPU it
+    /// left the old cache files next to the model.</para>
     /// <para>Cancel: the token is checked before the call and at each fetch, and it interrupts a fetch that waits
     /// for the remote or copies its bytes. The runtime's own work between fetches, such as reading the local file,
     /// copying reused sections or renaming the temporary file, has no callback, so a cancel during that work takes

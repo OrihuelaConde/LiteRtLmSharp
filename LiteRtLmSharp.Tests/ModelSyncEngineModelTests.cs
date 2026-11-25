@@ -152,11 +152,11 @@ public sealed class ModelSyncEngineModelTests(ITestOutputHelper output)
         }
     }
 
-    /// <summary>After an in-place update, an embedding engine that the same process loads from the path with the
-    /// default cache computes with the old model's compiled cache; with the cache off, or after the cache files
-    /// next to the model are deleted, it computes with the new model. If the first assertion after the update
-    /// fails, the runtime no longer reuses the old cache, and the remarks of
-    /// <see cref="LiteRtModelSync.UpdateAsync"/> need the new result.</summary>
+    /// <summary>When a process loaded the file before an in-place update, an embedding engine that it loads from the
+    /// path afterwards with the default cache computes with the old model's compiled cache (measured on Windows
+    /// only, so asserted there only); with the cache off, or after the cache files next to the model are deleted,
+    /// it computes with the new model. If the Windows assertion fails, the runtime no longer reuses the old cache,
+    /// and the remarks of <see cref="LiteRtModelSync.UpdateAsync"/> need the new result.</summary>
     [SkippableFact]
     public async Task EmbeddingEngine_AfterAnInPlaceUpdate_UsesTheOldCompiledCache_UntilItsFilesAreDeleted()
     {
@@ -187,8 +187,11 @@ public sealed class ModelSyncEngineModelTests(ITestOutputHelper output)
 
             await LiteRtModelSync.UpdateAsync(model, model, new ModelSyncFileSource(remote));
 
-            Assert.True(Embed(model, LiteRtCache.Default).AsSpan().SequenceEqual(before),
-                "The runtime no longer reuses the old compiled cache in the same process.");
+            float[] stale = Embed(model, LiteRtCache.Default);
+            output.WriteLine($"default cache after the update equals the old model: {stale.AsSpan().SequenceEqual(before)}");
+            if (OperatingSystem.IsWindows())
+                Assert.True(stale.AsSpan().SequenceEqual(before),
+                    "The runtime no longer reuses the old compiled cache in the same process.");
             Assert.True(Embed(model, LiteRtCache.Disabled).AsSpan().SequenceEqual(expected));
             string[] cacheFiles = [.. Directory.GetFiles(dir, "e.litertlm?*").Where(f => Path.GetFileName(f) != "e.litertlm")];
             output.WriteLine("cache files: " + string.Join(", ", cacheFiles.Select(Path.GetFileName)));
