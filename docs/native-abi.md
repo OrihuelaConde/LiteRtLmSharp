@@ -494,6 +494,62 @@ binding refuses those calls. After a prefill whose input did not fit, a rewind o
 the session; after other prefill failures the binding accepts both, but that was not measured. Measured on
 LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and GPU.
 
+## Model sync (v0.20.0, `c/model_sync.h`) — verified on win-x64
+
+`c/model_sync.h` declares 19 functions, all added in C API version 1.1.0, and the binding declares all 19
+(`Native/LiteRtLmNative.ModelSync.cs`). The exports were checked by name in the v0.20.0 library of every
+packaged platform; the calls ran on win-x64 only. The public API (`LiteRtModelSync`, see
+[model-sync.md](model-sync.md)) calls 15 of them:
+
+- **Options:** `options_create`, `options_delete`, `options_set_full_download_threshold`,
+  `options_set_clean`, `options_set_check_disk_space`. Every call creates options and sets all three
+  values instead of passing `NULL`, pinned to the native defaults (threshold 0.80, `clean` off, disk check
+  on), so a change of those defaults changes nothing in the binding.
+- **Plan:** `plan_create_from_file`, `plan_delete`, `plan_is_up_to_date`, `plan_get_bytes_to_download`,
+  `plan_get_bytes_to_reuse`, `plan_get_total_remote_size`, `plan_format`. The summary string belongs to the
+  plan, so the binding copies it before it deletes the plan.
+- **Update:** `update`.
+- **Range writer:** `range_writer_write`, `range_writer_set_error`, called from the fetcher callback.
+
+The other four, `options_set_allow_offline_fallback`, `cache_sync`, `result_delete` and
+`result_get_cached_path`, belong to the cache manager. They are declared and covered by the C-level ABI
+tests, with no managed caller.
+
+Contract, as the binding relies on it:
+
+- **Fetcher callback** (`LiteRtLmModelSyncRangeFetcherCallback`, cdecl
+  `(uint64_t offset, uint64_t length, writer*, void* user_data)`): the runtime calls it synchronously on the
+  thread that called `plan_create_from_file` or `update`, and never after that call returns. The writer is
+  valid only during the callback, and the binding calls it only on the callback thread. No request has
+  length 0, and every request is closed and bounded.
+- **Requests:** the header is read with `[0, 16384)`, then the rest of a longer header. A whole-file fetch
+  asks for `[header_end, size)`; only when that request is refused does the runtime ask for `[0, size)`.
+- **Statuses:** the status that the callback returns is the call's status, and a value outside 1 to 16
+  becomes `UNKNOWN`. `FAILED_PRECONDITION`, `UNIMPLEMENTED` and `OUT_OF_RANGE` make `update` fall back to a
+  full download only for fetches after the header; returned from a header fetch, they fail the plan or the
+  update. The binding returns `UNIMPLEMENTED` only for a remote that can't serve a range, never for an
+  error. The runtime doesn't retry a failed fetch.
+- **`set_error`:** the UTF-8 text appears in the last error after the status and the phase, as in
+  `CANCELLED: Failed to fetch section payload: <text>`. `NULL` restores the default text.
+- **Byte counts:** the runtime rejects short and long section writes and a short whole-file write with
+  `DATA_LOSS`, but accepts a whole-file write past `length` and leaves a longer, corrupt output. The binding
+  never passes the runtime a byte past `length`.
+- **Verification:** the runtime verifies each downloaded section that the remote header hashes, and nothing
+  for a remote without section hashes.
+- **Paths (Windows):** the runtime decodes every path in the active ANSI code page (UTF-8 bytes fail on code
+  page 1252), and in a process that isn't long-path aware, plain paths of 260 characters or more fail. The
+  binding passes ANSI bytes, refuses characters outside the code page, and switches every path of a call to
+  `\\?\` from 260 characters.
+- **In place:** the runtime compares the two path strings. An up-to-date update whose output is another
+  spelling of the local file fails with `INTERNAL` ("File exists"), so the binding passes the same bytes for
+  both when the full paths are equal.
+- **Replace (Windows):** `update` writes `OUTPUT.tmp_updating` and renames it over the output at the end.
+  While the output or that temporary file is open, for example by a live engine, by a
+  `litert_lm_loaded_file_create` that `LiteRtModelInfo.Read` makes, or by a second `update` of the same output
+  in another process, the rename fails with `INTERNAL` ("Failed to rename temporary model to destination")
+  after the download. The binding refuses an output that a live engine of the process loaded, and adds a hint
+  for that reason.
+
 ## Official shared-library status
 - **Upstream published official C API prebuilts with v0.16.0** (`litert_lm_c_api-<version>.zip` for
   linux/windows/macos/android, `CLiteRTLM.xcframework.zip` for iOS), and 1.2.0 ships those. v0.17.x and
