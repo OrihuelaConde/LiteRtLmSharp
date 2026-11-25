@@ -304,6 +304,8 @@ public sealed class ModelSyncHttpTests : IDisposable
         Assert.Equal((HttpStatusCode)status, inner.StatusCode);
         Assert.Contains($"answered {status}", e.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(Remote.Host, e.Message, StringComparison.Ordinal);
+        // The hint about files the runtime cannot open is for the runtime's own PERMISSION_DENIED, not a 403.
+        Assert.DoesNotContain("cannot create or open", e.Message, StringComparison.Ordinal);
         Assert.Equal(2, server.Requests.Count);
         AssertBytes(ModelSyncFixtures.A, local);
         Assert.Empty(Temporaries());
@@ -438,11 +440,11 @@ public sealed class ModelSyncHttpTests : IDisposable
         string local = Put("a.litertlm", ModelSyncFixtures.A);
         var server = new FakeModelServer(ModelSyncFixtures.A1) { Script = (index, _) => index == 1 ? new FakeHttpAction { StallAfter = 1000 } : null };
         var e = await Assert.ThrowsAsync<LiteRtException>(
-            () => LiteRtModelSync.UpdateAsync(local, local, Source(server, TimeSpan.FromMilliseconds(300))).WaitAsync(TimeSpan.FromSeconds(30)));
+            () => LiteRtModelSync.UpdateAsync(local, local, Source(server, TimeSpan.FromSeconds(2))).WaitAsync(TimeSpan.FromSeconds(30)));
         _output.WriteLine(e.Message);
         Assert.Equal(LiteRtStatusCode.DeadlineExceeded, e.StatusCode);
         Assert.IsType<TimeoutException>(e.InnerException);
-        Assert.Contains("sent no data for 300 milliseconds", e.Message, StringComparison.Ordinal);
+        Assert.Contains("sent no data for 2 seconds", e.Message, StringComparison.Ordinal);
         AssertBytes(ModelSyncFixtures.A, local);
         Assert.Empty(Temporaries());
     }
@@ -453,7 +455,7 @@ public sealed class ModelSyncHttpTests : IDisposable
         var gate = new TaskCompletionSource();
         var server = new FakeModelServer(ModelSyncFixtures.A) { Script = (_, _) => new FakeHttpAction { HeaderGate = gate.Task } };
         var e = await Assert.ThrowsAsync<LiteRtException>(
-            () => LiteRtModelSync.CreatePlanAsync(null, Source(server, TimeSpan.FromMilliseconds(300))).WaitAsync(TimeSpan.FromSeconds(30)));
+            () => LiteRtModelSync.CreatePlanAsync(null, Source(server, TimeSpan.FromSeconds(2))).WaitAsync(TimeSpan.FromSeconds(30)));
         Assert.Equal(LiteRtStatusCode.DeadlineExceeded, e.StatusCode);
         Assert.IsType<TimeoutException>(e.InnerException);
         Assert.Contains("sent no response", e.Message, StringComparison.Ordinal);

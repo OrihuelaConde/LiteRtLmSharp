@@ -62,7 +62,7 @@ public abstract class LiteRtModelSyncSource
     /// <see cref="HttpClient.DefaultRequestHeaders"/> is not sent again after a redirect, to the same host or to
     /// another one, so the address a redirect leads to does not receive it.</para>
     /// <para>The <see cref="SocketsHttpHandler"/> statements above were measured on .NET 10.0.15, win-x64, against
-    /// a server on the loopback address. Other handlers, such as the Android one, were not measured.</para>
+    /// a server on the loopback address. Other handlers, such as the Android one, are not measured.</para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="uri"/> is <c>null</c>.</exception>
     /// <exception cref="ArgumentException"><paramref name="uri"/> is not an absolute <c>http</c> or <c>https</c>
