@@ -36,7 +36,7 @@ internal enum SessionCallOutcome
 /// <remarks>
 /// <para>
 /// The native session reports success for work it skips: after a cancel or a failed prefill, a prefill returns OK
-/// having done nothing, and <c>run_decode_async</c> returns OK and never calls its callback (measured on
+/// at once, and <c>run_decode_async</c> returns OK and did not call its callback within 30 s (measured on
 /// LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and GPU). This machine is the only protection against a decode
 /// that never ends, so it accepts no call from a state where the runtime would skip the work.
 /// </para>

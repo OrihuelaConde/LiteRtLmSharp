@@ -13,8 +13,7 @@ public sealed record LiteRtSessionOptions
 
     private readonly int _maxOutputTokens;
 
-    /// <summary>Gets the maximum number of tokens one decode generates; 0 sets no cap other than the
-    /// context.</summary>
+    /// <summary>Gets the maximum number of tokens one decode generates; 0 sends no cap to the runtime.</summary>
     /// <exception cref="ArgumentOutOfRangeException">The value is negative.</exception>
     public int MaxOutputTokens
     {

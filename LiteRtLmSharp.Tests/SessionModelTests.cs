@@ -107,14 +107,15 @@ public sealed class SessionModelTests(SessionEngineFixture fixture, ITestOutputH
         LiteRtEngine engine = fixture.Engine;
         LiteRtTokenUnion? startToken = engine.GetStartToken();
         using LiteRtSession session = engine.CreateSession();
-        if (startToken is not { Kind: LiteRtTokenKind.Ids, Ids.Count: 1 })
-        {
+        // No start token, or one of several ids, has no rule.
+        if (startToken is null || startToken is { Kind: LiteRtTokenKind.Ids, Ids.Count: not 1 })
             Assert.Null(session.RefusedStartTokenText);
-            Skip.If(true, $"The model's start token is not one id ({startToken?.ToString() ?? "none"}).");
-        }
+        Skip.If(startToken is not { Kind: LiteRtTokenKind.Ids, Ids.Count: 1 },
+            $"The model's start token is not one id ({startToken?.ToString() ?? "none"}).");
 
         string startText = engine.Detokenize([startToken!.Ids[0]]);
         output.WriteLine($"start token {startToken.Ids[0]} = \"{startText}\"");
+        Skip.If(startText.Length == 0, "The model's start token detokenizes to an empty text.");
         Assert.Equal(startText, session.RefusedStartTokenText);
 
         var ex = Assert.Throws<ArgumentException>(() => session.Prefill(startText + "Hello"));

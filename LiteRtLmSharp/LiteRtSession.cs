@@ -61,8 +61,8 @@ public sealed class LiteRtSession : IDisposable
         NativeError.ThrowIfFailed(
             LiteRtLmNative.litert_lm_session_config_set_apply_prompt_template(config.Ptr, false),
             nameof(LiteRtLmNative.litert_lm_session_config_set_apply_prompt_template));
-        // Never 0 or a negative value: the runtime has no range check, and LiteRtSessionOptions refuses a
-        // negative value. 0 leaves the native default.
+        // Called only with a positive value: 0 means no cap and sends nothing, and LiteRtSessionOptions refuses
+        // a negative value.
         if (options is { MaxOutputTokens: > 0 and var maxOutputTokens })
             NativeError.ThrowIfFailed(
                 LiteRtLmNative.litert_lm_session_config_set_max_output_tokens(config.Ptr, maxOutputTokens),
@@ -101,11 +101,12 @@ public sealed class LiteRtSession : IDisposable
     /// </para>
     /// <para>
     /// A prefill can't be cut once it starts. Any failure leaves the session
-    /// <see cref="LiteRtSessionState.Faulted"/>: after a failed prefill the runtime skips later prefills and
-    /// decodes on the session without reporting an error. Input that does not fit the remaining context fails
-    /// with <see cref="LiteRtStatusCode.ResourceExhausted"/>, <see cref="LiteRtStatusCode.InvalidArgument"/> or
-    /// <see cref="LiteRtStatusCode.FailedPrecondition"/>, depending on how it does not fit. Both were measured on
-    /// LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and GPU.
+    /// <see cref="LiteRtSessionState.Faulted"/>: after a failed prefill the runtime returns OK for later prefills
+    /// and decodes on the session, and a decode then delivers no reply. Input that does not fit the remaining
+    /// context fails with <see cref="LiteRtStatusCode.ResourceExhausted"/>,
+    /// <see cref="LiteRtStatusCode.InvalidArgument"/> or <see cref="LiteRtStatusCode.FailedPrecondition"/>,
+    /// depending on how it does not fit. Both were measured on LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and
+    /// GPU.
     /// </para>
     /// </remarks>
     /// <exception cref="ObjectDisposedException">The session has been disposed.</exception>
@@ -248,8 +249,8 @@ public sealed class LiteRtSession : IDisposable
             }
             finally
             {
-                // Any failure latches Faulted: after a failed prefill the runtime skips every later call on the
-                // session, and a decode on it never calls back.
+                // Any failure latches Faulted: after a failed prefill, a later prefill returned OK at once and a
+                // decode stream did not call back within 30 s (measured on v0.20.0, win-x64, gemma-4 E2B).
                 _machine.Complete(SessionCall.Prefill, succeeded ? SessionCallOutcome.Succeeded : SessionCallOutcome.Failed);
             }
         }
@@ -290,9 +291,10 @@ public sealed class LiteRtSession : IDisposable
     /// to it, or a tokenizer call that throws <see cref="LiteRtException"/>.
     /// </summary>
     /// <remarks>An id start token is not required to come back from <paramref name="tokenize"/>: Gemma 4's
-    /// <c>&lt;bos&gt;</c> (id 2) tokenizes as plain text into three ids, yet the runtime reads a first prefill that
-    /// starts with it as a second start token (measured on LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and
-    /// GPU).</remarks>
+    /// <c>&lt;bos&gt;</c> (id 2) tokenizes as plain text into three ids, yet a first prefill that starts with it
+    /// takes one position more than the same text without it, which reads as a second start token (positions
+    /// measured on LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and GPU; the second start token is inferred from
+    /// them).</remarks>
     internal static string? StartTokenText(
         LiteRtTokenUnion? startToken, Func<string, int[]> tokenize, Func<int[], string> detokenize)
     {

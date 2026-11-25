@@ -381,13 +381,14 @@ public sealed class LiteRtEngine : IDisposable
     /// <summary>Creates a session that prefills and decodes raw text, without the conversation template, history,
     /// tool parsing or reasoning channels.</summary>
     /// <param name="options">The session's sampler and output cap, fixed for its lifetime; <c>null</c> uses the
-    /// engine's default sampling and no output cap other than the context.</param>
+    /// engine's default sampling and sends no output cap.</param>
     /// <returns>A new session in the <see cref="LiteRtSessionState.Fresh"/> state. Dispose it when done.</returns>
     /// <remarks>
-    /// The native session is created through the engine, as a conversation is, so the call can wait for a
-    /// generation in flight on the engine (see <see cref="CreateConversation"/>); how long a session waits is not
-    /// measured. The session keeps the native engine alive: disposing this engine first is safe, and the native
-    /// engine is released when its last conversation or session is disposed.
+    /// The native session is created through the engine, as a conversation is (see
+    /// <see cref="CreateConversation"/>); whether and how long the call waits for a generation in flight on the
+    /// engine is not measured for sessions. The session keeps the native engine alive: disposing this engine
+    /// first is safe, and the native engine is released when its last conversation or session is
+    /// disposed.
     /// </remarks>
     /// <exception cref="ObjectDisposedException">The engine has been disposed.</exception>
     /// <exception cref="LiteRtException">The native session could not be created.</exception>

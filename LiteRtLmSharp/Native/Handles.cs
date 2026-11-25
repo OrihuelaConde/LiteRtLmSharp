@@ -164,7 +164,8 @@ internal sealed class SessionHandle(nint handle, EngineHandle engine) : LiteRtLm
     private bool _deleted;
 
     /// <summary>Keeps <paramref name="gcHandle"/> until the native session is deleted, then frees it. When the
-    /// session is already deleted, frees it at once: no callback can run after the delete.</summary>
+    /// session is already deleted, frees it at once: the delete has returned, and no stream callback was observed
+    /// after a delete (LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and GPU).</summary>
     internal void Retire(GCHandle gcHandle)
     {
         lock (_retiredLock)
@@ -187,8 +188,8 @@ internal sealed class SessionHandle(nint handle, EngineHandle engine) : LiteRtLm
 
     protected override bool ReleaseHandle()
     {
-        // Delete first: it waits for the session's tasks, and a stream's callback data must stay valid until
-        // then. The engine reference goes last, because a session must be deleted before its engine.
+        // Delete first: a stream's callback data must stay valid until the native session is gone. The engine
+        // reference goes last, because a session must be deleted before its engine.
         LiteRtLmNative.litert_lm_session_delete(handle);
         List<GCHandle>? retired;
         lock (_retiredLock)
