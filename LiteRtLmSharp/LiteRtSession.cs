@@ -434,9 +434,9 @@ public sealed class LiteRtSession : IDisposable
     /// rewind to a checkpoint saved on a Fresh session, the runtime adds one position again on the next prefill,
     /// the start token on Gemma 4 (see <see cref="Prefill"/>). A decode after the rewind gave the same reply as
     /// the first decode from that point, and as a new session that reached the point the same way, also when
-    /// another session or a conversation used the engine in between. These rewinds ran with the default engine
-    /// options. With <see cref="LiteRtEngineOptions.UseRingbuffersLocalAttention"/> on, which gives up instant
-    /// rewinding, rewind and reset were not measured.
+    /// another session or a conversation used the engine in between. No rewind or reset was measured with
+    /// <see cref="LiteRtEngineOptions.UseRingbuffersLocalAttention"/> on, the option that gives up instant
+    /// rewinding.
     /// </para>
     /// <para>
     /// Accepted when the session is Fresh, Prefilled, Decoded or <see cref="LiteRtSessionState.ContextFull"/>, and
