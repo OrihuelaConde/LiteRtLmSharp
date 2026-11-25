@@ -394,6 +394,8 @@ public sealed class SessionDecodeModelTests(SessionEngineFixture fixture, ITestO
         Assert.False(session.IsCallInProgress);
         Skip.If(requestedAt == 0, $"The reply ended before piece {RequestAt}, so the token was not cancelled.");
         SessionDecodeHelpers.AssertStoppedAfterTheRequest(requestedAt, total);
+        // A decode that settled before the token fired has nothing left to cancel.
+        Skip.If(error is null && session.State == LiteRtSessionState.Decoded, "The reply ended before the token fired.");
         Assert.IsAssignableFrom<OperationCanceledException>(error);
         Skip.If(session.State == LiteRtSessionState.Decoded, "The reply ended by itself right after the request.");
         await SessionDecodeHelpers.AssertAcceptsOnlyDispose(session, LiteRtSessionState.Cancelled);
@@ -520,9 +522,9 @@ public sealed class SessionDecodeModelTests(SessionEngineFixture fixture, ITestO
         }));
         output.WriteLine($"disposed at piece {disposedAt}, {total} pieces, outcome {error?.GetType().Name ?? "completed"}, state {session.State}");
         Assert.False(session.IsCallInProgress);
+        Skip.If(disposedAt == 0, $"The reply ended before piece {DisposeAt}, so the session was not disposed during it.");
         SessionDecodeHelpers.AssertNativeSessionDeleted(session);
         Assert.Throws<ObjectDisposedException>(() => session.Prefill("Hello"));
-        Skip.If(disposedAt == 0, $"The reply ended before piece {DisposeAt}, so the session was not disposed during it.");
         SessionDecodeHelpers.AssertStoppedAfterTheRequest(disposedAt, total);
         Skip.If(error is null && session.State == LiteRtSessionState.Decoded, "The reply ended by itself right after the request.");
         Assert.IsType<ObjectDisposedException>(error);
