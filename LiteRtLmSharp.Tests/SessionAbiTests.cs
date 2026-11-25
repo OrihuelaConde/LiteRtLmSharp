@@ -155,6 +155,17 @@ public sealed unsafe class SessionAbiTests(ITestOutputHelper output)
         public static void Reset() => _chunks = 0;
 
         [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
-        public static void OnChunk(nint callbackData, nint chunk) => Interlocked.Increment(ref _chunks);
+        public static void OnChunk(nint callbackData, nint chunk)
+        {
+            // Guarded like every [UnmanagedCallersOnly] body: an exception that leaves it ends the process.
+            try
+            {
+                Interlocked.Increment(ref _chunks);
+            }
+            catch
+            {
+                // Nothing to report from a native callback.
+            }
+        }
     }
 }
