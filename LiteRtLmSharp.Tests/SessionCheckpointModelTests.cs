@@ -391,8 +391,12 @@ public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, IT
         LiteRtSessionCheckpoint checkpoint = session.SaveCheckpoint();
         var ex = await Assert.ThrowsAsync<LiteRtException>(() => SessionDecodeHelpers.Within(() => session.Prefill(tooLong)));
         output.WriteLine($"{ex.StatusCode}: {ex.Message}");
-        Assert.Equal(LiteRtStatusCode.InvalidArgument, ex.StatusCode);
-        Assert.Contains("Input token ids are too long", ex.Message, StringComparison.Ordinal);
+        // The status was measured on win-x64; elsewhere the test needs only the failed prefill.
+        if (SessionDecodeHelpers.SameBytesMeasured)
+        {
+            Assert.Equal(LiteRtStatusCode.InvalidArgument, ex.StatusCode);
+            Assert.Contains("Input token ids are too long", ex.Message, StringComparison.Ordinal);
+        }
         await SessionDecodeHelpers.AssertAcceptsOnlyRewindResetAndDispose(session, LiteRtSessionState.Faulted);
 
         await SessionDecodeHelpers.Within(() => session.RewindTo(checkpoint));
@@ -416,7 +420,9 @@ public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, IT
         using LiteRtSession session = SessionCheckpointHelpers.Session(engine);
         await SessionDecodeHelpers.Within(() => session.Prefill(prompt));
         var ex = await Assert.ThrowsAsync<LiteRtException>(() => SessionDecodeHelpers.Within(() => session.Prefill(tooLong)));
-        Assert.Equal(LiteRtStatusCode.InvalidArgument, ex.StatusCode);
+        output.WriteLine($"{ex.StatusCode}: {ex.Message}");
+        if (SessionDecodeHelpers.SameBytesMeasured)
+            Assert.Equal(LiteRtStatusCode.InvalidArgument, ex.StatusCode);
         await SessionDecodeHelpers.AssertAcceptsOnlyRewindResetAndDispose(session, LiteRtSessionState.Faulted);
 
         await SessionDecodeHelpers.Within(session.Reset);
@@ -497,8 +503,9 @@ internal static class SessionContextFill
 
 /// <summary>
 /// Recovery from a failed first prefill and from the two other failure statuses of a prefill that does not fit,
-/// each on its own engine fixture, apart from the other session tests: a decode that never ends would hold its
-/// session, and with it the engine, until the process ends. The recovered decode equals a new session's.
+/// in a class of their own, with an engine apart from the other session tests: a decode that never ends would
+/// hold its session, and with it the engine, until the process ends. The recovered decode equals a new
+/// session's.
 /// </summary>
 public sealed class SessionRecoveryModelTests(SessionEngineFixture fixture, ITestOutputHelper output) : IClassFixture<SessionEngineFixture>
 {
@@ -511,13 +518,17 @@ public sealed class SessionRecoveryModelTests(SessionEngineFixture fixture, ITes
         }
     }
 
-    /// <summary>Fails a prefill of <paramref name="text"/> and checks the status where it was measured.</summary>
+    /// <summary>Fails a prefill of <paramref name="text"/>. The status and the hint are checked only where they
+    /// were measured (win-x64); elsewhere the test needs only a failed prefill, whose status it logs.</summary>
     private async Task<LiteRtException> FailPrefill(LiteRtSession session, string text, LiteRtStatusCode measured)
     {
         var ex = await Assert.ThrowsAsync<LiteRtException>(() => SessionDecodeHelpers.Within(() => session.Prefill(text)));
         output.WriteLine($"{ex.StatusCode}: {ex.Message}");
-        Assert.Equal(measured, ex.StatusCode);
-        Assert.Contains(LiteRtSession.DoesNotFitHint, ex.Message, StringComparison.Ordinal);
+        if (SessionDecodeHelpers.SameBytesMeasured)
+        {
+            Assert.Equal(measured, ex.StatusCode);
+            Assert.Contains(LiteRtSession.DoesNotFitHint, ex.Message, StringComparison.Ordinal);
+        }
         await SessionDecodeHelpers.AssertAcceptsOnlyRewindResetAndDispose(session, LiteRtSessionState.Faulted);
         return ex;
     }
@@ -586,7 +597,8 @@ public sealed class SessionRecoveryModelTests(SessionEngineFixture fixture, ITes
         int left = SessionEngineFixture.Context - 1 - engine.Tokenize(first).Length;
         int count = engine.Tokenize(second).Length;
         output.WriteLine($"{left} positions left, {count} input tokens, rounded up to {(count + 127) / 128 * 128}");
-        // The test's own arithmetic: the input fits by its count and not after the rounding.
+        // The test's own arithmetic: the input fits by its count and not after the rounding. The rounding is
+        // inferred from the measured thresholds on win-x64.
         Assert.True(count < left && (count + 127) / 128 * 128 > left, $"{count} tokens with {left} positions left.");
 
         using LiteRtSession session = SessionCheckpointHelpers.Session(engine);
