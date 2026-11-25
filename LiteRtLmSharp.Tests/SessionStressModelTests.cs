@@ -55,7 +55,7 @@ public sealed class SessionStressModelTests(ITestOutputHelper output)
             for (; done < iterations && total.Elapsed < timeLimit; done++)
             {
                 int mode = done % 3;
-                LiteRtSession session = SessionDecodeHelpers.Session(engine, mode == 2 ? 8 : 64);
+                using LiteRtSession session = SessionDecodeHelpers.Session(engine, mode == 2 ? 8 : 64);
                 session.Prefill(mode == 2 ? shortPrompt : longPrompt);
                 Task<Exception?> run = mode switch
                 {
@@ -81,7 +81,7 @@ public sealed class SessionStressModelTests(ITestOutputHelper output)
                 Assert.True(error is null or ObjectDisposedException, $"Iteration {done} (mode {mode}) threw {error}");
                 Assert.True(session.State is LiteRtSessionState.Cancelled or LiteRtSessionState.Decoded,
                     $"Iteration {done} (mode {mode}) ended {session.State}.");
-                Assert.True(session.Handle.IsClosed);
+                SessionDecodeHelpers.AssertNativeSessionDeleted(session);
             }
         }
         await SessionDecodeHelpers.Eventually(() => LiteRtEngine.LiveEngineCount == before, "every native session and the engine to be deleted");

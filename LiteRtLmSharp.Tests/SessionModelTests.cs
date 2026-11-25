@@ -134,7 +134,7 @@ public sealed class SessionModelTests(SessionEngineFixture fixture, ITestOutputH
     /// of not fitting are tried: one input longer than the context on a fresh session, and a second input that
     /// does not fit after the first.</summary>
     [SkippableFact]
-    public void Prefill_ThatDoesNotFit_FaultsTheSession_AndTheEngineStillServes()
+    public async Task Prefill_ThatDoesNotFit_FaultsTheSession_AndTheEngineStillServes()
     {
         Skip.If(fixture.Engine is null, SessionModelHelpers.SkipReason);
         LiteRtEngine engine = fixture.Engine;
@@ -155,7 +155,8 @@ public sealed class SessionModelTests(SessionEngineFixture fixture, ITestOutputH
             Assert.Equal(LiteRtSessionState.Prefilled, next.State);
         }
         using LiteRtConversation chat = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax, MaxOutputTokens = 8 });
-        Assert.False(string.IsNullOrWhiteSpace(chat.Send("Reply with one short word: hello").Text), "The engine did not serve a conversation.");
+        Assert.False(string.IsNullOrWhiteSpace(await SessionDecodeHelpers.SendWithin(chat, "Reply with one short word: hello")),
+            "The engine did not serve a conversation.");
     }
 
     private void AssertFaultsOnOverflow(LiteRtSession session, string text)
@@ -165,7 +166,18 @@ public sealed class SessionModelTests(SessionEngineFixture fixture, ITestOutputH
         Assert.NotNull(ex.StatusCode);
         Assert.NotEqual(LiteRtStatusCode.Ok, ex.StatusCode);
         Assert.Contains("litert_lm_session_run_prefill failed", ex.Message, StringComparison.Ordinal);
-        if (ex.StatusCode == LiteRtStatusCode.ResourceExhausted)
+        // The hint follows the runtime's code and reason, so this holds whichever of the measured forms this
+        // platform gives: by code for RESOURCE_EXHAUSTED, by the reason for the other two.
+        bool doesNotFit = ex.StatusCode switch
+        {
+            LiteRtStatusCode.ResourceExhausted => true,
+            LiteRtStatusCode.InvalidArgument => ex.Message.Contains("Input token ids are too long", StringComparison.Ordinal),
+            LiteRtStatusCode.FailedPrecondition =>
+                ex.Message.Contains("Prefill input length exceeds available state entries", StringComparison.Ordinal)
+                || ex.Message.Contains("Chosen prefill work group size exceeds available state entries", StringComparison.Ordinal),
+            _ => false,
+        };
+        if (doesNotFit)
             Assert.Contains(LiteRtSession.DoesNotFitHint, ex.Message, StringComparison.Ordinal);
         Assert.Equal(LiteRtSessionState.Faulted, session.State);
         Assert.False(session.IsCallInProgress);
@@ -266,9 +278,10 @@ public sealed class SessionLifetimeModelTests(ITestOutputHelper output)
         Skip.If(options is null, SessionModelHelpers.SkipReason);
         int before = LiteRtEngine.LiveEngineCount;
 
-        LiteRtEngine engine = LiteRtEngine.Load(options);
+        // Disposed on every path, so that a failure here does not keep the native engine alive.
+        using LiteRtEngine engine = LiteRtEngine.Load(options);
         string text = SessionModelHelpers.TextOf(engine, 900, atLeast: false);
-        LiteRtSession session = engine.CreateSession();
+        using LiteRtSession session = engine.CreateSession();
         // The session then holds the last reference on the native engine, so the count shows when it is deleted.
         engine.Dispose();
         Assert.Equal(before + 1, LiteRtEngine.LiveEngineCount);
