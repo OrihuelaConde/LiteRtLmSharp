@@ -146,9 +146,13 @@ public sealed class SessionStreamTests
         Assert.Equal(LiteRtSessionState.Faulted, session.State);
         Assert.False(session.IsCallInProgress);
         Assert.Equal(1, session.Handle.RetiredCount);
-        // Faulted accepts only Dispose.
+        // A decode that did not start leaves a session that accepts only Dispose.
         await Assert.ThrowsAsync<InvalidOperationException>(() => RunDecode(session, call));
         Assert.Throws<InvalidOperationException>(() => session.Prefill("Hello"));
+        Assert.Throws<InvalidOperationException>(() => session.SaveCheckpoint());
+        Assert.Throws<InvalidOperationException>(() => session.Reset());
+        Assert.Throws<InvalidOperationException>(() => session.RewindTo(new LiteRtSessionCheckpoint(session, 0, LiteRtSessionState.Prefilled)));
+        Assert.Equal(1, session.Handle.RetiredCount);
     }
 
     // --- Simulated chunks -------------------------------------------------------
@@ -529,8 +533,8 @@ public sealed class SessionStreamTests
         entry(callbackData, chunk);
     }
 
-    /// <summary>The gate is held from the start of a decode until its settlement: a prefill or a second decode in
-    /// between is refused as busy.</summary>
+    /// <summary>The gate is held from the start of a decode until its settlement: a prefill, a second decode, a
+    /// save, a rewind or a reset in between is refused as busy.</summary>
     [Fact]
     public async Task Gate_IsHeldUntilSettlement()
     {
@@ -539,6 +543,10 @@ public sealed class SessionStreamTests
         Assert.Contains("in progress", Assert.Throws<InvalidOperationException>(() => session.Prefill("Hello")).Message,
             StringComparison.Ordinal);
         Assert.Throws<InvalidOperationException>(() => session.Decode());
+        var checkpoint = new LiteRtSessionCheckpoint(session, 0, LiteRtSessionState.Prefilled);
+        foreach (Action call in new Action[] { () => session.SaveCheckpoint(), () => session.RewindTo(checkpoint), session.Reset })
+            Assert.Contains("in progress", Assert.Throws<InvalidOperationException>(call).Message, StringComparison.Ordinal);
+        Assert.Equal(0, session.CheckpointCount);
         stream.OnChunk(Encoding.UTF8.GetBytes("a"), isFinal: false, error: null);
         Assert.True(session.IsCallInProgress);
         await Feed(stream, [], null);
