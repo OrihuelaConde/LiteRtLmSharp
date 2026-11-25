@@ -263,6 +263,50 @@ public sealed class SessionCoreTests
         Assert.Throws<LiteRtException>(() => session.Prefill("<bos>Hello"));
     }
 
+    /// <summary>The start-token check runs again with the gate held. A reset or a rewind that ends between a
+    /// prefill's argument check and its gate can make the session Fresh after the argument check saw another
+    /// state; the prefill is then refused before any native call (on the null handle a native call would throw
+    /// <see cref="LiteRtException"/> and latch Faulted). The test makes the session Fresh as such a reset would,
+    /// and calls the gated part of the prefill directly: no public call can force that interleaving.</summary>
+    [Fact]
+    public void Prefill_ChecksTheStartTokenAgainWithTheGateHeld()
+    {
+        using LiteRtSession session = NullSession(LiteRtSessionState.Decoded);
+        session.EnterCall();
+        session.Machine.Complete(SessionCall.Reset, SessionCallOutcome.Succeeded);
+        session.ExitCall();
+        Assert.Equal(LiteRtSessionState.Fresh, session.State);
+
+        var ex = Assert.Throws<ArgumentException>(() => session.EnterPrefill("<bos>Hello"));
+        Assert.Contains("adds the start token itself", ex.Message, StringComparison.Ordinal);
+        Assert.Equal("text", ex.ParamName);
+        Assert.Equal(LiteRtSessionState.Fresh, session.State);
+        Assert.False(session.IsCallInProgress);
+
+        // A text without the start token takes the gate, and the state accepts it.
+        session.EnterPrefill("Hello");
+        Assert.True(session.IsCallInProgress);
+        session.ExitCall();
+        Assert.Equal(LiteRtSessionState.Fresh, session.State);
+    }
+
+    /// <summary>The gated part of a prefill reports a busy session and a refusing state, and releases nothing it
+    /// did not take.</summary>
+    [Fact]
+    public void EnterPrefill_RefusesABusySessionAndARefusingState()
+    {
+        using LiteRtSession session = NullSession(LiteRtSessionState.Cancelled);
+        Assert.Contains("was cancelled", Assert.Throws<InvalidOperationException>(() => session.EnterPrefill("Hello")).Message,
+            StringComparison.Ordinal);
+        Assert.False(session.IsCallInProgress);
+        session.EnterCall();
+        Assert.Contains("in progress", Assert.Throws<InvalidOperationException>(() => session.EnterPrefill("Hello")).Message,
+            StringComparison.Ordinal);
+        // The busy refusal leaves the other call's gate held.
+        Assert.True(session.IsCallInProgress);
+        session.ExitCall();
+    }
+
     // --- Checkpoints, rewind and reset ------------------------------------------
 
     private static LiteRtSession NullSession(SessionMachineState state)

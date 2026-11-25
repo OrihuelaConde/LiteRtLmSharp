@@ -195,10 +195,9 @@ public sealed class LiteRtSession : IDisposable
     public void Prefill(string text)
     {
         CheckPrefillArguments(text);
-        EnterCall();
+        EnterPrefill(text);
         try
         {
-            _machine.ThrowIfRefused(SessionCall.Prefill);
             PrefillNative(text);
         }
         finally
@@ -230,10 +229,9 @@ public sealed class LiteRtSession : IDisposable
     {
         CheckPrefillArguments(text);
         cancellationToken.ThrowIfCancellationRequested();
-        EnterCall();
+        EnterPrefill(text);
         try
         {
-            _machine.ThrowIfRefused(SessionCall.Prefill);
             // A token cancelled before the work item starts cancels the task, and the prefill never runs. The
             // finally releases the gate in both cases.
             await Task.Run(() => PrefillNative(text), cancellationToken).ConfigureAwait(false);
@@ -628,13 +626,41 @@ public sealed class LiteRtSession : IDisposable
         ArgumentNullException.ThrowIfNull(text);
         // run_prefill needs at least one input item, and an empty text input is not measured.
         ArgumentException.ThrowIfNullOrEmpty(text);
-        // Read without the gate, so that a bad argument is reported before a busy session. Only a prefill that
-        // runs on a Fresh session at the same time can change the outcome, and that caller is refused either way.
+        // Read without the gate, so that a bad argument is reported before a busy session. EnterPrefill checks
+        // it again with the gate held, because the state can change before the gate is taken.
         if (RefusesStartToken(State, text, _startTokenText))
-            throw new ArgumentException(
-                $"The text starts with the model's start token \"{_startTokenText}\". The session adds the start " +
-                "token itself before the first prefill: remove it from the text.", nameof(text));
+            throw StartTokenRefusal();
     }
+
+    /// <summary>Takes the gate for a prefill of <paramref name="text"/>, checks the start token again and then
+    /// the state, with the gate held. On success the caller holds the gate; on failure the gate is
+    /// released.</summary>
+    /// <remarks>A <see cref="Reset"/> or a <see cref="RewindTo"/> that ends between the argument check and the
+    /// gate can make the session Fresh, and the argument check then saw another state. With the gate held, only
+    /// the caller changes the state.</remarks>
+    /// <exception cref="ArgumentException">The session is Fresh and <paramref name="text"/> starts with the start
+    /// token's text.</exception>
+    /// <exception cref="InvalidOperationException">Another call holds the gate, or the state refuses a
+    /// prefill.</exception>
+    internal void EnterPrefill(string text)
+    {
+        EnterCall();
+        try
+        {
+            if (RefusesStartToken(_machine.State, text, _startTokenText))
+                throw StartTokenRefusal();
+            _machine.ThrowIfRefused(SessionCall.Prefill);
+        }
+        catch
+        {
+            ExitCall();
+            throw;
+        }
+    }
+
+    private ArgumentException StartTokenRefusal() => new(
+        $"The text starts with the model's start token \"{_startTokenText}\". The runtime adds the start token " +
+        "itself before the first prefill: remove it from the text.", "text");
 
     /// <summary>Takes the one-call-at-a-time gate.</summary>
     /// <exception cref="InvalidOperationException">Another call holds it.</exception>
