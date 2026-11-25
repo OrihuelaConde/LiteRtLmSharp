@@ -10,7 +10,7 @@ namespace LiteRtLmSharp.Tests;
 /// The live-engine guard of <see cref="LiteRtModelSync.UpdateAsync"/> with real engines: a loaded model file counts
 /// as held until the native engine is deleted, on Dispose and on finalization, and an update that would replace it
 /// is refused before any fetch; what the runtime does when the guard is bypassed; and the compiled cache after an
-/// in-place update. Needs <c>LITERTLM_TEST_MODEL</c> (a chat model) and, for the embedding cases,
+/// in-place update and after a move over the model file. Needs <c>LITERTLM_TEST_MODEL</c> (a chat model) and, for the embedding cases,
 /// <c>LITERTLM_TEST_EMBEDDING_MODEL</c>; <c>LITERTLM_TEST_BACKEND</c> picks CPU or GPU. Every update writes a copy
 /// under a temporary folder, or uses a source that fails before the runtime writes anything. The runtime outcomes
 /// were measured on LiteRT-LM v0.20.0, win-x64.
@@ -110,7 +110,8 @@ public sealed class ModelSyncEngineModelTests(ITestOutputHelper output)
     }
 
     /// <summary>With the guard bypassed by a direct native call, an in-place update of a file that a live engine
-    /// holds downloads the whole file and then fails to replace it with <c>INTERNAL</c> on Windows; the old file,
+    /// holds downloads what the update needs (here the whole file after its header, since the bundle has no section
+    /// hashes) and then fails to replace it with <c>INTERNAL</c> on Windows; the old file,
     /// the engine and the folder are left as they were. Uses the small LoRA test bundle next to
     /// <c>LITERTLM_TEST_MODEL</c>, on CPU, because it does not load on GPU.</summary>
     [SkippableFact]
@@ -193,17 +194,87 @@ public sealed class ModelSyncEngineModelTests(ITestOutputHelper output)
                 Assert.True(stale.AsSpan().SequenceEqual(before),
                     "The runtime no longer reuses the old compiled cache in the same process.");
             Assert.True(Embed(model, LiteRtCache.Disabled).AsSpan().SequenceEqual(expected));
-            string[] cacheFiles = [.. Directory.GetFiles(dir, "e.litertlm?*").Where(f => Path.GetFileName(f) != "e.litertlm")];
-            output.WriteLine("cache files: " + string.Join(", ", cacheFiles.Select(Path.GetFileName)));
-            Assert.NotEmpty(cacheFiles);
-            foreach (string file in cacheFiles)
-                File.Delete(file);
+            DeleteCacheFiles(model);
             Assert.True(Embed(model, LiteRtCache.Default).AsSpan().SequenceEqual(expected));
         }
         finally
         {
             ModelSyncAsserts.DeleteFolder(dir);
         }
+    }
+
+    /// <summary>The flow that the guard's message describes: with the engine alive, the update writes the new
+    /// version to a second path; the engine is disposed and the new version is moved over the model file. An
+    /// embedding engine that the same process then loads with the default cache computes with the old model's
+    /// compiled cache (measured on Windows only, so asserted there only); with the cache off, with a new cache
+    /// folder, or after the cache files next to the model are deleted, it computes with the new model.</summary>
+    [SkippableFact]
+    public async Task EmbeddingEngine_AfterAMoveOverItsFile_UsesTheOldCompiledCache_UntilItsFilesAreDeleted()
+    {
+        SkipWithout(EmbeddingModel, "LITERTLM_TEST_EMBEDDING_MODEL");
+        string dir = Directory.CreateTempSubdirectory("litertlm-move-").FullName;
+        string folder = Directory.CreateTempSubdirectory("litertlm-move-cache-").FullName;
+        try
+        {
+            string model = Path.Combine(dir, "e.litertlm");
+            string nextPath = Path.Combine(dir, "e.next.litertlm");
+            File.Copy(EmbeddingModel!, model);
+            File.SetLastWriteTimeUtc(model, new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc));
+            byte[] next = File.ReadAllBytes(EmbeddingModel!);
+            for (int k = 0; k < 64; k++)
+                next[130_000_000 + k] ^= 0x40;
+            var source = new ModelSyncMemorySource(next);
+            next = null!;
+
+            float[] Embed(string path, LiteRtCache cache)
+            {
+                using var engine = LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions { ModelPath = path, Backend = Backend, Cache = cache });
+                return engine.Embed("The quick brown fox jumps over the lazy dog.");
+            }
+
+            float[] before;
+            using (var engine = LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions { ModelPath = model, Backend = Backend }))
+            {
+                before = engine.Embed("The quick brown fox jumps over the lazy dog.");
+                // The update reads the model file that the live engine holds, and writes the second path.
+                await LiteRtModelSync.UpdateAsync(model, nextPath, source);
+            }
+            float[] expected = Embed(nextPath, LiteRtCache.Disabled);
+            Assert.False(before.AsSpan().SequenceEqual(expected), "The changed weights must change the embedding.");
+            File.Move(nextPath, model, overwrite: true);
+
+            float[] stale = Embed(model, LiteRtCache.Default);
+            output.WriteLine($"default cache after the move equals the old model: {stale.AsSpan().SequenceEqual(before)}");
+            if (OperatingSystem.IsWindows())
+                Assert.True(stale.AsSpan().SequenceEqual(before),
+                    "The runtime no longer reuses the old compiled cache in the same process.");
+            Assert.True(Embed(model, LiteRtCache.Disabled).AsSpan().SequenceEqual(expected));
+            Assert.True(Embed(model, LiteRtCache.Directory(folder)).AsSpan().SequenceEqual(expected));
+            DeleteCacheFiles(model);
+            Assert.True(Embed(model, LiteRtCache.Default).AsSpan().SequenceEqual(expected));
+        }
+        finally
+        {
+            ModelSyncAsserts.DeleteFolder(dir);
+            ModelSyncAsserts.DeleteFolder(folder);
+        }
+    }
+
+    /// <summary>Deletes the compiled cache files next to a model by the rule the remarks of
+    /// <see cref="LiteRtModelSync.UpdateAsync"/> give: names that start with the model file's name and end with
+    /// <c>xnnpack_cache</c> or <c>_cache.bin</c>. Fails when there is none.</summary>
+    private void DeleteCacheFiles(string model)
+    {
+        string name = Path.GetFileName(model);
+        string[] cacheFiles = [.. Directory.GetFiles(Path.GetDirectoryName(model)!)
+            .Select(Path.GetFileName)
+            .Where(n => n != name && n!.StartsWith(name, StringComparison.Ordinal)
+                        && (n.EndsWith("xnnpack_cache", StringComparison.Ordinal) || n.EndsWith("_cache.bin", StringComparison.Ordinal)))
+            .Select(n => Path.Combine(Path.GetDirectoryName(model)!, n!))];
+        output.WriteLine("cache files: " + string.Join(", ", cacheFiles.Select(Path.GetFileName)));
+        Assert.NotEmpty(cacheFiles);
+        foreach (string file in cacheFiles)
+            File.Delete(file);
     }
 
     /// <summary>The native update without the managed guard, on a thread of its own, as the binding calls it.</summary>
