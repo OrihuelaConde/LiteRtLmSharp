@@ -96,9 +96,19 @@ internal static class SessionDecodeHelpers
         return pieces;
     }
 
-    /// <summary>Asserts that every member except Dispose refuses with <see cref="InvalidOperationException"/>
-    /// before any native call, and leaves the state and the gate as they are.</summary>
-    public static async Task AssertAcceptsOnlyDispose(LiteRtSession session, LiteRtSessionState state)
+    /// <summary>The text of a later user turn on Gemma 4: exactly what <see cref="LiteRtConversation.RenderMessage"/>
+    /// gives after a send, with no end-of-turn marker and no line break in front. After a reply, the session
+    /// already holds the position that ends the model's turn.</summary>
+    public static string NextTurn(string user) => $"<|turn>user\n{user}<turn|>\n<|turn>model\n";
+
+    /// <summary>Runs a blocking session call with the drain limit, so that a call that never returns fails the
+    /// test instead of hanging the suite.</summary>
+    public static Task Within(Action call) => Task.Run(call).WaitAsync(DrainLimit);
+
+    /// <summary>Asserts that a prefill, the three decodes and a save are refused with
+    /// <see cref="InvalidOperationException"/> before any native call, and leave the state and the gate as they
+    /// are.</summary>
+    private static async Task AssertRefusesPrefillDecodesAndSave(LiteRtSession session, LiteRtSessionState state)
     {
         Assert.Equal(state, session.State);
         Assert.Throws<InvalidOperationException>(() => session.Prefill("Hello"));
@@ -106,8 +116,33 @@ internal static class SessionDecodeHelpers
         await Assert.ThrowsAsync<InvalidOperationException>(() => DecodeWithin(session));
         await Assert.ThrowsAsync<InvalidOperationException>(() => session.DecodeAsync().WaitAsync(DrainLimit));
         await Assert.ThrowsAsync<InvalidOperationException>(() => StreamWithin(session));
+        Assert.Throws<InvalidOperationException>(() => session.SaveCheckpoint());
         Assert.Equal(state, session.State);
         Assert.False(session.IsCallInProgress);
+    }
+
+    /// <summary>Asserts that every member except Dispose refuses with <see cref="InvalidOperationException"/>
+    /// before any native call, and leaves the state and the gate as they are: a Cancelled session, or one that
+    /// a failure other than a prefill left Faulted. The rewind is checked with a checkpoint of the session
+    /// itself, so that the state refuses it and not the argument check; the refusal comes before the native
+    /// call, so the checkpoint need not exist in the runtime.</summary>
+    public static async Task AssertAcceptsOnlyDispose(LiteRtSession session, LiteRtSessionState state)
+    {
+        await AssertRefusesPrefillDecodesAndSave(session, state);
+        Assert.Throws<InvalidOperationException>(() => session.RewindTo(new LiteRtSessionCheckpoint(session, long.MaxValue, LiteRtSessionState.Prefilled)));
+        Assert.Throws<InvalidOperationException>(() => session.Reset());
+        Assert.Equal(state, session.State);
+        Assert.False(session.IsCallInProgress);
+    }
+
+    /// <summary>Asserts that a ContextFull session, or one that a failed prefill left Faulted, refuses a prefill,
+    /// the decodes and a save before any native call, as <see cref="AssertAcceptsOnlyDispose"/> does; it still
+    /// accepts <see cref="LiteRtSession.RewindTo"/> and <see cref="LiteRtSession.Reset"/>, which the caller
+    /// runs next.</summary>
+    public static Task AssertAcceptsOnlyRewindResetAndDispose(LiteRtSession session, LiteRtSessionState state)
+    {
+        Assert.True(state is LiteRtSessionState.ContextFull or LiteRtSessionState.Faulted, $"{state} is not a state that a rewind or a reset recovers.");
+        return AssertRefusesPrefillDecodesAndSave(session, state);
     }
 
     /// <summary>Waits until <paramref name="condition"/> holds, for a settlement that runs on the thread
@@ -334,17 +369,17 @@ public sealed class SessionDecodeModelTests(SessionEngineFixture fixture, ITestO
         Assert.Equal(LiteRtSessionState.Prefilled, session.State);
     }
 
-    /// <summary>After a prefill that does not fit, the session is Faulted and refuses every member, decodes
-    /// included, before any native call (the runtime was measured to skip a decode there and never call
-    /// back).</summary>
+    /// <summary>After a prefill that does not fit, the session is Faulted and refuses a prefill, the decodes and
+    /// a save before any native call (the runtime was measured to skip a decode there and never call back); only
+    /// a rewind, a reset and Dispose are left.</summary>
     [SkippableFact]
-    public async Task Faulted_RefusesEveryMember()
+    public async Task Faulted_AfterAFailedPrefill_AcceptsOnlyRewindResetAndDispose()
     {
         LiteRtEngine engine = Engine;
         using LiteRtSession session = SessionDecodeHelpers.Session(engine, 8);
         Assert.Throws<LiteRtException>(() =>
             session.Prefill(SessionModelHelpers.TextOf(engine, SessionEngineFixture.Context + 100, atLeast: true)));
-        await SessionDecodeHelpers.AssertAcceptsOnlyDispose(session, LiteRtSessionState.Faulted);
+        await SessionDecodeHelpers.AssertAcceptsOnlyRewindResetAndDispose(session, LiteRtSessionState.Faulted);
     }
 
     /// <summary>The token of <see cref="LiteRtSession.DecodeAsync"/>, cancelled once the decode runs, cancels the
@@ -430,7 +465,7 @@ public sealed class SessionDecodeModelTests(SessionEngineFixture fixture, ITestO
         Assert.Equal(LiteRtSessionState.Decoded, session.State);
         Assert.False(session.IsCallInProgress);
 
-        await session.PrefillAsync("\n<|turn>user\nName one more color.<turn|>\n<|turn>model\n");
+        await session.PrefillAsync(SessionDecodeHelpers.NextTurn("Name one more color."));
         Assert.Equal(LiteRtSessionState.Prefilled, session.State);
         string second = await session.DecodeAsync().WaitAsync(SessionDecodeHelpers.DrainLimit);
         output.WriteLine($"first: {string.Concat(first)}\nsecond: {second}");
@@ -438,7 +473,8 @@ public sealed class SessionDecodeModelTests(SessionEngineFixture fixture, ITestO
     }
 
     /// <summary>A decode that fills the context returns the text up to that point as a normal end and leaves the
-    /// session ContextFull, which refuses every member. This pins the runtime's context-full text.</summary>
+    /// session ContextFull, which refuses every member but a rewind, a reset and Dispose. This pins the runtime's
+    /// context-full text.</summary>
     [SkippableFact]
     public async Task Decode_ThatFillsTheContext_ReturnsThePartialText_AndEndsContextFull()
     {
@@ -470,7 +506,7 @@ public sealed class SessionDecodeModelTests(SessionEngineFixture fixture, ITestO
             $"The model ended its reply before the context filled: {promptTokens} prompt tokens, {replyTokens} reply tokens, reply \"{partial}\".");
         Assert.Equal(LiteRtSessionState.ContextFull, session.State);
         Assert.False(string.IsNullOrEmpty(partial));
-        await SessionDecodeHelpers.AssertAcceptsOnlyDispose(session, LiteRtSessionState.ContextFull);
+        await SessionDecodeHelpers.AssertAcceptsOnlyRewindResetAndDispose(session, LiteRtSessionState.ContextFull);
     }
 
     /// <summary><see cref="LiteRtSessionOptions.MaxOutputTokens"/> caps the reply, which ends Decoded without an
@@ -496,7 +532,9 @@ public sealed class SessionDecodeModelTests(SessionEngineFixture fixture, ITestO
         Assert.Equal(LiteRtSessionState.Decoded, session.State);
 
         // The turn after a capped reply: the prefill and the decode must both end, and the decode must reply.
-        await session.PrefillAsync("<turn|>\n<|turn>user\nName one color.<turn|>\n<|turn>model\n")
+        // A capped reply holds no position for the end of the model's turn, and the measured next-turn text
+        // still gave the replies of a conversation after it.
+        await session.PrefillAsync(SessionDecodeHelpers.NextTurn("Name one color."))
             .WaitAsync(SessionDecodeHelpers.DrainLimit);
         Assert.Equal(LiteRtSessionState.Prefilled, session.State);
         string next = await SessionDecodeHelpers.DecodeWithin(session);
@@ -765,7 +803,7 @@ public sealed class SessionDecodeLifetimeModelTests(ITestOutputHelper output)
         Assert.Equal(LiteRtSessionState.Decoded, session.State);
         Assert.Equal(before + 1, LiteRtEngine.LiveEngineCount);
 
-        session.Prefill("\n<|turn>user\nName one more color.<turn|>\n<|turn>model\n");
+        session.Prefill(SessionDecodeHelpers.NextTurn("Name one more color."));
         await SessionDecodeHelpers.DecodeWithin(session);
         Assert.Equal(LiteRtSessionState.Decoded, session.State);
         Assert.Equal(before + 1, LiteRtEngine.LiveEngineCount);
