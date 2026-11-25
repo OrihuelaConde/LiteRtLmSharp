@@ -258,7 +258,7 @@ public sealed class ModelSyncInternalsTests
         { LiteRtStatusCode.PermissionDenied, "HTTP 403", true, false, true, null },
         { LiteRtStatusCode.PermissionDenied, "x", false, false, false, null },
         { LiteRtStatusCode.Internal, "File exists", false, false, true, "pass the same path for both" },
-        { LiteRtStatusCode.Internal, "Failed to rename temporary model to destination: Access is denied.", false, false, true, "while the output is open" },
+        { LiteRtStatusCode.Internal, "Failed to rename temporary model to destination: Access is denied.", false, false, true, "while the output or its temporary file" },
         { LiteRtStatusCode.Internal, "x", false, false, false, null },
         { LiteRtStatusCode.DataLoss, "Section SHA-256 verification failed", false, false, true, "may have changed during the call" },
         { LiteRtStatusCode.DataLoss, "Section payload truncated", false, false, true, "may not be a .litertlm file" },
