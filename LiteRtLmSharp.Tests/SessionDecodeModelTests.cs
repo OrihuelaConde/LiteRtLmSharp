@@ -12,8 +12,10 @@ internal static class SessionDecodeHelpers
     /// <summary>Exact argmax over the TopP sampler (TopK = 1), so replies repeat from run to run.</summary>
     public static readonly LiteRtSamplerParams Argmax = new() { Strategy = LiteRtSamplerType.TopP, TopK = 1 };
 
-    /// <summary>The test-only limit for one decode: a regression fails the test instead of hanging the suite.</summary>
-    public static readonly TimeSpan DrainLimit = TimeSpan.FromSeconds(120);
+    /// <summary>The test-only limit for one decode: a regression fails the test instead of hanging the suite. It
+    /// stays well under the hang timeouts of the test runs, so that the assert fails before the host is
+    /// killed.</summary>
+    public static readonly TimeSpan DrainLimit = TimeSpan.FromSeconds(60);
 
     /// <summary>A prompt whose reply runs long, so that a cancel lands while it runs.</summary>
     public const string CountPrompt = "Count upward starting from 1, one number per line, and never stop.";
@@ -405,20 +407,40 @@ public sealed class SessionDecodeModelTests(SessionEngineFixture fixture, ITestO
     }
 
     /// <summary><see cref="LiteRtSessionOptions.MaxOutputTokens"/> caps the reply, which ends Decoded without an
-    /// error. The count prompt does not end by itself within the cap, so the cap is what stops it.</summary>
+    /// error, and the session then accepts the next turn: a prefill and a decode that ends.</summary>
     [SkippableFact]
-    public async Task MaxOutputTokens_CapsTheReply()
+    public async Task MaxOutputTokens_CapsTheReply_AndTheNextTurnRuns()
     {
         LiteRtEngine engine = Engine;
         const int Cap = 8;
+        string prompt = SessionDecodeHelpers.Prompt(engine, SessionDecodeHelpers.CountPrompt);
+        int uncappedTokens;
+        using (LiteRtSession reference = SessionDecodeHelpers.Session(engine, 4 * Cap))
+        {
+            reference.Prefill(prompt);
+            uncappedTokens = engine.Tokenize(await SessionDecodeHelpers.DecodeWithin(reference)).Length;
+        }
+
         using LiteRtSession session = SessionDecodeHelpers.Session(engine, Cap);
-        session.Prefill(SessionDecodeHelpers.Prompt(engine, SessionDecodeHelpers.CountPrompt));
+        session.Prefill(prompt);
         string reply = await SessionDecodeHelpers.DecodeWithin(session);
         int tokens = engine.Tokenize(reply).Length;
-        output.WriteLine($"{tokens} tokens: {reply}");
+        output.WriteLine($"{tokens} tokens: {reply} (reply with a cap of {4 * Cap}: {uncappedTokens} tokens)");
         Assert.Equal(LiteRtSessionState.Decoded, session.State);
-        // Re-tokenizing the text can merge or split tokens at the edges, so allow a small margin.
-        Assert.InRange(tokens, 1, Cap + 2);
+
+        // The turn after a capped reply: the prefill and the decode must both end, and the decode must reply.
+        await session.PrefillAsync("<turn|>\n<|turn>user\nName one color.<turn|>\n<|turn>model\n")
+            .WaitAsync(SessionDecodeHelpers.DrainLimit);
+        Assert.Equal(LiteRtSessionState.Prefilled, session.State);
+        string next = await SessionDecodeHelpers.DecodeWithin(session);
+        output.WriteLine($"next turn: {next}");
+        Assert.Equal(LiteRtSessionState.Decoded, session.State);
+        Assert.False(string.IsNullOrEmpty(next));
+
+        // Only a reply that runs past the cap shows the cap at work. Re-tokenizing the text can merge or split
+        // tokens at the edges, so allow a small margin.
+        Skip.If(uncappedTokens <= Cap + 2, $"The reply ends by itself within {uncappedTokens} tokens.");
+        Assert.InRange(tokens, Cap - 2, Cap + 2);
     }
 
     /// <summary>A <see cref="LiteRtSession.Dispose"/> in the read loop cancels the decode: the stream throws
