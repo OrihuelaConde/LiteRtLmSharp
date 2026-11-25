@@ -22,7 +22,7 @@ internal static class SessionModelHelpers
 {
     public const string SkipReason = "Set LITERTLM_TEST_MODEL to a .litertlm file to run.";
 
-    private const string Sentence = "The quick brown fox jumps over the lazy dog near the quiet river bank. ";
+    public const string Sentence = "The quick brown fox jumps over the lazy dog near the quiet river bank. ";
 
     public static LiteRtEngineOptions? Options()
     {

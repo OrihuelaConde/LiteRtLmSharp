@@ -443,21 +443,31 @@ public sealed class SessionDecodeModelTests(SessionEngineFixture fixture, ITestO
     public async Task Decode_ThatFillsTheContext_ReturnsThePartialText_AndEndsContextFull()
     {
         LiteRtEngine engine = Engine;
-        string filler = SessionModelHelpers.TextOf(engine, 900, atLeast: false);
-        string prompt = SessionDecodeHelpers.Prompt(engine, filler + "\n\nIgnore the text above. " + SessionDecodeHelpers.CountPrompt);
+        // Raw text with no chat template: one sentence repeated up to about a dozen positions from the end of
+        // the context, then the start of the next repeat. The model goes on with the repeat, so the reply
+        // reaches the end of the context. A chat prompt that asks for an endless count does not hold: after a
+        // long text the model ended that reply early on every CI platform and, for some texts, on the GPU.
+        const int FreePositions = 12;
+        const string Opening = "The quick brown fox";
+        int Tokens(string filler) => engine.Tokenize(filler + Opening).Length;
+        // The runtime adds one start position before the prompt.
+        int target = SessionEngineFixture.Context - 1 - FreePositions;
+        string filler = SessionModelHelpers.TextOf(engine, target - Tokens(""), atLeast: false);
+        while (Tokens(filler + SessionModelHelpers.Sentence) <= target)
+            filler += SessionModelHelpers.Sentence;
+        string prompt = filler + Opening;
         int promptTokens = engine.Tokenize(prompt).Length;
-        Assert.True(promptTokens < SessionEngineFixture.Context - 2, $"The prompt has {promptTokens} tokens.");
+        Assert.InRange(promptTokens, target - 24, target);
         using LiteRtSession session = SessionDecodeHelpers.Session(engine, 0);
         session.Prefill(prompt);
 
         string partial = await SessionDecodeHelpers.DecodeWithin(session);
         int replyTokens = engine.Tokenize(partial).Length;
         output.WriteLine($"{promptTokens} prompt tokens, {replyTokens} reply tokens, state {session.State}");
-        // A reply that ended well before the end of the context is the model's own end. A Decoded reply that
-        // reaches the end of the context is a full context that the binding missed. Re-tokenizing the text can
-        // differ by a few tokens.
-        Skip.If(session.State == LiteRtSessionState.Decoded && promptTokens + replyTokens < SessionEngineFixture.Context - 16,
-            "The model ended its reply before the context filled.");
+        // A reply the model ends by itself takes one position more than its tokens (win-x64, CPU and GPU), so it
+        // fits only below this sum. A Decoded reply at the sum is a full context that the binding missed.
+        Skip.If(session.State == LiteRtSessionState.Decoded && promptTokens + replyTokens < SessionEngineFixture.Context - 1,
+            $"The model ended its reply before the context filled: {promptTokens} prompt tokens, {replyTokens} reply tokens, reply \"{partial}\".");
         Assert.Equal(LiteRtSessionState.ContextFull, session.State);
         Assert.False(string.IsNullOrEmpty(partial));
         await SessionDecodeHelpers.AssertAcceptsOnlyDispose(session, LiteRtSessionState.ContextFull);
