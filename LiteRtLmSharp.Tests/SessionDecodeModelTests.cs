@@ -32,9 +32,10 @@ internal static class SessionDecodeHelpers
 
     /// <summary>How many pieces a stream may still deliver after a cancel was requested: the piece that issues
     /// it and pieces already queued for the reader. No piece after an issued cancel was seen on LiteRT-LM v0.20.0,
-    /// win-x64; the margin covers a reader that falls behind. A reply that runs on past it was not
-    /// stopped.</summary>
-    public const int MaxPiecesAfterCancel = 16;
+    /// win-x64; the margin covers a reader that falls behind, which a slow machine makes more likely. A reply
+    /// that runs on past it was not stopped: without the native cancel, the reply of the cancel tests ran 47 to
+    /// 49 pieces past the request on win-x64.</summary>
+    public const int MaxPiecesAfterCancel = 32;
 
     /// <summary>The output cap of the cancel tests: well above the cancel point plus
     /// <see cref="MaxPiecesAfterCancel"/>, so that a cancel that does not stop the runtime shows.</summary>
