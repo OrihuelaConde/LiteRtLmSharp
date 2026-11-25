@@ -289,9 +289,15 @@ jobs:
           if grep -q 'libLiteRt' <<< "$deps"; then
             echo "::error::macos library expects a separate libLiteRt companion — not the monolithic layout this workflow packages"; exit 1
           fi
-          cnt=$(nm -gU "$lib" | grep -c ' _litert_lm_' || true)
+          syms=$(nm -gU "$lib")
+          cnt=$(grep -c ' _litert_lm_' <<< "$syms" || true)
           echo "exported litert_lm_* symbols: $cnt"
           [ "$cnt" -ge "$MIN_EXPORTS" ] || { echo "::error::expected >= $MIN_EXPORTS litert_lm_* exports, got $cnt"; exit 1; }
+          # Model sync entry points (Mach-O names carry a leading underscore). The same names are in
+          # .github/scripts/inspect-pe.py, .github/scripts/assert-elf-exports.sh and ModelSyncAbiTests.cs.
+          for sym in litert_lm_model_sync_update litert_lm_model_sync_plan_create_from_file; do
+            grep -q " _${sym}\$" <<< "$syms" || { echo "::error::macos library lacks $sym"; exit 1; }
+          done
           echo "--- minimum macOS version ---"
           vtool -show-build "$lib" | grep -E 'platform|minos|sdk' || true
           ls -la artifacts/macos
@@ -325,9 +331,13 @@ jobs:
           lipo -info "$device"
           otool -L "$device"
           vtool -show-build "$device" | grep -E 'platform|minos|sdk' || true
-          cnt=$(nm -gU "$device" | grep -c ' _litert_lm_' || true)
+          syms=$(nm -gU "$device")
+          cnt=$(grep -c ' _litert_lm_' <<< "$syms" || true)
           echo "exported litert_lm_* symbols: $cnt"
           [ "$cnt" -ge "$MIN_EXPORTS" ] || { echo "::error::expected >= $MIN_EXPORTS litert_lm_* exports, got $cnt"; exit 1; }
+          for sym in litert_lm_model_sync_update litert_lm_model_sync_plan_create_from_file; do
+            grep -q " _${sym}\$" <<< "$syms" || { echo "::error::ios device binary lacks $sym"; exit 1; }
+          done
           echo "--- GPU companions referenced by name (documented: CPU-only with the xcframework alone) ---"
           strings "$device" | grep -E 'libLiteRt(MetalAccelerator|TopKMetalSampler)\.dylib' | sort -u || true
           ls -R artifacts/ios | head -40

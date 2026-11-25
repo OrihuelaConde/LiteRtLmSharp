@@ -42,6 +42,9 @@ REQUIRED = (
     "litert_lm_session_config_set_apply_prompt_template", "litert_lm_responses_delete",
     "litert_lm_responses_get_num_candidates", "litert_lm_responses_get_response_text_at",
     "litert_lm_responses_get_score_at", "litert_lm_responses_get_token_length_at",
+    # Model sync entry points. The same names are in .github/scripts/assert-elf-exports.sh, in the Apple steps
+    # of .github/workflows/native-release.yml and in LiteRtLmSharp.Tests/ModelSyncAbiTests.cs (ModelSyncImports).
+    "litert_lm_model_sync_update", "litert_lm_model_sync_plan_create_from_file",
 )
 for required in REQUIRED:
     if required not in capi:
