@@ -16,7 +16,7 @@ namespace LiteRtLmSharp;
 /// <see cref="Decode"/>, <see cref="DecodeAsync"/> or <see cref="DecodeStreamingAsync"/>. After a reply, prefill
 /// more text before the next decode. A cancel, from a token, from leaving a stream early or from
 /// <see cref="Dispose"/>, takes effect at the next piece of the reply and leaves the session
-/// <see cref="LiteRtSessionState.Cancelled"/>.
+/// <see cref="LiteRtSessionState.Cancelled"/>, unless the reply had already reached its last piece.
 /// </para>
 /// <para>
 /// <b>One call at a time.</b> A session runs one call at a time and refuses a second call with
@@ -196,7 +196,8 @@ public sealed class LiteRtSession : IDisposable
 
     /// <summary>Generates a reply to the prefilled input and returns its text.</summary>
     /// <returns>The reply. When the context filled during the decode, the text up to that point, and
-    /// <see cref="State"/> is <see cref="LiteRtSessionState.ContextFull"/>.</returns>
+    /// <see cref="State"/> is <see cref="LiteRtSessionState.ContextFull"/>. The runtime's report of a full context
+    /// that this relies on was measured on LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and GPU.</returns>
     /// <remarks>
     /// <para>
     /// The call blocks the calling thread until the decode ends. No token can cut it; a
@@ -228,7 +229,7 @@ public sealed class LiteRtSession : IDisposable
 
     /// <summary>Generates a reply to the prefilled input without blocking a thread.</summary>
     /// <param name="cancellationToken">Cancels the decode at the next piece of the reply. The session is then
-    /// <see cref="LiteRtSessionState.Cancelled"/>.</param>
+    /// <see cref="LiteRtSessionState.Cancelled"/>, unless the reply had already reached its last piece.</param>
     /// <returns>A task whose result is the reply, as <see cref="Decode"/> returns it.</returns>
     /// <remarks>
     /// <para>
@@ -263,7 +264,7 @@ public sealed class LiteRtSession : IDisposable
 
     /// <summary>Generates a reply to the prefilled input and streams it as text pieces.</summary>
     /// <param name="cancellationToken">Cancels the decode at the next piece of the reply. The session is then
-    /// <see cref="LiteRtSessionState.Cancelled"/>.</param>
+    /// <see cref="LiteRtSessionState.Cancelled"/>, unless the reply had already reached its last piece.</param>
     /// <returns>The pieces of the reply, in order. Their concatenation is the text <see cref="Decode"/>
     /// returns.</returns>
     /// <remarks>
@@ -274,7 +275,7 @@ public sealed class LiteRtSession : IDisposable
     /// </para>
     /// <para>
     /// Leaving the loop before the last piece, with <c>break</c> or an exception, cancels the decode, and the
-    /// enumerator's disposal waits until the runtime has stopped. The session is then
+    /// enumerator's disposal waits for the last chunk of the decode from the runtime. The session is then
     /// <see cref="LiteRtSessionState.Cancelled"/>, unless the reply had already reached its last piece. An
     /// enumerator that is dropped without disposal does not cancel: the decode runs to its end and releases the
     /// session then.
