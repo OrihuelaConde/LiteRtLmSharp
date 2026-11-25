@@ -18,7 +18,9 @@ namespace LiteRtLmSharp;
 /// <para>Each call runs the native work on a thread of its own and completes only when the native call has
 /// returned. The methods are safe to call from several threads. A call that writes a file that another call of
 /// this process reads or writes is refused, and so is a call that reads a file another call writes (see the
-/// exceptions); calls that only read one file run together. Other processes are not checked.</para>
+/// exceptions); calls that only read one file run together. Other processes are not checked: two processes that
+/// update the same output at the same time write the same temporary file, and one of them fails at the end with
+/// <see cref="LiteRtStatusCode.Internal"/> (measured).</para>
 /// <para>Paths on Windows: unless the process runs under the UTF-8 code page (65001), the runtime decodes paths in
 /// the active ANSI code page (measured), so the binding refuses a path with characters outside that code page
 /// before any native call. Under the UTF-8 code page, non-ASCII folder names work (measured with Latin, Japanese
@@ -61,8 +63,9 @@ public static class LiteRtModelSync
     /// when its header is longer than 16 KiB.</para>
     /// <para>Cancel: the token is checked before the call and at each fetch, and it interrupts a fetch that waits
     /// for the remote. The runtime calls no fetcher while it works on the local file, so a cancel during that
-    /// work takes effect at the next fetch, or not at all when none follows. The length of that delay is not
-    /// measured.</para>
+    /// work takes effect at the next fetch, or not at all when none follows. When the headers match, that work
+    /// reads the whole local file after the only fetch: about 3.3 seconds for a 1 GiB file that the operating
+    /// system had cached, on a desktop computer (measured).</para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="remote"/> is <c>null</c>.</exception>
     /// <exception cref="ArgumentException"><paramref name="localModelPath"/> does not exist, is a folder or cannot
@@ -111,12 +114,16 @@ public static class LiteRtModelSync
     /// <para>Replacing the file: the runtime writes the new file to <c>OUTPUT.tmp_updating</c> next to the output
     /// and renames it over the output at the end; the C API describes an update of one path as atomic. On a failed
     /// fetch, on bytes the binding refuses, and on a cancel during a fetch, the runtime deletes the temporary file
-    /// and leaves the old output (measured). A process that ends during an update is not measured. When the local
+    /// and leaves the old output (measured). When the process ends during an update, the temporary file stays next to
+    /// the output and the old output is intact; the next update of that output overwrites the temporary file
+    /// (measured). When the local
     /// file is already up to date and is the output, nothing is written; when the output is another file, the
     /// runtime copies the local file to it.</para>
     /// <para>Disk space: the temporary file is a full copy of the remote file, and it sits next to the old output
-    /// until the rename. The binding turns on the runtime's check of free space before the download. What an
-    /// update reports on a volume without enough space is not measured.</para>
+    /// until the rename. The binding turns on the runtime's check of free space before the download: when the
+    /// output's volume has less free space than the remote file's size, the update fails with
+    /// <see cref="LiteRtStatusCode.ResourceExhausted"/> after it reads the remote header and before it writes
+    /// anything (measured). A volume that fills up during the download is not measured.</para>
     /// <para>Cost of files without section hashes: when the remote file or the local file has no section hashes,
     /// nothing is reused and the update downloads the whole file, even when the local file is identical to the
     /// remote file. Calling this method at every start then downloads the whole model every time. None of the
@@ -129,14 +136,28 @@ public static class LiteRtModelSync
     /// ignores case; in a case-sensitive folder they name two files. Another spelling of the file, such as a hard
     /// link or a short 8.3 name, does not count as the same.</para>
     /// <para>Engines: the call refuses an output that a live engine of this process loaded, and checks that only
-    /// when it starts. An engine that loads the output while the update runs is not detected, so do not load the
-    /// output until the update completes.</para>
+    /// when it starts. Without that check, on Windows the runtime downloads the whole file and then fails to
+    /// replace the output with <see cref="LiteRtStatusCode.Internal"/>, and the engine keeps working (measured with
+    /// a <see cref="LiteRtEngine"/> on CPU and a <see cref="LiteRtEmbeddingEngine"/> on CPU and GPU; Linux and
+    /// macOS are not measured). An engine that loads the output while the update runs is not detected, so do not
+    /// load the output until the update completes. A <see cref="LiteRtModelInfo.Read"/> of the output that runs
+    /// when the runtime replaces it makes the update fail the same way, and the read can fail with
+    /// <see cref="LiteRtStatusCode.Internal"/> too (measured), so do not read the output during an update.</para>
+    /// <para>Compiled cache: after an in-place update, an engine that this process loads from the same path with
+    /// <see cref="LiteRtCache.Default"/> can use the compiled cache of the old file and compute with the old
+    /// model. A <see cref="LiteRtEmbeddingEngine"/> on CPU and on GPU returned the old model's embeddings
+    /// (measured). Before you load the file again in the same process, delete the cache files next to it, whose
+    /// names start with the model file's name, or load it with <see cref="LiteRtCache.Disabled"/>. A new process
+    /// built a new cache and computed with the new model; on GPU it left the old cache files next to the
+    /// model.</para>
     /// <para>Cancel: the token is checked before the call and at each fetch, and it interrupts a fetch that waits
     /// for the remote or copies its bytes. The runtime's own work between fetches, such as reading the local file,
     /// copying reused sections or renaming the temporary file, has no callback, so a cancel during that work takes
-    /// effect at the next fetch, or not at all when none follows. The length of that delay is not measured. When
-    /// the runtime completes the update before it sees the cancel, the method returns the result instead of
-    /// throwing, because the output was replaced.</para>
+    /// effect at the next fetch, or not at all when none follows. An update of a local file that is already up to
+    /// date reads the whole file after the only fetch: about 3.3 seconds for a 1 GiB file that the operating
+    /// system had cached, on a desktop computer (measured). When the runtime completes the update before it
+    /// sees the cancel, the method returns the result instead of throwing, because the output was
+    /// replaced.</para>
     /// <para>Failures: a failed fetch becomes the call's status: <see cref="LiteRtStatusCode.Unavailable"/> for a network
     /// failure or a server error, <see cref="LiteRtStatusCode.NotFound"/>,
     /// <see cref="LiteRtStatusCode.Unauthenticated"/> or <see cref="LiteRtStatusCode.PermissionDenied"/> for the
@@ -343,6 +364,11 @@ public static class LiteRtModelSync
             LiteRtStatusCode.PermissionDenied when runtimeCheck && update =>
                 "The runtime reports a file it cannot create, such as the temporary OUTPUT.tmp_updating next to the " +
                 "output, as PERMISSION_DENIED, whatever the cause. Check that the output's folder is writable.",
+            LiteRtStatusCode.Internal when update && reason?.Contains("Failed to rename temporary model", StringComparison.Ordinal) == true =>
+                "The runtime downloaded the file but could not replace the output, which happens on Windows while the " +
+                "output is open: an engine that loaded it under another spelling or after the update started, a " +
+                "LiteRtModelInfo.Read of it, or another process, such as a second update of the same file. Close it " +
+                "and update again, or write the update to another path.",
             LiteRtStatusCode.Internal when update =>
                 "The runtime could not write the output path. If the output is another spelling of the local file, " +
                 "such as a hard link or a short 8.3 name, pass the same path for both.",
