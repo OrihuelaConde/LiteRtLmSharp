@@ -383,6 +383,8 @@ public sealed class SessionStreamTests
         stream.OnChunk(Encoding.UTF8.GetBytes("whole reply"), isFinal: false, error: null);
         stream.OnChunk([], isFinal: true, error: null);
         session.Dispose();
+        // Dispose itself leaves the state; the decode in progress moves it when it settles.
+        Assert.Equal(LiteRtSessionState.Prefilled, session.State);
         stream.OnCallReturned();
         await stream.Settled.WaitAsync(Limit);
         Assert.False(stream.CancelIssued);

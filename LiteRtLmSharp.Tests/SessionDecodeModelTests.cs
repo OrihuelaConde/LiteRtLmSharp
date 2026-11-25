@@ -136,10 +136,10 @@ internal static class SessionDecodeHelpers
     }
 
     /// <summary>Asserts that a ContextFull session, or one that a failed prefill left Faulted, refuses a prefill,
-    /// the decodes and a save before any native call, as <see cref="AssertAcceptsOnlyDispose"/> does; it still
-    /// accepts <see cref="LiteRtSession.RewindTo"/> and <see cref="LiteRtSession.Reset"/>, which the caller
-    /// runs next.</summary>
-    public static Task AssertAcceptsOnlyRewindResetAndDispose(LiteRtSession session, LiteRtSessionState state)
+    /// the decodes and a save before any native call, as <see cref="AssertAcceptsOnlyDispose"/> does. It does not
+    /// call <see cref="LiteRtSession.RewindTo"/> or <see cref="LiteRtSession.Reset"/>: each caller runs one of
+    /// them next and checks that it is accepted.</summary>
+    public static Task AssertRefusesAllButRewindResetAndDispose(LiteRtSession session, LiteRtSessionState state)
     {
         Assert.True(state is LiteRtSessionState.ContextFull or LiteRtSessionState.Faulted, $"{state} is not a state that a rewind or a reset recovers.");
         return AssertRefusesPrefillDecodesAndSave(session, state);
@@ -371,7 +371,7 @@ public sealed class SessionDecodeModelTests(SessionEngineFixture fixture, ITestO
 
     /// <summary>After a prefill that does not fit, the session is Faulted and refuses a prefill, the decodes and
     /// a save before any native call (the runtime was measured to skip a decode there and never call back); only
-    /// a rewind, a reset and Dispose are left.</summary>
+    /// a rewind, a reset and Dispose are left, and a reset is accepted and returns the session to Fresh.</summary>
     [SkippableFact]
     public async Task Faulted_AfterAFailedPrefill_AcceptsOnlyRewindResetAndDispose()
     {
@@ -379,7 +379,9 @@ public sealed class SessionDecodeModelTests(SessionEngineFixture fixture, ITestO
         using LiteRtSession session = SessionDecodeHelpers.Session(engine, 8);
         Assert.Throws<LiteRtException>(() =>
             session.Prefill(SessionModelHelpers.TextOf(engine, SessionEngineFixture.Context + 100, atLeast: true)));
-        await SessionDecodeHelpers.AssertAcceptsOnlyRewindResetAndDispose(session, LiteRtSessionState.Faulted);
+        await SessionDecodeHelpers.AssertRefusesAllButRewindResetAndDispose(session, LiteRtSessionState.Faulted);
+        await SessionDecodeHelpers.Within(session.Reset);
+        Assert.Equal(LiteRtSessionState.Fresh, session.State);
     }
 
     /// <summary>The token of <see cref="LiteRtSession.DecodeAsync"/>, cancelled once the decode runs, cancels the
@@ -506,7 +508,9 @@ public sealed class SessionDecodeModelTests(SessionEngineFixture fixture, ITestO
             $"The model ended its reply before the context filled: {promptTokens} prompt tokens, {replyTokens} reply tokens, reply \"{partial}\".");
         Assert.Equal(LiteRtSessionState.ContextFull, session.State);
         Assert.False(string.IsNullOrEmpty(partial));
-        await SessionDecodeHelpers.AssertAcceptsOnlyRewindResetAndDispose(session, LiteRtSessionState.ContextFull);
+        await SessionDecodeHelpers.AssertRefusesAllButRewindResetAndDispose(session, LiteRtSessionState.ContextFull);
+        await SessionDecodeHelpers.Within(session.Reset);
+        Assert.Equal(LiteRtSessionState.Fresh, session.State);
     }
 
     /// <summary><see cref="LiteRtSessionOptions.MaxOutputTokens"/> caps the reply, which ends Decoded without an

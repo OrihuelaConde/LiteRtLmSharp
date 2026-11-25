@@ -98,7 +98,7 @@ public sealed class SessionModelTests(SessionEngineFixture fixture, ITestOutputH
     }
 
     /// <summary>A first prefill that starts with the model's start token is refused before any native call, and
-    /// leaves the session Fresh; once the session holds input, the same text passes unchanged. Needs a model
+    /// leaves the session Fresh; once the session holds input, the wrapper passes the same text unchanged. Needs a model
     /// whose start token is one id (Gemma 4: <c>&lt;bos&gt;</c>).</summary>
     [SkippableFact]
     public async Task Prefill_ThatStartsWithTheStartToken_IsRefusedOnlyOnAFreshSession()
