@@ -482,6 +482,8 @@ public sealed class ModelSyncTests : IDisposable
         using var cts = new CancellationTokenSource();
         Task<LiteRtModelUpdateResult> update = LiteRtModelSync.UpdateAsync(local, local, source, cancellationToken: cts.Token);
         await source.Waiting.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        // The runtime creates the temporary file after the header fetch, so the cancel comes mid-download.
+        Assert.True(File.Exists(local + ".tmp_updating"));
         cts.Cancel();
         var e = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => update.WaitAsync(TimeSpan.FromSeconds(30)));
         Assert.Equal(cts.Token, e.CancellationToken);
@@ -751,5 +753,78 @@ public sealed class ModelSyncTests : IDisposable
         LiteRtModelSyncPlan[] plans = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => LiteRtModelSync.CreatePlanAsync(null, shared)));
         Assert.All(plans, p => Assert.Equal(129024, p.TotalRemoteSize));
         Assert.Equal(8, shared.Requests.Count);
+    }
+
+    // ---------------------------------------------------------------- leftovers, fallbacks and free space
+
+    /// <summary>A process that ends during an update leaves its temporary file (measured by ending a child
+    /// process on Windows). The next update of that output overwrites it.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task LeftoverTemporary_IsOverwrittenByTheNextUpdate(bool inPlace)
+    {
+        string output = inPlace ? Put("a.litertlm", ModelSyncFixtures.A) : PathIn("new.litertlm");
+        File.WriteAllBytes(output + ".tmp_updating", ModelSyncFixtures.Payload(31, 70_000));
+        var source = new ModelSyncMemorySource(ModelSyncFixtures.A1);
+        await LiteRtModelSync.UpdateAsync(inPlace ? output : null, output, source);
+        AssertBytes(ModelSyncFixtures.A1, output);
+        ModelSyncAsserts.NoTemporaries(_dir);
+    }
+
+    /// <summary>A source that refuses every range after the header, the whole file from byte 0 included, fails
+    /// the update without a temporary file and leaves the local file.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RemoteThatRefusesEveryRangeAfterTheHeader_FailsWithUnknown_AndLeavesNoTemporary(bool differential)
+    {
+        string local = Put("a.litertlm", ModelSyncFixtures.A);
+        string output = differential ? local : PathIn("new.litertlm");
+        var source = new ModelSyncMemorySource(ModelSyncFixtures.A1)
+        {
+            Script = (index, _, _) => index > 0 ? new SourceAction { Refuse = true } : null,
+        };
+        var e = await Assert.ThrowsAsync<LiteRtException>(() => LiteRtModelSync.UpdateAsync(differential ? local : null, output, source));
+        _output.WriteLine($"[{e.StatusCode}] {e.Message}");
+        Assert.Equal(LiteRtStatusCode.Unknown, e.StatusCode);
+        Assert.Contains("could not serve the start of the file", e.Message, StringComparison.Ordinal);
+        Assert.Equal(
+            differential
+                ? "[0,+16384] [81920,+8192]:refused [1184,+127840]:refused [0,+129024]:refused"
+                : "[0,+16384] [1184,+127840]:refused [0,+129024]:refused",
+            Sequence(source));
+        AssertBytes(ModelSyncFixtures.A, local);
+        Assert.Equal(differential, File.Exists(output));
+        ModelSyncAsserts.NoTemporaries(_dir);
+    }
+
+    /// <summary>A remote whose header declares 40 TiB fails the runtime's free-space check after the header fetch,
+    /// before anything is written.</summary>
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RemoteLargerThanTheFreeSpace_FailsWithResourceExhausted_BeforeWriting(bool inPlace)
+    {
+        byte[] huge = (byte[])ModelSyncFixtures.A.Clone();
+        long headerEnd = ModelSyncFixtures.HeaderEnd(huge);
+        int[] ends = [.. Enumerable.Range(32, (int)headerEnd - 39)
+            .Where(i => System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(huge.AsSpan(i, 8)) == (ulong)huge.Length)];
+        Assert.Single(ends);
+        const long declared = 40L * 1024 * 1024 * 1024 * 1024;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(huge.AsSpan(ends[0], 8), declared);
+        Skip.If(new DriveInfo(Path.GetPathRoot(_dir)!).AvailableFreeSpace >= declared, "The volume has 40 TiB free.");
+
+        string output = inPlace ? Put("a.litertlm", ModelSyncFixtures.A) : PathIn("big.litertlm");
+        var source = new ModelSyncMemorySource(huge);
+        var e = await Assert.ThrowsAsync<LiteRtException>(() => LiteRtModelSync.UpdateAsync(inPlace ? output : null, output, source));
+        _output.WriteLine($"[{e.StatusCode}] {e.Message}");
+        Assert.Equal(LiteRtStatusCode.ResourceExhausted, e.StatusCode);
+        Assert.Contains("free space at least equal to the remote file's size", e.Message, StringComparison.Ordinal);
+        Assert.Equal("[0,+16384]", Sequence(source));
+        Assert.Equal(inPlace, File.Exists(output));
+        if (inPlace)
+            AssertBytes(ModelSyncFixtures.A, output);
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 }
