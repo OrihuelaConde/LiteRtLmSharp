@@ -10,6 +10,8 @@
       href: semantic-kernel.md
     - name: Conversation state — restore & clone
       href: conversation-state.md
+    - name: Sessions — raw prefill & decode
+      href: sessions.md
     - name: Engine tuning
       href: engine-tuning.md
     - name: Speculative decoding

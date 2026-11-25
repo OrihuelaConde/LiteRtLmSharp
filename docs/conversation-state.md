@@ -215,6 +215,8 @@ A failure other than a cut leaves this block with the exception, so dispose `cha
   (gemma-4 E2B, win-x64).
 - **The cut turn is not kept.** The checkpoint holds the conversation as it was before the send, so send the
   question again to get the answer; the partial text the stream produced is yours to show or discard.
+  To have the model finish the partial text instead, see
+  [Continue a reply that was cut](sessions.md#continue-a-reply-that-was-cut).
 - **Clone before, not after.** `Clone()` throws `InvalidOperationException` for a conversation whose send was
   cut short, because the runtime would return an empty clone that also answers `CANCELLED`. It also throws after
   a stream that failed during generation. After a blocking send that failed, it can't detect the failure and returns a
