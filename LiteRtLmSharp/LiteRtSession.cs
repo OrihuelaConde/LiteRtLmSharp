@@ -69,42 +69,53 @@ public sealed class LiteRtSession : IDisposable
 
     internal static unsafe LiteRtSession Create(LiteRtEngine engine, LiteRtSessionOptions? options)
     {
-        string? startTokenText = engine.SessionStartTokenText;
-
-        // The config is always created: the template setter needs one. The header does not say whether the
-        // session keeps a reference to it, so it lives until create_session returns and is deleted then.
-        nint configPtr;
-        NativeError.ThrowIfFailed(
-            LiteRtLmNative.litert_lm_session_config_create(&configPtr),
-            nameof(LiteRtLmNative.litert_lm_session_config_create));
-        using var config = new SessionConfigHandle(configPtr);
-        // Always off: the text reaches the model as given, and the runtime then adds the start token on the
-        // first prefill of a fresh session (measured on v0.20.0, win-x64, gemma-4 E2B, CPU and GPU).
-        NativeError.ThrowIfFailed(
-            LiteRtLmNative.litert_lm_session_config_set_apply_prompt_template(config.Ptr, false),
-            nameof(LiteRtLmNative.litert_lm_session_config_set_apply_prompt_template));
-        // Called only with a positive value: 0 means no cap and sends nothing, and LiteRtSessionOptions refuses
-        // a negative value.
-        if (options is { MaxOutputTokens: > 0 and var maxOutputTokens })
-            NativeError.ThrowIfFailed(
-                LiteRtLmNative.litert_lm_session_config_set_max_output_tokens(config.Ptr, maxOutputTokens),
-                nameof(LiteRtLmNative.litert_lm_session_config_set_max_output_tokens));
-        NativeSampler.Apply(config.Ptr, options?.Sampler);
-
-        // The session keeps the native engine alive until it is deleted (SessionHandle releases this reference),
-        // so disposing the engine first can never free it under a live session.
+        // The reference comes before any native call on the engine, the start-token lookup included: an engine
+        // disposed on another thread after the caller's check then throws ObjectDisposedException here instead
+        // of leaving a pointer to a deleted engine. On success the session keeps it until it is deleted
+        // (SessionHandle releases it), so disposing the engine first never frees it under a live session.
         bool engineReferenced = false;
         engine.Handle.DangerousAddRef(ref engineReferenced);
-        nint sessionPtr;
-        LiteRtStatusCode status = LiteRtLmNative.litert_lm_engine_create_session(engine.Handle.Ptr, config.Ptr, &sessionPtr);
-        if (status != LiteRtStatusCode.Ok)
+        try
         {
-            // Read the report before any other native call: the release can delete the engine.
-            LiteRtException failure = NativeError.Exception(status, "litert_lm_engine_create_session failed.");
-            engine.Handle.DangerousRelease();
-            throw failure;
+            string? startTokenText = engine.SessionStartTokenText;
+
+            // The config is always created: the template setter needs one. The header does not say whether the
+            // session keeps a reference to it, so it lives until create_session returns and is deleted then.
+            nint configPtr;
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_session_config_create(&configPtr),
+                nameof(LiteRtLmNative.litert_lm_session_config_create));
+            using var config = new SessionConfigHandle(configPtr);
+            // Always off: the text reaches the model as given, and the runtime then adds the start token on the
+            // first prefill of a fresh session (measured on v0.20.0, win-x64, gemma-4 E2B, CPU and GPU).
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_session_config_set_apply_prompt_template(config.Ptr, false),
+                nameof(LiteRtLmNative.litert_lm_session_config_set_apply_prompt_template));
+            // Called only with a positive value: 0 means no cap and sends nothing, and LiteRtSessionOptions
+            // refuses a negative value.
+            if (options is { MaxOutputTokens: > 0 and var maxOutputTokens })
+                NativeError.ThrowIfFailed(
+                    LiteRtLmNative.litert_lm_session_config_set_max_output_tokens(config.Ptr, maxOutputTokens),
+                    nameof(LiteRtLmNative.litert_lm_session_config_set_max_output_tokens));
+            NativeSampler.Apply(config.Ptr, options?.Sampler);
+
+            nint sessionPtr;
+            LiteRtStatusCode status = LiteRtLmNative.litert_lm_engine_create_session(engine.Handle.Ptr, config.Ptr, &sessionPtr);
+            // The exception reads the report here, before the catch below releases the reference, which can
+            // delete the engine.
+            if (status != LiteRtStatusCode.Ok)
+                throw NativeError.Exception(status, "litert_lm_engine_create_session failed.");
+            // From here the session handle owns the reference.
+            var handle = new SessionHandle(sessionPtr, engine.Handle);
+            engineReferenced = false;
+            return new LiteRtSession(handle, startTokenText);
         }
-        return new LiteRtSession(new SessionHandle(sessionPtr, engine.Handle), startTokenText);
+        catch
+        {
+            if (engineReferenced)
+                engine.Handle.DangerousRelease();
+            throw;
+        }
     }
 
     /// <summary>Gets the state of the session. It can be read from any thread, also after

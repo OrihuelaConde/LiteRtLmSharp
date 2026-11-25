@@ -1,3 +1,4 @@
+using System.Reflection;
 using LiteRtLmSharp.Native;
 using Xunit;
 
@@ -260,5 +261,27 @@ public sealed class SessionCoreTests
         using LiteRtSession session = NullSession(startTokenText: null);
         // Reaches the native call (which fails on the null handle) instead of the start-token refusal.
         Assert.Throws<LiteRtException>(() => session.Prefill("<bos>Hello"));
+    }
+
+    // --- Create -----------------------------------------------------------------
+
+    /// <summary>A session created on an engine whose handle is already disposed fails with
+    /// <see cref="ObjectDisposedException"/> before any native call on the engine: the start token is not read,
+    /// because a disposed handle can point to a native engine that was deleted. The engine wraps a null native
+    /// handle, which SafeHandle never releases.</summary>
+    [Fact]
+    public void Create_OnADisposedEngineHandle_ReadsNothingFromTheEngine()
+    {
+        ConstructorInfo? constructor = typeof(LiteRtEngine).GetConstructor(
+            BindingFlags.NonPublic | BindingFlags.Instance,
+            [typeof(EngineHandle), typeof(bool), typeof(int), typeof(bool)]);
+        Assert.NotNull(constructor);
+        var engine = (LiteRtEngine)constructor.Invoke([new EngineHandle(nint.Zero, allowMultiple: false), false, 0, false]);
+        FieldInfo? cache = typeof(LiteRtEngine).GetField("_sessionStartTokenText", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(cache);
+        engine.Dispose();
+
+        Assert.Throws<ObjectDisposedException>(() => LiteRtSession.Create(engine, null));
+        Assert.Null(cache.GetValue(engine));
     }
 }
