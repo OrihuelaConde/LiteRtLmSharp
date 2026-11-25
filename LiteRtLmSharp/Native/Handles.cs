@@ -108,8 +108,9 @@ internal sealed class EngineHandle(nint handle, bool allowMultiple) : LiteRtLmHa
         LiteRtLmNative.litert_lm_engine_delete(handle);
         // Free this engine's slot only after the native engine is destroyed (ordering matters: a new
         // engine must not be created while this one's native object still exists). This runs once the
-        // engine is disposed or finalized AND every ConversationHandle released its reference, so a
-        // forgotten/GC'd engine still frees its slot, and never while one of its sessions is alive. The
+        // engine is disposed or finalized AND every ConversationHandle and SessionHandle released its
+        // reference, so a forgotten/GC'd engine still frees its slot, and never while one of its native
+        // conversations or sessions is alive. The
         // handle carries the engine's opt-in because a finalizer must not depend on other managed objects.
         EngineLiveness.Default.Release(allowMultiple);
         return true;
@@ -143,6 +144,67 @@ internal sealed class ConversationHandle(nint handle, EngineHandle engine) : Lit
     protected override bool ReleaseHandle()
     {
         LiteRtLmNative.litert_lm_conversation_delete(handle);
+        engine.DangerousRelease();
+        return true;
+    }
+}
+
+/// <summary>A native session. Like <see cref="ConversationHandle"/>, it holds a reference on its engine's
+/// handle, taken by the caller with <see cref="SafeHandle.DangerousAddRef"/> before the native create, and
+/// releases it after deleting the session, so the engine is deleted only after its last session.</summary>
+/// <remarks>It also keeps the <see cref="GCHandle"/> of every decode stream that has settled
+/// (<see cref="Retire"/>) and frees them only after <c>litert_lm_session_delete</c> returns. C API 1.1.0 has no
+/// session call that waits for a stream's last callback, so a stream's callback data stays valid until the
+/// native session is gone. A stream retires its handle while it still holds its reference on this handle, so
+/// the retire always comes before the release.</remarks>
+internal sealed class SessionHandle(nint handle, EngineHandle engine) : LiteRtLmHandle(handle)
+{
+    private readonly object _retiredLock = new();
+    private List<GCHandle>? _retired;
+    private bool _deleted;
+
+    /// <summary>Keeps <paramref name="gcHandle"/> until the native session is deleted, then frees it. When the
+    /// session is already deleted, frees it at once: no callback can run after the delete.</summary>
+    internal void Retire(GCHandle gcHandle)
+    {
+        lock (_retiredLock)
+        {
+            if (!_deleted)
+            {
+                (_retired ??= []).Add(gcHandle);
+                return;
+            }
+        }
+        if (gcHandle.IsAllocated)
+            gcHandle.Free();
+    }
+
+    /// <summary>The number of handles waiting for the native delete, for tests.</summary>
+    internal int RetiredCount
+    {
+        get { lock (_retiredLock) return _retired?.Count ?? 0; }
+    }
+
+    protected override bool ReleaseHandle()
+    {
+        // Delete first: it waits for the session's tasks, and a stream's callback data must stay valid until
+        // then. The engine reference goes last, because a session must be deleted before its engine.
+        LiteRtLmNative.litert_lm_session_delete(handle);
+        List<GCHandle>? retired;
+        lock (_retiredLock)
+        {
+            _deleted = true;
+            retired = _retired;
+            _retired = null;
+        }
+        if (retired is not null)
+        {
+            foreach (GCHandle gcHandle in retired)
+            {
+                if (gcHandle.IsAllocated)
+                    gcHandle.Free();
+            }
+        }
         engine.DangerousRelease();
         return true;
     }
