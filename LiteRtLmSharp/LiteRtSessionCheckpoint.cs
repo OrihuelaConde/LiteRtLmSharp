@@ -16,7 +16,10 @@ namespace LiteRtLmSharp;
 /// at a later point than the one it returns to; checkpoints saved at the same point stay. A
 /// <see cref="LiteRtSession.Reset"/> drops every checkpoint except those saved while the session was
 /// <see cref="LiteRtSessionState.Fresh"/>. A rewind to a dropped checkpoint throws
-/// <see cref="InvalidOperationException"/> and changes nothing. This behavior was measured on LiteRT-LM v0.20.0,
+/// <see cref="InvalidOperationException"/>. On a session in use it changed neither the session's position nor
+/// its next decode. From <see cref="LiteRtSessionState.ContextFull"/>, and from
+/// <see cref="LiteRtSessionState.Faulted"/> after a failed prefill, it left the state as it was, and a rewind to a
+/// checkpoint the session still held then recovered the session. This behavior was measured on LiteRT-LM v0.20.0,
 /// win-x64, gemma-4 E2B, CPU and GPU.
 /// </para>
 /// </remarks>

@@ -113,9 +113,9 @@ internal sealed class SessionStateMachine
     }
 
     /// <summary>Whether a rewind or a reset recovers a session that <paramref name="fault"/> left Faulted: only
-    /// a failed prefill. A rewind or a reset was measured to recover the session after a failed second prefill
-    /// and after a full context; a chain that failed another way was not measured, and a decode on it may never
-    /// end.</summary>
+    /// a failed prefill. A rewind or a reset was measured to recover the session after a failed first or later
+    /// prefill whose input did not fit, and after a full context; a chain that failed another way was not
+    /// measured, and a decode on it may never end.</summary>
     public static bool RecoversFrom(SessionFault fault) => fault.Call == SessionCall.Prefill;
 
     /// <summary>Whether <paramref name="state"/> accepts <paramref name="call"/>.</summary>

@@ -387,8 +387,11 @@ public sealed class LiteRtEngine : IDisposable
     /// <para>
     /// The native session is created through the engine, as a conversation is (see
     /// <see cref="CreateConversation"/>), so the call waits for a generation in flight on the engine to end.
-    /// Behind a 160-token conversation send or session decode it took 4.5 to 4.9 s on CPU and 1.2 s on GPU; on an
-    /// idle engine, 0.1 ms or less (measured on LiteRT-LM v0.20.0, win-x64, gemma-4 E2B).
+    /// Behind a 160-token conversation send or session decode it took 4.5 to 4.9 s on CPU and 1.2 s on GPU. On an
+    /// idle engine, every call after the engine's first took under 0.4 ms. The first call took about 3 ms on an
+    /// engine without vision or audio, up to 82 ms on CPU with vision or audio enabled, and 1.8 s on GPU with
+    /// vision enabled; each first call was measured once. These figures were measured on LiteRT-LM v0.20.0,
+    /// win-x64, gemma-4 E2B, CPU and GPU.
     /// </para>
     /// <para>
     /// The session keeps the native engine alive: disposing this engine first is safe, and the native engine is

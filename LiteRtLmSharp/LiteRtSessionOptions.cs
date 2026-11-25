@@ -2,7 +2,8 @@ namespace LiteRtLmSharp;
 
 /// <summary>Settings for <see cref="LiteRtEngine.CreateSession"/>, fixed for the session's lifetime.</summary>
 /// <remarks>A session always runs with the prompt template off: the text it prefills reaches the tokenizer as
-/// given. See <see cref="LiteRtSession.Prefill"/> for the start token that the runtime adds.</remarks>
+/// given. See <see cref="LiteRtSession.Prefill"/> for the position that the runtime adds before the first
+/// prefill.</remarks>
 public sealed record LiteRtSessionOptions
 {
     /// <summary>Gets the sampling settings; <c>null</c> uses the engine's default sampling.</summary>
