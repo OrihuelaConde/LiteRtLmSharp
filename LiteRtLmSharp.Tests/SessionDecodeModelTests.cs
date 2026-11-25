@@ -44,9 +44,9 @@ internal static class SessionDecodeHelpers
     public static Task<string> SendWithin(LiteRtConversation conversation, string text)
         => Task.Run(() => conversation.Send(text).Text ?? "").WaitAsync(DrainLimit);
 
-    /// <summary>Asserts that the native session was deleted, not only that its handle was disposed: a decode
-    /// retires its stream handle to the session handle at settlement, and only the native delete empties
-    /// that list.</summary>
+    /// <summary>Asserts that the native session was deleted. <see cref="SafeHandle.IsClosed"/> turns true only
+    /// when the last reference on a disposed handle is released, which runs the native delete; the retired
+    /// stream handles, which only the delete frees, confirm it.</summary>
     public static void AssertNativeSessionDeleted(LiteRtSession session)
     {
         Assert.True(session.Handle.IsClosed);
