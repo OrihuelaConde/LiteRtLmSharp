@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using LiteRtLmSharp.Native;
@@ -10,13 +11,15 @@ namespace LiteRtLmSharp.Tests;
 /// The C API 1.1 binary interface of the session functions (<c>c/engine.h</c>), called directly and without a
 /// model: every session import is exported by the loaded library, every function rejects a null handle with
 /// INVALID_ARGUMENT, pointer outputs are set to NULL, scalar outputs are left unwritten, and a decode that
-/// cannot start never calls its callback.
+/// cannot start does not call its callback before it returns.
 /// </summary>
 public sealed unsafe class SessionAbiTests(ITestOutputHelper output)
 {
     static SessionAbiTests() => LiteRtEngine.SetMinLogLevel(3); // registers the resolver
 
-    /// <summary>The session functions the binding imports, the blocking decode included.</summary>
+    /// <summary>The session functions the binding imports, the blocking decode included. The packaging checks
+    /// <c>.github/scripts/inspect-pe.py</c> and <c>.github/scripts/assert-elf-exports.sh</c> keep the same list;
+    /// change all three together.</summary>
     internal static readonly string[] SessionImports =
     [
         "litert_lm_engine_create_session",
@@ -44,15 +47,22 @@ public sealed unsafe class SessionAbiTests(ITestOutputHelper output)
     public void SessionImports_AreExported()
     {
         NativeLibraryResolver.EnsureCompatible();
-        nint library = NativeLibraryResolver.LoadedHandle;
+        // Loading the library by name can find another file than the resolver did, so the test reads the
+        // handle of the library that passed the version check from the resolver's own field.
+        FieldInfo? verified = typeof(NativeLibraryResolver).GetField("_verified", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(verified);
+        nint library = (nint)verified.GetValue(null)!;
         Assert.NotEqual(nint.Zero, library);
         string[] missing = SessionImports.Where(name => !NativeLibrary.TryGetExport(library, name, out _)).ToArray();
         Assert.Empty(missing);
     }
 
     /// <summary>Every session and responses function rejects a null handle with INVALID_ARGUMENT: pointer outputs
-    /// are set to NULL, scalar outputs keep their value, and a decode that cannot start never calls its
-    /// callback.</summary>
+    /// are set to NULL, scalar outputs keep their value, and a decode that cannot start does not call its
+    /// callback before it returns.</summary>
+    /// <remarks>The statuses and the outputs follow <c>c/engine.h</c>. The callback check is different: the
+    /// header says only that a non-OK status is the error that kept the stream from starting, so "not called"
+    /// is an observation, and the test checks only a callback made during the call.</remarks>
     [Fact]
     public void NullHandles_AreRejected_WithoutWritingScalarOutputs()
     {

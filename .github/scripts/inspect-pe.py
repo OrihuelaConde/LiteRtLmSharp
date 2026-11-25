@@ -32,7 +32,8 @@ if len(capi) < min_exports:
 REQUIRED = (
     "litert_lm_engine_create", "litert_lm_conversation_create",
     "litert_lm_conversation_send_message_stream", "litert_lm_stream_chunk_get_error",
-    # Session API
+    # Session API. The same names are in .github/scripts/assert-elf-exports.sh and in
+    # LiteRtLmSharp.Tests/SessionAbiTests.cs (SessionImports); change all three together.
     "litert_lm_engine_create_session", "litert_lm_session_delete",
     "litert_lm_session_cancel_process", "litert_lm_session_save_checkpoint",
     "litert_lm_session_rewind_to_checkpoint", "litert_lm_session_rewind_to_step",

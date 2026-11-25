@@ -61,10 +61,6 @@ internal static partial class NativeLibraryResolver
         _ = Resolve(LiteRtLmNative.Library, typeof(NativeLibraryResolver).Assembly, searchPath: null);
     }
 
-    /// <summary>The handle of the library that passed the version check, or zero before one has loaded. Tests read
-    /// exports through it.</summary>
-    internal static nint LoadedHandle => Volatile.Read(ref _verified);
-
     private static nint Resolve(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
     {
         if (libraryName != LiteRtLmNative.Library)
