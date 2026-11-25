@@ -3,6 +3,8 @@ using System.Diagnostics.CodeAnalysis;
 namespace LiteRtLmSharp;
 
 /// <summary>Options for <see cref="LiteRtModelSync.UpdateAsync"/>.</summary>
+/// <remarks>This type is experimental (diagnostic <c>LITERTLM003</c>) and can change or be removed in a minor
+/// release.</remarks>
 [Experimental(ExperimentalApis.ModelSync, UrlFormat = ExperimentalApis.ModelSyncUrl)]
 public sealed record LiteRtModelSyncOptions
 {

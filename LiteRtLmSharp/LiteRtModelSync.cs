@@ -7,19 +7,23 @@ namespace LiteRtLmSharp;
 /// <summary>Downloads and updates <c>.litertlm</c> model files from a remote copy, reusing the sections that did
 /// not change. Needs no engine.</summary>
 /// <remarks>
-/// <para>The runtime compares the section hashes that the local and the remote headers record. It copies the
-/// sections whose hashes match from the local file and downloads the others; when more than 80% of the section
-/// bytes changed, or when either file has no section hashes, it downloads the whole file. It verifies the SHA-256
-/// of each downloaded section that the remote header hashes, so the bytes of a remote without section hashes are
-/// not verified. See <see cref="LiteRtModelSyncPlan"/> for what that means for files published without section
-/// hashes.</para>
+/// <para>This API is experimental. Using it reports the diagnostic <c>LITERTLM003</c>, and its types and members
+/// can change or be removed in a minor release.</para>
+/// <para>The calls load no model and create no engine. The runtime compares the section hashes that the local and
+/// the remote headers record. It copies the sections whose hashes match from the local file and downloads the
+/// others; when more than 80% of the section bytes changed, or when either file has no section hashes, it
+/// downloads the whole file. It verifies the SHA-256 of each downloaded section that the remote header hashes, so
+/// the bytes of a remote without section hashes are not verified. Behaviour described as measured was measured
+/// on LiteRT-LM v0.20.0, win-x64.</para>
 /// <para>Each call runs the native work on a thread of its own and completes only when the native call has
 /// returned. The methods are safe to call from several threads; calls that read or write the same file at the
 /// same time are refused (see the exceptions). Other processes are not checked.</para>
-/// <para>Paths: the runtime opens them through the C runtime's narrow file functions. On Windows those decode the
-/// path in the active ANSI code page, so a path with characters outside that code page is refused; under the UTF-8
-/// code page (65001) any path works. A path of 260 characters or more is passed in its extended-length form
-/// (<c>\\?\</c>), except a UNC path, which is refused. Measured on LiteRT-LM v0.20.0, win-x64.</para>
+/// <para>Paths on Windows: unless the process runs under the UTF-8 code page (65001), the runtime decodes paths in
+/// the active ANSI code page (measured), so the binding refuses a path with characters outside that code page
+/// before any native call. Under the UTF-8 code page, the non-ASCII folder names that were tried worked. When a
+/// path of the call, or the temporary file next to the output, reaches 260 characters, the binding passes every
+/// path of the call in its extended-length form (<c>\\?\</c>), because the runtime fails on plain paths of that
+/// length (measured); a UNC path in such a call is refused.</para>
 /// </remarks>
 [Experimental(ExperimentalApis.ModelSync, UrlFormat = ExperimentalApis.ModelSyncUrl)]
 public static class LiteRtModelSync
@@ -40,8 +44,20 @@ public static class LiteRtModelSync
     /// <remarks>
     /// <para>The runtime fetches the remote header (the first 16 KiB, then the rest of a longer header) and reads
     /// the local header. When the headers match, the result also depends on the local sections' bytes: a local
-    /// section whose bytes do not match the hash its header records makes the file not up to date.</para>
-    /// <para>A remote that cannot serve byte ranges fails the plan when its header is longer than 16 KiB.</para>
+    /// section whose bytes do not match the hash its header records makes the file not up to date. Reading those
+    /// bytes takes longer for a larger file, and no cancel is seen while the runtime reads them.</para>
+    /// <para>Cost of files without section hashes: when the remote file or the local file has no section hashes,
+    /// the plan reports the whole file as <see cref="LiteRtModelSyncPlan.BytesToDownload"/> and the local file is
+    /// never up to date, even when it is identical to the remote file. An update then downloads the whole file
+    /// every time. None of the <c>.litertlm</c> files checked on Hugging Face when this binding was released
+    /// (Gemma 4 E2B and E4B, EmbeddingGemma) had section hashes. Check the plan before you update: with an
+    /// existing local file, <see cref="LiteRtModelSyncPlan.BytesToReuse"/> equal to 0 means the update downloads
+    /// everything.</para>
+    /// <para>A remote that cannot serve byte ranges fails the plan with <see cref="LiteRtStatusCode.Unimplemented"/>
+    /// when its header is longer than 16 KiB.</para>
+    /// <para>Cancel: the token is checked before the call and at each fetch, and it interrupts a fetch that waits
+    /// for the remote. The runtime's own work between fetches has no callback, so a cancel during that work takes
+    /// effect at the next fetch, or not at all when none follows. That delay was not measured.</para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="remote"/> is <c>null</c>.</exception>
     /// <exception cref="ArgumentException"><paramref name="localModelPath"/> does not exist, is a folder or cannot
@@ -87,26 +103,39 @@ public static class LiteRtModelSync
     /// <returns>What the update received.</returns>
     /// <remarks>
     /// <para>The runtime writes the new file to <c>OUTPUT.tmp_updating</c> next to the output and renames it over
-    /// the output at the end, so the output is never partly written: on a failure or a cancel the old output is
-    /// still there and the temporary file is removed. The output's volume needs free space at least equal to the
-    /// remote file's size. When the local file is already up to date and is the output, nothing is written; when
-    /// the output is another file, the runtime copies the local file to it.</para>
+    /// the output at the end; the C API describes an update of one path as atomic. After every failure and cancel
+    /// that was tried (failed fetches, refused bytes, a cancel during a fetch) the old output was still there and
+    /// the temporary file was gone; a process that ends during the update was not tried. The temporary file is a
+    /// full copy of the remote file. The runtime checks free space before it writes it (the binding turns the
+    /// check on) and reports too little as <see cref="LiteRtStatusCode.ResourceExhausted"/>. When the local file
+    /// is already up to date and is the output, nothing is written; when the output is another file, the runtime
+    /// copies the local file to it.</para>
+    /// <para>Cost of files without section hashes: when the remote file or the local file has no section hashes,
+    /// nothing is reused and the update downloads the whole file, even when the local file is identical to the
+    /// remote file. Calling this method at every start then downloads the whole model every time. None of the
+    /// <c>.litertlm</c> files checked on Hugging Face when this binding was released (Gemma 4 E2B and E4B,
+    /// EmbeddingGemma) had section hashes. Call <see cref="CreatePlanAsync"/> first, and update when the plan
+    /// shows sections to reuse or when the user accepts <see cref="LiteRtModelSyncPlan.BytesToDownload"/>.</para>
     /// <para>Pass the same string for both paths to update a file in place: the runtime compares the path
     /// strings, and paths that <see cref="Path.GetFullPath(string)"/> makes equal count as the same. Another
     /// spelling of the file, such as a hard link or a short 8.3 name, does not.</para>
     /// <para>Cancel: the token is checked before the call and at each fetch, and it interrupts a fetch that waits
-    /// for the remote. The runtime's work between fetches (reading the local file, copying reused sections,
-    /// renaming the temporary file) is not interrupted, so a cancel then takes effect at the next fetch, or never
-    /// when none follows. When the runtime completes the update before it sees the cancel, the method returns the
-    /// result instead of throwing, because the output was replaced.</para>
+    /// for the remote or copies its bytes. The runtime's own work between fetches, such as reading the local file,
+    /// copying reused sections or renaming the temporary file, has no callback, so a cancel during that work takes
+    /// effect at the next fetch, or not at all when none follows. That delay was not measured. When the runtime
+    /// completes the update before it sees the cancel, the method returns the result instead of throwing, because
+    /// the output was replaced.</para>
     /// <para>A failed fetch becomes the call's status: <see cref="LiteRtStatusCode.Unavailable"/> for a network
     /// failure or a server error, <see cref="LiteRtStatusCode.NotFound"/>,
     /// <see cref="LiteRtStatusCode.Unauthenticated"/> or <see cref="LiteRtStatusCode.PermissionDenied"/> for the
     /// matching HTTP status, <see cref="LiteRtStatusCode.DeadlineExceeded"/> for a timeout,
     /// <see cref="LiteRtStatusCode.Aborted"/> when the remote file changed during the call, and
-    /// <see cref="LiteRtStatusCode.DataLoss"/> when the remote returned other bytes than the ones asked for. A
-    /// remote that cannot serve byte ranges makes the runtime download the whole file from byte 0, and fails the
-    /// update when its header is longer than 16 KiB.</para>
+    /// <see cref="LiteRtStatusCode.DataLoss"/> when the remote returned other bytes than the ones asked for. The
+    /// runtime does not retry a failed fetch. A remote that cannot serve byte ranges makes the runtime download the
+    /// whole file from byte 0: before that, an update that reuses sections makes two requests the remote cannot
+    /// serve (the changed section, then the file after its header), and a first download makes one. Such a remote
+    /// fails the update with <see cref="LiteRtStatusCode.Unimplemented"/> when its header is longer than
+    /// 16 KiB.</para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="outputModelPath"/> or <paramref name="remote"/> is
     /// <c>null</c>.</exception>
