@@ -195,7 +195,7 @@ public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, IT
         LiteRtEngine engine = Engine;
         string prompt = SessionDecodeHelpers.Prompt(engine, SessionCheckpointHelpers.FirstUser);
         string second = SessionDecodeHelpers.NextTurn(SessionCheckpointHelpers.SecondUser);
-        string third = SessionDecodeHelpers.NextTurn(SessionCheckpointHelpers.FrenchUser);
+        string french = SessionDecodeHelpers.NextTurn(SessionCheckpointHelpers.FrenchUser);
         string twin = await SessionCheckpointHelpers.Twin(engine, prompt, second);
 
         using LiteRtSession session = SessionCheckpointHelpers.Session(engine);
@@ -205,7 +205,7 @@ public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, IT
         Assert.Equal(LiteRtSessionState.Decoded, session.State);
         await SessionCheckpointHelpers.Prefill(session, second);
         string firstPass = await SessionDecodeHelpers.DecodeWithin(session);
-        await SessionCheckpointHelpers.Prefill(session, third);
+        await SessionCheckpointHelpers.Prefill(session, french);
         string later = await SessionDecodeHelpers.DecodeWithin(session);
 
         await SessionDecodeHelpers.Within(() => session.RewindTo(checkpoint));
@@ -372,9 +372,9 @@ public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, IT
     /// <summary>A save after a reset gets a label that no earlier save had. The runtime accepts a second save under
     /// a label it holds and then rewinds that label to the later save, so a repeated label would move the
     /// checkpoint saved on the Fresh session to the later point. The turn after the reset equals a new
-    /// session's. Before the reset the session holds the French turn, so a reset that does nothing gives a French
-    /// reply; after the rewind to the Fresh checkpoint the turn asks for the previous question, so a rewind that
-    /// goes to the later save, or does nothing, gives a reply about the turn before it.</summary>
+    /// session's. The label assert catches a repeated label. Before the reset the session holds the French turn,
+    /// so a reset that does nothing gives a French reply; after the rewind to the Fresh checkpoint the turn asks
+    /// for the previous question, so a rewind that does nothing gives a reply about the first prompt.</summary>
     [SkippableFact]
     public async Task SaveCheckpoint_AfterAReset_NeverReusesALabel()
     {
