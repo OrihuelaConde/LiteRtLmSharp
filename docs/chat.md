@@ -75,7 +75,7 @@ using var chat = engine.CreateConversation(new LiteRtConversationOptions
 The runtime keeps the reasoning out of the KV cache by default, so setting `FilterThinkingFromKvCache` to
 `true` is optional. With the property unset, a 966-token reply that held 668 thinking tokens left the
 conversation at 339 tokens. This was measured with LiteRT-LM v0.20.0 and gemma-4 E2B on win-x64 CPU. On
-the GPU, through the `IChatClient` adapter, which leaves the property unset, a 966-token reply that held
+the GPU, through the `IChatClient` adapter with the property unset, a 966-token reply that held
 818 thinking tokens left the conversation at 189 tokens.
 
 The reasoning trace comes back **separate** from the answer — on the blocking `Send` via

@@ -396,7 +396,7 @@ public sealed class LiteRtEngine : IDisposable
     /// idle engine, every call after the engine's first took under 0.4 ms. The first call took about 3 ms on an
     /// engine without vision or audio, up to 82 ms on CPU with vision or audio enabled, and 1.8 s on GPU with
     /// vision enabled; each first call was measured once. These figures were measured on LiteRT-LM v0.20.0,
-    /// win-x64, gemma-4 E2B, CPU and GPU.
+    /// win-x64, gemma-4 E2B, CPU and GPU (Intel Core i7-12700F, NVIDIA RTX 3080).
     /// </para>
     /// <para>
     /// The session keeps the native engine alive: disposing this engine first is safe, and the native engine is
