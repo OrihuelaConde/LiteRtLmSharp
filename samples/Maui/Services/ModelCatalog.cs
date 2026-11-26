@@ -9,8 +9,8 @@ namespace LiteRtLmSharp.SampleMaui.Services;
 /// <paramref name="SupportsSpeculativeDecoding"/>: the model ships an MTP drafter (all the Gemma 4
 /// builds do), so speculative decoding can be turned on. Turning it on does not guarantee a speedup: with
 /// gemma-4-E2B it lowered decode throughput on every desktop CPU and GPU backend measured, and it was not
-/// measured on a device with LiteRT-LM v0.20.0. The Models page still defaults the speculative toggle ON
-/// for these models and hides it for the rest.
+/// measured on a device with LiteRT-LM v0.20.0. For these models, the Models page asks on each load whether
+/// to enable speculative decoding, with no default; for the rest it doesn't ask.
 /// <paramref name="SupportsVision"/> / <paramref name="SupportsAudio"/>: the model can take image /
 /// audio attachments (the Gemma 4 E-series are full text+vision+audio). When set, the engine is loaded
 /// with the matching vision/audio backend and the Chat tab shows the attach buttons.

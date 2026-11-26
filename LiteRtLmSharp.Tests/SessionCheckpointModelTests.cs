@@ -178,7 +178,8 @@ internal static class SessionCheckpointHelpers
 /// point the same way (prefill and decode), never a session prefilled with reply text. The equalities are asserted
 /// on every platform: these tests are the measurement off win-x64.
 /// </summary>
-public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, ITestOutputHelper output) : IClassFixture<SessionEngineFixture>
+[Collection(SessionEngineCollection.Name)]
+public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, ITestOutputHelper output)
 {
     private LiteRtEngine Engine
     {
@@ -511,9 +512,10 @@ public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, IT
         Assert.Equal(LiteRtSessionState.Decoded, session.State);
     }
 
-    /// <summary>A full context recovers by a reset: fill the context with the raw repeated text of the stable
-    /// context-full test, reset, and the next turn equals a new session's; the start-token rule applies again. A
-    /// decode that does not fill the context fails the test as an unmet precondition.</summary>
+    /// <summary>A full context recovers by a reset: prefill the raw repeated text of
+    /// <see cref="SessionContextFill.FirstPrefill"/>, decode until the context is full, which returns a non-empty
+    /// partial reply, reset, and the next turn equals a new session's; the start-token rule applies again. A decode
+    /// that does not fill the context fails the test as an unmet precondition.</summary>
     [SkippableFact]
     public async Task ContextFull_Reset_RecoversTheSession()
     {
@@ -526,6 +528,7 @@ public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, IT
         await SessionCheckpointHelpers.Prefill(session, SessionContextFill.FirstPrefill(engine));
         string partial = await SessionDecodeHelpers.DecodeWithin(session);
         SessionCheckpointHelpers.AssertContextFilled(session, partial);
+        Assert.False(string.IsNullOrEmpty(partial));
         await SessionDecodeHelpers.AssertRefusesAllButRewindResetAndDispose(session, LiteRtSessionState.ContextFull);
 
         await SessionDecodeHelpers.Within(session.Reset);
@@ -591,26 +594,6 @@ public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, IT
         Assert.Equal(twin, reply);
     }
 
-    /// <summary>A Cancelled session refuses a save, a rewind to a checkpoint it saved, and a reset, before any
-    /// native call.</summary>
-    [SkippableFact]
-    public async Task Cancelled_RefusesSaveRewindAndReset()
-    {
-        LiteRtEngine engine = Engine;
-        using LiteRtSession session = SessionDecodeHelpers.Session(engine, SessionDecodeHelpers.CancelCap);
-        await SessionCheckpointHelpers.Prefill(session, SessionDecodeHelpers.Prompt(engine, SessionDecodeHelpers.CountPrompt));
-        LiteRtSessionCheckpoint checkpoint = await SessionCheckpointHelpers.Save(session);
-        List<string> pieces = await SessionDecodeHelpers.StreamWithin(session, onPiece: count => count < 2);
-        Assert.False(session.IsCallInProgress);
-        Skip.If(pieces.Count < 2, "The reply ended before its second piece, so the loop was not left early.");
-        Skip.If(session.State == LiteRtSessionState.Decoded, "The reply ended before the cancel reached the runtime.");
-        Assert.Equal(LiteRtSessionState.Cancelled, session.State);
-
-        foreach (Action call in new Action[] { () => session.SaveCheckpoint(), () => session.RewindTo(checkpoint), session.Reset })
-            Assert.Contains("was cancelled", Assert.Throws<InvalidOperationException>(call).Message, StringComparison.Ordinal);
-        await SessionDecodeHelpers.AssertAcceptsOnlyDispose(session, LiteRtSessionState.Cancelled);
-    }
-
     /// <summary>A save, a rewind and a reset during a running stream are refused as busy, from the read loop
     /// itself; the stream then ends normally, and a rewind to the checkpoint saved before it gives the same reply
     /// again. The count prompt keeps the decode running past the first piece; a decode that still ended before
@@ -652,11 +635,14 @@ public sealed class SessionCheckpointModelTests(SessionEngineFixture fixture, IT
     }
 }
 
-/// <summary>The raw repeated text of the stable context-full test, as a first prefill.</summary>
+/// <summary>Raw text with no chat template that fills the context from a first prefill.</summary>
 internal static class SessionContextFill
 {
     /// <summary>One sentence repeated up to about a dozen positions from the end of the context, then the start
-    /// of the next repeat, for a Fresh session (which holds one start position).</summary>
+    /// of the next repeat, for a Fresh session (which holds one start position). The model goes on with the
+    /// repeat, so the reply reaches the end of the context. A chat prompt that asks for an endless count does not
+    /// hold: after a long text the model ended that reply early on every CI platform and, for some texts, on the
+    /// GPU.</summary>
     public static string FirstPrefill(LiteRtEngine engine)
     {
         const int FreePositions = 12;
@@ -666,16 +652,19 @@ internal static class SessionContextFill
         string filler = SessionModelHelpers.TextOf(engine, target - Tokens(""), atLeast: false);
         while (Tokens(filler + SessionModelHelpers.Sentence) <= target)
             filler += SessionModelHelpers.Sentence;
-        return filler + Opening;
+        string text = filler + Opening;
+        Assert.InRange(engine.Tokenize(text).Length, target - 24, target);
+        return text;
     }
 }
 
 /// <summary>
-/// Recovery from a failed prefill, in a class of their own, with an engine apart from the other session tests: a
-/// decode that never ends would hold its session, and with it the engine, until the process ends. The cases are a
-/// failed first prefill, the two other failure statuses of a prefill that does not fit, a rewind to a checkpoint
-/// saved after a decode, and a rewind to a dropped checkpoint before the recovery. The recovered decode equals a
-/// new session's.
+/// Recovery from a failed prefill, on an engine that this class loads for itself. The cases are a failed first
+/// prefill, the two other failure statuses of a prefill that does not fit, a rewind to a checkpoint saved after a
+/// decode, and a rewind to a dropped checkpoint before the recovery. The recovered decode equals a new session's.
+/// The separate engine doesn't isolate a recovery that leaves a decode hanging: a decode that never ends holds its
+/// session, and with it the native engine, until the process ends, so every later engine load without
+/// <see cref="LiteRtEngineOptions.AllowMultipleEngines"/> fails, whichever class the hang is in.
 /// </summary>
 public sealed class SessionRecoveryModelTests(SessionEngineFixture fixture, ITestOutputHelper output) : IClassFixture<SessionEngineFixture>
 {

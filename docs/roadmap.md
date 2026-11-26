@@ -74,9 +74,9 @@ library).
 ## C API coverage (audit 2026-10-06, headers v0.18.0)
 
 > **v0.20.0 (1.4.0, not yet published):** C API 1.0.0 (v0.19.0) and 1.1.0 (v0.20.0) changed most
-> signatures to a status return with out pointers, changed the stream callback to
-> `(callback_data, const LiteRtLmStreamChunk*)` with chunk getters, and removed
-> `litert_lm_get_last_error_code`. `c/model_sync.h` is new; there are seven public headers in all, and the
+> signatures to a status return with out pointers, including the chunk getters (`stream_chunk_get_text`,
+> `stream_chunk_is_final`, `stream_chunk_get_error`), and removed `litert_lm_get_last_error_code`. The
+> stream callback typedef, `(callback_data, const LiteRtLmStreamChunk*)`, is the same as in v0.18.0. `c/model_sync.h` is new; there are seven public headers in all, and the
 > Windows DLL exports exactly the functions they declare.
 >
 > | v0.20.0 `litert_lm_*` functions | Count |
@@ -84,6 +84,13 @@ library).
 > | Exported on ELF and PE | 242 |
 > | Exported in the Mach-O builds | 243 |
 > | Declared by the binding (distinct) | 203 |
+>
+> Functions added since v0.18.0 that the binding doesn't declare include the speculative decoding config (`speculative_decoding_config_create`,
+> `_delete`, `_set_mode`, `_set_lenience`, `engine_settings_set_speculative_decoding_config` and
+> `session_config_set_speculative_decoding_config`), so the `Adaptive` mode and the lenience factor are not
+> available; `engine_settings_set_selected_signatures` (C API 1.1.0); and `session_clone` (C API 1.0.0).
+> `EnableSpeculativeDecoding` still goes through the two on/off setters that C API 1.0.0 deprecated,
+> `engine_settings_set_enable_speculative_decoding` and `session_config_set_enable_speculative_decoding`.
 >
 > The audit below and its per-header counts describe the v0.18.0 headers.
 
@@ -194,7 +201,7 @@ responses functions and wraps 9 of them in `LiteRtSession`; see the Raw Session 
 
 | Feature | Functions | Notes |
 |---|---|---|
-| ✅ Raw Session API | Used by the public API: `engine_create_session`, `session_config_set_apply_prompt_template` (always off), `session_run_prefill`, `session_run_decode_async`, `session_cancel_process`, `session_delete`; experimental tier: `session_save_checkpoint`, `session_rewind_to_checkpoint`, `session_rewind_to_step` (called only with 0, for `Reset`). Declared only: `session_run_decode` (blocking; a regression test compares it with the async decode) and `session_run_text_scoring`. Not imported: `session_generate_content(_stream)`, `session_get_benchmark_info` | **1.4.0, not yet published** (LiteRT-LM v0.20.0): `LiteRtSession` with stable prefill, decode, streaming, and cancel, and the experimental (`LITERTLM001`) `SaveCheckpoint`, `RewindTo`, `Reset`, and `LiteRtSessionCheckpoint`. Measured on win-x64 with gemma-4 E2B, CPU and GPU. **Text scoring is not wrapped:** after a save, a score of a one-token target, and a rewind, the next decode failed with `INVALID_ARGUMENT: Unprocessed token is null.` and the session was unusable, on CPU and GPU; and a score after a rewind that undid a prefill returned a wrong value. Its `input_data_create`/`_delete` are bound since the embedding engine, which takes the same inputs. See [sessions](sessions.md). |
+| ✅ Raw Session API | Used by the public API: `engine_create_session`, `session_config_set_apply_prompt_template` (always off), `session_run_prefill`, `session_run_decode_async`, `session_cancel_process`, `session_delete`; experimental tier: `session_save_checkpoint`, `session_rewind_to_checkpoint`, `session_rewind_to_step` (called only with 0, for `Reset`). Declared only: `session_run_decode` (blocking; a regression test compares it with the async decode) and `session_run_text_scoring`. Not imported: `session_generate_content(_stream)`, `session_get_benchmark_info`, `session_clone`. Bound for conversations but not used for `LiteRtSession`: the session-config LoRA setters (`session_config_set_lora_path`, `session_config_set_audio_lora_path`) and speculative decoding setter (`session_config_set_enable_speculative_decoding`) | **1.4.0, not yet published** (LiteRT-LM v0.20.0): `LiteRtSession` with stable prefill, decode, streaming, and cancel, and the experimental (`LITERTLM001`) `SaveCheckpoint`, `RewindTo`, `Reset`, and `LiteRtSessionCheckpoint`. Measured on win-x64 with gemma-4 E2B, CPU and GPU. **Text scoring is not wrapped:** after a save, a score of a one-token target, and a rewind, the next decode failed with `INVALID_ARGUMENT: Unprocessed token is null.` and the session was unusable, on CPU and GPU; and a score after a rewind that undid a prefill returned a wrong value. Its `input_data_create`/`_delete` are bound since the embedding engine, which takes the same inputs. See [sessions](sessions.md). |
 | Responses introspection | `responses_*` | Declared only, for the declarations that the blocking decode and text scoring need: `responses_delete`, `get_num_candidates`, `get_response_text_at`, `get_score_at`, `get_token_length_at`. No public member reads a responses object; the rest of `responses_*` is not imported. |
 | Raw-FD engine load | `engine_settings_create_from_raw_file_descriptor` | **Deferred** (new in v0.14.0). Loads a model from an open file descriptor (mainly Android `content://` scenarios); the path-based `engine_settings_create` covers the desktop/MAUI paths we ship. |
 | ✅ Benchmark fake tokens | `engine_settings_set_num_prefill_tokens`, `set_num_decode_tokens` | **Done 2026-06-20** (`LiteRtEngineOptions.BenchmarkPrefillTokens` / `BenchmarkDecodeTokens`). Synthetic-token benchmarking: the prompt is padded/truncated to the prefill count and decode runs exactly the decode count (ignoring the stop token), so `GetBenchmarkInfo` reports throughput at FIXED counts — content-independent device benchmarking. **Confirmed observable through the Conversation API** (not a benchmark-main-only path): both fields feed `EngineSettings::benchmark_params_`, read by the default `EngineAdvancedImpl`/`SessionAdvanced` (source trace + win-x64 probe: a tiny "Hi" reports 256/64). Setting either also flips benchmark mode on; the reply is not a real answer. |
@@ -207,9 +214,18 @@ responses functions and wraps 9 of them in `LiteRtSession`; see the Raw Session 
 
 ## Actionable next steps (suggested order)
 
--5. **AFTER 1.3.0 (open as of 2026-10-12).** (a) Review pull request #15, the first external contribution
-   (opt-in second engine, non-blocking `TokenCount`, snapshot/resume, sampler diagnostics): it changes the
-   one-live-engine rule, so it needs a careful read and our own measurements. (b) Embeddings demo in the
+-6. **v0.20.0 CYCLE → 1.4.0 (in preparation, not yet published).** 1.4.0 moves the native runtime to
+   LiteRT-LM v0.20.0 (C API 1.1.0), adds raw sessions with experimental checkpoints and experimental model
+   sync, and carries the engine-usage changes of pull request #15. Open: (a) android-arm64 on a device with
+   v0.20.0; only the x86_64 emulator has run it. (b) LiteRT-LM#4394 is still open upstream: it did not
+   reproduce with v0.20.0 on the one GPU measured, and other GPUs and `Float16` activations were not
+   measured. (c) The speculative decoding config (`Adaptive` mode, lenience) is not wrapped, and
+   `EnableSpeculativeDecoding` relies on the two setters that C API 1.0.0 deprecated (see the C API coverage
+   note above).
+
+-5. **AFTER 1.3.0 (open as of 2026-10-12).** (a) ✅ Pull request #15, the first external contribution
+   (opt-in second engine, non-blocking `TokenCount`, sampler diagnostics), was merged on
+   2026-11-24 and ships in 1.4.0 (see -6). (b) Embeddings demo in the
    MAUI sample. (c) Upstream answer to LiteRT-LM#3929 (EmbeddingGemma 2 prefixes), see the watchlist;
    #3932 (CPU sampler types) was closed as fixed in v0.20.0. (d) Carried over: iOS on a device, osx-arm64 as a NuGet package, linux-x64 GPU
    on real hardware with the official libraries. The 1.3.0 announcement went out on X with the card kept in

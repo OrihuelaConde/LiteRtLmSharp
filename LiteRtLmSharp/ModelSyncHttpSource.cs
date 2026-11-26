@@ -14,10 +14,11 @@ namespace LiteRtLmSharp;
 /// <para>A 206 must carry a byte <c>Content-Range</c> that starts at the requested offset. A 206 with fewer bytes
 /// than asked that ends before the end of the file, which RFC 9110 allows, is followed by a request for the rest,
 /// within the same fetch. A 200 answers a
-/// request at byte 0 with its first bytes, because the server ignored <c>Range</c>; a 200 to a request after
-/// byte 0 reports "ranges unsupported", which makes the runtime fall back to a full download for any fetch after
-/// the header. Every copy stops at the requested length, because the runtime accepts a whole-file write past it
-/// and leaves a longer, corrupt file (measured on LiteRT-LM v0.20.0, win-x64).</para>
+/// request at byte 0 with its first bytes, because the server ignored <c>Range</c>; a 200 to the first request of
+/// a range that starts after byte 0 reports "ranges unsupported", which makes the runtime fall back to a full
+/// download for any fetch after the header. A 200 to the request for the rest of a range, after a partial answer,
+/// fails the call with <c>UNKNOWN</c>. Every copy stops at the requested length, because the runtime accepts a
+/// whole-file write past it and leaves a longer, corrupt file (measured on LiteRT-LM v0.20.0, win-x64).</para>
 /// <para><see cref="ForCall"/> returns an instance with its own entity tag pin, so one source serves calls one
 /// after another and at the same time.</para>
 /// </remarks>

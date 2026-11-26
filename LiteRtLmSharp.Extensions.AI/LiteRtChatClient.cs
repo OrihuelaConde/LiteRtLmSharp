@@ -62,7 +62,10 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// <b>Token usage.</b> Each response carries <see cref="ChatResponse.Usage"/> with
 /// <see cref="UsageDetails.TotalTokenCount"/> always set (the conversation's KV-cache size, read at no cost).
 /// In the stateless mode this is the turn's prompt + reply; in the stateful mode it is the conversation's
-/// cumulative total, so it grows across the thread. The input/output split —
+/// cumulative total, so it grows across the thread. The runtime removes a reply's thinking from the KV cache
+/// after the reply, so after a reply with thinking the total leaves the thinking out and can be lower than
+/// <see cref="UsageDetails.InputTokenCount"/> + <see cref="UsageDetails.OutputTokenCount"/>, because the output
+/// count includes the thinking (LiteRT-LM v0.20.0, win-x64, CPU, gemma-4 E2B). The input/output split —
 /// <see cref="UsageDetails.InputTokenCount"/> / <see cref="UsageDetails.OutputTokenCount"/> — is populated
 /// <b>only</b> when the engine was loaded with <see cref="LiteRtEngineOptions.EnableBenchmark"/> = <c>true</c>;
 /// otherwise those stay <c>null</c> and a note to that effect is left in

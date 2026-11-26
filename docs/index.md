@@ -55,12 +55,16 @@ feature with runnable snippets; the guides here go deeper per topic.
   token counting.
 - **[Embeddings](embeddings.md)** — on-device text embeddings (EmbeddingGemma 2) for semantic search and
   RAG, also as an `IEmbeddingGenerator`.
+- **[Download and update models](model-sync.md)** (experimental) — download a `.litertlm` file over HTTP, or
+  update a local copy by reusing the sections that didn't change.
 - **[Microsoft.Extensions.AI integration](extensions-ai.md)** — plug the model into the .NET AI
   ecosystem as an `IChatClient` and an `IEmbeddingGenerator` (Agent Framework, Semantic Kernel, MEAI
   middleware).
 - **[Semantic Kernel connector](semantic-kernel.md)** — `IChatCompletionService` and an embedding
   generator over the same bridge.
 - **[Conversation state](conversation-state.md)** — persist/restore chats, clone live conversations.
+- **[Sessions](sessions.md)** — prefill and decode text you write, with no chat template; experimental
+  checkpoints, rewind and reset.
 - **[Engine tuning](engine-tuning.md)** — precision, prefill chunking, thread counts, benchmarking.
 - **[Speculative decoding](speculative-decoding.md)** — the MTP drafter: when it helps and what it needs.
 - **[Android](android.md)** — device setup, backends, and MAUI notes.

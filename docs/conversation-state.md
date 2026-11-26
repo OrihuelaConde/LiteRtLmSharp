@@ -142,7 +142,9 @@ validated as a JSON array when the conversation is created and throws `ArgumentE
 
 A send that is cut short **consumes** its conversation, which can't generate again: after a cancelled `SendAsync`,
 a stream abandoned before its reply ended, or `CancelProcess()` during a send, the runtime answers every later send on it with
-`CANCELLED`, and `IsCancelled` turns `true`. `CancelProcess()` on an idle conversation changes nothing. To
+`CANCELLED`, and `IsCancelled` turns `true`. With LiteRT-LM v0.20.0, `CancelProcess()` on an idle conversation
+left it usable, but the C API allows only deleting a conversation after a cancel, so call `CancelProcess()` only
+while a send runs. To
 continue, take a checkpoint with `Clone()` **before** the send that might be cut, and continue on the checkpoint if it is. In its
 stateful mode, `LiteRtChatClient` [does this for you](extensions-ai.md#cancelled-and-failed-sends).
 
@@ -229,8 +231,9 @@ A failure other than a cut leaves this block with the exception, so dispose `cha
   once per clone. A file-path attachment avoids that. This cost was not measured.
 - **Earlier reasoning leaves the KV cache.** The runtime removes the reasoning from the KV cache right after
   each reply. After a 966-token reply that held 668 thinking tokens, the conversation held 339 tokens
-  (LiteRT-LM v0.20.0, win-x64, CPU, gemma-4 E2B). A clone taken after such a reply was not measured: not
-  its token count, a rollback to it, the replies it generates later, or the GPU.
+  (LiteRT-LM v0.20.0, win-x64, CPU, gemma-4 E2B). A clone taken after such a reply holds the same token
+  count, without the reasoning (CPU, gemma-4 E2B). The replies a clone generates later were not measured, and
+  neither was the GPU.
 - **Ring buffers can break a clone's later turns.** In the LiteRT-LM sources, with
   `UseRingbuffersLocalAttention` on, the next turns on a clone can fail with `NOT_FOUND`; this was not
   measured.
@@ -314,7 +317,7 @@ using var chat = engine.CreateConversation(new LiteRtConversationOptions
 });
 
 // This one turn is capped tighter, just for this send:
-var terse = chat.Send("Summarize in one line.", options: new LiteRtSendOptions { MaxOutputTokens = 32 });
+var terse = chat.Send("Summarize in one line.", attachments: null, options: new LiteRtSendOptions { MaxOutputTokens = 32 });
 
 // The next send with no options falls back to the conversation's 512.
 var full = chat.Send("Now explain in detail.");

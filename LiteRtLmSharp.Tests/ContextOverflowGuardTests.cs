@@ -71,7 +71,7 @@ public class ContextOverflowGuardTests
         => Assert.Equal(1, LiteRtContextGuard.DecodeBudget(
             tokenCount: 4096 - (128 + LiteRtContextGuard.SafetyMargin + 1), maxNumTokens: 4096, inputTokens: 128));
 
-    /// <summary>The v0.15.0 executor plans prefill in fixed work groups: a partial chunk still debits a
+    /// <summary>The executor plans prefill in fixed work groups: a partial chunk still debits a
     /// whole signature length. An input above one work group with fewer than two work groups remaining
     /// passes the flat token count but not the plan — the guard must reject it (typed) before the native
     /// layer rejects it (raw). The exact live repro: 180 input tokens against 200 remaining entries.</summary>
@@ -169,7 +169,7 @@ public class ContextOverflowGuardTests
     /// (JsonElement.TryGetProperty throws InvalidOperationException on those, so the shape needs its own
     /// check, not just the JsonException catch).</summary>
     [Theory]
-    [InlineData("[{\"role\":\"user\"}]")]   // array root — a raw caller batching messages
+    [InlineData("[{\"role\":\"user\"}]")]   // array root — the runtime rejects it; the guard still probes it before the native call
     [InlineData("\"just a string\"")]
     [InlineData("42")]
     [InlineData("null")]
@@ -187,10 +187,8 @@ public class ContextOverflowGuardTests
 /// </summary>
 public sealed class ContextOverflowModelTests
 {
-    // Small enough to fill within a few capped turns, but not below the model's compiled prefill
-    // chunk: gemma-4-E2B rejects a 256- or 512-token KV outright (DYNAMIC_UPDATE_SLICE
-    // "update > operand" at tensor allocation — the KV cache must fit at least one prefill chunk,
-    // 1024 for this model).
+    // Small enough to fill within a few capped turns. Keep MaxNumTokens at or above the model's
+    // largest prefill signature (1024), as LiteRtEngineOptions.MaxNumTokens documents.
     private const int SmallContext = 1024;
 
 

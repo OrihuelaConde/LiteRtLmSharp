@@ -72,7 +72,10 @@ foreach ($r in $Rid) {
     Invoke-WebRequest "$base/$asset" -OutFile $file
 
     $actual = (Get-FileHash -Algorithm SHA256 $file).Hash.ToLower()
-    if ($checksums.ContainsKey($asset) -and $checksums[$asset] -ne $actual) {
+    if (-not $checksums.ContainsKey($asset)) {
+        throw "checksums.txt of $tag has no entry for ${asset}; refusing to install it unverified."
+    }
+    if ($checksums[$asset] -ne $actual) {
         throw "Checksum mismatch for ${asset}: expected $($checksums[$asset]), got $actual"
     }
 

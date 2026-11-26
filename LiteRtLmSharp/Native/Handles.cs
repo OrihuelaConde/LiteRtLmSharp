@@ -162,7 +162,8 @@ internal sealed class ConversationHandle(nint handle, EngineHandle engine) : Lit
 /// (<see cref="Retire"/>) and frees them only after <c>litert_lm_session_delete</c> returns. C API 1.1.0 has no
 /// session call that waits for a stream's last callback, so a stream's callback data stays valid until the
 /// native session is gone. A stream retires its handle while it still holds its reference on this handle, so
-/// the retire always comes before the release.</remarks>
+/// the retire always comes before the release. A stream clears its handle's target before it retires it, so the
+/// retired handles keep their slots but root no settled stream.</remarks>
 internal sealed class SessionHandle(nint handle, EngineHandle engine) : LiteRtLmHandle(handle)
 {
     private readonly object _retiredLock = new();

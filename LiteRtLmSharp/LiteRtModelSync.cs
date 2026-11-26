@@ -20,11 +20,13 @@ namespace LiteRtLmSharp;
 /// this process reads or writes is refused, and so is a call that reads a file another call writes (see the
 /// exceptions); calls that only read one file run together. Other processes are not checked: two processes that
 /// update the same output at the same time write the same temporary file, and one of them fails at the end with
-/// <see cref="LiteRtStatusCode.Internal"/> (measured).</para>
+/// <see cref="LiteRtStatusCode.Internal"/> (measured with both processes updating from the same remote file; two
+/// different remote files were not measured).</para>
 /// <para>Paths on Windows: unless the process runs under the UTF-8 code page (65001), the runtime decodes paths in
-/// the active ANSI code page (measured), so the binding refuses a path with characters outside that code page
-/// before any native call. Under the UTF-8 code page, non-ASCII folder names work (measured with Latin, Japanese
-/// and emoji names). When a
+/// the active ANSI code page (measured with code page 1252), so the binding refuses a path with characters outside
+/// that code page before any native call. Under the UTF-8 code page, the runtime accepted non-ASCII folder names
+/// (measured on the runtime directly, with Latin, Japanese and emoji names); the binding's calls under that code
+/// page were not run. When a
 /// path of the call, or the temporary file next to the output, reaches 260 characters, the binding passes every
 /// path of the call in its extended-length form (<c>\\?\</c>), because the runtime fails on plain paths of that
 /// length (measured); a UNC path in such a call is refused. A path that starts with <c>\\?\</c> or <c>\\.\</c>
@@ -170,10 +172,12 @@ public static class LiteRtModelSync
     /// <see cref="LiteRtStatusCode.Unauthenticated"/> or <see cref="LiteRtStatusCode.PermissionDenied"/> for the
     /// matching HTTP status, <see cref="LiteRtStatusCode.DeadlineExceeded"/> for a timeout,
     /// <see cref="LiteRtStatusCode.Aborted"/> when the remote file changed during the call, and
-    /// <see cref="LiteRtStatusCode.DataLoss"/> when the remote returned other bytes than the ones asked for. The
-    /// runtime does not retry a failed fetch. A remote that cannot serve byte ranges makes the runtime download the
-    /// whole file from byte 0: before that, an update that reuses sections makes two requests the remote cannot
-    /// serve (the changed section, then the file after its header), and a first download makes one. Such a remote
+    /// <see cref="LiteRtStatusCode.DataLoss"/> when the remote returned other bytes than the ones asked for. The C
+    /// API also documents <see cref="LiteRtStatusCode.DataLoss"/> for a failure of the runtime to store the bytes
+    /// it receives, which is not a fault of the remote. The runtime does not retry a failed fetch. A remote that
+    /// cannot serve byte ranges makes the runtime download the whole file from byte 0: before that, an update that
+    /// reuses sections makes two requests the remote cannot serve (the changed section, then the file after its
+    /// header), and a first download makes one. Such a remote
     /// fails the update with <see cref="LiteRtStatusCode.Unimplemented"/> when its header is longer than
     /// 16 KiB.</para>
     /// </remarks>
@@ -382,6 +386,9 @@ public static class LiteRtModelSync
             LiteRtStatusCode.Internal when update =>
                 "The runtime could not write the output path. If the output is another spelling of the local file, " +
                 "such as a hard link or a short 8.3 name, pass the same path for both.",
+            LiteRtStatusCode.DataLoss when writerFailed && update =>
+                "The runtime could not store the bytes it received, so the remote is not the cause. Check the " +
+                "output's volume, for example its free space.",
             LiteRtStatusCode.DataLoss when runtimeCheck && reason?.Contains("SHA-256", StringComparison.Ordinal) == true =>
                 "A downloaded section does not match the hash in the remote header: the remote file may have changed " +
                 "during the call, or it is corrupt.",

@@ -23,7 +23,7 @@ using LiteRtLmSharp.Sample;
 //                          LiteRtLmSharp.Sample <model.litertlm> --threads 4 (CPU executor thread count)
 
 Console.OutputEncoding = Encoding.UTF8;
-LiteRtEngine.SetMinLogLevel(3); // WARNING+ (early native logs still print to stderr)
+LiteRtEngine.SetMinLogLevel(3); // WARNING+ (early native warnings still print to stderr; early info lines do not)
 
 CliArgs cli = CliArgs.Parse(args);
 
@@ -134,7 +134,7 @@ static async Task<bool> MainMenuAsync(
                 "Quit");
             switch (Ui.Pick(1, 7))
             {
-                case 1: await ChatLoopAsync(chat, contextTokens); break;
+                case 1: chat = await ChatLoopAsync(engine, chat, contextTokens, thinking); break;
                 case 2: await RunToolsDemo(engine); break;
                 case 3: RunTokenizerDemo(engine); break;
                 case 4: chat.Dispose(); chat = NewChat(engine, thinking); Ui.Success("Started a fresh conversation."); break;
@@ -159,7 +159,8 @@ static LiteRtConversation NewChat(LiteRtEngine engine, bool thinking) => engine.
     EnableThinking = thinking,
 });
 
-static async Task ChatLoopAsync(LiteRtConversation chat, int contextTokens)
+// Returns the conversation to continue on, which is a new one when a reply was cut short.
+static async Task<LiteRtConversation> ChatLoopAsync(LiteRtEngine engine, LiteRtConversation chat, int contextTokens, bool thinking)
 {
     Ui.Info("\nChat — type a message. Empty line returns to the menu. Ctrl+C cancels a reply.\n");
     while (true)
@@ -169,7 +170,18 @@ static async Task ChatLoopAsync(LiteRtConversation chat, int contextTokens)
         if (string.IsNullOrWhiteSpace(line))
             break;
         await StreamReplyAsync(chat, line, contextTokens);
+
+        // After a cancel (Ctrl+C) the runtime forbids reusing the conversation; only disposing it is allowed.
+        // IsCancelled treats a failure during generation the same way, so continue on a new conversation.
+        if (chat.IsCancelled)
+        {
+            LiteRtConversation next = NewChat(engine, thinking);
+            chat.Dispose();
+            chat = next;
+            Ui.WriteLine("[reply cut short: started a new conversation; the earlier turns are gone]", ConsoleColor.DarkYellow);
+        }
     }
+    return chat;
 }
 
 static async Task StreamReplyAsync(LiteRtConversation chat, string prompt, int contextTokens)
@@ -225,11 +237,14 @@ static async Task StreamReplyAsync(LiteRtConversation chat, string prompt, int c
 
 static void PrintContextGauge(LiteRtConversation chat, int contextTokens, TimeSpan elapsed)
 {
-    // chat.TokenCount = context used so far (prompt + replies, all turns).
-    int used = chat.TokenCount;
+    // chat.TokenCount = context used so far (prompt + replies, all turns). After a cancel the runtime
+    // forbids reusing the conversation, and IsCancelled also covers a failure during generation, so then
+    // read the cached count, which makes no native call, and skip the benchmark read.
+    bool cut = chat.IsCancelled;
+    int used = cut ? chat.TokenCountCached : chat.TokenCount;
     double frac = contextTokens > 0 ? (double)used / contextTokens : 0;
     var color = frac > 0.85 ? ConsoleColor.Red : ConsoleColor.DarkGray;
-    Ui.WriteLine($"[context {used}/{contextTokens} ({frac:P0}) · {elapsed.TotalSeconds:F1}s{BenchSuffix(chat)}]", color);
+    Ui.WriteLine($"[context {used}/{contextTokens} ({frac:P0}) · {elapsed.TotalSeconds:F1}s{(cut ? "" : BenchSuffix(chat))}]", color);
     if (frac > 0.85)
         Ui.WriteLine("[context almost full — start a new conversation to avoid degraded replies]", ConsoleColor.Red);
 }
@@ -340,12 +355,10 @@ static void RunTokenizerDemo(LiteRtEngine engine)
     Ui.WriteLine($"  {ids.Length} tokens", ConsoleColor.White);
     Ui.WriteLine($"  ids: {PreviewIds(ids)}", ConsoleColor.DarkGray);
 
-    // 2. Token ids → text (round-trips back through the tokenizer). Detokenize returns the tokenizer's
-    //    surface form: Gemma's SentencePiece marks word boundaries with ▁ (the chat path renders spaces).
+    // 2. Token ids → text (round-trips back through the tokenizer). Detokenize returns plain text with
+    //    ordinary spaces.
     string detok = engine.Detokenize(ids);
     Ui.WriteLine($"  detokenized: {detok}", ConsoleColor.DarkGray);
-    if (detok.Contains('▁'))
-        Ui.WriteLine("  (▁ is this model's SentencePiece space marker)", ConsoleColor.DarkGray);
 
     // 3. The model's configured start (BOS) / stop (EOS) tokens — generation halts on a stop token.
     if (engine.GetStartToken() is { } start)

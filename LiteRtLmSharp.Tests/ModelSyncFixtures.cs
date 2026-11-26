@@ -21,8 +21,8 @@ namespace LiteRtLmSharp.Tests;
 /// </code>
 /// <para>A section's SHA-256 is the item <c>sha256</c> holding the lowercase hex digest of its bytes; the runtime
 /// reuses a section and reports a file up to date only for sections that carry one. The runtime accepts these
-/// containers (measured on LiteRT-LM v0.20.0, win-x64: a plan of each fixture against itself is up to
-/// date).</para>
+/// containers (measured on LiteRT-LM v0.20.0, win-x64: a plan of each fixture with section hashes against itself
+/// is up to date).</para>
 /// </remarks>
 internal static class ModelSyncFixtures
 {
@@ -60,9 +60,6 @@ internal static class ModelSyncFixtures
 
     /// <summary><see cref="A"/> without section hashes (header 664).</summary>
     public static byte[] H => Build([S0.Value, S1.Value, S2.Value, S3.Value], hashes: false);
-
-    /// <summary><see cref="A1"/> without section hashes.</summary>
-    public static byte[] H1 => Build([S0.Value, S1.Value, S2Changed.Value, S3.Value], hashes: false);
 
     /// <summary>A container smaller than the first header fetch: 3,716 bytes, header 912, three sections at
     /// 16-byte alignment.</summary>

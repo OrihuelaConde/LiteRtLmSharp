@@ -10,7 +10,8 @@ namespace LiteRtLmSharp;
 /// <summary>
 /// A stateful conversation over a <see cref="LiteRtEngine"/>. Handles chat templating
 /// internally (mirrors the Gemini Chat APIs). Not thread-safe: serialize calls per instance. The C API's
-/// threading model (<c>c/engine.h</c>) forbids overlapping calls on one conversation. Multiple live
+/// threading model (<c>c/engine.h</c>) forbids overlapping calls that use the same handle, the engine's
+/// included, and some sends call the engine's tokenizer (see remarks). Multiple live
 /// conversations of one engine may be interleaved freely; plan for one generation at a time per engine
 /// (see remarks).
 /// </summary>
@@ -36,6 +37,16 @@ namespace LiteRtLmSharp;
 /// <para>
 /// Native calls that go through the engine, such as <see cref="TokenCount"/> and creating a conversation,
 /// also wait for a generation in flight on any conversation of the engine.
+/// </para>
+/// <para>
+/// <b>Calls on the engine handle.</b> Some sends call the tokenizer on the engine handle, from the thread
+/// that sends. On an engine loaded with an explicit <see cref="LiteRtEngineOptions.MaxNumTokens"/>, a send
+/// measures its message and, after a reply that the guard capped, can measure the reply. The first send on the
+/// engine with <see cref="LiteRtSendOptions.EnableThinking"/> set to <c>false</c> looks up a token with it.
+/// <see cref="LiteRtEngine.Tokenize"/> and <see cref="LiteRtEngine.Detokenize"/> use the same handle. Two such
+/// calls on different threads at once overlap on the engine handle, which <c>c/engine.h</c> forbids. The
+/// binding does not serialize them, so keep them from overlapping in the application, for example by keeping
+/// one send in flight per engine.
 /// </para>
 /// </remarks>
 public sealed class LiteRtConversation : IDisposable
@@ -105,14 +116,12 @@ public sealed class LiteRtConversation : IDisposable
         // (EnableConstrainedDecoding) or a custom provider (ConstraintProvider) — upstream
         // docs/api/cpp/constrained-decoding.md says choose one. On LiteRT-LM v0.20.0 the runtime itself
         // created a conversation with both and answered a send on it, but whether both took effect together
-        // was not measured. Checked before the platform guard below so an invalid combination reports the
-        // same error on every OS.
+        // was not measured.
         if (options is { EnableConstrainedDecoding: true, ConstraintProvider: not null })
         {
             throw new ArgumentException(
                 "EnableConstrainedDecoding (tool-calling constrained decoding) and ConstraintProvider " +
-                "(custom constraints) are mutually exclusive — the native runtime supports only one " +
-                "per conversation. Set one of the two.", nameof(options));
+                "(custom constraints) are mutually exclusive in this binding. Set one of the two.", nameof(options));
         }
 
         ConversationConfigHandle? config = null;
@@ -323,7 +332,7 @@ public sealed class LiteRtConversation : IDisposable
     /// <summary>
     /// Tokens currently held in this conversation's KV cache (prefill + decode, accumulated across
     /// turns). When this approaches the engine's <see cref="LiteRtEngineOptions.MaxNumTokens"/> the
-    /// context is full and further generation degrades — manage history before that point. When the
+    /// context is full: the reply stops there and later sends fail — manage history before that point. When the
     /// engine was loaded with an explicit <c>MaxNumTokens</c>, the send methods guard the limit and
     /// throw <see cref="LiteRtContextOverflowException"/> rather than let the runtime reject a send at the
     /// end of the cache (a rejected prefill leaves the conversation failing every later send; LiteRT-LM v0.20.0,
@@ -395,8 +404,11 @@ public sealed class LiteRtConversation : IDisposable
     /// <remarks>A cancel requested while a send runs sets it, even when that send then completes: a cancel that
     /// lands as the reply ends still makes the runtime fail every later send. <see cref="CancelProcess"/> on an
     /// idle conversation, a cancelled token that fires only after the send returned, and a stream left after its
-    /// final chunk had already arrived keep it <c>false</c>; a stream left before that is cut. Like
-    /// <see cref="TokenCountCached"/>, it can be read from another thread.</remarks>
+    /// final chunk had already arrived keep it <c>false</c>; a stream left before that is cut. A stream that
+    /// ended cleanly also sets it when the runtime reports a failure for the wait that ends the stream (see
+    /// <see cref="SendStreamingAsync(string, System.Threading.CancellationToken)"/>): the conversation's state is
+    /// then unknown, so it counts as cut. Like <see cref="TokenCountCached"/>, it can be read from another
+    /// thread.</remarks>
     public bool IsCancelled => _cancelled;
 
     /// <summary>
@@ -632,9 +644,8 @@ public sealed class LiteRtConversation : IDisposable
             throw new InvalidOperationException(
                 "Cannot clone a conversation that has not advanced yet: Clone() duplicates the prefilled " +
                 "KV-cache state, and a newly created conversation has none (its system message, tools and " +
-                "History are prefilled by the first send). Cloning it anyway produces a branch that continues " +
-                "another conversation's context once any other conversation runs on the engine. Send one " +
-                "message on this conversation first, then clone it.");
+                "History are prefilled by the first send). Send one message on this conversation first, " +
+                "then clone it.");
 
         bool engineReferenced = false;
         _engineOwner.Handle.DangerousAddRef(ref engineReferenced);   // released by the clone's handle
@@ -767,7 +778,10 @@ public sealed class LiteRtConversation : IDisposable
     /// running on another thread, a <see cref="SendAsync(string, CancellationToken)"/>, or an active
     /// <see cref="SendStreamingAsync(string, System.Threading.CancellationToken)"/> stream. Besides reading
     /// <see cref="TokenCountCached"/> and <see cref="IsContextFull"/>, it is the only operation that is safe to
-    /// call from any thread while a send is in flight; when nothing is in flight it is a no-op. The send it
+    /// call from any thread while a send is in flight. When nothing is in flight, it had no visible effect on
+    /// LiteRT-LM v0.20.0: <see cref="IsCancelled"/> stayed <c>false</c>, and a clone taken afterwards
+    /// answered. The C API's threading model (<c>c/engine.h</c>) still says a conversation must not be reused after
+    /// <c>cancel_process</c>, so call this only while a send runs. The send it
     /// cuts fails with a <see cref="LiteRtException"/> whose <see cref="LiteRtException.StatusCode"/> is
     /// <see cref="LiteRtStatusCode.Cancelled"/>, a stream included; the async variants throw
     /// <see cref="OperationCanceledException"/> instead only when their own token was cancelled. Afterwards,
@@ -1236,10 +1250,10 @@ public sealed class LiteRtConversation : IDisposable
     /// On both backends, no blocking send returned an empty reply: every failure raised an exception.
     /// </remarks>
     internal const string SmallContextSendHint =
-        "The engine was loaded with LiteRtEngineOptions.MaxNumTokens below 1024. The native executor " +
-        "accepts that, but a send whose prefill spans more than its smallest work group then fails inside " +
-        "the native graph (the published gemma conversions' largest prefill signature is 1024). If this " +
-        "message was longer than a short sentence, reload the engine with MaxNumTokens >= 1024.";
+        "The engine was loaded with LiteRtEngineOptions.MaxNumTokens below 1024, the largest prefill " +
+        "signature of the published gemma conversions. The native executor accepts some such limits, and a " +
+        "send on the engine can then fail inside the native graph whatever the length of its message. " +
+        "Reload the engine with MaxNumTokens >= 1024.";
 
     /// <summary>Whether a send failure on an engine below 1024 tokens looks like the small-context
     /// failure (LiteRT-LM v0.20.0 on CPU reports "Failed to allocate tensors"), or the runtime gave no
@@ -1540,6 +1554,13 @@ public sealed class LiteRtConversation : IDisposable
     /// <see cref="LiteRtStreamChunkKind.ToolCallDelta"/> progress fragments additionally precede that
     /// complete tool-call chunk.
     /// </summary>
+    /// <remarks>
+    /// When the reply ends cleanly and no cancel was requested, the loop over the stream ends only after two
+    /// native calls: a wait for the work the runtime still runs for the turn, such as the KV-cache refill after
+    /// a reply with thinking, and a read of the token count. Like <see cref="TokenCount"/>, the read waits for a generation in flight on any
+    /// conversation of the engine. If the runtime reports a failure for the wait, <see cref="IsCancelled"/>
+    /// becomes <c>true</c> and the conversation counts as cut short.
+    /// </remarks>
     public IAsyncEnumerable<LiteRtStreamChunk> SendStreamingAsync(
         string text, CancellationToken cancellationToken = default)
         => SendStreamingAsync(text, attachments: null, options: null, cancellationToken);
@@ -1665,9 +1686,10 @@ public sealed class LiteRtConversation : IDisposable
                     }).ConfigureAwait(false);
                     if (waited != LiteRtStatusCode.Ok)
                     {
-                        // The runtime gave up waiting (its fixed wait limit): a callback may still come, so the
-                        // GCHandle stays allocated (a small leak rather than a callback on a freed handle), and
-                        // the conversation is in an unknown state.
+                        // The runtime gave up waiting (its fixed wait limit), and the conversation is in an
+                        // unknown state. Keeping the GCHandle allocated is a precaution: whether a callback can
+                        // still come after a failed wait was not measured, and a small leak is safer than a
+                        // callback on a freed handle.
                         freeHandle = settled = false;
                         _cancelled = true;
                     }

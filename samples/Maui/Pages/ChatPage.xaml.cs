@@ -225,6 +225,23 @@ public partial class ChatPage : ContentPage
         {
             _replyCts = null;
             SetBusy(false);
+            // After a cancel (Stop) the runtime forbids reusing the conversation; only disposing it is allowed.
+            // IsCancelled treats a failure during generation the same way, so continue on a new conversation.
+            // This runs inside the reply task, which ReleaseConversationAsync awaits, so it must not throw.
+            if (_conversation is { IsCancelled: true } cut)
+            {
+                cut.Dispose();
+                _conversation = null;
+                try
+                {
+                    _conversation = _engine.NewConversation();
+                    reply.Append("  [started a new conversation; the earlier turns are gone]");
+                }
+                catch (Exception ex)
+                {
+                    reply.Append($"  [could not start a new conversation: {ex.Message}]");
+                }
+            }
             UpdateGauge(sw.Elapsed);
         }
     }

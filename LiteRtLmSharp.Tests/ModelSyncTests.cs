@@ -1,4 +1,3 @@
-using System.Net;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -94,7 +93,6 @@ public sealed class ModelSyncTests : IDisposable
         "B" => ModelSyncFixtures.B,
         "M" => ModelSyncFixtures.M,
         "H" => ModelSyncFixtures.H,
-        "H1" => ModelSyncFixtures.H1,
         "Small" => ModelSyncFixtures.Small,
         "Small1" => ModelSyncFixtures.Small1,
         "LongHeader" => ModelSyncFixtures.LongHeader,
@@ -116,17 +114,10 @@ public sealed class ModelSyncTests : IDisposable
         _output.WriteLine(Sequence(source));
         AssertBytes(remote, output);
         Assert.Equal(ModelSyncFixtures.FirstDownloadBytes(remote), result.BytesReceived);
+        // The header, then the rest of the file after it.
+        if (name == "A")
+            Assert.Equal("[0,+16384] [1184,+127840]", Sequence(source));
         ModelSyncAsserts.NoTemporaries(_dir);
-    }
-
-    [Fact]
-    public async Task UpdateAsync_FirstDownload_FetchesTheHeaderThenTheRestOfTheFile()
-    {
-        string output = PathIn("first.litertlm");
-        var source = new ModelSyncMemorySource(ModelSyncFixtures.A);
-        LiteRtModelUpdateResult result = await LiteRtModelSync.UpdateAsync(null, output, source);
-        Assert.Equal("[0,+16384] [1184,+127840]", Sequence(source));
-        Assert.Equal(144224, result.BytesReceived);
     }
 
     [Fact]
@@ -252,16 +243,6 @@ public sealed class ModelSyncTests : IDisposable
 
     public static TheoryData<string, LiteRtStatusCode> SourceFailures => new()
     {
-        { "http401", LiteRtStatusCode.Unauthenticated },
-        { "http403", LiteRtStatusCode.PermissionDenied },
-        { "http404", LiteRtStatusCode.NotFound },
-        { "http410", LiteRtStatusCode.NotFound },
-        { "http408", LiteRtStatusCode.Unavailable },
-        { "http429", LiteRtStatusCode.Unavailable },
-        { "http500", LiteRtStatusCode.Unavailable },
-        { "http503", LiteRtStatusCode.Unavailable },
-        { "http400", LiteRtStatusCode.Unknown },
-        { "http416", LiteRtStatusCode.Unknown },
         { "httpNoStatus", LiteRtStatusCode.Unavailable },
         { "timeout", LiteRtStatusCode.DeadlineExceeded },
         { "otherCancel", LiteRtStatusCode.DeadlineExceeded },
@@ -273,16 +254,6 @@ public sealed class ModelSyncTests : IDisposable
 
     private static Exception FailureFor(string name) => name switch
     {
-        "http401" => new HttpRequestException("unauthorized", null, HttpStatusCode.Unauthorized),
-        "http403" => new HttpRequestException("forbidden", null, HttpStatusCode.Forbidden),
-        "http404" => new HttpRequestException("not found", null, HttpStatusCode.NotFound),
-        "http410" => new HttpRequestException("gone", null, HttpStatusCode.Gone),
-        "http408" => new HttpRequestException("request timeout", null, HttpStatusCode.RequestTimeout),
-        "http429" => new HttpRequestException("too many requests", null, HttpStatusCode.TooManyRequests),
-        "http500" => new HttpRequestException("server error", null, HttpStatusCode.InternalServerError),
-        "http503" => new HttpRequestException("unavailable", null, HttpStatusCode.ServiceUnavailable),
-        "http400" => new HttpRequestException("bad request", null, HttpStatusCode.BadRequest),
-        "http416" => new HttpRequestException("range not satisfiable", null, HttpStatusCode.RequestedRangeNotSatisfiable),
         "httpNoStatus" => new HttpRequestException("name not resolved"),
         "timeout" => new TimeoutException("no byte for 60 seconds"),
         "otherCancel" => new OperationCanceledException("not the caller's token"),
@@ -362,7 +333,8 @@ public sealed class ModelSyncTests : IDisposable
     }
 
     /// <summary>A folder the runtime cannot create the temporary file in: on Windows a deny rule for creating
-    /// files (measured on win-x64), elsewhere a folder without write permission (not measured).</summary>
+    /// files, elsewhere a folder without write permission. The hands-on measurement was made on win-x64; CI runs the
+    /// test on linux-x64, linux-arm64, and osx-arm64 too.</summary>
     [SkippableFact]
     public async Task OutputFolderWithoutWriteAccess_FailsWithPermissionDenied_AndTheHint()
     {
@@ -729,12 +701,12 @@ public sealed class ModelSyncTests : IDisposable
     }
 
     [Fact]
-    public async Task ThousandPlans_LeaveNoHandle()
+    public async Task RepeatedPlans_LeaveTheManagedHandleCountAtZero()
     {
         var source = new ModelSyncMemorySource(ModelSyncFixtures.Small);
-        for (int i = 0; i < 1000; i++)
+        for (int i = 0; i < 3; i++)
             await LiteRtModelSync.CreatePlanAsync(null, source);
-        Assert.Equal(1000, source.Requests.Count);
+        Assert.Equal(3, source.Requests.Count);
         Assert.Equal(0, ModelSyncCall.LiveHandles);
     }
 

@@ -39,8 +39,8 @@ internal enum CancelRequester
 /// session, releases the session's one-call gate, and then completes the channel and <see cref="Settled"/>, in
 /// that order, so a consumer that sees the end already reads the settled state. The <see cref="GCHandle"/> that
 /// native code holds is retired to the <see cref="SessionHandle"/>, which frees it after the native delete.
-/// After settlement this object holds no reference to the session, so a retired state never keeps the session
-/// alive.
+/// Settlement clears the handle's target first, so a retired handle keeps neither this object nor what it
+/// references alive. After settlement this object holds no reference to the session.
 /// </para>
 /// </remarks>
 internal sealed class SessionStream
@@ -87,8 +87,9 @@ internal sealed class SessionStream
             _channel = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
             {
                 SingleReader = true,
-                // Nothing depends on one writer: the chunks of one stream were not seen to overlap, but that is
-                // not a contract of the header.
+                // The decoder, the text sink and settlement assume that the chunks of one stream don't overlap.
+                // They were not seen to overlap, but the header does not promise it; only the channel is set up
+                // to tolerate more than one writer.
                 SingleWriter = false,
             });
         else
@@ -232,7 +233,7 @@ internal sealed class SessionStream
         try
         {
             // A stateful decoder keeps the bytes of a character that a chunk splits until the rest arrives; the
-            // final chunk flushes what is left.
+            // final chunk flushes what is left, so the bytes of a character that never completes become U+FFFD.
             Emit(DecodeText(text, flush: isFinal));
             if (isFinal)
             {
@@ -315,7 +316,19 @@ internal sealed class SessionStream
     {
         if (Settled.IsCompleted)
             return;
-        _arrived!.Task.GetAwaiter().GetResult();
+        try
+        {
+            _arrived!.Task.GetAwaiter().GetResult();
+        }
+        catch
+        {
+            // The wait itself failed, for example on Thread.Interrupt. The decode still settles, on the thread
+            // pool once both arrivals happened, so the gate and the reference on the native session are
+            // released; the caller gets the exception.
+            _arrived!.Task.ContinueWith(
+                static (_, state) => ((SessionStream)state!).Settle(), this, TaskScheduler.Default);
+            throw;
+        }
         Settle();
     }
 
@@ -364,9 +377,13 @@ internal sealed class SessionStream
                 owner.ClearRunningDecode(this);
                 SessionHandle handle = owner.Handle;
                 // Retire before the release: the release can run the native delete, and the handle must still be
-                // allocated until then.
+                // allocated until then. The target is cleared first, because Retire can free the handle at once: a
+                // late callback then finds no stream and returns, and the retired handle roots nothing.
                 if (_gcHandle.IsAllocated)
+                {
+                    _gcHandle.Target = null;
                     handle.Retire(_gcHandle);
+                }
                 if (_referenced)
                 {
                     _referenced = false;

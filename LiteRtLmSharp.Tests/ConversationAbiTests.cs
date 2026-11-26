@@ -10,9 +10,11 @@ namespace LiteRtLmSharp.Tests;
 /// The C API 1.1 binary interface of the conversation functions (<c>c/conversation.h</c>) and of the stream
 /// chunk getters (<c>c/engine.h</c>), called directly: status returns, out pointers written on success and set
 /// to NULL on failure, scalar outputs left unwritten on failure, the by-value constraint provider, and the
-/// failure statuses the public API cannot reach (it never passes a null handle, an undeclared enum value or a
-/// JSON array). The builders and the null-handle cases need no model; the rest load the model named by
-/// LITERTLM_TEST_MODEL on the CPU backend and are skipped without it.
+/// failure statuses of values that the public API never passes (a null handle) or passes through unchecked (an
+/// undeclared enum value, a JSON array through <see cref="LiteRtConversation.SendRaw"/>), whose public side
+/// <see cref="ConversationRuntimeBehaviourTests"/> covers. The builders and the null-handle cases need no model;
+/// the rest load the model named by LITERTLM_TEST_MODEL on the CPU backend and are skipped without it, and
+/// when LITERTLM_TEST_BACKEND names another backend.
 /// </summary>
 public sealed unsafe class ConversationAbiTests(ITestOutputHelper output)
 {
@@ -297,15 +299,18 @@ public sealed unsafe class ConversationAbiTests(ITestOutputHelper output)
 
     /// <summary>Sampler values that the public <see cref="LiteRtSamplerParams"/> rejects up front (k = 0, a NaN
     /// temperature) reach the runtime only through the C API, which rejects them when the conversation is
-    /// created.</summary>
-    [SkippableTheory]
-    [InlineData((int)LiteRtLmSamplerType.TopP, 0, 1.0f)]
-    [InlineData((int)LiteRtLmSamplerType.TopK, 0, 1.0f)]
-    [InlineData((int)LiteRtLmSamplerType.TopP, 40, float.NaN)]
-    public void Conversation_WithInvalidSamplerValues_FailsAtCreation(int samplerType, int topK, float temperature)
+    /// created. The three cases share one engine.</summary>
+    [SkippableFact]
+    public void Conversation_WithInvalidSamplerValues_FailsAtCreation()
     {
-        var type = (LiteRtLmSamplerType)samplerType;
         using LiteRtEngine engine = LoadEngine();
+        AssertCreationFails(engine, LiteRtLmSamplerType.TopP, 0, 1.0f);
+        AssertCreationFails(engine, LiteRtLmSamplerType.TopK, 0, 1.0f);
+        AssertCreationFails(engine, LiteRtLmSamplerType.TopP, 40, float.NaN);
+    }
+
+    private void AssertCreationFails(LiteRtEngine engine, LiteRtLmSamplerType type, int topK, float temperature)
+    {
         nint config, session, sampler;
         Assert.Equal(LiteRtStatusCode.Ok, LiteRtLmNative.litert_lm_conversation_config_create(&config));
         Assert.Equal(LiteRtStatusCode.Ok, LiteRtLmNative.litert_lm_session_config_create(&session));
@@ -339,6 +344,9 @@ public sealed unsafe class ConversationAbiTests(ITestOutputHelper output)
     {
         string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
         Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model), "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        // The engine is CPU whatever the pass: a pass on another backend would only repeat the CPU pass.
+        Skip.If(LiteRtBackend.Parse(Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu") != LiteRtBackend.Cpu,
+            "These tests load a CPU engine; the CPU pass runs them.");
         return LiteRtEngine.Load(new LiteRtEngineOptions { ModelPath = model!, Backend = LiteRtBackend.Cpu, MaxNumTokens = 1024 });
     }
 
@@ -377,7 +385,8 @@ public sealed unsafe class ConversationAbiTests(ITestOutputHelper output)
 
 /// <summary>
 /// Conversation behaviour that LiteRT-LM v0.20.0 changed and the binding passes through, pinned through the
-/// public API on the model named by LITERTLM_TEST_MODEL (CPU backend; skipped without it).
+/// public API on the model named by LITERTLM_TEST_MODEL (CPU backend; skipped without it, and when
+/// LITERTLM_TEST_BACKEND names another backend).
 /// </summary>
 public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
 {
@@ -387,6 +396,9 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
     {
         string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
         Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model), "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        // The engine is CPU whatever the pass: a pass on another backend would only repeat the CPU pass.
+        Skip.If(LiteRtBackend.Parse(Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu") != LiteRtBackend.Cpu,
+            "These tests load a CPU engine; the CPU pass runs them.");
         LiteRtEngine.SetMinLogLevel(3);
         return LiteRtEngine.Load(new LiteRtEngineOptions
         {

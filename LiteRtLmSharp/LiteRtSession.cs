@@ -17,7 +17,9 @@ namespace LiteRtLmSharp;
 /// <para>
 /// <b>What was measured.</b> The runtime behavior these docs describe was measured on LiteRT-LM v0.20.0, win-x64,
 /// gemma-4 E2B, on CPU and GPU. A sentence that names another model was measured on the same version, platform
-/// and backends. Other platforms and models were not measured.
+/// and backends. Other models were not measured. Apart from the runs on an Android x86_64 emulator with the CPU
+/// backend that the sessions guide lists, other platforms were not measured; the session tests run in CI on
+/// Linux and macOS.
 /// </para>
 /// <para>
 /// <b>Prefill, then decode.</b> Add the prompt text with <see cref="Prefill"/>, then generate the reply with
@@ -336,7 +338,9 @@ public sealed class LiteRtSession : IDisposable
     /// <para>
     /// The decode starts at the first <see cref="IAsyncEnumerator{T}.MoveNextAsync"/>, and the session counts as
     /// busy until the decode ends. A piece holds whole characters: the bytes of a character that the runtime
-    /// splits are kept until the character is complete.
+    /// splits are kept until the character is complete. When the decode ends before a character is complete,
+    /// its bytes become U+FFFD at the end of the last piece, a character the model did not generate; remove it
+    /// before you prefill the text again.
     /// </para>
     /// <para>
     /// Leaving the loop before the last piece, with <c>break</c> or an exception, cancels the decode, and the
@@ -712,8 +716,9 @@ public sealed class LiteRtSession : IDisposable
             finally
             {
                 // Any failure latches Faulted: after a failed prefill, a later prefill returned OK at once and a
-                // decode stream did not call back within 30 s (measured, as the class remarks say). The
-                // fault records the status, for the rule on which faults a rewind or a reset recovers.
+                // decode stream did not call back within 30 s (measured, as the SessionStateMachine remarks say).
+                // The fault records the status, but the rule on which faults a rewind or a reset recovers
+                // (SessionStateMachine.RecoversFrom) reads only the call.
                 _machine.Complete(
                     SessionCall.Prefill, succeeded ? SessionCallOutcome.Succeeded : SessionCallOutcome.Failed, failedStatus);
             }
@@ -746,7 +751,8 @@ public sealed class LiteRtSession : IDisposable
             {
                 LiteRtStatusCode status;
                 string function;
-                // The runtime copies the label during the call, so the buffer is pinned only for its duration.
+                // The header does not say whether the session keeps the label pointer after the call; the buffer
+                // is pinned only for the call's duration.
                 fixed (byte* labelPtr = label)
                 {
                     switch (call)

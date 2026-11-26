@@ -14,8 +14,10 @@
 > reason for the extra export is not known. The binding's coverage is tracked in [`roadmap.md`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md).
 >
 > v0.20.0 implements C API 1.1.0. Since C API 1.0.0 (LiteRT-LM v0.19.0), most functions return a
-> `LiteRtLmStatusCode` and deliver their results through trailing `out_*` parameters, and the stream
-> callback receives a chunk object instead of plain strings. The C snippets on this page show the
+> `LiteRtLmStatusCode` and deliver their results through trailing `out_*` parameters. The stream
+> callback typedef is the same as in v0.18.0, but the chunk getters (`stream_chunk_get_text`,
+> `stream_chunk_is_final`, `stream_chunk_get_error`) return a status and write through out
+> pointers. The C snippets on this page show the
 > v0.20.0 shapes, except in the sections marked as history.
 >
 > Today config/system-prompt/sampler, tools, streaming and token count work on every validated platform. Speculative decoding, the benchmark API, and the engine cache-dir setting were
@@ -475,9 +477,8 @@ library-owned string, typically the full absl status text, such as `INVALID_ARGU
 number or failed to read`. `litert_lm_clear_last_error()` resets it. The contract shapes how the
 binding reads it (`NativeError`):
 
-- The state is set **only on failure**: a later successful call does not clear it, so the binding clears
-  it right before every call it may need to diagnose, so a report is never left over from an earlier,
-  unrelated failure.
+- The state is set **only on failure**: a later successful call does not clear it, and every failure
+  overwrites it. The binding reads it only after a call that failed, so it doesn't clear it before a call.
 - Failure is decided by the status code the call returns, never by the report.
 - The report is read on the **same thread**, right after the failing call, and then cleared, which also
   frees the message on long-lived thread-pool threads. The blocking sends that the async APIs move to
@@ -598,11 +599,12 @@ binding refuses those calls. After a prefill whose input did not fit, a rewind o
 the session; after other prefill failures the binding accepts both, but that was not measured. Measured on
 LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and GPU.
 
-## Model sync (v0.20.0, `c/model_sync.h`) — verified on win-x64
+## Model sync (v0.20.0, `c/model_sync.h`) — verified on win-x64 and an Android x86_64 emulator
 
 `c/model_sync.h` declares 19 functions, all added in C API version 1.1.0, and the binding declares all 19
 (`Native/LiteRtLmNative.ModelSync.cs`). The exports were checked by name in the v0.20.0 library of every
-packaged platform; the calls ran on win-x64 only. The public API (`LiteRtModelSync`, see
+packaged platform. The calls were measured on win-x64 and, in part, on an Android x86_64 emulator; on
+linux-x64, linux-arm64 and osx-arm64, only the repository's CI tests run them. The public API (`LiteRtModelSync`, see
 [model-sync.md](model-sync.md)) calls 15 of them:
 
 - **Options:** `options_create`, `options_delete`, `options_set_full_download_threshold`,

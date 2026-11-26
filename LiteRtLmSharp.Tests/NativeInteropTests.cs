@@ -26,37 +26,6 @@ public class NativeInteropTests
         var options = new LiteRtEngineOptions { ModelPath = "does-not-exist.litertlm" };
         Assert.Throws<ArgumentException>(() => LiteRtEngine.Load(options));
     }
-
-    /// <summary>
-    /// Proves the multimodal conversation optional-args C ABI functions resolve and are callable
-    /// without a model (create → set visual token budget → delete) — the native plumbing behind
-    /// <see cref="LiteRtConversationOptions.VisualTokenBudget"/>. Mirrors
-    /// <see cref="NativeLibrary_Loads_And_LogLevelCallSucceeds"/>: the create writes a handle through its
-    /// out pointer and the setter returns OK on a version-matched binary.
-    /// </summary>
-    [Fact]
-    public unsafe void OptionalArgs_NativeEntrypoints_Resolve()
-    {
-        // Touch LiteRtEngine first so its static ctor runs NativeLibraryResolver.Initialize(): this
-        // test calls the native lib DIRECTLY (not via LiteRtEngine), and on Linux the .so lives in
-        // runtimes/<rid>/native and is only found once the resolver is registered. Without this the
-        // call fails with DllNotFoundException when it happens to run before any other LiteRtEngine
-        // use (real consumers always create an engine first, so this just mirrors that setup).
-        LiteRtEngine.SetMinLogLevel(3);
-
-        nint args;
-        Assert.Equal(LiteRtStatusCode.Ok, LiteRtLmNative.litert_lm_conversation_optional_args_create(&args));
-        Assert.NotEqual(nint.Zero, args);
-        try
-        {
-            Assert.Equal(LiteRtStatusCode.Ok,
-                LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget(args, 128));
-        }
-        finally
-        {
-            LiteRtLmNative.litert_lm_conversation_optional_args_delete(args);
-        }
-    }
 }
 
 /// <summary>
@@ -919,7 +888,9 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
             $"Streaming teardown did not complete promptly (took {sw.Elapsed.TotalSeconds:F1}s).");
     }
 
-    /// <summary>Plain blocking chat. Skipped unless LITERTLM_TEST_MODEL is set.</summary>
+    /// <summary>Plain blocking chat. The fixture engine is loaded without
+    /// <see cref="LiteRtEngineOptions.EnableBenchmark"/>, so <see cref="LiteRtConversation.GetBenchmarkInfo"/>
+    /// returns <c>null</c> after the send. Skipped unless LITERTLM_TEST_MODEL is set.</summary>
     [SkippableFact]
     public void Chat_Blocking_ProducesText()
     {
@@ -930,6 +901,7 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
 
         Assert.False(string.IsNullOrWhiteSpace(response.Text),
             $"Expected a non-empty blocking response. Raw: {response.RawJson}");
+        Assert.Null(conversation.GetBenchmarkInfo());
     }
 
     /// <summary>Reasoning mode via extra context: a conversation created with EnableThinking = true and
@@ -1193,9 +1165,8 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     /// <summary>
     /// LoRA negative coverage: a conversation created with a <see cref="LiteRtConversationOptions.LoraPath"/>
     /// pointing at a nonexistent file must fail with a coherent <see cref="LiteRtException"/> at creation
-    /// (the native side opens the adapter file at set time), not crash the process. We cannot assert the
-    /// SUCCESS path — no LoRA adapter artifact is available — so this pins only the honest failure mode.
-    /// Skipped unless LITERTLM_TEST_MODEL is set.
+    /// (the native side opens the adapter file at set time), not crash the process. The success path is
+    /// asserted by <see cref="LoraTextAdapterTests"/>. Skipped unless LITERTLM_TEST_MODEL is set.
     /// </summary>
     [SkippableFact]
     public void Lora_NonexistentAdapterPath_ThrowsCoherentException()
@@ -1819,11 +1790,12 @@ public sealed class EngineTuningTests(ITestOutputHelper output)
 
     /// <summary>
     /// <see cref="LiteRtConversation.GetBenchmarkInfo"/> on a benchmark engine returns an info with zero turns
-    /// before the first send and one prefill and one decode turn after it; on an engine loaded without
-    /// <see cref="LiteRtEngineOptions.EnableBenchmark"/> it returns <c>null</c>. If the runtime created no
+    /// before the first send and one prefill and one decode turn after it (the <c>null</c> of an engine loaded
+    /// without <see cref="LiteRtEngineOptions.EnableBenchmark"/> is checked in
+    /// <see cref="ModelTests.Chat_Blocking_ProducesText"/>). If the runtime created no
     /// benchmark info until a turn completed, the first read would be <c>null</c>; if the binding read a turn
     /// at a zero turn count, the runtime's <c>OUT_OF_RANGE</c> would make it throw <see cref="LiteRtException"/>.
-    /// Loads two engines, one after the other. Skipped unless LITERTLM_TEST_MODEL is set.
+    /// Skipped unless LITERTLM_TEST_MODEL is set.
     /// </summary>
     [SkippableFact]
     public void GetBenchmarkInfo_BeforeTheFirstSend_ReportsZeroTurns()
@@ -1858,18 +1830,6 @@ public sealed class EngineTuningTests(ITestOutputHelper output)
             Assert.Equal(1, after.NumDecodeTurns);
             Assert.True(after.LastPrefillTokenCount > 0, "Expected the send's prefill token count.");
             Assert.True(after.LastDecodeTokenCount > 0, "Expected the send's decode token count.");
-        }
-
-        using (var engine = LiteRtEngine.Load(new LiteRtEngineOptions
-        {
-            ModelPath = model!, Backend = LiteRtBackend.Cpu, MaxNumTokens = 2048,
-        }))
-        {
-            using var conv = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
-            conv.Send("Reply with one word: OK");
-            LiteRtBenchmarkInfo? off = conv.GetBenchmarkInfo();
-            output.WriteLine($"benchmark off, after one send: {off?.ToString() ?? "null"}");
-            Assert.Null(off);
         }
     }
 }
@@ -1969,8 +1929,9 @@ public sealed class LoraTextAdapterTests
     }
 
     /// <summary>An adapter changes the deterministic (seed-0 default sampling) continuation of the same prompt,
-    /// and two different adapters change it differently. Each adapter gets an engine of its own, as LiteRT-LM
-    /// v0.18.0 applied an adapter to the whole engine (v0.20.0 applies it to its conversation only, pinned below).
+    /// and two different adapters change it differently. The second adapter runs on a second engine, a
+    /// structure kept from LiteRT-LM v0.18.0, which applied an adapter to the whole engine; v0.20.0 applies it
+    /// to its conversation only (pinned below), but the three replies on one engine were not measured.
     /// No explicit sampler: the default
     /// sampling is deterministic (see <c>DecodingModelTests</c>).</summary>
     [SkippableFact]

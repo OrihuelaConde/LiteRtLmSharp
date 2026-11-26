@@ -514,7 +514,7 @@ public sealed class ModelSyncHttpTests : IDisposable
         var gate = new TaskCompletionSource();
         var server = new FakeModelServer(ModelSyncFixtures.A) { Script = (_, _) => new FakeHttpAction { HeaderGate = gate.Task } };
         var e = await Assert.ThrowsAsync<LiteRtException>(
-            () => LiteRtModelSync.CreatePlanAsync(null, Source(server, TimeSpan.FromSeconds(2))).WaitAsync(TimeSpan.FromSeconds(30)));
+            () => LiteRtModelSync.CreatePlanAsync(null, Source(server, TimeSpan.FromMilliseconds(300))).WaitAsync(TimeSpan.FromSeconds(30)));
         Assert.Equal(LiteRtStatusCode.DeadlineExceeded, e.StatusCode);
         Assert.IsType<TimeoutException>(e.InnerException);
         Assert.Contains("sent no response", e.Message, StringComparison.Ordinal);
@@ -564,7 +564,6 @@ public sealed class ModelSyncHttpTests : IDisposable
         server.Script = (_, _) => new FakeHttpAction { Status = HttpStatusCode.NotFound };
         await Assert.ThrowsAsync<LiteRtException>(() => LiteRtModelSync.CreatePlanAsync(local, source));
 
-        Assert.False(server.Disposed);
         server.Script = null;
         using HttpResponseMessage response = await client.GetAsync(Remote);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);

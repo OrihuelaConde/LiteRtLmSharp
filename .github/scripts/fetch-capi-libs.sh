@@ -4,7 +4,7 @@
 #   zip   litert_lm_c_api-$CAPI_VERSION.zip, a release asset of $UPSTREAM_TAG, verified against the sha256
 #         digest GitHub records for it (fetch-upstream-asset.sh).
 #   pypi  the litert-lm-api wheels on PyPI. Each wheel is a ctypes wrapper around the same C API library
-#         (all 212 litert_lm_* functions of the v0.18.0 headers are exported), and each file is verified
+#         (it exports the litert_lm_* functions of the release's C API headers), and each file is verified
 #         against the sha256 digest PyPI publishes for it. Upstream shipped the zip only with v0.16.0 and
 #         paused it while it renames functions (LiteRT-LM#3569); the wheels ship with every release.
 # The packaging steps read the same paths whichever source filled them.

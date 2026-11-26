@@ -594,8 +594,10 @@ internal static class LiteRtChatMapping
 
     /// <summary>
     /// Builds the token <see cref="UsageDetails"/> for a completed turn. <paramref name="totalTokens"/> (the
-    /// conversation's KV-cache size = prompt + reply, from <see cref="LiteRtConversation.TokenCount"/>) is always
-    /// set, at no cost. The input/output split (<see cref="UsageDetails.InputTokenCount"/> /
+    /// conversation's KV-cache size after the reply, from <see cref="LiteRtConversation.TokenCount"/>) is always
+    /// set, at no cost. After a reply with thinking it leaves the thinking out, because the runtime removes it
+    /// from the KV cache, so it can be lower than the input count plus the output count, which includes the
+    /// thinking. The input/output split (<see cref="UsageDetails.InputTokenCount"/> /
     /// <see cref="UsageDetails.OutputTokenCount"/>) is taken from <paramref name="benchmark"/> when present — which
     /// requires the engine to have been loaded with <see cref="LiteRtEngineOptions.EnableBenchmark"/> = <c>true</c>;
     /// when it is <c>null</c> those stay <c>null</c> (the caller leaves <see cref="UsageBenchmarkNote"/> nearby).

@@ -85,7 +85,7 @@ public sealed class LiteRtAttachment
     }
 
     /// <summary>An audio clip read from a file on disk; sent as a path that the native side opens itself (no
-    /// base64). Desktop only: audio files on Android were not measured (see <see cref="LiteRtAttachment"/>). The
+    /// base64). Not measured on Android (see <see cref="LiteRtAttachment"/>). The
     /// path must be readable by the native process.</summary>
     public static LiteRtAttachment AudioFile(string path)
     {

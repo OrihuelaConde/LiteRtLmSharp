@@ -191,6 +191,12 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
     /// conversation on its own engine too, must sample exactly like TopP with <c>TopP = 1</c>. Without the
     /// runtime's support for these types, the first send fails with <c>UNIMPLEMENTED: Sampler type: N</c> on
     /// the CPU backend, and Greedy gives sampled text on the GPU backend (both measured on LiteRT-LM v0.18.0).
+    /// The second engine then pins LiteRT-LM v0.20.0 behaviour: a TopK conversation after a TopP one gives the
+    /// reply of the TopK conversation that came first on that engine. If the runtime kept the TopP sampler, the
+    /// TopK reply would come from it instead; that sampler's reply differs from the TopK one, which the test
+    /// checks first. A runtime that kept the TopP type with the TopK conversation's parameters is not told apart
+    /// on any backend: TopK samples as TopP with <c>TopP = 1</c>, so TopP with this TopK conversation's
+    /// parameters gives the same text (measured on LiteRT-LM v0.20.0, gemma-4 E2B, win-x64 GPU).
     /// </summary>
     [SkippableFact]
     public void GreedyAndTopK_ShouldWorkOnAFreshEngine_AndGreedyShouldBeArgmax()
@@ -222,6 +228,19 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
             output.WriteLine($"TopP k 8, p 1: {topP}");
             Assert.False(string.IsNullOrWhiteSpace(topK));
             Assert.Equal(topP, topK);
+
+            // A TopK conversation after a TopP one gives the reply of the TopK conversation that came first on
+            // this engine. If the runtime kept the TopP sampler, the reply would come from it instead; that
+            // sampler's reply differs from the TopK one, which is checked first.
+            var hotTopP = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 64, TopP = 1.0f, Temperature = 1.6f, Seed = 7 };
+            string topPBefore = Reply(engine, hotTopP);
+            output.WriteLine($"TopP before TopK: {topPBefore}");
+            Assert.NotEqual(argmax, topK);
+            Assert.NotEqual(argmax, topPBefore);
+            Assert.NotEqual(topPBefore, topK);
+            string topKAfter = Reply(engine, sampled with { Strategy = LiteRtSamplerType.TopK });
+            output.WriteLine($"TopK after TopP:  {topKAfter}");
+            Assert.Equal(topK, topKAfter);
         }
     }
 
@@ -236,12 +255,8 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
     /// conversation after a sampled one gives the reply of a separate engine that never sampled, and so does
     /// one sent turn by turn next to a live sampled conversation. If the runtime kept the sampler of an earlier
     /// conversation on the engine, the Greedy reply would be sampled text (LiteRT-LM v0.18.0 on the CPU backend
-    /// did that). The TopK half pins LiteRT-LM v0.20.0 behaviour: a TopK conversation after a TopP one gives
-    /// the reply a TopK conversation gives as the first on a fresh engine. If the runtime kept the TopP
-    /// sampler, the TopK reply would come from it instead; that sampler's reply differs from the TopK one, which
-    /// the test checks first. A runtime that kept the TopP type with the TopK conversation's parameters is not
-    /// told apart on any backend: TopK samples as TopP with <c>TopP = 1</c> (pinned above), so TopP with this TopK
-    /// conversation's parameters gives the same text (measured on LiteRT-LM v0.20.0, gemma-4 E2B, win-x64 GPU).
+    /// did that). A TopK conversation after a TopP one is pinned in
+    /// <see cref="GreedyAndTopK_ShouldWorkOnAFreshEngine_AndGreedyShouldBeArgmax"/>.
     /// </summary>
     [SkippableFact]
     public void Greedy_ShouldBeArgmax_AfterASampledConversation_AndNextToALiveOne()
@@ -253,27 +268,13 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         using (var alone = LiteRtEngine.Load(options))
             argmax = Reply(alone, Argmax);
 
-        var topKSampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopK, TopK = 8, Temperature = 1.0f, Seed = 7 };
-        string topKAlone;
-        using (var fresh = LiteRtEngine.Load(options))
-            topKAlone = Reply(fresh, topKSampler);
         output.WriteLine($"Argmax, own engine: {argmax}");
-        output.WriteLine($"TopK, fresh engine: {topKAlone}");
-        Assert.NotEqual(argmax, topKAlone);   // the TopK reply samples, so the comparison below can fail
 
         var hotTopP = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 64, TopP = 1.0f, Temperature = 1.6f, Seed = 7 };
         var hotGreedy = hotTopP with { Strategy = LiteRtSamplerType.Greedy, Seed = 8 };
         using var engine = LiteRtEngine.Load(options);
         Assert.NotEqual(argmax, Reply(engine, hotTopP));
         Assert.Equal(argmax, Reply(engine, hotGreedy));
-
-        string topPBefore = Reply(engine, hotTopP);
-        output.WriteLine($"TopP before TopK:   {topPBefore}");
-        Assert.NotEqual(argmax, topPBefore);
-        Assert.NotEqual(topPBefore, topKAlone);
-        string topKAfter = Reply(engine, topKSampler);
-        output.WriteLine($"TopK after TopP:    {topKAfter}");
-        Assert.Equal(topKAlone, topKAfter);
 
         using var sampled = engine.CreateConversation(new LiteRtConversationOptions { Sampler = hotTopP, MaxOutputTokens = 48 });
         using var greedy = engine.CreateConversation(new LiteRtConversationOptions { Sampler = hotGreedy, MaxOutputTokens = 48 });
@@ -484,8 +485,8 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// CancelProcess() on an idle conversation is a documented no-op, so it must not mark the conversation as
-    /// cancelled: Clone() still works and the clone generates.
+    /// CancelProcess() on an idle conversation had no visible effect on LiteRT-LM v0.20.0, so it must not mark
+    /// the conversation as cancelled: Clone() still works and the clone generates.
     /// </summary>
     [SkippableFact]
     public void CancelProcess_OnAnIdleConversation_ShouldNotBlockClone()

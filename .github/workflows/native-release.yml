@@ -265,6 +265,15 @@ jobs:
     timeout-minutes: 30
     env:
       SOURCE: ${{ needs.prepare.outputs.source }}
+      # Session API. The same names are in .github/scripts/assert-elf-exports.sh,
+      # .github/scripts/inspect-pe.py and LiteRtLmSharp.Tests/SessionAbiTests.cs (SessionImports).
+      SESSION_EXPORTS: >-
+        litert_lm_engine_create_session litert_lm_session_delete litert_lm_session_cancel_process
+        litert_lm_session_save_checkpoint litert_lm_session_rewind_to_checkpoint litert_lm_session_rewind_to_step
+        litert_lm_session_run_prefill litert_lm_session_run_decode litert_lm_session_run_decode_async
+        litert_lm_session_run_text_scoring litert_lm_session_config_set_apply_prompt_template
+        litert_lm_responses_delete litert_lm_responses_get_num_candidates litert_lm_responses_get_response_text_at
+        litert_lm_responses_get_score_at litert_lm_responses_get_token_length_at
     steps:
       - uses: actions/checkout@v4
 
@@ -295,9 +304,10 @@ jobs:
           cnt=$(grep -c ' _litert_lm_' <<< "$syms" || true)
           echo "exported litert_lm_* symbols: $cnt"
           [ "$cnt" -ge "$MIN_EXPORTS" ] || { echo "::error::expected >= $MIN_EXPORTS litert_lm_* exports, got $cnt"; exit 1; }
-          # Model sync entry points (Mach-O names carry a leading underscore). The same names are in
-          # .github/scripts/inspect-pe.py, .github/scripts/assert-elf-exports.sh and ModelSyncAbiTests.cs.
-          for sym in litert_lm_model_sync_update litert_lm_model_sync_plan_create_from_file; do
+          # Session API (SESSION_EXPORTS) and model sync entry points (Mach-O names carry a leading
+          # underscore). The model sync names are in .github/scripts/inspect-pe.py,
+          # .github/scripts/assert-elf-exports.sh and ModelSyncAbiTests.cs.
+          for sym in $SESSION_EXPORTS litert_lm_model_sync_update litert_lm_model_sync_plan_create_from_file; do
             grep -q " _${sym}\$" <<< "$syms" || { echo "::error::macos library lacks $sym"; exit 1; }
           done
           echo "--- minimum macOS version ---"
@@ -337,7 +347,7 @@ jobs:
           cnt=$(grep -c ' _litert_lm_' <<< "$syms" || true)
           echo "exported litert_lm_* symbols: $cnt"
           [ "$cnt" -ge "$MIN_EXPORTS" ] || { echo "::error::expected >= $MIN_EXPORTS litert_lm_* exports, got $cnt"; exit 1; }
-          for sym in litert_lm_model_sync_update litert_lm_model_sync_plan_create_from_file; do
+          for sym in $SESSION_EXPORTS litert_lm_model_sync_update litert_lm_model_sync_plan_create_from_file; do
             grep -q " _${sym}\$" <<< "$syms" || { echo "::error::ios device binary lacks $sym"; exit 1; }
           done
           echo "--- GPU companions referenced by name (documented: CPU-only with the xcframework alone) ---"
@@ -451,9 +461,23 @@ jobs:
           done
           cd release
           # Merge with the existing release's checksums so a partial (platform-filtered) run
-          # doesn't clobber checksums of assets that weren't repackaged.
-          gh release download "native-${UPSTREAM_TAG}" --repo "${{ github.repository }}" \
-            --pattern 'checksums.txt' --output existing.txt 2>/dev/null || touch existing.txt
+          # doesn't clobber checksums of assets that weren't repackaged. Only a missing release or a
+          # release without checksums.txt starts from an empty list; any other error stops the run.
+          if names=$(gh release view "native-${UPSTREAM_TAG}" --repo "${{ github.repository }}" \
+              --json assets --jq '.assets[].name' 2> "$RUNNER_TEMP/release-view.err"); then
+            if grep -qx 'checksums.txt' <<< "$names"; then
+              gh release download "native-${UPSTREAM_TAG}" --repo "${{ github.repository }}" \
+                --pattern 'checksums.txt' --output existing.txt
+            else
+              touch existing.txt
+            fi
+          elif grep -q 'release not found' "$RUNNER_TEMP/release-view.err"; then
+            touch existing.txt
+          else
+            cat "$RUNNER_TEMP/release-view.err"
+            echo "::error::could not read release native-${UPSTREAM_TAG}; refusing to replace its checksums.txt"
+            exit 1
+          fi
           sha256sum *.tar.gz THIRD_PARTY_NOTICES.litert-lm.txt > new.txt 2>/dev/null || touch new.txt
           awk '{print $2, $0}' new.txt existing.txt | sort -u -k1,1 | cut -d' ' -f2- > checksums.txt
           rm -f existing.txt new.txt

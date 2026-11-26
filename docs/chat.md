@@ -263,7 +263,12 @@ So read `false`, `0` or `null` as "not declared", not as "not supported": gemma-
 tools although its file declares neither. `SupportedBackends` is a declaration too: it repeats what the
 file states.
 
-`MaxContextTokens` is not always a hard maximum. gemma-4-E2B-it, which declares a dynamic context of
+For a language model, `MaxContextTokens` is the context size the metadata sets or, when the metadata sets
+none, the runtime's default of 4,096, capped by the size of a static model graph. So 4,096 can be either a
+declared size or the default, and the value doesn't tell which. It reads `0` only when the runtime finds no
+context size at all.
+
+`MaxContextTokens` is not always a hard maximum. gemma-4-E2B-it, which reports a dynamic context of
 4,096 tokens, accepted 19,533 tokens with `MaxNumTokens = 20000`. That was measured with LiteRT-LM v0.20.0
 on win-x64 CPU, calling the native API directly, without the binding's overflow guard. Other
 dynamic-context models were not measured.

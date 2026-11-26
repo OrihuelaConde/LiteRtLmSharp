@@ -69,9 +69,10 @@ internal readonly record struct SessionMachineState(LiteRtSessionState State, Se
 /// The native session reports success for work it skips: after a cancel or a failed prefill, a prefill returns OK
 /// at once, and <c>run_decode_async</c> returns OK and did not call its callback within 30 s (measured on
 /// LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and GPU). This machine is the only protection against a decode
-/// that never ends, so from such a state it accepts only the calls that were measured to recover the session: a
-/// rewind to a checkpoint and a reset, after a failed prefill or a full context. After a cancel, or after any
-/// other failure, it accepts only Dispose.
+/// that never ends, so from such a state it accepts only a rewind to a checkpoint and a reset, after any failed
+/// prefill or a full context. Their recovery was measured after a full context and after the prefill failures
+/// whose input did not fit; after another prefill failure they are accepted but were not measured (see
+/// <see cref="RecoversFrom"/>). After a cancel, or after any other failure, it accepts only Dispose.
 /// </para>
 /// <para>
 /// <see cref="Accepts"/> and <see cref="After"/> are the whole table. The session calls them with one call at a

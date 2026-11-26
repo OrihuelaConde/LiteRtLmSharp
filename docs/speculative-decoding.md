@@ -9,7 +9,9 @@ reply without the drafter (see the sampler note in
 paid off yet: it slowed gemma-4-E2B down on desktop CPU and GPU (see [Measured results](#measured-results)).
 
 LiteRtLmSharp exposes it as an engine-level flag with a per-conversation override, plus the native
-**benchmark API** to measure the effect.
+**benchmark API** to measure the effect. The binding sets the engine flag and the per-conversation override with the on/off setters that the v0.20.0 C API
+marks deprecated, and it doesn't wrap the speculative decoding config that replaces them, so the C API's
+adaptive mode and lenience factor aren't available.
 
 ## Requirements
 

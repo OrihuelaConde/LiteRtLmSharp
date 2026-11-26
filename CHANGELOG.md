@@ -126,7 +126,21 @@ later release. The C# compiler reports each use as an error until you suppress t
     overflow guard cuts at the limit leaves room in the context: `IsContextFull` stays `false`, the next send
     works, and `LiteRtChatClient` still reports `ChatFinishReason.Length` for that turn. A clone taken after
     such a reply holds the count without the thinking. A stream or a blocking send of a reply with thinking
-    returns only after the runtime has refilled the context.
+    returns only after the runtime has refilled the context. `UsageDetails.TotalTokenCount` in
+    `LiteRtLmSharp.Extensions.AI` reads this count, so after a reply with thinking it can be lower than
+    `InputTokenCount` plus `OutputTokenCount`, which counts the thinking.
+
+    The runtime leaves the thinking out whatever `LiteRtConversationOptions.FilterThinkingFromKvCache` says:
+    its native default drops channel content, and the binding sends the setting only for `true`, so `false`
+    doesn't keep the thinking in the context (CPU, gemma-4 E2B). The 1.3.0 docs described the filter as off
+    unless the option was set.
+  - **A send ends with a native token-count read that can wait for other generations on the engine.** A
+    stream that runs to its end now waits for the runtime to finish the turn before its loop ends, as a
+    blocking send does. If that wait fails, the conversation counts as cancelled (`IsCancelled`). Every
+    completed send, blocking or streamed, then reads the native token count to refresh `TokenCountCached`,
+    also with the overflow guard off; 1.3.0 read it only after a send for which the guard set the output cap.
+    Like `TokenCount`, that read goes through the engine, so it can wait behind a generation in flight on
+    another conversation of the engine.
   - **`SendRaw` takes one message JSON object per call.** A JSON array, which 1.3.0 answered, fails with
     `INVALID_ARGUMENT: Message must be a JSON object.`, and the conversation stays usable.
   - **A message that doesn't fit the remaining context fails with `RESOURCE_EXHAUSTED`**, where 1.3.0 failed it
@@ -143,8 +157,11 @@ later release. The C# compiler reports each use as an error until you suppress t
   - **A text LoRA adapter applies to its own conversation only.** 1.3.0 applied an adapter to the whole engine.
     A conversation without an adapter now answers normally next to one with an adapter, and the
     `No LoRA ID is set` failure does not occur (measured on CPU with the upstream LoRA test bundle).
-  - **Three model files report a 4,096-token context.** `LiteRtModelInfo.MaxContextTokens` reads 4,096 for
-    these files (win-x64):
+  - **`LiteRtModelInfo.MaxContextTokens` reports a language model's default context size.** It reads the
+    context size the file's metadata sets or, when the metadata sets none, the runtime's default of 4,096,
+    capped by the size of a static model graph, so a declared 4,096 and the default read the same. The
+    LiteRT-LM v0.18.0 C API that 1.3.0 wraps defined the value as the size of a static model graph, or the
+    largest size a dynamic model accepts. Three model files report a 4,096-token context (win-x64):
     - `gemma-4-E2B-it`, dynamic context: 1.3.0 read 32,003. The file also declares CPU and GPU for vision.
       The value is not a hard maximum for this model: gemma-4 E2B accepted 19,533 tokens with `MaxNumTokens`
       20000 (win-x64 CPU, overflow guard off).
@@ -160,7 +177,8 @@ later release. The C# compiler reports each use as an error until you suppress t
     temporary DOS device name.
   - **Values outside a declared enum fail.** A value of `LiteRtConstraintProvider`, `LiteRtSamplerType` or
     `LiteRtInputOverflowStrategy` that only a cast can produce fails with a `LiteRtException`
-    (`InvalidArgument`) from the runtime.
+    (`InvalidArgument`) from the runtime. Such a `LiteRtActivationDataType` value makes `LiteRtEngine.Load` and
+    `LiteRtEmbeddingEngine.Load` fail the same way.
   - **`LiteRtBenchmarkInfo.TotalInitTimeSeconds` is the engine creation time only.** LiteRT-LM v0.18.0 summed
     every initialization phase in it.
   - **Concurrent sends on one engine.** On the GPU, two blocking sends at once on two conversations of one engine
@@ -211,9 +229,11 @@ later release. The C# compiler reports each use as an error until you suppress t
   a key, so a second model silently ran on the first engine. Equal options still share one engine, and a
   `LiteRtEngine` you registered without a key before the `serviceId` still serves them. A `serviceId` also
   no longer inherits the model id, template and stateful settings of an earlier registration, or goes through an
-  `IChatClient` registered without a key. A service registered from options loads its engine on its first call, not
-  when it is resolved, so a bad path fails at that call unless you set `eager`. See
+  `IChatClient` registered without a key. See
   [Register several models](https://orihuelaconde.github.io/LiteRtLmSharp/semantic-kernel.html#register-several-models).
+- **A Semantic Kernel chat service registered from options loads its engine on its first call**, with or without a
+  `serviceId`. Before, resolving `IChatCompletionService` loaded the engine, so a bad model path or backend failed
+  there; now it fails at the first call. To load the engine at registration, and fail there, set `eager`.
 - **A conflicting chat registration throws.** Registering a chat client again, with or without a Semantic Kernel
   `serviceId`, with a different engine or different options throws `InvalidOperationException`. Before, the second
   registration was silently ignored. The same applies to a key registered with the new `AddKeyedLiteRtChatClient`.

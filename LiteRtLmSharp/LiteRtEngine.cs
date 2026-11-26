@@ -418,6 +418,12 @@ public sealed class LiteRtEngine : IDisposable
     /// the raw tokenizer output (no chat template is applied); pair with <see cref="Detokenize"/> for
     /// the round trip.
     /// </summary>
+    /// <remarks>
+    /// The tokenizer runs on the engine handle, and the C API's threading model (<c>c/engine.h</c>) forbids
+    /// overlapping calls that use the same handle. Some sends of this engine's conversations call the
+    /// tokenizer too (see the remarks of <see cref="LiteRtConversation"/>). The binding does not serialize
+    /// these calls, so keep this method, <see cref="Detokenize"/> and those sends from overlapping.
+    /// </remarks>
     /// <exception cref="LiteRtException">The native tokenizer call failed.</exception>
     public int[] Tokenize(string text)
     {

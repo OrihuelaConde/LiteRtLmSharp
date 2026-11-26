@@ -31,7 +31,7 @@ public sealed record LiteRtSendOptions
     /// underlying decode cap as the conversation-level setting, applied at per-send granularity: the
     /// native runtime resolves the effective cap as the per-send value when present, otherwise the
     /// session's value (session_advanced.cc). Unlike the conversation-level setting, it does not create a
-    /// session config, so it never changes multimodal encoder loading.
+    /// session config.
     /// </remarks>
     public int MaxOutputTokens { get; init; }
 

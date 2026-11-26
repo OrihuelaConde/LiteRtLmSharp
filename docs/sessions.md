@@ -2,7 +2,8 @@
 
 A session runs the model on text that you write. You prefill text into the model's context, and then you
 decode a reply. Everything you prefill and every reply stays in the context, so you can add turns, but the
-session keeps no list of messages that you can read back, restore, or clone. The experimental
+session keeps no list of messages that you can read back or restore, and the binding doesn't wrap the C API's
+session clone. The experimental
 [checkpoints](#experimental-checkpoints-rewind-and-reset) return the context to a point that you saved earlier on
 the same session.
 
@@ -18,7 +19,7 @@ example to continue a reply that was cut.
 | | Conversation | Session |
 |---|---|---|
 | Prompt template | Applied by the runtime | None: you write the text |
-| Message history | Kept; restore it with `History`, fork it with `Clone()` | The context holds every prefill and reply; no list of messages, clone, or restore. Experimental: rewind to a saved checkpoint, or reset |
+| Message history | Kept; restore it with `History`, fork it with `Clone()` | The context holds every prefill and reply; no list of messages or restore, and no clone in the binding. Experimental: rewind to a saved checkpoint, or reset |
 | Tools, reasoning, constrained decoding | Supported | Not available |
 | Images and audio | Supported | Text only |
 | Reply | `LiteRtResponse`, or chunks tagged as answer, thinking, or tool call | A string, or a stream of text pieces |
@@ -195,10 +196,14 @@ if (session.State == LiteRtSessionState.ContextFull)
     Console.WriteLine("\n[The context is full.]");
 ```
 
-- The decode starts when the loop asks for the first piece, and the session is busy until the decode ends.
-- Each piece holds whole characters. The pieces joined are the text that `Decode` returns.
-- While the loop runs, another call on the session throws `InvalidOperationException`, including a `Prefill`
-  from inside the loop body.
+- The decode starts when the loop asks for the first piece, and the session is busy until the decode ends. The
+  decode can end before the loop has read every piece.
+- Each piece holds whole characters. The pieces joined are the text that `Decode` returns. When the bytes of
+  the reply end inside a character, the last piece ends with U+FFFD, the replacement character, and so does the
+  text that `Decode` returns. Whether the runtime ends a cut reply that way was not measured.
+- While the decode runs, another call on the session throws `InvalidOperationException`, including a `Prefill`
+  from inside the loop body. After the decode ends, while the loop reads the pieces that are left, a call from
+  the loop body runs as it would after the loop.
 - Leaving the loop early, with `break` or an exception, cancels the decode. See
   [Cancel a generation](#cancel-a-generation).
 - An enumerator that you drop without disposing it doesn't cancel: the decode runs to its end. An
@@ -382,7 +387,9 @@ The cancel reaches the runtime at the next piece of the reply, and the runtime s
 the cancel, the loop can still receive the piece that carries it and any pieces already waiting, and then it
 ends. In the measurements, the runtime stopped within about the time of one piece after the request. The
 session is then `Cancelled` and accepts only `Dispose`. Every piece you received is part of the reply: keep the
-pieces if you want to [continue the reply](#continue-a-reply-that-was-cut).
+pieces if you want to [continue the reply](#continue-a-reply-that-was-cut). A U+FFFD at the end of the last piece
+can stand for a character that the reply didn't complete (see [Stream the reply](#stream-the-reply)); drop it
+before you prefill the partial reply.
 
 ```csharp
 using System.Text;
@@ -405,10 +412,11 @@ catch (OperationCanceledException)
 }
 ```
 
-If the cancel arrives after the last piece but before the call returns, nothing is cancelled. The state is
+If the cancel arrives after the last piece but before the decode ends, nothing is cancelled. The state is
 `Decoded` or `ContextFull`, or `Faulted` if the decode failed, and the session accepts what that state accepts.
 A token still makes `DecodeAsync` or the stream throw `OperationCanceledException`, so always read `State` in
-the catch block. A `Dispose` that arrives after the last piece doesn't make the call throw.
+the catch block. A token that fires after the decode ended changes nothing, even while the loop still reads
+pieces that were waiting. A `Dispose` that arrives after the last piece doesn't make the call throw.
 
 A prefill can't be cancelled once it starts. The token of `PrefillAsync` works only before the prefill starts:
 the call then throws `OperationCanceledException` and leaves the session as it was. A `Dispose` during a
@@ -696,6 +704,10 @@ engine's first session.
   value than the same score on a new session.
 - **Rewind to a position.** The C API can rewind to a numbered position, but it reports no current position, so
   a caller can't choose a valid one. `Reset` is the rewind to position 0.
+- **Other session functions.** The C API can also clone a session, read a session's benchmark information,
+  generate content from a list of inputs in one call, with or without streaming, and set LoRA paths and
+  speculative decoding in a session's configuration. The binding wraps none of them for sessions:
+  `LiteRtSessionOptions` holds only the sampler and the output cap.
 
 ## Threads, lifetime, and the engine
 
@@ -711,8 +723,11 @@ engine's first session.
   same way for another session's decode; behind a conversation send it wasn't measured (see
   [Cost and waiting](#cost-and-waiting)). `Dispose` of an idle session didn't wait. These results come from one
   model, one pair of prompts, and 5 to 10 runs per case, so treat them as observations, not as a guarantee.
-  Create the sessions you need before you start a long generation, and don't call `CreateSession` or `Prefill`
-  on a UI thread while something generates on the engine.
+  Create the sessions and conversations you need before you start a long generation, and don't call
+  `CreateSession`, `CreateConversation`, or `Prefill` on a UI thread while something generates on the engine.
+  `CreateConversation` creates its native conversation through the engine too, and the remarks of
+  `LiteRtConversation` in the API reference say that such calls wait for a generation in flight on a
+  conversation of the engine. That includes the unsent conversation that renders a prompt.
 - **Session lifetime.** Keep one session per dialog while you add turns, and dispose it when the dialog ends.
   Without the experimental members, dispose it as soon as it is `ContextFull`, `Faulted`, or `Cancelled`. With
   them, you can keep a `ContextFull` session, or one that a failed prefill left `Faulted` (see
@@ -738,7 +753,9 @@ Console.WriteLine(session.Decode());
 ## Limitations
 
 - **What conversations have and sessions don't.** Besides the differences in the table in
-  [When to use a session](#when-to-use-a-session), a session has no LoRA adapter and no `GetBenchmarkInfo()`.
+  [When to use a session](#when-to-use-a-session), `LiteRtSession` has no LoRA adapter and no
+  `GetBenchmarkInfo()`. The C API has both for a session, and the binding doesn't wrap them (see **What the
+  binding doesn't wrap**, at the end of the experimental section).
 - **Where it was measured.** Unless a section says otherwise, the results in this guide come from Gemma 4 E2B
   with LiteRT-LM v0.20.0 on Windows x64, on the CPU and on an NVIDIA GPU. Apart from the comparison of sampler
   settings, every comparison of two replies used argmax sampling (top-k 1), which gave the same replies as
@@ -748,17 +765,20 @@ Console.WriteLine(session.Decode());
   `CreateSession`, `Prefill`, and `Decode` gave the expected states and reply in 3 of 3 runs. The experimental
   members ran there too; see **Checkpoints, rewind, and reset on Android** below. Not measured on Android:
   `PrefillAsync`, `DecodeAsync`, `DecodeStreamingAsync`, cancellation, the GPU backend, and arm64 devices.
-- **Other platforms.** Linux, macOS, and GPU vendors other than NVIDIA were not measured.
+- **Other platforms.** The session tests run in CI on linux-x64 and linux-arm64 (CPU) and on osx-arm64 (CPU
+  and GPU). The measurements this guide reports were not made on those platforms, nor on GPU vendors other
+  than NVIDIA.
 - **Models.** The later-turn text, the continuation of a cut reply, the cancel, the context limits, and the
-  experimental checkpoints, rewind, and reset were measured on Gemma 4 E2B only. The start-token rule and the
+  experimental checkpoints, rewind, and reset were measured on Gemma 4 E2B only, apart from the extra positions
+  that [Count the context yourself](#count-the-context-yourself) gives for Phi-4-mini. The start-token rule and the
   first-turn text were also measured on Gemma 4 E4B, Ministral 3, and Phi-4-mini. Prompts with reasoning or tool
   markup were not measured.
 - **Continuing a cut reply.** It was measured with partial replies from a conversation's stream, cut after one
   prompt, with no system message, with a system message, or with a one-turn history. Continuing a cut reply in
   a session that already held earlier turns was not measured, and neither was going on with the chat after a
   continuation. Whether a continuation on the GPU reads as one coherent reply was not measured either.
-- **Concurrency.** Two conversations generating at the same time, and overlapping calls on other models, were
-  not measured.
+- **Concurrency.** Overlapping calls on models other than Gemma 4 E2B were not measured. For two conversations
+  that generate at the same time, see the remarks of `LiteRtConversation` in the API reference.
 - **Checkpoints, rewind, and reset.** Not measured: a save or a rewind while another session generates, many
   checkpoints held at the same time, and any rewind or reset with
   `LiteRtEngineOptions.UseRingbuffersLocalAttention` on. The recovery was measured only after prefills whose

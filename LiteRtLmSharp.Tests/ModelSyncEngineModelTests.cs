@@ -11,7 +11,8 @@ namespace LiteRtLmSharp.Tests;
 /// as held until the native engine is deleted, on Dispose and on finalization, and an update that would replace it
 /// is refused before any fetch; what the runtime does when the guard is bypassed; and the compiled cache after an
 /// in-place update and after a move over the model file. Needs <c>LITERTLM_TEST_MODEL</c> (a chat model) and, for the embedding cases,
-/// <c>LITERTLM_TEST_EMBEDDING_MODEL</c>; <c>LITERTLM_TEST_BACKEND</c> picks CPU or GPU. Every update writes a copy
+/// <c>LITERTLM_TEST_EMBEDDING_MODEL</c>; <c>LITERTLM_TEST_BACKEND</c> picks CPU or GPU for the finalization and
+/// compiled cache cases, and the Dispose cases load on CPU. Every update writes a copy
 /// under a temporary folder, or uses a source that fails before the runtime writes anything. The runtime outcomes
 /// were measured on LiteRT-LM v0.20.0, win-x64.
 /// </summary>
@@ -28,6 +29,12 @@ public sealed class ModelSyncEngineModelTests(ITestOutputHelper output)
     private static void SkipWithout(string? model, string variable) =>
         Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model), $"Set {variable} to a .litertlm model to run.");
 
+    /// <summary>The compiled cache cases change 64 bytes at offset 130,000,000, inside the weights of
+    /// EmbeddingGemma 2 (270M); a shorter embedding model cannot hold them.</summary>
+    private static void SkipIfShorterThanTheChangedBytes() =>
+        Skip.If(new FileInfo(EmbeddingModel!).Length < 130_000_064,
+            "Set LITERTLM_TEST_EMBEDDING_MODEL to EmbeddingGemma 2 (270M) to run: the test changes 64 bytes at offset 130,000,000.");
+
     /// <summary>A source that fails its first request, so an update the guard fails to refuse ends at the header
     /// fetch and never replaces the model file the other tests load.</summary>
     private static ModelSyncMemorySource FailingSource() => new(ModelSyncFixtures.A)
@@ -42,7 +49,7 @@ public sealed class ModelSyncEngineModelTests(ITestOutputHelper output)
         string full = Path.GetFullPath(ChatModel!);
         int before = LoadedModelPaths.Default.Count(full);
         var source = FailingSource();
-        using (LiteRtEngine engine = LiteRtEngine.Load(new LiteRtEngineOptions { ModelPath = ChatModel!, Backend = Backend }))
+        using (LiteRtEngine engine = LiteRtEngine.Load(new LiteRtEngineOptions { ModelPath = ChatModel!, Backend = LiteRtBackend.Cpu }))
         {
             Assert.Equal(before + 1, LoadedModelPaths.Default.Count(full));
             DateTime written = File.GetLastWriteTimeUtc(full);
@@ -71,7 +78,7 @@ public sealed class ModelSyncEngineModelTests(ITestOutputHelper output)
         string full = Path.GetFullPath(EmbeddingModel!);
         int before = LoadedModelPaths.Default.Count(full);
         var source = FailingSource();
-        using (LiteRtEmbeddingEngine engine = LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions { ModelPath = EmbeddingModel!, Backend = Backend }))
+        using (LiteRtEmbeddingEngine engine = LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions { ModelPath = EmbeddingModel!, Backend = LiteRtBackend.Cpu }))
         {
             Assert.Equal(before + 1, LoadedModelPaths.Default.Count(full));
             await Assert.ThrowsAsync<InvalidOperationException>(() => LiteRtModelSync.UpdateAsync(null, EmbeddingModel!, source));
@@ -162,6 +169,7 @@ public sealed class ModelSyncEngineModelTests(ITestOutputHelper output)
     public async Task EmbeddingEngine_AfterAnInPlaceUpdate_UsesTheOldCompiledCache_UntilItsFilesAreDeleted()
     {
         SkipWithout(EmbeddingModel, "LITERTLM_TEST_EMBEDDING_MODEL");
+        SkipIfShorterThanTheChangedBytes();
         string dir = Directory.CreateTempSubdirectory("litertlm-cache-").FullName;
         try
         {
@@ -212,6 +220,7 @@ public sealed class ModelSyncEngineModelTests(ITestOutputHelper output)
     public async Task EmbeddingEngine_AfterAMoveOverItsFile_UsesTheOldCompiledCache_UntilItsFilesAreDeleted()
     {
         SkipWithout(EmbeddingModel, "LITERTLM_TEST_EMBEDDING_MODEL");
+        SkipIfShorterThanTheChangedBytes();
         string dir = Directory.CreateTempSubdirectory("litertlm-move-").FullName;
         string folder = Directory.CreateTempSubdirectory("litertlm-move-cache-").FullName;
         try

@@ -219,8 +219,9 @@ public sealed unsafe class ModelInfoEmbeddingAbiTests(ITestOutputHelper output)
         }
     }
 
-    /// <summary>On a language model the embedding getters return NOT_FOUND, and the vision getters return
-    /// the model's values (Gemma 4 E-series: budget 280, lengths 70, 140 and 280).</summary>
+    /// <summary>On a language model the embedding getters return NOT_FOUND. The vision getters return either
+    /// NOT_FOUND, which the header allows for a model without vision or without a declared budget, or a budget
+    /// that is one of the returned lengths; the test checks that rule, not the values (it prints them).</summary>
     [SkippableFact]
     public void ModelInfoGetters_OnTheChatModel()
     {
@@ -343,7 +344,7 @@ public sealed unsafe class ModelInfoEmbeddingAbiTests(ITestOutputHelper output)
                 LiteRtLmNative.litert_lm_embedding_responses_delete(responses);
             }
 
-            // A NULL input array with a non-zero count is rejected; NULL with zero inputs is accepted.
+            // A NULL input array with a non-zero count is rejected.
             nint ignored = 1;
             Assert.Equal(LiteRtStatusCode.InvalidArgument,
                 LiteRtLmNative.litert_lm_embedding_engine_compute_embedding(engine, null, 1, nint.Zero, &ignored));

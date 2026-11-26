@@ -44,6 +44,8 @@ await foreach (var chunk in chat.SendStreamingAsync("Tell me a joke"))
 - Reasoning mode (Gemma "thinking"), surfaced separately from the answer
 - Multimodal input: image and audio attachments
 - Conversation restore & clone, token counting, speculative decoding, benchmarking
+- Raw sessions: prefill and decode text you write, with no chat template (experimental checkpoints)
+- Model download and update over HTTP, reusing unchanged sections (experimental)
 - Text embeddings (EmbeddingGemma 2) for semantic search and RAG, next to a chat model
 - Model metadata (type, context size, inputs, backends) read without loading the model
 - AOT- and trim-compatible (source-generated P/Invoke)

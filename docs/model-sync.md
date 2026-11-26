@@ -61,8 +61,8 @@ be removed in a minor version. They're experimental for three reasons:
 
 - The runtime's model sync functions first appear in C API version 1.1.0, which LiteRT-LM v0.20.0 carries,
   and the binding was tested against that version only.
-- The calls ran only on Windows x64 and, in part, on an Android x86_64 emulator (see
-  [Limitations](#limitations)).
+- The calls were measured only on Windows x64 and, in part, on an Android x86_64 emulator. On Linux and macOS,
+  only the repository's CI tests run them (see [Limitations](#limitations)).
 - Differential updates depend on files with section hashes, and none of the files that were checked has them.
 
 The C# compiler reports each use of these types as error LITERTLM003, and the error's help link opens this
@@ -132,7 +132,8 @@ Console.WriteLine($"Received {result.BytesReceived:N0} bytes.");
 
 Replace `REVISION` with the commit of the repository that you want, or with `main`. Every example in this
 guide uses this placeholder. A commit is safer; see
-[Pin the model to a revision](#pin-the-model-to-a-revision).
+[Pin the model to a revision](#pin-the-model-to-a-revision). The example in
+[Keep a model up to date at startup](#keep-a-model-up-to-date-at-startup) needs a commit.
 
 The output's folder must exist: the runtime doesn't create it, and the call throws `ArgumentException` when
 it's missing. The runtime writes the new file to `OUTPUT.tmp_updating` next to the output, where `OUTPUT` is
@@ -149,8 +150,12 @@ that throws fails the update with `LiteRtStatusCode.Unknown`.
 fetches included. On a first download it's a little more than the file size: the runtime reads the header
 with a fetch of the first 16 KiB (16,384 bytes) of the file, and then fetches the file from the end of the
 header. For a 129,024-byte test file with a 1,184-byte header, a first download received 144,224 bytes. To
-show a percentage, take `TotalRemoteSize` from a plan (see
-[Check for an update before downloading](#check-for-an-update-before-downloading)), and cap the value at 100%.
+show a percentage, divide by `BytesToDownload` from a plan (see
+[Check for an update before downloading](#check-for-an-update-before-downloading)), not by `TotalRemoteSize`,
+which also counts the sections that an update copies from the local file. Cap the value at 100%:
+`BytesReceived` counts the whole 16 KiB fetch of the header, and `BytesToDownload` counts only the header's own
+bytes, so the total can pass `BytesToDownload`. In an update that downloads little, the header fetch alone can
+pass it. When the plan reports `BytesToDownload` as 0, the local file is up to date: show no percentage.
 
 ## Pin the model to a revision
 
@@ -250,6 +255,9 @@ when the app asks for another revision, so a new version of your app decides whe
 files have section hashes, the update reuses the sections that didn't change. When the server can't be
 reached, the app keeps the file it has.
 
+Set `Revision` to a commit. With a branch such as `main`, the revision file matches `Revision` after the first
+download, so the example never checks the branch again.
+
 ```csharp
 #pragma warning disable LITERTLM003
 
@@ -298,8 +306,9 @@ The plan decides what to do:
   others.
 - **Not up to date, local file present, `BytesToReuse` equal to 0:** the update downloads the whole file. In
   this example that happens when the revision changed, even when that commit left the model file unchanged,
-  so change `Revision` only to a commit that changed the model file. If you follow a branch such as `main`
-  instead of a revision, the plan can't tell a new version from the same file without hashes. Then ask the
+  so change `Revision` only to a commit that changed the model file. To follow a branch such as `main`
+  instead, make a plan at every start in place of the revision check. The plan can't tell a new version from
+  the same file without hashes, so when it reports `IsUpToDate` as `false` and `BytesToReuse` as 0, ask the
   user before you download `BytesToDownload` bytes.
 
 A model file without the revision file is downloaded again in full when it has no section hashes. That
@@ -547,7 +556,7 @@ catch (LiteRtException e)
 | `Unauthenticated` | The server answered 401. | Send a valid access token; see [Use a gated or private model](#use-a-gated-or-private-model). |
 | `PermissionDenied` | With an `HttpRequestException` as `InnerException`: the server answered 403. Without one: the runtime couldn't create or open a file, such as the temporary file next to the output, whatever the cause. | For a 403, check that the account can access the file. Otherwise, check that the output's folder is writable. |
 | `Aborted` | The remote file changed during the call: a later response carried another strong `ETag`. The output isn't replaced. | Run the update again, and use an address pinned to a revision. |
-| `DataLoss` | The server answered with other bytes than the ones requested, a downloaded section doesn't match the hash in the remote header, or the server returned a different number of bytes than the remote header declares. | Run the update again. If it fails again, the remote file is damaged or changed during the call. |
+| `DataLoss` | The server answered with other bytes than the ones requested, a downloaded section doesn't match the hash in the remote header, or the server returned a different number of bytes than the remote header declares. The C API also documents `DataLoss` for a failure of the runtime to store the bytes it received, which is not a fault of the server (not measured). | Run the update again. If it fails again, the remote file is damaged or changed during the call, or the runtime can't store the bytes: check the output's volume, for example its free space. |
 | `InvalidArgument` | The remote file isn't a `.litertlm` file. | Check that the address points to the `.litertlm` file. |
 | `Unimplemented` | The server doesn't serve byte ranges, and the remote header is longer than 16 KiB. | Use a server that serves byte ranges; see [Servers without range support](#servers-without-range-support). |
 | `Internal` | The runtime couldn't replace or write the output. When the reason says "Failed to rename temporary model", the runtime downloaded what the update needs and wrote the temporary file, and the output or its temporary file `OUTPUT.tmp_updating` was open: for example by a `LiteRtModelInfo.Read` of the output, or by a second update of the same output in another process (measured on Windows). For an up-to-date local file, another cause is an output that is another name of the local file, such as a hard link or a short 8.3 name (not measured; another spelling of the path failed this way). | Close what holds the file and update again, or write the update to another path and replace the file later. For another name of the local file, pass the same path for both arguments. |
@@ -635,9 +644,11 @@ Non-ASCII file names in an ASCII folder were not measured; the measured non-ASCI
   v0.20.0 on Windows x64, with test files served from memory or from an HTTP server on the loopback address.
   The Hugging Face results come from requests to the four files listed in
   [Files without section hashes](#files-without-section-hashes). The native libraries of every packaged
-  platform export the model sync functions. The calls ran on Windows x64, and some of them also ran on an
-  Android x86_64 emulator (see **Android** in this list). Linux and macOS were not run, and the names of the
-  compiled cache files were seen on Windows only.
+  platform export the model sync functions. The measurements were made on Windows x64, and some of the calls
+  also ran on an Android x86_64 emulator (see **Android** in this list). The repository's CI also runs the
+  model sync tests on linux-x64, linux-arm64, and osx-arm64, including the tests that need no model and the
+  compiled cache tests with an embedding engine on the CPU, and on osx-arm64 also on the GPU. Beyond what those
+  tests check, Linux and macOS were not measured.
 - **Engines.** The read of a model file that a live engine holds, and the stale compiled cache, were measured
   with an embedding engine only. A chat engine was measured in two cases, both on CPU: the failed replacement,
   and a replacement by another model of another size. In the second case, with LiteRT-LM v0.20.0 and two small

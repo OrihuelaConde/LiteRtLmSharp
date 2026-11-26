@@ -488,7 +488,7 @@ ends: its id stops working, and using it throws `ArgumentException`, so start a 
 |---|---|
 | The first turn of a conversation, tool calls included | Nothing comes before it. This applies even when stream updates already carried the id |
 | Any turn of a conversation with constrained decoding or a constraint provider, by default | Cloning it is slow, as the next paragraph explains |
-| A turn that starts with tool results, when no earlier turn is waiting for them | A retry would repeat the discarded tool results, and repeating a discarded send gave a wrong reply on the GPU with LiteRT-LM v0.18.0 (see **Sending the same message again** under "Other things to know"). A fork doesn't inherit its parent's waiting turn, so results sent on a branch count |
+| A turn that starts with tool results, when no earlier turn is waiting for them | A retry would repeat the discarded tool results, and this client's rollback of such a turn was not measured. Through the core conversation API, sending the tool results again on a checkpoint taken before a cut send gave the same reply as an uncut turn (LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and GPU, one tool and one prompt). With LiteRT-LM v0.18.0, repeating a discarded send gave a wrong reply on the GPU (see **Sending the same message again** under "Other things to know"). A fork doesn't inherit its parent's waiting turn, so results sent on a branch count |
 | Any turn on a backend that cannot clone | The checkpoint is a clone |
 
 **Constrained conversations.** Cloning a conversation with `EnableConstrainedDecoding`, a `ConstraintProvider`, or a
@@ -522,9 +522,9 @@ using IChatClient client = new LiteRtChatClient(engine, statefulConversations: n
 - **Tool calls in a stream.** In the stateful mode, a stream delivers a reply's tool calls together when the reply
   ends, after any text in it. That is why stopping at them keeps the turn.
 - **Reasoning.** The runtime removes a reply's reasoning from the KV cache right after the reply, so a checkpoint
-  holds no earlier reasoning, and a rollback leaves none in the context. This was measured on the CPU backend
-  (LiteRT-LM v0.20.0, win-x64, gemma-4 E2B); the GPU backend, and replies that a checkpoint generates later, weren't
-  measured.
+  holds no earlier reasoning: a clone taken after a reply with reasoning had the token count without it. This was
+  measured on the CPU backend (LiteRT-LM v0.20.0, win-x64, gemma-4 E2B). A rollback of this client after such a
+  reply, the GPU backend, and replies that a checkpoint generates later weren't measured.
 
 ### Forking a conversation
 
@@ -628,8 +628,8 @@ or a local file.
 
 ## Token usage
 
-Every response carries `ChatResponse.Usage`. `TotalTokenCount` — the turn's prompt + reply, read from the
-conversation's KV cache — is **always set, at no cost**:
+Every response carries `ChatResponse.Usage`. `TotalTokenCount` — what the conversation's KV cache holds after the
+reply, which leaves a reply's reasoning out — is **always set, at no cost**:
 
 ```csharp
 ChatResponse response = await client.GetResponseAsync("Hello", options);
@@ -644,6 +644,11 @@ bookkeeping). Without it those stay `null`, and a note is left under `response.A
 `InputTokenCount` is the prefill of the send's own messages (`LiteRtBenchmarkInfo.LastSendPrefillTokenCount`). After
 a reply with reasoning, the runtime records the refill of the KV cache as a later prefill turn; `InputTokenCount`
 leaves that refill out. This holds on CPU and GPU with LiteRT-LM v0.20.0 (win-x64, gemma-4 E2B).
+
+`TotalTokenCount` is what the KV cache holds after the reply, and the runtime removes a reply's reasoning from the
+KV cache, while `OutputTokenCount` counts every decoded token, reasoning included. So after a reply with reasoning,
+`TotalTokenCount` can be lower than `InputTokenCount` plus `OutputTokenCount`. For example, after a 966-token reply
+that held 668 thinking tokens, the conversation held 339 tokens (LiteRT-LM v0.20.0, win-x64, CPU, gemma-4 E2B).
 
 ```csharp
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions

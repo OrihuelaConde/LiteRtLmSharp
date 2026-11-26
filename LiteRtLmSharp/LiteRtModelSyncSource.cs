@@ -37,7 +37,9 @@ public abstract class LiteRtModelSyncSource
     /// when it ends at the end of the file, or when its <c>Content-Range</c> gives no file size; otherwise the
     /// source asks for the rest of the range with another <c>GET</c>.</description></item>
     /// <item><description>200, the whole file: the source serves a request at byte 0 from the first bytes of the
-    /// body, and reports any other request as a remote that cannot serve byte ranges. The runtime then downloads
+    /// body. A 200 to the request for the rest of a range, after a 206 with a part of it, fails the call with
+    /// <see cref="LiteRtStatusCode.Unknown"/>. To the first request of a range that starts after byte 0, the
+    /// source reports a 200 as a remote that cannot serve byte ranges. The runtime then downloads
     /// the whole file from byte 0, after one refused request for a first download and two for an update that
     /// reuses sections (measured over loopback). Each refused request is still a <c>GET</c> of the whole file:
     /// the source stops reading it at once, but the server can already have sent part or all of it. A plan or an

@@ -7,7 +7,7 @@ LLamaSharp-style model: **one pure managed package + per-RID native runtime pack
 | `LiteRtLmSharp` | Managed assembly only (`lib/net10.0/LiteRtLmSharp.dll`). No natives. | net10.0 |
 | `LiteRtLmSharp.Extensions.AI` | `IChatClient` and `IEmbeddingGenerator` connectors (Microsoft.Extensions.AI). Depends on `LiteRtLmSharp` (same version). | net10.0 |
 | `LiteRtLmSharp.SemanticKernel` | `IChatCompletionService` connector and embedding generator registration, built on `LiteRtLmSharp.Extensions.AI` (same version). | net10.0 |
-| `LiteRtLmSharp.runtime.win-x64` | `runtimes/win-x64/native/`: the official `LiteRtLm.dll` (static CRT) + the DirectX Shader Compiler runtime (`dxcompiler.dll`, `dxil.dll`) the GPU backend needs. No lib. | (native-only) |
+| `LiteRtLmSharp.runtime.win-x64` | `runtimes/win-x64/native/`: the official `LiteRtLm.dll` (static CRT) + the DirectX Shader Compiler runtime: `dxcompiler.dll`, which the GPU backend needs, and `dxil.dll`, which ships beside it (see [native-build.md](native-build.md)). No lib. | (native-only) |
 | `LiteRtLmSharp.runtime.linux-x64` | `runtimes/linux-x64/native/libLiteRtLm.so` (one official library). No lib. | (native-only) |
 | `LiteRtLmSharp.runtime.linux-arm64` | `runtimes/linux-arm64/native/libLiteRtLm.so` (one official library). No lib. | (native-only) |
 | `LiteRtLmSharp.runtime.android-arm64` | `runtimes/android-arm64/native/libLiteRtLm.so` (one official library, accelerators and samplers embedded; packed into the APK as `lib/arm64-v8a/`). | (native-only) |

@@ -35,8 +35,9 @@ if grep -q 'libLiteRt' <<< "$deps"; then
   exit 1
 fi
 if [ "$kind" = linux ]; then
-  # The v0.16.0 zip linked the Vulkan loader as a hard dependency; the v0.18.0 libraries load without it,
-  # and the docs, the CHANGELOG and model-tests.yml (which no longer installs libvulkan1) rely on that.
+  # The v0.16.0 zip linked the Vulkan loader as a hard dependency; the v0.18.0 and v0.20.0 libraries
+  # load without it, and the docs, the CHANGELOG and model-tests.yml (which no longer installs
+  # libvulkan1) rely on that.
   # A build that brings the dependency back fails here instead of on a consumer without the loader.
   if grep -q 'libvulkan\.so' <<< "$deps"; then
     echo "::error::$(basename "$out"): the library DT_NEEDs the Vulkan loader (libvulkan.so.1), which the docs say it does not need. Update the docs and model-tests.yml before packaging it."
@@ -48,10 +49,11 @@ fi
 bash "$(dirname "$0")/assert-elf-exports.sh" "$lib" "$MIN_EXPORTS"
 
 if [ "$kind" = android ]; then
-  # The OpenCL TopK sampler must be EMBEDDED: the factory dlopens libLiteRtTopKOpenClSampler.so first
-  # and falls back to the statically linked copy, and we ship no companion. Without the embedded copy
-  # GPU sampling falls back to CPU (or fails, as the self-built v0.15.0 set did, LiteRT-LM#3135). The
-  # x86_64 build targets the emulator, which has no OpenCL, so a missing sampler there only warns.
+  # The OpenCL TopK sampler must be EMBEDDED, because we ship no companion library. In the v0.20.0
+  # sources the factory tries the statically linked sampler first and falls back to dlopen of
+  # libLiteRtTopKOpenClSampler.so. Without the embedded copy GPU sampling falls back to CPU (or fails,
+  # as the self-built v0.15.0 set did, LiteRT-LM#3135). The x86_64 build targets the emulator, where
+  # the docs say to use the CPU backend, so a missing sampler there only warns.
   # From C API 1.0.0 the library exports only litert_lm_* symbols, so the sampler's entry points are no
   # longer in the dynamic symbol table. The embedded copy is then recognized by its names in the binary's
   # strings, which is weaker evidence: it shows the sampler code is referenced, not that it loads.

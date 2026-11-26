@@ -264,8 +264,8 @@ public sealed class ModelSyncInternalsTests
         { LiteRtStatusCode.DataLoss, "Section payload truncated", false, false, true, "may not be a .litertlm file" },
         { LiteRtStatusCode.InvalidArgument, "magic bytes", false, false, false, "may not be a .litertlm file" },
         { LiteRtStatusCode.DataLoss, "Content-Range", true, false, true, null },
-        // A failure of the runtime's own writer is not the remote's.
-        { LiteRtStatusCode.DataLoss, "write failed", false, true, true, null },
+        // A failure of the runtime's own writer is not the remote's: it gets its own hint.
+        { LiteRtStatusCode.DataLoss, "write failed", false, true, true, "could not store the bytes it received" },
         { LiteRtStatusCode.InvalidArgument, "x", false, true, false, null },
         { LiteRtStatusCode.Unavailable, "x", true, false, true, null },
     };

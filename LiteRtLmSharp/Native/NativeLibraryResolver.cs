@@ -13,8 +13,9 @@ namespace LiteRtLmSharp.Native;
 /// WebGPU on Direct3D 12); <c>dxil.dll</c> ships beside it. The resolver pre-loads every other
 /// library in the folder so those by-name loads hit the already-loaded module. Linux/macOS get the
 /// same treatment with <c>RTLD_GLOBAL</c>
-/// (a no-op with the current single-file layout). Registered lazily from
-/// <see cref="LiteRtEngine"/>'s static constructor.
+/// (a no-op with the current single-file layout). Registered lazily from the static constructor of
+/// every public type whose members can be the first native use: <see cref="LiteRtEngine"/>,
+/// <see cref="LiteRtEmbeddingEngine"/>, <see cref="LiteRtModelInfo"/> and <see cref="LiteRtModelSync"/>.
 /// When the library cannot be resolved, throws a <see cref="DllNotFoundException"/> whose message
 /// names the fix: the missing <c>LiteRtLmSharp.runtime.&lt;rid&gt;</c> package for this process's
 /// RID, or — when the binary exists but fails to load — the usual system prerequisites. When the

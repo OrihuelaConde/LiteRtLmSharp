@@ -719,8 +719,7 @@ public sealed class DecodingModelTests(EngineFixture fixture, ITestOutputHelper 
 
     /// <summary>LlGuidance regex constraint: the reply must match the pattern exactly — constrained
     /// sampling masks every token that cannot extend a valid match. Also the readiness probe for the
-    /// from-source LlGuidance provider on every platform (unlike tool-calling constrained decoding,
-    /// whose linux-x64 prebuilt provider is broken — see the guard in LiteRtConversation.Create).</summary>
+    /// LlGuidance provider on every platform.</summary>
     [SkippableFact]
     public void Send_WithLlGuidanceRegexConstraint_OutputMatchesPattern()
     {

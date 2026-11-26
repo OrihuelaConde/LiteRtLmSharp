@@ -29,12 +29,13 @@ public sealed class LiteRtModelInfo
     public LiteRtModelType ModelType { get; private init; }
 
     /// <summary>
-    /// Gets the context size in tokens the file declares. For a language model it is the default context
-    /// size the model is initialized with (the runtime reports 4,096 for gemma-4-E2B-it); when the metadata
-    /// declares none, the runtime's default of 4,096, capped by the size of a static model graph. A dynamic model (see
+    /// Gets the context size in tokens that the runtime reports for the file. For a language model it is the
+    /// default context size the model is initialized with (the runtime reports 4,096 for gemma-4-E2B-it); when the
+    /// metadata sets none, the runtime reports its own default of 4,096, capped by the size of a static model
+    /// graph, so 4,096 does not show whether the file sets the size. A dynamic model (see
     /// <see cref="IsDynamicContext"/>) accepts another size through
-    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/>. 0 when the file does not declare it. For an embedding
-    /// model it is the longest input signature (8,192 for EmbeddingGemma 2), which an embedding engine only
+    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/>. 0 when the runtime reports no context size for the file.
+    /// For an embedding model it is the longest input signature (8,192 for EmbeddingGemma 2), which an embedding engine only
     /// accepts with <see cref="LiteRtEmbeddingEngineOptions.MaxInputLength"/>: by default it stops at the
     /// limit the model declares (1,024 for EmbeddingGemma 2), which the C API does not expose.
     /// </summary>

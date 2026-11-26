@@ -210,7 +210,7 @@ public sealed class SessionStreamTests
                     stream.OnChunk(piece, isFinal: false, error: null);
                 stream.OnChunk([], isFinal: true, finalError);
                 stream.OnCallReturned();
-                stream.WaitAndSettle();
+                await Task.Run(stream.WaitAndSettle).WaitAsync(Limit);
             }
             else
             {
@@ -416,7 +416,7 @@ public sealed class SessionStreamTests
         SessionStream sync = blocking.BeginDecode(SessionCall.Decode, CancellationToken.None);
         sync.OnChunk(Encoding.UTF8.GetBytes("x"), isFinal: true, error: null);
         sync.OnCallReturned();
-        sync.WaitAndSettle();
+        await Task.Run(sync.WaitAndSettle).WaitAsync(Limit);
         Assert.Equal("x", sync.TakeResult());
         Assert.Equal(LiteRtSessionState.Decoded, blocking.State);
     }
@@ -477,7 +477,7 @@ public sealed class SessionStreamTests
     /// issued at the next chunk, and the blocking wait then throws <see cref="ObjectDisposedException"/> with the
     /// session Cancelled.</summary>
     [Fact]
-    public void Dispose_DuringABlockingDecode_ThrowsObjectDisposed()
+    public async Task Dispose_DuringABlockingDecode_ThrowsObjectDisposed()
     {
         LiteRtSession session = NullSession(LiteRtSessionState.Prefilled);
         SessionStream stream = session.BeginDecode(SessionCall.Decode, CancellationToken.None);
@@ -486,7 +486,7 @@ public sealed class SessionStreamTests
         Assert.True(stream.CancelIssued);
         stream.OnChunk([], isFinal: true, FinalChunkClassifier.CancelledError);
         stream.OnCallReturned();
-        stream.WaitAndSettle();
+        await Task.Run(stream.WaitAndSettle).WaitAsync(Limit);
         Assert.Throws<ObjectDisposedException>(() => stream.TakeResult());
         Assert.Equal(LiteRtSessionState.Cancelled, session.State);
         Assert.False(session.IsCallInProgress);

@@ -369,7 +369,9 @@ public sealed class ExtensionsAiStatefulModelTests(ITestOutputHelper output)
             new ChatOptions { TopK = 1, MaxOutputTokens = 48, ConversationId = id }))
         {
             // Creating a conversation waits for the generation in flight, so the reply has ended after this. The
-            // final chunk's callback runs just after that, so the pause lets it arrive before the break.
+            // final chunk's callback runs just after that, so the pause lets it arrive before the break. The
+            // pause is a margin, not a guarantee: a callback that runs later than 200 ms makes the break cut the
+            // stream, and the asserts below fail.
             using LiteRtConversation waited = engine.CreateConversation();
             await Task.Delay(200);
             break;
@@ -732,8 +734,9 @@ public sealed class ExtensionsAiStatefulModelTests(ITestOutputHelper output)
             name: "get_weather", description: "Gets the current weather for a given city.");
 
         // The template arms the provider on every conversation, so the schema continuation below can
-        // be enforced. NOTE: no EnableConstrainedDecoding here — provider and the tool-calling
-        // constrained mode are mutually exclusive; tools still work without it.
+        // be enforced. NOTE: no EnableConstrainedDecoding here — the binding does not combine the
+        // tool-calling constrained mode with a provider on one conversation (the binding's rule, not a
+        // native one); tools still work without it.
         using IChatClient client = new LiteRtChatClient(engine,
                 optionsTemplate: new LiteRtConversationOptions { ConstraintProvider = LiteRtConstraintProvider.LlGuidance },
                 statefulConversations: new LiteRtStatefulConversationOptions())
@@ -807,10 +810,7 @@ public sealed class ExtensionsAiStatefulModelTests(ITestOutputHelper output)
 
     // ─────────────────────── Forking + multi-conversation ───────────────────────
     //
-    // These tests exercise the multi-live-conversation / forking surface, unlocked with the v0.15.0
-    // repin: the native runtime now preserves a suspended conversation's state when another advances
-    // (verified by the Upstream_..._Sentinel canary below and the interleave recall tests here). They
-    // were parked behind LITERTLM_TEST_MULTICONV=1 from 2026-07-10 until that fix shipped.
+    // These tests exercise the multi-live-conversation / forking surface.
 
     /// <summary><c>GetService(typeof(LiteRtConversationBranching))</c> returns a branching instance in the
     /// stateful mode and <c>null</c> in the stateless mode; the standard <see cref="ChatClientMetadata"/> and
@@ -929,8 +929,8 @@ public sealed class ExtensionsAiStatefulModelTests(ITestOutputHelper output)
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
         using var engine = LiteRtEngine.Load(Options());
-        // Capacity exactly 2 (via the internal seam) so the third live conversation evicts the LRU — the
-        // parked multi-conversation machinery under test.
+        // Capacity exactly 2 (MaxLiveConversations) so the third live conversation evicts the LRU — the
+        // multi-conversation machinery under test.
         using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions { MaxLiveConversations = 2 });
         var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
 

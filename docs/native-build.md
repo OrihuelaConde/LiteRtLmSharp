@@ -49,12 +49,12 @@ the packaging steps are the same for both. What each job does, per platform:
 
 | RID | Library (zip path / wheel) | Shipped as | Checks before packaging |
 |---|---|---|---|
-| linux-x64 | `lib/linux_x86_64/liblitert-lm.so` / `manylinux_*_x86_64` wheel | `libLiteRtLm.so` | x86-64 ELF; ≥ 140 `litert_lm_*` exports incl. the engine/stream entry points; no `libLiteRt*` companion dependency; reports whether the Vulkan loader is a hard dependency |
+| linux-x64 | `lib/linux_x86_64/liblitert-lm.so` / `manylinux_*_x86_64` wheel | `libLiteRtLm.so` | x86-64 ELF; ≥ 140 `litert_lm_*` exports incl. the engine/stream entry points; no `libLiteRt*` companion dependency; fails when the library lists `libvulkan.so.1` as a dependency |
 | linux-arm64 | `lib/linux_arm64/liblitert-lm.so` / `manylinux_*_aarch64` wheel | `libLiteRtLm.so` | AArch64 ELF; same checks as linux-x64 |
 | android-arm64 | `lib/android_arm64/liblitert-lm.so` / `android_*_arm64_v8a` wheel | `libLiteRtLm.so` | AArch64 ELF; same export check; **OpenCL TopK sampler embedded** (`LiteRtTopKOpenClSampler_*`); 16 KB page alignment (Google Play) |
 | android-x64 | `lib/android_x86_64/liblitert-lm.so` / `android_*_x86_64` wheel | `libLiteRtLm.so` | x86-64 ELF; same checks as android-arm64, except that a missing OpenCL sampler only warns |
 | win-x64 | `lib/windows_x86_64/bin/litert-lm.dll` / `win_amd64` wheel | `LiteRtLm.dll` + `dxcompiler.dll` + `dxil.dll` | x64 image; export check; no separate LiteRt import; **no VC++ runtime import** (static CRT); the DXC zip is pinned by sha256 |
-| osx-arm64 | `lib/macos_arm64/liblitert-lm.dylib` / `macosx_*_arm64` wheel | `libLiteRtLm.dylib` | arm64; export check; system frameworks only in the load commands |
+| osx-arm64 | `lib/macos_arm64/liblitert-lm.dylib` / `macosx_*_arm64` wheel | `libLiteRtLm.dylib` | arm64; export check; no `libLiteRt*` companion in the load commands, which the log lists |
 | ios-arm64 | `CLiteRTLM.xcframework.zip` | `xcframeworks/CLiteRTLM.xcframework` (upstream name kept) | device slice present; export check on the device binary; logs the Metal companions the binary references by name |
 
 Every download is verified against the digest its host publishes: the **sha256 digest GitHub records
@@ -123,7 +123,8 @@ each release:
    `litert_lm_c_api-*.zip` asset when there is one and the PyPI wheels otherwise. Inspect the run, then
    run it again with `publish_release` to create the `native-<tag>` release.
 3. Bump `LiteRtLmVersion` in `Directory.Build.props`, `NATIVE_REF` in `ci.yml` and `model-tests.yml`,
-   and the default in `scripts/restore-natives.ps1`.
+   the default in `scripts/restore-natives.ps1`, and, in `native-release.yml`, the `litertlm_version`
+   input default and the `UPSTREAM_TAG` fallback.
 4. Run the full model-backed suite locally (CPU and GPU) and let CI run it on every desktop leg.
 
 Each package release records the native tag it ships (release notes + README compatibility table).

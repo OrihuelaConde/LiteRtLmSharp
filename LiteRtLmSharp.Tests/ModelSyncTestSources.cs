@@ -219,10 +219,6 @@ internal sealed class ModelSyncFileSource(string path) : LiteRtModelSyncSource
 /// <summary>Checks and cleanup that the model sync test classes share.</summary>
 internal static class ModelSyncAsserts
 {
-    /// <summary>How many times a temporary file was still listed right after a call and gone within the wait of
-    /// <see cref="NoTemporaries"/>, for a runner that reports it.</summary>
-    public static int LingeredTemporaries;
-
     /// <summary>Asserts that no <c>*.tmp_updating</c> file is left under <paramref name="folder"/>. A file that is
     /// still listed right after the call gets up to 2 seconds to go away, so a deletion that the operating system
     /// completes late does not fail the test. A file that stays fails the test with its size and whether it
@@ -239,10 +235,7 @@ internal static class ModelSyncAsserts
             found = Find(folder);
         }
         if (found.Length == 0)
-        {
-            Interlocked.Increment(ref LingeredTemporaries);
             return;
-        }
         Xunit.Assert.Fail("Temporary file left after the call: " + string.Join("; ", found.Select(Describe)));
     }
 

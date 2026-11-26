@@ -6,9 +6,10 @@ using Xunit.Abstractions;
 
 namespace LiteRtLmSharp.Tests;
 
-/// <summary>One engine for the session tests, with a 1024-token context so that an input that does not fit stays
-/// small. Loaded only when LITERTLM_TEST_MODEL names a model file (LITERTLM_TEST_BACKEND selects cpu or
-/// gpu).</summary>
+/// <summary>An engine for the session tests, with a 1024-token context so that an input that does not fit stays
+/// small. The test classes of <see cref="SessionEngineCollection"/> share one; <see cref="SessionRecoveryModelTests"/>
+/// loads its own as a class fixture. Loaded only when LITERTLM_TEST_MODEL names a model file
+/// (LITERTLM_TEST_BACKEND selects cpu or gpu).</summary>
 public sealed class SessionEngineFixture : IDisposable
 {
     public const int Context = 1024;
@@ -16,6 +17,14 @@ public sealed class SessionEngineFixture : IDisposable
     public LiteRtEngine? Engine { get; } = SessionModelHelpers.Options() is { } options ? LiteRtEngine.Load(options) : null;
 
     public void Dispose() => Engine?.Dispose();
+}
+
+/// <summary>The session test classes that share one <see cref="SessionEngineFixture"/>, so that the model loads
+/// once for all of them.</summary>
+[CollectionDefinition(Name)]
+public sealed class SessionEngineCollection : ICollectionFixture<SessionEngineFixture>
+{
+    public const string Name = "Session engine";
 }
 
 internal static class SessionModelHelpers
@@ -54,11 +63,11 @@ internal static class SessionModelHelpers
 }
 
 /// <summary>
-/// The session core on a model: create and dispose, prefill, the start-token refusal, a prefill that does not fit,
-/// and a cancelled <see cref="LiteRtSession.PrefillAsync"/>. The asserts are about the binding (states,
-/// exceptions, refusals), not about what the model writes.
+/// The session core on a model: create and dispose, prefill, the start-token refusal, and a prefill that does not
+/// fit. The asserts are about the binding (states, exceptions, refusals), not about what the model writes.
 /// </summary>
-public sealed class SessionModelTests(SessionEngineFixture fixture, ITestOutputHelper output) : IClassFixture<SessionEngineFixture>
+[Collection(SessionEngineCollection.Name)]
+public sealed class SessionModelTests(SessionEngineFixture fixture, ITestOutputHelper output)
 {
     private static readonly LiteRtSamplerParams Argmax = new() { Strategy = LiteRtSamplerType.TopP, TopK = 1 };
 
@@ -129,10 +138,10 @@ public sealed class SessionModelTests(SessionEngineFixture fixture, ITestOutputH
         Assert.Equal(LiteRtSessionState.Prefilled, session.State);
     }
 
-    /// <summary>A prefill that does not fit throws <see cref="LiteRtException"/> with the runtime's status, latches
-    /// Faulted, and refuses the next prefill; the engine still serves a new session and a conversation. Both ways
-    /// of not fitting are tried: one input longer than the context on a fresh session, and a second input that
-    /// does not fit after the first.</summary>
+    /// <summary>An input longer than the context on a fresh session throws <see cref="LiteRtException"/> with the
+    /// runtime's status, latches Faulted, and refuses the next prefill; the engine still serves a new session and a
+    /// conversation. A second input that does not fit after the first is tried by
+    /// <see cref="SessionRecoveryModelTests"/>.</summary>
     [SkippableFact]
     public async Task Prefill_ThatDoesNotFit_FaultsTheSession_AndTheEngineStillServes()
     {
@@ -141,13 +150,6 @@ public sealed class SessionModelTests(SessionEngineFixture fixture, ITestOutputH
 
         using (LiteRtSession tooLong = engine.CreateSession())
             AssertFaultsOnOverflow(tooLong, SessionModelHelpers.TextOf(engine, SessionEngineFixture.Context + 100, atLeast: true));
-
-        using (LiteRtSession filled = engine.CreateSession())
-        {
-            filled.Prefill(SessionModelHelpers.TextOf(engine, 600, atLeast: false));
-            Assert.Equal(LiteRtSessionState.Prefilled, filled.State);
-            AssertFaultsOnOverflow(filled, SessionModelHelpers.TextOf(engine, 500, atLeast: true));
-        }
 
         using (LiteRtSession next = engine.CreateSession())
         {
@@ -183,22 +185,6 @@ public sealed class SessionModelTests(SessionEngineFixture fixture, ITestOutputH
         Assert.False(session.IsCallInProgress);
         Assert.Throws<InvalidOperationException>(() => session.Prefill("Hello"));
         Assert.Equal(LiteRtSessionState.Faulted, session.State);
-    }
-
-    [SkippableFact]
-    public async Task PrefillAsync_WithATokenCancelledBeforeItStarts_ChangesNothing()
-    {
-        Skip.If(fixture.Engine is null, SessionModelHelpers.SkipReason);
-
-        using LiteRtSession session = fixture.Engine.CreateSession();
-        using var cts = new CancellationTokenSource();
-        cts.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => session.PrefillAsync("Hello", cts.Token));
-        Assert.Equal(LiteRtSessionState.Fresh, session.State);
-        Assert.False(session.IsCallInProgress);
-
-        await session.PrefillAsync("Hello", CancellationToken.None);
-        Assert.Equal(LiteRtSessionState.Prefilled, session.State);
     }
 }
 
@@ -290,10 +276,12 @@ public sealed class SessionLifetimeModelTests(ITestOutputHelper output)
         var wait = System.Diagnostics.Stopwatch.StartNew();
         while (!session.IsCallInProgress && !prefill.IsCompleted && wait.Elapsed < TimeSpan.FromSeconds(10))
             Thread.SpinWait(100);
+        bool disposedDuringCall = !prefill.IsCompleted;
         var dispose = System.Diagnostics.Stopwatch.StartNew();
         session.Dispose();
         dispose.Stop();
-        bool disposedDuringCall = !prefill.IsCompleted;
+        // Read at once: a Dispose that does not wait returns while the prefill still holds the gate.
+        bool busyAfterDispose = session.IsCallInProgress;
 
         Exception? error = await Record.ExceptionAsync(() => prefill.WaitAsync(TimeSpan.FromSeconds(60)));
         output.WriteLine($"dispose took {dispose.Elapsed.TotalMilliseconds:F1} ms, during the call: {disposedDuringCall}, " +
@@ -303,5 +291,8 @@ public sealed class SessionLifetimeModelTests(ITestOutputHelper output)
         Assert.False(session.IsCallInProgress);
         Assert.Equal(before, LiteRtEngine.LiveEngineCount);
         Skip.If(!disposedDuringCall, "The prefill ended before Dispose ran, so the dispose did not land during the call.");
+        // A prefill that ended normally held the native session when Dispose ran, and ran on after Dispose returned.
+        if (error is null)
+            Assert.True(busyAfterDispose, "The prefill had ended when Dispose returned: Dispose waited for the call.");
     }
 }

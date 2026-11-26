@@ -7,7 +7,7 @@ namespace LiteRtLmSharp.Tests;
 /// <see cref="LiteRtModelSyncSource.FromHttp"/> against a real server, opt-in only: set
 /// <c>LITERTLM_TEST_MODELSYNC_URL</c> to the address of a <c>.litertlm</c> file, preferably one pinned to a revision
 /// (for example a Hugging Face <c>resolve/COMMIT/FILE</c> address). The test downloads the whole file into a
-/// temporary folder, so it needs free space equal to twice the file's size. No CI job sets the variable.
+/// temporary folder, so it needs free space equal to the file's size. No CI job sets the variable.
 /// </summary>
 public sealed class ModelSyncNetworkTests(ITestOutputHelper output) : IDisposable
 {

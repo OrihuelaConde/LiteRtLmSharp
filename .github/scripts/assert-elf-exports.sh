@@ -17,8 +17,9 @@ if [ "$count" -lt "$min" ]; then
   exit 1
 fi
 required="litert_lm_engine_create litert_lm_conversation_create litert_lm_conversation_send_message_stream litert_lm_stream_chunk_get_error"
-# Session API. The same names are in .github/scripts/inspect-pe.py and in
-# LiteRtLmSharp.Tests/SessionAbiTests.cs (SessionImports); change all three together.
+# Session API. The same names are in .github/scripts/inspect-pe.py, in SESSION_EXPORTS of
+# .github/workflows/native-release.yml and in LiteRtLmSharp.Tests/SessionAbiTests.cs (SessionImports);
+# change all four together.
 required="$required litert_lm_engine_create_session litert_lm_session_delete litert_lm_session_cancel_process litert_lm_session_save_checkpoint litert_lm_session_rewind_to_checkpoint litert_lm_session_rewind_to_step litert_lm_session_run_prefill litert_lm_session_run_decode"
 required="$required litert_lm_session_run_decode_async litert_lm_session_run_text_scoring litert_lm_session_config_set_apply_prompt_template litert_lm_responses_delete litert_lm_responses_get_num_candidates litert_lm_responses_get_response_text_at litert_lm_responses_get_score_at litert_lm_responses_get_token_length_at"
 # Model sync entry points. The same names are in .github/scripts/inspect-pe.py, in the Apple steps of

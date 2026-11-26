@@ -13,7 +13,7 @@ all running locally via LiteRtLmSharp.
 - **Models tab** — catalog of Gemma 4 models from `litert-community` (Hugging Face): download with
   progress + resume, delete, pick CPU/GPU and load. Loading while another model is active swaps
   the engine in-place (no app restart) — same pattern as Google's Edge Gallery. When you load an
-  MTP-capable model it also asks whether to enable speculative decoding (default on; see
+  MTP-capable model it also asks, on each load, whether to enable speculative decoding, with no default (see
   `docs/speculative-decoding.md`). The engine keeps the default disk cache with or without speculative
   decoding.
 - **Chat tab** — streaming chat with Stop (cancellation), New conversation, and a gauge showing

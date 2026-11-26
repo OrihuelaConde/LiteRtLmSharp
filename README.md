@@ -108,6 +108,8 @@ Every feature has a full guide on the [documentation site](https://orihuelaconde
 | **Reasoning mode** | Gemma "thinking", surfaced separately from the answer (blocking & streaming) — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/chat.html#reasoning-mode-thinking) |
 | **Multimodal** | Image and audio attachments, in-memory or memory-mapped from disk — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/chat.html#multimodal-messages-image--audio) |
 | **Conversation state** | Persist/restore chats across restarts; clone a live conversation to branch it — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html) |
+| **Raw sessions** | Prefill and decode text you write, with no chat template; experimental checkpoints, rewind and reset — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/sessions.html) |
+| **Model download and update (experimental)** | Download a `.litertlm` file over HTTP, or update a local copy by reusing the sections that didn't change — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/model-sync.html) |
 | **Embeddings** | On-device text embeddings (EmbeddingGemma 2) for semantic search and RAG, next to a chat model — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/embeddings.html) |
 | **Model metadata** | Read a model file's type, context size, inputs and backends without loading it — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/chat.html#read-a-models-metadata) |
 | **Token counting** | Tokenize/detokenize with the model's own tokenizer; budget the context window — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/chat.html#token-counting-tokenize--detokenize) |

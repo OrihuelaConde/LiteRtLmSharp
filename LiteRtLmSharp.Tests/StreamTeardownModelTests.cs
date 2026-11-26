@@ -9,7 +9,8 @@ namespace LiteRtLmSharp.Tests;
 /// The stream teardown on a model: how a stream that ends, or that the consumer leaves, decides whether the
 /// conversation is consumed (<see cref="LiteRtConversation.IsCancelled"/>), including the background KV-cache
 /// refill the runtime runs after a reply with thinking.
-/// Set LITERTLM_TEST_MODEL to a .litertlm file to run (CPU backend; skipped without it).
+/// Set LITERTLM_TEST_MODEL to a .litertlm file to run (CPU backend; skipped without it, and when
+/// LITERTLM_TEST_BACKEND names another backend).
 /// </summary>
 public sealed class StreamTeardownModelTests(ITestOutputHelper output)
 {
@@ -22,6 +23,9 @@ public sealed class StreamTeardownModelTests(ITestOutputHelper output)
     {
         string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
         Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model), "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        // The engine is CPU whatever the pass: a pass on another backend would only repeat the CPU pass.
+        Skip.If(LiteRtBackend.Parse(Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu") != LiteRtBackend.Cpu,
+            "These tests load a CPU engine; the CPU pass runs them.");
         LiteRtEngine.SetMinLogLevel(3);
         return LiteRtEngine.Load(new LiteRtEngineOptions { ModelPath = model!, Backend = LiteRtBackend.Cpu, MaxNumTokens = 4096 });
     }
@@ -106,6 +110,9 @@ public sealed class StreamTeardownModelTests(ITestOutputHelper output)
             Assert.True(chat.IsCancelled);
         if (!chat.IsCancelled)
             Assert.False(string.IsNullOrWhiteSpace(chat.Send("Reply with one word: OK").Text));
+        // Checked after the asserts so a failure still fails: a run where no cancel landed while the
+        // teardown waited did not reach the scenario.
+        Skip.If(outcome == "clean" && (cancel == 0 || cancel > loopEnd), "The cancel did not land while the teardown waited.");
     }
 
     /// <summary>

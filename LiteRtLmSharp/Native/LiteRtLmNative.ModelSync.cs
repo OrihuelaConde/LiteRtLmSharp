@@ -5,8 +5,8 @@ namespace LiteRtLmSharp.Native;
 
 // Differential download and update of .litertlm files (c/model_sync.h, C API 1.1.0). Options, plans and results
 // are caller-owned, independent handles. Paths and messages are NUL-terminated byte strings the binding encodes
-// itself (see NarrowPath.EncodeForModelSync). A C bool input is one byte (UnmanagedType.U1) and a bool* output is
-// byte*. The remote fetcher callback is
+// itself: paths with NarrowPath.EncodeForModelSync, messages as UTF-8. A C bool input is one byte
+// (UnmanagedType.U1) and a bool* output is byte*. The remote fetcher callback is
 //   LiteRtLmStatusCode (*)(uint64_t offset, uint64_t length, LiteRtLmModelSyncRangeWriter* writer, void* user_data)
 // declared as delegate* unmanaged[Cdecl]<ulong, ulong, nint, nint, LiteRtStatusCode>. It runs synchronously on the
 // thread that called plan_create_from_file or update, and never after that call returns (measured on LiteRT-LM

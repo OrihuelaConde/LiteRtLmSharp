@@ -8,7 +8,8 @@ namespace LiteRtLmSharp.Tests;
 /// <summary>
 /// Paths through <see cref="LiteRtModelSync"/>: non-ASCII folders, characters outside the Windows ANSI code page,
 /// long paths and UNC paths. On Windows the expectations come from the active code page read at run time, never
-/// assumed. The Windows behaviour was measured on LiteRT-LM v0.20.0, win-x64, code pages 1252 and 65001.
+/// assumed. The Windows behaviour of these calls was measured on LiteRT-LM v0.20.0, win-x64, code page 1252;
+/// under code page 65001, only the runtime, called directly, was measured.
 /// </summary>
 public sealed class ModelSyncPathTests : IDisposable
 {
