@@ -2,11 +2,15 @@ namespace LiteRtLmSharp.SampleMaui.Services;
 
 /// <summary>A known LiteRT-LM model that the app can download and run.</summary>
 /// <remarks>
-/// <paramref name="GpuOnly"/>: some published .litertlm files carry a backend constraint and
-/// refuse to load on CPU ("Main backend constraint mismatch") — the 12B build is one of them.
-/// <paramref name="SupportsSpeculativeDecoding"/>: the model ships an MTP drafter, so speculative
-/// decoding gives a real decode speedup (all the Gemma 4 builds do). The Models page defaults the
-/// speculative toggle ON for these and hides it for the rest.
+/// <paramref name="GpuOnly"/>: the Models page offers only the GPU backend for the model (this catalog
+/// sets it on the 12B entry). A .litertlm file that lists only GPU in
+/// <see cref="LiteRtLmSharp.LiteRtModelInfo.SupportedBackends"/> fails to load on CPU: with LiteRT-LM
+/// v0.20.0, gemma-4-E2B-it-gpu failed with NOT_FOUND ("tf_lite_prefill_decode not found in the model").
+/// <paramref name="SupportsSpeculativeDecoding"/>: the model ships an MTP drafter (all the Gemma 4
+/// builds do), so speculative decoding can be turned on. Turning it on does not guarantee a speedup: with
+/// gemma-4-E2B it lowered decode throughput on every desktop CPU and GPU backend measured, and it was not
+/// measured on a device with LiteRT-LM v0.20.0. The Models page still defaults the speculative toggle ON
+/// for these models and hides it for the rest.
 /// <paramref name="SupportsVision"/> / <paramref name="SupportsAudio"/>: the model can take image /
 /// audio attachments (the Gemma 4 E-series are full text+vision+audio). When set, the engine is loaded
 /// with the matching vision/audio backend and the Chat tab shows the attach buttons.

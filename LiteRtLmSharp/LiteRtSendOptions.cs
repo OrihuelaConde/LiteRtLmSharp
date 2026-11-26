@@ -7,9 +7,8 @@ namespace LiteRtLmSharp;
 /// conversation's configuration unchanged.
 /// </summary>
 /// <remarks>
-/// This is also the growth point for per-send settings future native versions add (e.g. a per-send
-/// output-token cap), so they can land without changing the send signatures. Maps to the C API's
-/// per-send <c>conversation_optional_args</c>.
+/// This record is also where new per-send settings of the native API are added, so they can land without
+/// changing the send signatures. Maps to the C API's per-send <c>conversation_optional_args</c>.
 /// </remarks>
 public sealed record LiteRtSendOptions
 {
@@ -134,10 +133,10 @@ public sealed record LiteRtSendOptions
     /// throws <see cref="LiteRtException"/>. <c>null</c> (default) = unconstrained.
     /// </summary>
     /// <remarks>
-    /// The constraint masks <b>every</b> generated token to pattern-conforming continuations, so on a
-    /// conversation with <see cref="LiteRtConversationOptions.Tools"/> a constrained send cannot emit
-    /// a tool call — the model is forced into the pattern instead. Constrain only the sends whose
-    /// reply must match the pattern; run tool rounds unconstrained.
+    /// Constrain only the sends whose reply must match the pattern, and run tool rounds unconstrained. On a
+    /// conversation with <see cref="LiteRtConversationOptions.Tools"/>, the one constrained send measured
+    /// (a regex constraint; LiteRT-LM v0.20.0, win-x64, CPU, gemma-4 E2B) answered with text and no tool
+    /// call.
     /// </remarks>
     public LiteRtConstraint? Constraint { get; init; }
 }

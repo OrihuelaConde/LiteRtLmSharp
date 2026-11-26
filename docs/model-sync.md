@@ -61,7 +61,8 @@ be removed in a minor version. They're experimental for three reasons:
 
 - The runtime's model sync functions first appear in C API version 1.1.0, which LiteRT-LM v0.20.0 carries,
   and the binding was tested against that version only.
-- The calls ran on one platform only (see [Limitations](#limitations)).
+- The calls ran only on Windows x64 and, in part, on an Android x86_64 emulator (see
+  [Limitations](#limitations)).
 - Differential updates depend on files with section hashes, and none of the files that were checked has them.
 
 The C# compiler reports each use of these types as error LITERTLM003, and the error's help link opens this
@@ -634,12 +635,30 @@ Non-ASCII file names in an ASCII folder were not measured; the measured non-ASCI
   v0.20.0 on Windows x64, with test files served from memory or from an HTTP server on the loopback address.
   The Hugging Face results come from requests to the four files listed in
   [Files without section hashes](#files-without-section-hashes). The native libraries of every packaged
-  platform export the model sync functions, but the calls ran only on Windows x64. Linux and macOS were not
-  run, and the names of the compiled cache files were seen on Windows only.
+  platform export the model sync functions. The calls ran on Windows x64, and some of them also ran on an
+  Android x86_64 emulator (see **Android** in this list). Linux and macOS were not run, and the names of the
+  compiled cache files were seen on Windows only.
 - **Engines.** The read of a model file that a live engine holds, and the stale compiled cache, were measured
-  with an embedding engine only. A chat engine was measured only for the failed replacement on CPU.
-- **Android.** The Android HTTP handler and the runtime's free-space check in Android app storage were not
-  measured.
+  with an embedding engine only. A chat engine was measured in two cases, both on CPU: the failed replacement,
+  and a replacement by another model of another size. In the second case, with LiteRT-LM v0.20.0 and two small
+  test models (a Qwen3 0.6B and the LiteRT-LM LoRA test model), a chat engine that the same process loaded from
+  that path afterwards computed with the new model. A chat model replaced in the same process by a file of the
+  same size was not measured, and on the GPU this case was not measured either, because the LoRA test model
+  doesn't load there.
+- **Android.** Each of the following gave the expected result in 3 of 3 runs on an Android x86_64 emulator
+  (API 35) with LiteRT-LM v0.20.0. The runs used test files of 129,024 bytes and the default `HttpClient` over
+  cleartext HTTP, and every update wrote a separate output file:
+  - `CreatePlanAsync`, for a file with section hashes and for a file that is up to date. Each plan read the
+    header with one range request and gave the same values as on Windows x64.
+  - `UpdateAsync` with section hashes, which received the same number of bytes as on Windows x64.
+  - `UpdateAsync` without section hashes.
+  - `UpdateAsync` against a server that ignores range requests, which fell back to whole-file answers and
+    received the same number of bytes as the Windows x64 test, which updates in place.
+
+  In each update, the output matched the remote file, and the local file didn't change.
+
+  Not measured on Android: in-place updates, HTTPS, redirects, cancellation, files of real model sizes, the
+  runtime's free-space check in app storage, and arm64 devices.
 - **iOS.** The iOS package is not published.
 - **Servers.** Apart from the loopback server, only Hugging Face was measured. Other CDNs and object stores
   were not.
@@ -656,9 +675,10 @@ Non-ASCII file names in an ASCII folder were not measured; the measured non-ASCI
   same output at the same time write the same temporary file: one of them fails at the end with `Internal`,
   and the other one succeeds. That was measured with both processes updating from the same remote file; two
   different remote files were not measured.
-- **Timing.** The times in this guide come from a desktop computer, with the file in the operating system's
-  cache. A file that isn't cached, a file of several GB, mobile devices, and the time an update of a file
-  without section hashes spends on the local file were not timed.
+- **Timing.** The times in this guide come from a Windows 11 computer with an Intel Core i7-12700F and an
+  NVIDIA RTX 3080, with LiteRT-LM v0.20.0 and the file in the operating system's cache. A file that isn't
+  cached, a file of several GB, mobile devices, and the time an update of a file without section hashes spends
+  on the local file were not timed.
 - **Cache manager.** The runtime's cache manager, which keeps models in a folder by ID and falls back to the
   cached file when offline, is not part of the binding. Catch `Unavailable` and keep the existing file
   instead, as in [Keep a model up to date at startup](#keep-a-model-up-to-date-at-startup).

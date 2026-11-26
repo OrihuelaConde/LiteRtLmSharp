@@ -2,14 +2,19 @@ namespace LiteRtLmSharp;
 
 /// <summary>
 /// Raised instead of letting a send run into the end of the conversation's KV cache, which is sized by
-/// <see cref="LiteRtEngineOptions.MaxNumTokens"/>. Without the guard, the runtime stops a reply at the limit.
-/// When the context then stays full, it rejects the next send (<c>RESOURCE_EXHAUSTED</c>); a reply with
-/// thinking leaves room, because the runtime removes the thinking from the KV cache. A send whose prefill does
-/// not fit, or lands in the last free entries, is rejected (<c>RESOURCE_EXHAUSTED</c> or
-/// <c>FAILED_PRECONDITION</c>), and every later send on that conversation fails; measured on LiteRT-LM v0.20.0,
-/// CPU, gemma-4 E2B. The binding throws this instead, before the conversation is lost.
+/// <see cref="LiteRtEngineOptions.MaxNumTokens"/>. The binding throws it before the conversation is lost.
 /// </summary>
 /// <remarks>
+/// <para>Without the guard, the runtime behaves as follows (LiteRT-LM v0.20.0, gemma-4 E2B):</para>
+/// <list type="bullet">
+/// <item>It stops a reply at the limit (CPU and GPU).</item>
+/// <item>When the context then stays full, it rejects the next send with <c>RESOURCE_EXHAUSTED</c> (CPU and
+/// GPU). A reply with thinking leaves room, because the runtime removes the thinking from the KV cache
+/// (CPU).</item>
+/// <item>A send whose prefill does not fit, or lands in the last free entries, is rejected
+/// (<c>RESOURCE_EXHAUSTED</c> or <c>FAILED_PRECONDITION</c>), and every later send on that conversation fails
+/// (CPU and GPU).</item>
+/// </list>
 /// <para>Thrown by the send methods of <see cref="LiteRtConversation"/> when the engine was loaded
 /// with an explicit <see cref="LiteRtEngineOptions.MaxNumTokens"/> and either (a) the conversation's
 /// context is full (<see cref="LiteRtConversation.IsContextFull"/>: fewer than 128 entries left, or an earlier

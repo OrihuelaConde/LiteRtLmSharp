@@ -10,7 +10,9 @@ namespace LiteRtLmSharp;
 /// <c>Last*</c> properties report
 /// the most recent turn (the headline number for "how fast was that reply"), except
 /// <see cref="LastSendPrefillTokenCount"/>, which reports the last send's own message. Decode throughput
-/// is the metric that <see cref="LiteRtEngineOptions.EnableSpeculativeDecoding"/> accelerates.
+/// is the metric <see cref="LiteRtEngineOptions.EnableSpeculativeDecoding"/> aims to raise; with gemma-4 E2B
+/// it lowered decode throughput on every desktop CPU and GPU measured, so compare both settings here before
+/// turning it on.
 /// </para>
 /// </summary>
 public sealed record LiteRtBenchmarkInfo

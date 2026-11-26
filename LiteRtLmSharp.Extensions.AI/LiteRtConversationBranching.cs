@@ -58,7 +58,7 @@ public sealed class LiteRtConversationBranching
     /// </param>
     /// <param name="cancellationToken">Cancels waiting to acquire the call gate, which every client over the
     /// same engine shares. Cloning itself is a fast, non-cancellable native copy (about a second on a
-    /// conversation with constrained decoding or a constraint provider).</param>
+    /// conversation with constrained decoding or a constraint provider, measured with LiteRT-LM v0.18.0).</param>
     /// <returns>
     /// A fresh <c>ConversationId</c> for the branch. It has identical semantics to any other conversation id:
     /// set it on <see cref="ChatOptions.ConversationId"/> to resume, re-fork, or evict it. The branch inherits

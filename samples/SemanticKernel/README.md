@@ -59,7 +59,8 @@ You need a `.litertlm` model and the native binaries for your platform.
   [docs/semantic-kernel.md](../../docs/semantic-kernel.md) for the design.
 - **Function calling** (Demo D) sets `EnableConstrainedDecoding = true` — the recommended setting when using
   tools, which forces the model to emit schema-valid arguments. See
-  [docs/semantic-kernel.md](../../docs/semantic-kernel.md#function-calling) for its linux-x64 caveat.
+  [docs/semantic-kernel.md](../../docs/semantic-kernel.md#function-calling) for details.
 - Native `WARNING: … npu_registry` / `mel_filterbank` lines on startup are harmless — the NPU probe and
   the multimodal model's audio sub-model initializing on CPU.
-- win-x64 needs the Microsoft Visual C++ Redistributable (the native DLLs import `VCRUNTIME140`).
+- On win-x64, the official `LiteRtLm.dll` links the C runtime statically, so it doesn't need the Microsoft
+  Visual C++ Redistributable.

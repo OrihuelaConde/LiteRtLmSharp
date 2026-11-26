@@ -74,9 +74,11 @@ env:
   # truncated or wrong-architecture binary, not a specific version).
   MIN_EXPORTS: '140'
   # DirectX Shader Compiler runtime for win-x64 (the official DLL's Dawn requires DXC on D3D12 and
-  # has no FXC fallback: without dxil.dll the GPU engine fails to create, "DynamicLib.Open: dxil.dll
-  # Windows Error: 87"). Pinned by hash; this exact pair was validated on an RTX 3080 (2026-09) and is
-  # byte-identical to the pair the v0.18.0 Windows wheel carries.
+  # has no FXC fallback: without dxcompiler.dll the GPU engine fails to create, "DynamicLib.Open:
+  # dxcompiler.dll Windows Error: 87"). dxil.dll ships alongside it; on LiteRT-LM v0.20.0 with one
+  # RTX 3080, one GPU run without dxil.dll (cache disabled) still loaded and answered. Pinned by
+  # hash; this exact pair was validated on an RTX 3080 (2026-09) and is byte-identical to the pair
+  # the v0.20.0 Windows wheel carries.
   DXC_URL: https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/dxc_2026_02_20.zip
   DXC_SHA256: a1e89031421cf3c1fca6627766ab3020ca4f962ac7e2caa7fab2b33a8436151e
 

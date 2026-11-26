@@ -514,9 +514,9 @@ again.
 
 `LiteRtSession.SaveCheckpoint`, `LiteRtSession.RewindTo`, `LiteRtSession.Reset`, and the
 `LiteRtSessionCheckpoint` type carry `[Experimental("LITERTLM001")]`. The C# compiler reports every use of them as
-error LITERTLM001, and the error's help link opens this section. They're experimental because their behavior was
-measured on one platform and one model only (see [Limitations](#limitations)), so they can change or be removed
-in a minor version. The stable members don't depend on them.
+error LITERTLM001, and the error's help link opens this section. They can change or be removed in a minor
+version. They're experimental because their behavior was measured with one model only, on Windows x64 and, in
+part, on an Android x86_64 emulator (see [Limitations](#limitations)). The stable members don't depend on them.
 
 To use them, suppress the diagnostic in the files that call them:
 
@@ -742,7 +742,13 @@ Console.WriteLine(session.Decode());
 - **Where it was measured.** Unless a section says otherwise, the results in this guide come from Gemma 4 E2B
   with LiteRT-LM v0.20.0 on Windows x64, on the CPU and on an NVIDIA GPU. Apart from the comparison of sampler
   settings, every comparison of two replies used argmax sampling (top-k 1), which gave the same replies as
-  `Greedy`. Linux, macOS, Android, and other GPU vendors were not measured.
+  `Greedy`. The times in [Cost and waiting](#cost-and-waiting) and elsewhere in this guide were measured on a
+  Windows 11 computer with an Intel Core i7-12700F and an NVIDIA RTX 3080.
+- **Android.** On an Android x86_64 emulator (API 35, CPU backend) with LiteRT-LM v0.20.0, the synchronous
+  `CreateSession`, `Prefill`, and `Decode` gave the expected states and reply in 3 of 3 runs. The experimental
+  members ran there too; see **Checkpoints, rewind, and reset on Android** below. Not measured on Android:
+  `PrefillAsync`, `DecodeAsync`, `DecodeStreamingAsync`, cancellation, the GPU backend, and arm64 devices.
+- **Other platforms.** Linux, macOS, and GPU vendors other than NVIDIA were not measured.
 - **Models.** The later-turn text, the continuation of a cut reply, the cancel, the context limits, and the
   experimental checkpoints, rewind, and reset were measured on Gemma 4 E2B only. The start-token rule and the
   first-turn text were also measured on Gemma 4 E4B, Ministral 3, and Phi-4-mini. Prompts with reasoning or tool
@@ -758,3 +764,16 @@ Console.WriteLine(session.Decode());
   `LiteRtEngineOptions.UseRingbuffersLocalAttention` on. The recovery was measured only after prefills whose
   input didn't fit and after full contexts; a rewind or a reset after another prefill failure is accepted but
   wasn't measured (see [Recover a full or failed session](#recover-a-full-or-failed-session)).
+- **Checkpoints, rewind, and reset on Android.** On the emulator of **Android** above, with a 1,024-token context, each of
+  the following gave the expected result in 3 of 3 runs:
+  - After a rewind to a checkpoint saved in `Decoded`, the session was `Decoded`, and the repeated turn gave
+    the same reply as the first time.
+  - A `Reset` after one turn and after three turns left the session `Fresh`, and the next reply was the same
+    as on a new session.
+  - After a 1,501-token prefill failed with `InvalidArgument`, the session was `Faulted`. A `RewindTo` made it
+    `Prefilled`, and the next decode gave the same reply as a session that never had the failure. The runtime
+    refused that prefill for its length, so this case shows that the session accepts the rewind, not that the
+    rewind restored the context.
+
+  Not measured on Android: that a `Faulted` session refuses the other calls, a `Reset` from `Faulted`, a rewind
+  to a checkpoint saved in `Prefilled` on a session that didn't fail, and the start-token rule after a `Reset`.

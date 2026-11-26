@@ -22,12 +22,17 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// </para>
 /// <para>
 /// <b>Serialized per engine.</b> Calls are serialized with a gate shared by every
-/// <see cref="LiteRtChatClient"/> over the same engine: the native runtime does not support two generations in
-/// flight on one engine, and conversations are not thread-safe. Clients over different engines (see
-/// <see cref="LiteRtEngineOptions.AllowMultipleEngines"/>) do not wait for each other. A stream holds the gate
-/// until it is read to the end or disposed, so a call on any client over the same engine (a fork included)
-/// made from inside the loop that reads the stream waits for that loop forever. Finish or dispose the stream
-/// first, or use a client over another engine.
+/// <see cref="LiteRtChatClient"/> over the same engine, so one generation runs on an engine at a time and no
+/// conversation is used from two threads at once (conversations are not thread-safe). Clients over different
+/// engines (see <see cref="LiteRtEngineOptions.AllowMultipleEngines"/>) do not wait for each other. A stream holds
+/// the gate until it is read to the end or disposed, so a call on any client over the same engine (a fork
+/// included) made from inside the loop that reads the stream waits for that loop forever. Finish or dispose the
+/// stream first, or use a client over another engine.
+/// </para>
+/// <para>
+/// The gate is this client's own rule. With LiteRT-LM v0.20.0 on win-x64 (gemma-4 E2B), the runtime itself
+/// queued concurrent sends on different conversations of one engine, and every reply was correct: on CPU, and on
+/// GPU (an NVIDIA RTX 3080) with blocking sends. Concurrent streaming through this client was not measured.
 /// </para>
 /// <para>
 /// <b>Reasoning.</b> Enable the model's reasoning ("thinking") mode with the <c>enable_thinking</c> key in
@@ -48,8 +53,10 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// bytes) or a file-path <see cref="UriContent"/> with an <c>image/*</c> or <c>audio/*</c> media type — is sent
 /// to the model as an attachment. The engine must have been loaded with the matching modality enabled
 /// (<see cref="LiteRtEngineOptions.VisionBackend"/> / <see cref="LiteRtEngineOptions.AudioBackend"/>) on a
-/// multimodal model. In the stateless (default) mode, media on earlier (history) turns is not replayed — only
-/// the triggering turn's media is sent.
+/// multimodal model. In the stateless (default) mode, image and audio content on earlier user turns is carried
+/// into the restored history and re-encoded through prefill on every call, so the model can refer back to it:
+/// with gemma-4 E2B on LiteRT-LM v0.20.0 (win-x64, CPU and GPU), the model recalled an image from an earlier
+/// turn. Audio on an earlier turn was not tested.
 /// </para>
 /// <para>
 /// <b>Token usage.</b> Each response carries <see cref="ChatResponse.Usage"/> with
@@ -187,7 +194,9 @@ public sealed class LiteRtChatClient : IChatClient
     {
         (IReadOnlyList<LiteRtMessage> history, LiteRtChatMapping.SendTrigger trigger) = LiteRtChatMapping.Split(messages);
         // For a Required tool mode, fold a best-effort "you must call a tool" instruction into the system prompt
-        // (the native API has no forced tool choice). No-op for Auto/None.
+        // (the native tool_choice setting does not force a call: on LiteRT-LM v0.20.0, win-x64, the runtime
+        // ignored it without constrained decoding and rejected every value but "auto" with it). No-op for
+        // Auto/None.
         history = LiteRtChatMapping.WithRequiredToolInstruction(history, options);
         LiteRtConversationOptions? convOptions = LiteRtChatMapping.ToConversationOptions(history, options, _optionsTemplate);
         // ChatOptions.MaxOutputTokens is a MEAI per-request option, so it maps to the native per-send cap
@@ -367,8 +376,10 @@ public sealed class LiteRtChatClient : IChatClient
     /// rounds) is discarded, results sent for its tool calls are rejected, and the next request continues from
     /// the turn before it. Otherwise the conversation is evicted, and resuming its id throws: a turn that created
     /// the conversation, no checkpoint, a checkpoint that is itself full (the guard's context-full rejection of
-    /// a turn's first send), or a turn started by tool results: re-sending tool results on a checkpoint was not
-    /// measured to give a correct reply.
+    /// a turn's first send), or a turn started by tool results. This client's rollback of a turn started by tool
+    /// results is not measured. Through the core conversation API, re-sending the tool results on a checkpoint
+    /// taken before a cut send gave the same reply as an uncut turn (LiteRT-LM v0.20.0, win-x64, gemma-4 E2B,
+    /// CPU and GPU, one tool and one prompt).
     /// </summary>
     private void RecoverFailedTurn(string id, LiteRtConversationStore.Entry entry, TurnCheckpoint turn)
     {
@@ -386,13 +397,19 @@ public sealed class LiteRtChatClient : IChatClient
 
     /// <summary>
     /// Takes the checkpoint a stateful turn rolls back to: a clone of the live conversation, taken under the
-    /// gate right before the turn's first send. Creating it costs no measurable time or memory (measured on
-    /// LiteRT-LM v0.18.0) except on a conversation with constrained decoding or a constraint provider, which
-    /// gets none unless the client opted in (see <see cref="LiteRtConversationStore.Entry.CloneIsSlow"/>). It is a transient second
-    /// conversation, outside <see cref="LiteRtStatefulConversationOptions.MaxLiveConversations"/>, disposed
-    /// when the turn completes. Returns <c>null</c> when no checkpoint can be taken; after the backend reports
-    /// that it does not implement cloning, no further clone is attempted, so a failure then evicts as before.
+    /// gate right before the turn's first send. It is a transient second conversation, outside
+    /// <see cref="LiteRtStatefulConversationOptions.MaxLiveConversations"/>, disposed when the turn completes.
+    /// Returns <c>null</c> when no checkpoint can be taken; after the backend reports that it does not implement
+    /// cloning, no further clone is attempted, so a failure then evicts as before.
     /// </summary>
+    /// <remarks>
+    /// Creating it costs no measurable time or memory (measured on LiteRT-LM v0.18.0) except on a conversation
+    /// with constrained decoding or a constraint provider, which gets none unless the client opted in (see
+    /// <see cref="LiteRtConversationStore.Entry.CloneIsSlow"/>). Using it is not always cheaper than a replay: on
+    /// the GPU with LiteRT-LM v0.20.0 (win-x64, gemma-4 E2B), a clone saved the replay only when nothing else
+    /// generated after it was taken. After the original generated, as it does in a turn that is rolled back, the
+    /// clone's first send took as long as a <c>History</c> restore or longer.
+    /// </remarks>
     private LiteRtConversation? TakeCheckpoint(LiteRtConversation conversation)
     {
         if (_checkpointUnsupported)

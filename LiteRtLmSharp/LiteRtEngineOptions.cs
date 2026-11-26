@@ -5,8 +5,8 @@ public sealed record LiteRtEngineOptions
 {
     /// <summary>Path to the <c>.litertlm</c> (or <c>.task</c>) model file. Must be set —
     /// <see cref="LiteRtEngine.Load"/> throws <see cref="System.ArgumentException"/> when it is empty.
-    /// (Deliberately not <c>required</c>: future native versions add alternate model sources — e.g.
-    /// loading from a file descriptor — which will land here as sibling properties.)</summary>
+    /// (Deliberately not <c>required</c>: the native API has other model sources — e.g. loading from a file
+    /// descriptor, which this binding does not expose — that would be added here as sibling properties.)</summary>
     public string ModelPath { get; init; } = "";
 
     /// <summary>Backend to run the model on. Defaults to <see cref="LiteRtBackend.Cpu"/>. Use
@@ -17,30 +17,36 @@ public sealed record LiteRtEngineOptions
     /// <summary>
     /// Backend for the vision encoder, enabling <b>image</b> input. <c>null</c> (default) leaves vision
     /// unconfigured — image attachments will not work. Requires a multimodal model (e.g. the Gemma 4
-    /// E-series); on a text-only model setting this has no effect.
+    /// E-series); on a text-only model the engine loads, but creating a conversation fails.
     /// </summary>
     /// <remarks>
-    /// Maps to the <c>vision_backend_str</c> parameter of the C API <c>engine_settings_create</c>.
+    /// <para>Leave this <c>null</c> on a text-only model. With a backend set,
+    /// <see cref="LiteRtEngine.CreateConversation"/> fails with <c>NOT_FOUND</c> ("tf_lite_vision_encoder not
+    /// found in the model"), measured on LiteRT-LM v0.20.0 with Phi-4-mini-instruct (win-x64, CPU).</para>
+    /// <para>Maps to the <c>vision_backend_str</c> parameter of the C API <c>engine_settings_create</c>.
     /// May differ from <see cref="Backend"/> (e.g. main on <see cref="LiteRtBackend.Gpu"/>, vision on
     /// <see cref="LiteRtBackend.Cpu"/>). Pair with image attachments via
     /// <see cref="LiteRtAttachment.Image(System.ReadOnlySpan{byte})"/> and tune the image prefill budget
-    /// with <see cref="LiteRtConversationOptions.VisualTokenBudget"/>.
+    /// with <see cref="LiteRtConversationOptions.VisualTokenBudget"/>.</para>
     /// </remarks>
     public LiteRtBackend? VisionBackend { get; init; }
 
     /// <summary>
     /// Backend for the audio encoder, enabling <b>audio</b> input. <c>null</c> (default) leaves audio
     /// unconfigured — audio attachments will not work. Requires a model with audio support (e.g. the
-    /// Gemma 4 E-series); a no-op on models without it.
+    /// Gemma 4 E-series); on a model without it the engine loads, but creating a conversation fails.
     /// </summary>
     /// <remarks>
-    /// A model may constrain which backend its audio encoder accepts. The Gemma 4 audio sub-model
+    /// <para>Leave this <c>null</c> on a text-only model. With a backend set,
+    /// <see cref="LiteRtEngine.CreateConversation"/> fails with <c>NOT_FOUND</c> ("tf_lite_audio_encoder_hw not
+    /// found in the model"), measured on LiteRT-LM v0.20.0 with Phi-4-mini-instruct (win-x64, CPU).</para>
+    /// <para>A model may constrain which backend its audio encoder accepts. The Gemma 4 audio sub-model
     /// requires <b>CPU</b>: passing <see cref="LiteRtBackend.Gpu"/> makes <c>litert_lm_engine_create</c>
     /// fail with "Audio backend constraint mismatch. Model requires one of [cpu]" even when
     /// <see cref="Backend"/> is GPU — on any platform, not a win-x64 quirk. Use
     /// <see cref="LiteRtBackend.Cpu"/> for such models; the vision encoder has no such constraint and
     /// runs on GPU. Maps to the <c>audio_backend_str</c> parameter of the C API
-    /// <c>engine_settings_create</c>.
+    /// <c>engine_settings_create</c>.</para>
     /// </remarks>
     public LiteRtBackend? AudioBackend { get; init; }
 
@@ -51,36 +57,52 @@ public sealed record LiteRtEngineOptions
     /// <remarks>
     /// This is the hard ceiling for a conversation's KV cache. Size it for the longest exchange you
     /// expect — the system prompt, any restored <see cref="LiteRtConversationOptions.History"/>, and each
-    /// user turn and reply all count against it and accumulate. As the running total
-    /// (<see cref="LiteRtConversation.TokenCount"/>) nears the limit, generation degrades, so manage the
-    /// conversation before then: trim history, cap replies with
+    /// user turn and reply all count against it and accumulate. When the running total
+    /// (<see cref="LiteRtConversation.TokenCount"/>) reaches the limit, the reply stops there and later sends
+    /// fail (see below), so manage the conversation before then: trim history, cap replies with
     /// <see cref="LiteRtConversationOptions.MaxOutputTokens"/>, or start a fresh conversation. A larger
     /// window costs more memory and a slower prefill, so prefer the smallest that fits your use case. For
     /// <b>multimodal</b> input leave room for the media on top of the text — an image expands to roughly
     /// 256 vision tokens — for which 4096 is a comfortable starting point.
     /// <para><b>Setting this also arms the binding's KV overflow guard.</b> Without it, the runtime stops a
     /// reply at the limit and, when the context stays full, rejects later sends; a send whose prefill does not
-    /// fit, or lands in the last free entries, leaves the conversation failing every later send (measured on
-    /// LiteRT-LM v0.20.0, CPU, gemma-4 E2B; GPU not measured). With an explicit
+    /// fit, or lands in the last free entries, leaves the conversation failing every later send. The process
+    /// did not crash (measured on LiteRT-LM v0.20.0 with gemma-4 E2B on win-x64, CPU and GPU). With an explicit
     /// value here, the send methods instead clamp each reply to the remaining context and throw
     /// <see cref="LiteRtContextOverflowException"/> when the conversation is full. <b>The clamp cannot
     /// cover sends whose prefill cost is unmeasurable managed-side</b> — media attachments and
     /// <c>SendRaw</c>'s per-send <c>extraContext</c> get only the conversation-full check, so keep extra
-    /// headroom under the limit on those paths (an image is roughly 256 tokens). With 0 the effective
-    /// limit is internal to the engine (the C API exposes no getter), so the guard stays off.</para>
-    /// <para><b>Keep the value at or below the model's built-in context length.</b> The native loader
-    /// sizes the KV cache from this hint only when it is smaller than the model's own maximum; a value
-    /// at or above it silently falls back to the model's default sizing, leaving the real cache SMALLER
-    /// than this property claims — and the overflow guard, calibrated against this value, would then
-    /// stop policing before the actual edge. Values below the model's minimum prefill work group
-    /// (~128) are unusable outright: every send is rejected.</para>
+    /// headroom under the limit on those paths (an image is roughly 256 tokens). With 0 the engine uses its
+    /// own default limit and the guard stays off: the binding does not read that default (the C API reports
+    /// it only in the benchmark info of an engine in benchmark mode).</para>
+    /// <para><b>A large value can be capped by the runtime.</b> The guard is calibrated against the value set
+    /// here, so where the runtime caps it, the guard does not protect the conversation: a send that does not
+    /// fit reaches the runtime, which rejects it with <c>RESOURCE_EXHAUSTED</c>, and the conversation then
+    /// fails every later send. Measured on LiteRT-LM v0.20.0 with gemma-4 E2B (win-x64, CPU):</para>
+    /// <list type="bullet">
+    /// <item><description>No value: the limit was 4,096 tokens.</description></item>
+    /// <item><description>20,000: used as set.</description></item>
+    /// <item><description>40,000: capped at 32,000.</description></item>
+    /// </list>
     /// <para><b>Keep the value at or above the model's largest prefill signature</b> (1024 for the
-    /// published gemma conversions). The native loader accepts a smaller limit, but a send whose prefill
-    /// spans more than the smallest work group then fails inside the native graph (v0.18.0 reports
-    /// "Failed to invoke the compiled model Failed to allocate tensors") instead of cleanly. The C API
-    /// exposes no way to query the signatures, so the binding cannot validate this up front; when a send
-    /// fails that way on an engine loaded with a limit below 1024, the exception names this as the likely
-    /// cause.</para>
+    /// published gemma conversions). The native loader accepts some smaller limits, and what then fails
+    /// depends on the value and the backend. Measured on LiteRT-LM v0.20.0 with gemma-4 E2B (win-x64):</para>
+    /// <list type="bullet">
+    /// <item><description>100: engine creation fails on CPU; on GPU the engine loads and every send
+    /// fails.</description></item>
+    /// <item><description>512: on CPU the engine loads and every text send fails with "Failed to allocate
+    /// tensors"; on GPU a 427-token first message was accepted.</description></item>
+    /// <item><description>256 and 384 on CPU, with <see cref="VisionBackend"/> set to CPU and the cache
+    /// disabled: engine creation fails with "Failed to allocate tensors".</description></item>
+    /// <item><description>1000: a 707-token message was accepted on CPU and GPU. A 987-token message was
+    /// rejected by the guard with <see cref="LiteRtContextOverflowException"/> before it reached the
+    /// runtime.</description></item>
+    /// </list>
+    /// <para>When a send fails with "Failed to allocate tensors" on an engine loaded with a limit below 1024,
+    /// the exception names the small limit as the likely cause. The C API exposes no way to query the
+    /// signatures, so the binding cannot validate the value up front. In the cases above, every failure raised
+    /// an exception; no blocking send returned an empty reply. Other values below 1024 were not
+    /// measured.</para>
     /// </remarks>
     public int MaxNumTokens { get; init; }
 
@@ -141,11 +163,23 @@ public sealed record LiteRtEngineOptions
     /// <see cref="LiteRtCache.Directory"/> for an explicit path.
     /// </summary>
     /// <remarks>
-    /// The cache files are named after the model file (its name, modification time and size), not after
-    /// the native runtime version. A newer runtime detects a GPU cache written by an older one and
-    /// rebuilds it on the first load, which makes that load slower once. A <see cref="LiteRtCache.Directory"/>
+    /// <para>
+    /// The cache files are named after the model file (its name, modification time and size), not after the
+    /// native runtime version, so LiteRT-LM v0.18.0 and v0.20.0 give them the same names. A model file loaded
+    /// under a new name in a new process gets a new cache file, and the old one stays on disk. When v0.20.0
+    /// loads a cache that v0.18.0 wrote, or the reverse, the runtime rewrites the files once, on CPU and GPU.
+    /// On GPU, the program cache file grows instead of being replaced. Measured on win-x64 with Qwen3-0.6B.
+    /// </para>
+    /// <para>
+    /// Within one process, the cache key of a path is fixed at its first load: after the file at that path
+    /// was replaced, an embedding engine in the same process returned stale results (LiteRT-LM v0.20.0,
+    /// win-x64, CPU, EmbeddingGemma 2).
+    /// </para>
+    /// <para>
+    /// A <see cref="LiteRtCache.Directory"/>
     /// must exist: the runtime does not create it, and since native v0.18.0 <see cref="LiteRtEngine.Load"/>
     /// fails with <see cref="LiteRtStatusCode.InvalidArgument"/> when it is missing.
+    /// </para>
     /// </remarks>
     public LiteRtCache Cache { get; init; }
 
@@ -166,24 +200,46 @@ public sealed record LiteRtEngineOptions
     /// with up to three) and linux-x64 (CPU, up to four): the engines load, generate at the same time and
     /// dispose in any order, with replies byte-identical to a single engine. That includes engines loaded
     /// concurrently from two threads (with the compiled-model cache already warm), mixed CPU and GPU engines, a
-    /// vision engine next to a text engine, and speculative decoding. On the android-x64 emulator (CPU,
-    /// gemma-4 E2B) up to three engines load and generate. Physical Android devices, Apple platforms and
-    /// linux-arm64 were not measured.
+    /// vision engine next to a text engine, and speculative decoding. With LiteRT-LM v0.20.0 on win-x64
+    /// (gemma-4 E2B), each of these layouts also gave replies identical to a single engine. On the Android
+    /// x86_64 emulator (API 35, CPU, gemma-4 E2B, LiteRT-LM v0.20.0) three engines stayed loaded at once and
+    /// each replied in turn. Physical Android devices, Apple platforms and linux-arm64 were not measured.
     /// </para>
     /// <para>
     /// Engines run in parallel only on a desktop CPU. On a GPU, and on the Android emulator, a second engine
-    /// adds no throughput: two replies generated at the same time take longer than one after the other.
+    /// adds no throughput: two replies generated at the same time take longer than one after the other
+    /// (measured with LiteRT-LM v0.18.0).
     /// </para>
     /// <para>
-    /// Each engine holds its own memory. On Windows a gemma-4 E2B engine commits about 2.3 GB of private memory
-    /// on CPU and 3.6 GB on GPU once loaded, while right after loading the working set of a CPU engine grows by
-    /// about 0.35 GB, because the weights are memory-mapped; on linux-x64 and the Android emulator each extra CPU
-    /// engine took 0.2 to 0.4 GB. These figures are before generating: one engine alone reached 1.3 GB on win-x64
-    /// and 1.45 GB on the emulator after one short reply, and several generating engines were not measured. Over ten
-    /// load and dispose cycles next to a live engine, private memory ended about 90 MB higher on CPU and 215 to 250 MB
-    /// on GPU (win-x64), moving in both directions, so this does not show steady growth. Check free memory (on Windows, the commit limit) before loading another
-    /// engine. On win-x64 GPU, test runs that load and dispose many engines in one process have ended a few
-    /// times with the process exiting without an error; the project roadmap tracks it.
+    /// Each engine holds its own memory. Check free memory (on Windows, the commit limit) before loading
+    /// another engine. The table lists the measured figures; memory with several engines generating at the
+    /// same time was not measured.
+    /// </para>
+    /// <list type="table">
+    /// <listheader><term>Measurement</term><description>Memory</description></listheader>
+    /// <item><term>gemma-4 E2B engine on Windows, right after loading (LiteRT-LM v0.20.0, Float32; GPU on an
+    /// RTX 3080)</term>
+    /// <description>Committed (private) memory: about 2.3 GB on CPU and about 4.1 GB on GPU.</description></item>
+    /// <item><term>CPU engine on Windows, right after loading (measured with LiteRT-LM v0.18.0)</term>
+    /// <description>The working set grows by about 0.35 GB, because the weights are
+    /// memory-mapped.</description></item>
+    /// <item><term>Extra CPU engine on linux-x64 (measured with LiteRT-LM v0.18.0)</term>
+    /// <description>0.2 to 0.4 GB each.</description></item>
+    /// <item><term>One engine alone on win-x64, after one short reply (measured with LiteRT-LM
+    /// v0.18.0)</term>
+    /// <description>1.3 GB.</description></item>
+    /// <item><term>Android x86_64 emulator (gemma-4 E2B, CPU, LiteRT-LM v0.20.0)</term>
+    /// <description>Each extra engine added 252 to 257 MiB of proportional memory (PSS); one engine reached
+    /// 1,402 to 1,403 MiB resident (RSS) after one reply.</description></item>
+    /// <item><term>Ten load and dispose cycles next to a live engine on win-x64 (measured with LiteRT-LM
+    /// v0.18.0)</term>
+    /// <description>Private memory ended about 90 MB higher on CPU and 215 to 250 MB higher on GPU, moving in
+    /// both directions, so this does not show steady growth.</description></item>
+    /// </list>
+    /// <para>
+    /// With LiteRT-LM v0.20.0 (win-x64, RTX 3080), none of 12 full GPU test runs that load and dispose many
+    /// engines in one process ended with the process exiting without an error. With LiteRT-LM v0.18.0 on
+    /// win-x64 GPU, such runs ended that way a few times.
     /// </para>
     /// <para>
     /// The one-engine rule was added in an earlier release built on self-built LiteRT-LM v0.13.1 libraries,
@@ -216,11 +272,16 @@ public sealed record LiteRtEngineOptions
     /// v0.13.1).
     /// </para>
     /// <para>
-    /// Sampling with speculative decoding, measured on LiteRT-LM v0.20.0 (gemma-4 E2B, win-x64, CPU, turned
-    /// on per conversation): a sampled reply follows the conversation's seed (seeds 7, 8 and 9 give three
-    /// different replies), and an argmax reply equals the plain argmax reply. For one seed, the sampled
-    /// speculative reply differs from the plain one. Not measured on GPU.
+    /// Sampling with speculative decoding, measured on LiteRT-LM v0.20.0 with gemma-4 E2B on win-x64:
     /// </para>
+    /// <list type="bullet">
+    /// <item><description>CPU (turned on per conversation): a sampled reply follows the conversation's seed
+    /// (seeds 7, 8 and 9 give three different replies), and an argmax reply equals the plain argmax reply. For
+    /// one seed, the sampled speculative reply differs from the plain one.</description></item>
+    /// <item><description>GPU (Float32): sampled replies also follow the seed. Seeds 7, 8 and 9 give three
+    /// replies, and the same three in each of two processes. An argmax reply with speculative decoding on
+    /// differs from the argmax reply with it off on the same engine, in 2 of 2 processes.</description></item>
+    /// </list>
     /// </remarks>
     public bool EnableSpeculativeDecoding { get; init; }
 
@@ -243,20 +304,21 @@ public sealed record LiteRtEngineOptions
 
     /// <summary>
     /// Activation tensor precision. Defaults to <see cref="LiteRtActivationDataType.Float32"/>.
-    /// <b>Only the GPU backend honors this, and only as F32 vs F16</b>; on CPU it is a <b>no-op</b>.
+    /// <b>Only the GPU backend honors this</b>; on CPU it is a <b>no-op</b>.
     /// </summary>
     /// <remarks>
     /// The runtime's own GPU default for the text executor is F16, which corrupts structured output
     /// (digits, dates, JSON) on the GPUs we measured, with no speed gain on a desktop GPU: gemma-4-E2B on an
-    /// RTX 3080 decodes 113 tok/s with F16 and 117 with F32, and F32 commits about 0.3 to 0.6 GB more. So
-    /// the binding asks for F32. Set <see cref="LiteRtActivationDataType.Float16"/> to trade precision for
-    /// activation memory (for example on a mobile GPU, after checking your outputs), or <c>null</c> to let
+    /// RTX 3080 decodes 113 tok/s with F16 and 117 with F32, and F32 commits about 0.3 to 0.6 GB more
+    /// (measured with LiteRT-LM v0.18.0). So the binding asks for F32. Set
+    /// <see cref="LiteRtActivationDataType.Float16"/> to trade precision for activation memory (for example on
+    /// a mobile GPU, after checking your outputs), or <c>null</c> to let
     /// the runtime choose: the precision the model file declares for its text model (F16 for the Gemma 4
     /// E-series), else F16 on GPU. The setting reaches the text executor only: the vision and audio encoders
     /// run at the precision the model file declares for them (F16 for the Gemma 4 E-series vision encoder),
     /// else F32. <see cref="LiteRtActivationDataType.Int16"/> and
-    /// <see cref="LiteRtActivationDataType.Int8"/> are accepted by the native API but not distinctly
-    /// implemented by the shipped executors (folded to F16 on GPU). Maps to
+    /// <see cref="LiteRtActivationDataType.Int8"/> are accepted, but on GPU both produced unusable text;
+    /// on CPU, Int8 gave the same replies as F16 and F32 (LiteRT-LM v0.20.0, gemma-4 E2B, win-x64). Maps to
     /// <c>engine_settings_set_activation_data_type</c>. See <c>docs/engine-tuning.md</c>.
     /// </remarks>
     public LiteRtActivationDataType? ActivationDataType { get; init; } = LiteRtActivationDataType.Float32;
@@ -505,8 +567,8 @@ public sealed record LiteRtEngineOptions
 
 /// <summary>
 /// Activation tensor precision for <see cref="LiteRtEngineOptions.ActivationDataType"/>, mirroring
-/// upstream's <c>ActivationDataType</c> enum. Only <see cref="Float32"/> and <see cref="Float16"/> are
-/// distinctly honored, and only on the GPU backend (see
+/// upstream's <c>ActivationDataType</c> enum. Only the GPU backend honors it, and only <see cref="Float32"/>
+/// and <see cref="Float16"/> gave usable text there (see
 /// <see cref="LiteRtEngineOptions.ActivationDataType"/>).
 /// </summary>
 public enum LiteRtActivationDataType
@@ -518,12 +580,12 @@ public enum LiteRtActivationDataType
     /// default for the text executor; see <see cref="LiteRtEngineOptions.ActivationDataType"/>.</summary>
     Float16 = 1,
 
-    /// <summary>16-bit integer — present for parity with the native enum, but not distinctly implemented
-    /// by the shipped executors (folded to F16 on GPU, ignored on CPU).</summary>
+    /// <summary>16-bit integer — present for parity with the native enum. On GPU it produced unusable text
+    /// (LiteRT-LM v0.20.0, gemma-4 E2B, win-x64).</summary>
     Int16 = 2,
 
-    /// <summary>8-bit integer — present for parity with the native enum, but not distinctly implemented
-    /// by the shipped executors (folded to F16 on GPU, ignored on CPU).</summary>
+    /// <summary>8-bit integer — present for parity with the native enum. On GPU it produced unusable text,
+    /// and on CPU it had no effect (LiteRT-LM v0.20.0, gemma-4 E2B, win-x64).</summary>
     Int8 = 3,
 }
 
@@ -656,11 +718,15 @@ public sealed record LiteRtConversationOptions
     /// provider enforces during sampling. <c>null</c> (default) = no custom constraints.
     /// </summary>
     /// <remarks>
-    /// Mutually exclusive with <see cref="EnableConstrainedDecoding"/> (the tool-calling
-    /// constrained-decoding path) — the native runtime supports one per conversation, and
-    /// <see cref="LiteRtEngine.CreateConversation"/> throws <see cref="ArgumentException"/> when both
-    /// are set. Maps to the C API <c>conversation_config_set_constraint_provider</c>. The LlGuidance
-    /// provider, like the tool-calling one, is embedded in the native library.
+    /// The binding does not combine it with <see cref="EnableConstrainedDecoding"/> (the tool-calling
+    /// constrained-decoding path): <see cref="LiteRtEngine.CreateConversation"/> throws
+    /// <see cref="ArgumentException"/> when both are set. The runtime itself accepted both on one
+    /// conversation (LiteRT-LM v0.20.0, gemma-4 E2B, win-x64, CPU), but whether both took effect together was
+    /// not measured. A constrained send can keep a tool call from happening: on a conversation with
+    /// <see cref="Tools"/>, a send with a regex <see cref="LiteRtSendOptions.Constraint"/> returned text and no
+    /// tool call (one send measured; see that property). Maps to the C API
+    /// <c>conversation_config_set_constraint_provider</c>. The LlGuidance provider, like the tool-calling one,
+    /// is embedded in the native library.
     /// </remarks>
     public LiteRtConstraintProvider? ConstraintProvider { get; init; }
 

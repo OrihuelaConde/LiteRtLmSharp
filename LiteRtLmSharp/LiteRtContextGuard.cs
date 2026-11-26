@@ -25,17 +25,18 @@ internal static class LiteRtContextGuard
     /// message actually is. After that rejection, every later send on the conversation fails with
     /// <c>INTERNAL: Task failed with state: 7.</c> 128 is the smallest prefill signature in the current
     /// gemma <c>.litertlm</c> conversions (measured on LiteRT-LM v0.20.0, CPU, gemma-4 E2B: 127 free
-    /// entries rejected, 129 accepted). A model with a smaller signature just gets the typed rejection
-    /// slightly early.
+    /// entries rejected, 129 accepted). On GPU (same version and model), a prefill that landed in the last
+    /// ~128 free entries also left the conversation failing every later send. A model with a smaller
+    /// signature gets the typed rejection slightly early.
     /// </summary>
     internal const int MinPrefillReserve = 128;
 
     /// <summary>
-    /// The largest prefill signature of the published gemma <c>.litertlm</c> conversions. A
-    /// <c>MaxNumTokens</c> below it is accepted by the native loader but breaks prefill for inputs longer
-    /// than the smallest work group (verified on v0.15.0 and v0.16.0 with a raw C API ladder). The C API
-    /// exposes no signature query, so the binding cannot validate this up front — it names the cause when
-    /// a send fails on such an engine (<see cref="IsBelowLargestKnownPrefillSignature"/>).
+    /// The largest prefill signature of the published gemma <c>.litertlm</c> conversions. Below it, the
+    /// outcome depends on the value and the backend; the measured cases are listed in the remarks of
+    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/>. The C API exposes no signature query, so the binding
+    /// cannot validate this up front — it names the cause when a send fails on such an engine
+    /// (<see cref="IsBelowLargestKnownPrefillSignature"/>).
     /// </summary>
     internal const int LargestKnownPrefillSignature = 1024;
 

@@ -11,7 +11,7 @@ LLamaSharp-style model: **one pure managed package + per-RID native runtime pack
 | `LiteRtLmSharp.runtime.linux-x64` | `runtimes/linux-x64/native/libLiteRtLm.so` (one official library). No lib. | (native-only) |
 | `LiteRtLmSharp.runtime.linux-arm64` | `runtimes/linux-arm64/native/libLiteRtLm.so` (one official library). No lib. | (native-only) |
 | `LiteRtLmSharp.runtime.android-arm64` | `runtimes/android-arm64/native/libLiteRtLm.so` (one official library, accelerators and samplers embedded; packed into the APK as `lib/arm64-v8a/`). | (native-only) |
-| `LiteRtLmSharp.runtime.android-x64` | `runtimes/android-x64/native/libLiteRtLm.so` (the same library for the x86_64 Android emulator; packed into the APK as `lib/x86_64/`). | (native-only) |
+| `LiteRtLmSharp.runtime.android-x64` | `runtimes/android-x64/native/libLiteRtLm.so` (the x86_64 build of the same library, for the Android emulator with the CPU backend; packed into the APK as `lib/x86_64/`). | (native-only) |
 | `LiteRtLmSharp.runtime.osx-arm64` | `runtimes/osx-arm64/native/libLiteRtLm.dylib` (one official library, Apple Silicon). | (native-only) |
 | `LiteRtLmSharp.runtime.ios-arm64` | Google's official `CLiteRTLM.xcframework` (device + simulator slices) injected via `NativeReference` (buildTransitive `.targets`); CPU backend. No lib. | (native-only) |
 
@@ -50,10 +50,10 @@ picks its RID, like LLamaSharp).
 
 ## Producing the packages
 
-1. **Native release** (`native-release.yml`) pinned to the upstream tag (`v0.18.0`, the current pin)
+1. **Native release** (`native-release.yml`) pinned to the upstream tag (`v0.20.0`, the current pin)
    with `publish_release` → downloads Google's official prebuilts (the C API zip release asset, or the
    `litert-lm-api` wheels on PyPI when the release carries no zip), verifies each download against the
-   digest its host publishes, inspects each library and publishes the `native-v0.18.0` release with the
+   digest its host publishes, inspects each library and publishes the `native-v0.20.0` release with the
    `litertlm-*.tar.gz` assets plus `THIRD_PARTY_NOTICES.litert-lm.txt`.
 2. **Pack** (`pack-nuget.yml`): downloads those assets, lays them into
    `runtimes/<rid>/native/`, runs `dotnet pack` with the given `package_version`, uploads the
@@ -67,8 +67,9 @@ the projects under `packaging/` (these need the natives already present in
 
 ## Notes / pending
 
-- **No Vulkan loader needed on Linux** for the CPU backend: the v0.18.0 libraries carry no hard
-  dependency on `libvulkan.so.1` (the v0.16.0 one did, which is why 1.2.0 documented `libvulkan1`). The
+- **No hard dependency on the Vulkan loader on Linux:** the v0.20.0 linux-x64 and linux-arm64 libraries
+  do not list `libvulkan.so.1` as a dependency (the v0.16.0 one did, which is why 1.2.0 documented
+  `libvulkan1`). A CPU engine with v0.20.0 was not tested on a machine without the Vulkan loader. The
   GPU backend runs on Vulkan and needs the GPU's Vulkan driver plus the Vulkan loader.
 - **No VC++ Redistributable on Windows** since 1.2.0: the official `LiteRtLm.dll` links the CRT statically.
 - Optional future: a `LiteRtLmSharp.Backend.Desktop` meta-package depending on the win/linux

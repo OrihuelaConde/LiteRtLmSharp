@@ -146,7 +146,9 @@ internal static unsafe partial class LiteRtLmNative
     internal static partial LiteRtStatusCode litert_lm_engine_settings_enable_benchmark(nint settings);
 
     /// <summary>Directory for the compiled-artifact cache (copied; null is rejected). Special values
-    /// <c>:nocache</c> (disable) and <c>:memory</c> (in-RAM); empty = next to the model file.</summary>
+    /// <c>:nocache</c> (disable) and <c>:memory</c> (in-RAM); empty = next to the model file. For how the
+    /// runtime names the cache files, shares them between LiteRT-LM v0.18.0 and v0.20.0, and keys them within
+    /// one process, see <see cref="LiteRtEngineOptions.Cache"/>, which carries the measured conditions.</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial LiteRtStatusCode litert_lm_engine_settings_set_cache_dir(nint settings, string cache_dir);
@@ -164,7 +166,10 @@ internal static unsafe partial class LiteRtLmNative
         nint settings, [MarshalAs(UnmanagedType.U1)] bool enable_ynnpack);
 
     /// <summary>Activation tensor precision (0=F32, 1=F16, 2=I16, 3=I8 per <c>ActivationDataType</c>). Fails
-    /// with <c>INVALID_ARGUMENT</c> for any other value.</summary>
+    /// with <c>INVALID_ARGUMENT</c> for any other value. Measured with LiteRT-LM v0.20.0 on win-x64 and
+    /// gemma-4 E2B: on the CPU backend the value had no effect (F32, F16 and I8 gave byte-identical replies);
+    /// on the GPU backend (WebGPU on Direct3D 12, one NVIDIA RTX 3080) I16 and I8 are accepted and produce
+    /// unusable text.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial LiteRtStatusCode litert_lm_engine_settings_set_activation_data_type(nint settings, int activation_data_type);
@@ -288,7 +293,7 @@ internal static unsafe partial class LiteRtLmNative
 
     /// <summary>Per-session speculative decoding. Unset = inherit the engine setting; true on an engine
     /// created without it lazily loads the MTP drafter on the session's first request; false disables it
-    /// for this session even when the engine enables it (v0.18.0+). Deprecated in C API 1.0.0 in favor of
+    /// for this session even when the engine enables it. Deprecated in C API 1.0.0 in favor of
     /// the speculative-decoding config object, and still exported.</summary>
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -324,8 +329,9 @@ internal static unsafe partial class LiteRtLmNative
     internal static partial LiteRtStatusCode litert_lm_conversation_config_set_tools(nint config, string tools_json);
 
     /// <summary>Sets the initial messages (conversation history / few-shot preface) as a JSON
-    /// <b>array</b>. Consumed at <c>conversation_create</c>: parsed and appended to the preface after
-    /// the system message, then prefilled into the KV cache.</summary>
+    /// <b>array</b>, appended to the preface after the system message. The runtime prefills them with the
+    /// conversation's first send, not at <c>conversation_create</c>: right after the create the token count
+    /// is 0 (LiteRT-LM v0.20.0, win-x64, CPU and GPU backends, gemma-4 E2B).</summary>
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial LiteRtStatusCode litert_lm_conversation_config_set_messages(nint config, string messages_json);

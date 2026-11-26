@@ -112,8 +112,13 @@ internal static unsafe partial class LiteRtLmNative
     /// keeps the pointers after the call. Each score is the log likelihood of its target given the
     /// prefilled context. The call changes the session's memory (it consumes the pending input token and,
     /// for a target of several tokens, writes every target token except the last), so rewind the
-    /// session before any further prefill or decode. The caller owns <paramref name="out_responses"/> and
-    /// frees it with <see cref="litert_lm_responses_delete"/>; it is set to NULL on failure. Fails with
+    /// session before any further prefill or decode: a decode right after a score fails with
+    /// <c>"Unprocessed token is null."</c>. A rewind restores the session only after a target of several
+    /// tokens: the next decode then matched a session that never scored (5 of 5 per backend). After a score of
+    /// a single-token target, a rewind to a checkpoint saved before the score still left the next decode
+    /// failing the same way (LiteRT-LM v0.20.0, win-x64, CPU and GPU backends, gemma-4 E2B). The caller owns
+    /// <paramref name="out_responses"/> and frees it with <see cref="litert_lm_responses_delete"/>; it is set
+    /// to NULL on failure. Fails with
     /// <c>INVALID_ARGUMENT</c> for a null session, targets or out pointer, a zero count, or several targets
     /// where one is not a single token; otherwise with the runtime's error.</summary>
     [LibraryImport(Library)]

@@ -71,8 +71,8 @@ created: right after `CreateConversation` the history is queued but not in the c
 
 `ToMessage()` keeps the assistant's tool calls so a function-calling conversation restores correctly,
 and it **drops the reasoning ("thinking") trace** on purpose. Replaying a long thinking block would
-re-consume the context window for no benefit, which is the same reason
-[`FilterThinkingFromKvCache`](chat.md#reasoning-mode-thinking) exists. Pass
+re-consume the context window for no benefit, which is the same reason the runtime keeps the reasoning
+out of the KV cache after each reply (see [Reasoning mode](chat.md#reasoning-mode-thinking)). Pass
 `ToMessage(includeToolCalls: false)` if you want text only.
 
 A full tools round-trip looks like this:
@@ -95,15 +95,10 @@ Set the system prompt in **one** place: either `LiteRtConversationOptions.System
 history, so doing both yields two system turns. The common pattern is to keep `SystemMessage` as the
 active system prompt and store only user/model/tool turns in the history.
 
-> **`SystemMessage` was fixed in v0.14.0 (this matters if you used the workaround).** Before v0.14.0,
-> `SystemMessage` was **silently ignored**: the binding wrapped the text in a bare `{"type":"text",…}`
-> object, and the chat template drops object-valued content, so the system turn rendered empty and the
-> model never saw the prompt. It is now sent as a content-parts **array** and renders correctly (root-caused
-> and verified with [`RenderPreface()`](#inspect-the-rendered-preface) below). The documented workaround was
-> to put the system prompt as a leading `LiteRtMessage.System(...)` in `History` (the path
-> `LiteRtChatClient` uses), which was **never** affected. **Migration:** if you applied that workaround AND
-> also left `SystemMessage` set, remove one of the two; both now render, which produces two system turns.
-> Confirm the result with `RenderPreface()`.
+> **Note:** In LiteRtLmSharp versions before 1.1.0, `SystemMessage` was ignored, and the documented
+> workaround was a leading `LiteRtMessage.System(...)` in `History`. If you applied that workaround and also
+> set `SystemMessage`, remove one of the two: both render, which produces two system turns. Confirm the
+> result with [`RenderPreface()`](#inspect-the-rendered-preface).
 
 ### Inspect the rendered preface
 
@@ -125,8 +120,7 @@ int prefaceTokens = engine.Tokenize(preface).Length;   // exact preamble cost ag
 ```
 
 Pair it with `LiteRtEngine.Tokenize` to measure the preamble's exact token cost before you send, and use
-it to verify the system-prompt placement above (a correctly-set `SystemMessage` now appears in the
-preface; an empty system turn signals the pre-v0.14.0 bug).
+it to verify the system-prompt placement above (`SystemMessage` appears in the preface as a system turn).
 
 ### Raw escape hatch
 
@@ -148,9 +142,8 @@ validated as a JSON array when the conversation is created and throws `ArgumentE
 
 A send that is cut short **consumes** its conversation, which can't generate again: after a cancelled `SendAsync`,
 a stream abandoned before its reply ended, or `CancelProcess()` during a send, the runtime answers every later send on it with
-`CANCELLED` (LiteRT-LM v0.16.0 and later; on v0.14.0 the send does not return), and
-`IsCancelled` turns `true`. `CancelProcess()` on an idle conversation changes nothing. To continue, take a
-checkpoint with `Clone()` **before** the send that might be cut, and continue on the checkpoint if it is. In its
+`CANCELLED`, and `IsCancelled` turns `true`. `CancelProcess()` on an idle conversation changes nothing. To
+continue, take a checkpoint with `Clone()` **before** the send that might be cut, and continue on the checkpoint if it is. In its
 stateful mode, `LiteRtChatClient` [does this for you](extensions-ai.md#cancelled-and-failed-sends).
 
 ```csharp
@@ -190,44 +183,57 @@ chat.Dispose();
 
 A failure other than a cut leaves this block with the exception, so dispose `chat` in your own error path too.
 
-> **Warning:** On the GPU backend, don't repeat the cut message word for word. On LiteRT-LM v0.18.0 and v0.19.0, the
-> reply comes out wrong or empty, with no error, when all of these hold
-> ([LiteRT-LM #4394](https://github.com/google-ai-edge/LiteRT-LM/issues/4394)):
+> **Note:** With LiteRT-LM v0.20.0, sending the cut message again, as it was, gave a correct reply on the GPU
+> backend in 100 of 100 runs. That was measured on win-x64 (WebGPU on Direct3D 12, one NVIDIA RTX 3080) with
+> gemma-4 E2B and `Float32`. Other GPUs, `Float16` and other models were not measured, and the upstream issue
+> ([LiteRT-LM #4394](https://github.com/google-ai-edge/LiteRT-LM/issues/4394)) is still open.
+>
+> With LiteRT-LM v0.18.0, the version in LiteRtLmSharp 1.3.0, the GPU backend returned a wrong reply, with no
+> error, in 25 of 25 runs of the same cases. The failure appeared when all of these held:
 >
 > - You continue on a clone, and this is the clone's first send.
 > - The send repeats a message that the original conversation, or another of its clones, already processed.
 > - Another conversation generated in between.
->
-> The CPU backend was not affected in the same tests. To avoid the problem, reword the message or append zero-width
-> spaces (`"\u200B"`): one on the first retry, two on the second, and so on, so that the text differs from every earlier
-> attempt. Plain whitespace does not help, because the model's template trims it. The reply can differ from the one the
-> original message would have received.
 
 - **Cost:** on a text conversation, creating the clone takes no measurable time or memory; it only costs memory
-  once it generates.
-  Measured on LiteRT-LM v0.18.0 with gemma-4 E2B, a clone of a 2,300-token conversation holds about 36 MB on
-  a desktop CPU and 60 to 100 MB on a desktop GPU once used. Continuing on it skips the replay a `History`
-  restore pays: for a 310-token conversation, 0.3 s instead of 0.6 s on CPU, and 48 ms instead of 202 ms on
-  GPU when nothing else generated in between. On the GPU, continuing after the original generated (the
-  cut send) also pays a conversation switch: about 0.3 to 0.6 s at 2,300 tokens, still less than a replay.
+  once it generates. Measured on LiteRT-LM v0.18.0 with gemma-4 E2B, a clone of a 2,300-token conversation
+  holds about 36 MB on a desktop CPU and 60 to 100 MB on a desktop GPU once used.
+- **Speed:** continuing on a clone skips the replay that a `History` restore pays. On the GPU, it saves time
+  only when nothing else generated in between:
+  - Measured with LiteRT-LM v0.18.0, gemma-4 E2B and a 310-token conversation: 0.3 s instead of 0.6 s on
+    CPU, and 48 ms instead of 202 ms on GPU when nothing else generated in between.
+  - LiteRT-LM v0.20.0, GPU: after the original conversation (the cut send) or another conversation
+    generated, the clone's first send took as long as a `History` restore of the same conversation, or
+    longer. Measured on win-x64 (WebGPU on Direct3D 12, one NVIDIA RTX 3080) with gemma-4 E2B, `Float32`
+    and a 2,293-token conversation.
 - **Constrained conversations cost more.** On a conversation with `EnableConstrainedDecoding` or a
-  `ConstraintProvider`, the runtime rebuilds the constraints for the clone: about 0.9 s and 1 s per clone
-  (gemma-4 E2B, win-x64).
+  `ConstraintProvider`, the runtime rebuilds the constraints for the clone. That took about 0.9 s per clone
+  with constrained decoding and 1 s with the LlGuidance provider, with gemma-4 E2B on win-x64, measured with
+  LiteRT-LM v0.18.0.
 - **The cut turn is not kept.** The checkpoint holds the conversation as it was before the send, so send the
   question again to get the answer; the partial text the stream produced is yours to show or discard.
   To have the model finish the partial text instead, see
   [Continue a reply that was cut](sessions.md#continue-a-reply-that-was-cut).
-- **Clone before, not after.** `Clone()` throws `InvalidOperationException` for a conversation whose send was
-  cut short, because the runtime would return an empty clone that also answers `CANCELLED`. It also throws after
-  a stream that failed during generation. After a blocking send that failed, it can't detect the failure and returns a
-  clone that fails too, so take the checkpoint before the send. `Clone()` also needs a conversation that has completed
-  a send (see [Clone a conversation](#clone-a-conversation)).
+- **Clone before, not after.** Take the checkpoint before the send. `Clone()` throws
+  `InvalidOperationException` for a conversation whose send was cut short, because the runtime would return an
+  empty clone that also answers `CANCELLED`. It also throws after a stream that failed during generation. After
+  a blocking send that failed, `Clone()` returns a clone, and whether that clone works depends on where the
+  runtime rejected the send:
+  - If the runtime rejected the message before the prefill (an image it could not decode, for example), the
+    conversation and its clone kept working.
+  - If it rejected the prefill itself, the clone failed every send.
+
+  Both cases were measured with LiteRT-LM v0.20.0 and gemma-4 E2B on win-x64, CPU and GPU. `Clone()` also
+  needs a conversation that has completed a send (see [Clone a conversation](#clone-a-conversation)).
 - **Inline attachments are copied.** The clone copies the message history, so an inline image or audio is copied
   once per clone. A file-path attachment avoids that. This cost was not measured.
-- **Reasoning stays in a clone's context.** A clone does not carry the state that removes earlier
-  reasoning from the KV cache (`FilterThinkingFromKvCache`), so on a reasoning conversation the earlier
-  reasoning stays in the clone's context. In the LiteRT-LM sources, with `UseRingbuffersLocalAttention` on the
-  next turns can also fail with `NOT_FOUND`; this was not measured.
+- **Earlier reasoning leaves the KV cache.** The runtime removes the reasoning from the KV cache right after
+  each reply. After a 966-token reply that held 668 thinking tokens, the conversation held 339 tokens
+  (LiteRT-LM v0.20.0, win-x64, CPU, gemma-4 E2B). A clone taken after such a reply was not measured: not
+  its token count, a rollback to it, the replies it generates later, or the GPU.
+- **Ring buffers can break a clone's later turns.** In the LiteRT-LM sources, with
+  `UseRingbuffersLocalAttention` on, the next turns on a clone can fail with `NOT_FOUND`; this was not
+  measured.
 - **Same engine and process only.** To move a conversation to another engine, or across a restart, restore
   its turns through `History` instead.
 
@@ -250,26 +256,30 @@ Console.WriteLine(luxury.Send("Suggest a luxury itinerary.").Text);
 // baseChat is untouched; each clone advances on its own KV cache.
 ```
 
-Other good uses: checkpoint before a risky or expensive turn so you can retry from the checkpoint (reword
-the retry on the GPU backend, see [Continue after a cancellation](#continue-after-a-cancellation)); A/B two
-sampler settings or two phrasings from the same context.
+Other good uses: checkpoint before a risky or expensive turn so you can retry from the checkpoint (see
+[Continue after a cancellation](#continue-after-a-cancellation)); A/B two sampler settings or two phrasings
+from the same context.
 
 ### Caveats
 
 - **Send first, then clone.** `Clone()` duplicates the *prefilled* state, and creating a conversation
   prefills nothing: the system message, tools and `History` only enter the KV cache with the first
-  send. A conversation that has not advanced (`TokenCount == 0`) therefore has nothing to duplicate,
-  and cloning it anyway is unreliable: the first clone happens to work, but once any other
-  conversation runs on the engine, the parent and its later clones continue that other conversation's
-  context instead of their own (observed on LiteRT-LM v0.15.0 and v0.16.0, CPU and GPU). `Clone()`
-  rejects this up front with `InvalidOperationException`. To keep a reusable base to branch from
-  (a system prompt plus tools, say), send one real turn on it first, as the example above does.
+  send. Until then, `TokenCount` stays 0, even with a system message, so there is nothing to duplicate,
+  and `Clone()` rejects the conversation with `InvalidOperationException`. To keep a reusable base to
+  branch from (a system prompt plus tools, say), send one real turn on it first, as the example above does.
+
+  The rejection guards against an older runtime behavior. On LiteRT-LM v0.15.0 and v0.16.0 (CPU and GPU),
+  cloning such a conversation worked once, but after another conversation ran on the engine, the parent
+  and its later clones continued that other conversation's context instead of their own. With LiteRT-LM v0.20.0 this did not reproduce: the
+  conversation and its clones kept their own context in 10 of 10 runs (win-x64; gemma-4 E2B on CPU,
+  gemma-4 E4B on GPU).
 - **Idle only.** Conversations are not thread-safe. Clone when the source is idle, with no in-flight
   `SendStreamingAsync`.
 - **May be unsupported on some backends.** Cloning is implemented by the standard executors and is
-  verified on CPU and GPU (win-x64 WebGPU). It is not a CPU-only feature, but an executor that does not
-  implement it makes the native call return null and `Clone()` throw `LiteRtException`. If you target an
-  exotic backend, be ready to catch it and fall back to restoring from `History`.
+  verified on CPU and GPU (win-x64 WebGPU). It is not a CPU-only feature. For an executor that does not
+  implement it, the native call returns an error status and `Clone()` throws `LiteRtException`; no backend
+  we test with takes this path, so it was not measured. If you target an exotic backend, be ready to catch
+  it and fall back to restoring from `History`.
 - **In-memory only.** A clone lives in the same process. To carry a conversation across restarts use
   `History`, not `Clone()`.
 - **Lifetime.** Dispose clones like any conversation. A clone keeps the native engine loaded, so
@@ -281,13 +291,15 @@ sampler settings or two phrasings from the same context.
 |---|---|---|
 | Resume a chat after the app restarts | `History` / `HistoryJson` | Re-prefills the history |
 | Seed a conversation with few-shot examples | `History` / `HistoryJson` | Re-prefills the examples |
-| Continue a chat after cancelling a send | `Clone()` before the send | Copies state, no re-prefill |
+| Continue a chat after cancelling a send | `Clone()` before the send | Copies state, no re-prefill; on the GPU, the first send after the cut can take as long as a `History` restore |
 | Branch a live conversation into variants | `Clone()` | Copies state, no re-prefill |
-| Checkpoint before a risky turn, then retry | `Clone()` (reword the retry on the GPU backend) | Copies state, no re-prefill |
+| Checkpoint before a risky turn, then retry | `Clone()` | Copies state, no re-prefill |
 | Do the same on a raw session, where you write the prompt text | `LiteRtSession.SaveCheckpoint` and `RewindTo`, experimental (see [Sessions](sessions.md#experimental-checkpoints-rewind-and-reset)) | No re-prefill; not after a cancel |
 
-On a conversation, `Clone()` and `History` compose: clone is the cheap same-process fork of live state, and the
-checkpoint that survives a cancellation; restore is the durable cross-session reload.
+On a conversation, `Clone()` and `History` compose: clone is the same-process fork of live state, and the
+checkpoint that survives a cancellation; restore is the durable cross-session reload. On the GPU, a clone's
+first send after the original or another conversation generated can take as long as a `History` restore
+(see [Continue after a cancellation](#continue-after-a-cancellation)).
 
 ## Cap a single send: per-send `MaxOutputTokens`
 

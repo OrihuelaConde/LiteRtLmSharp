@@ -28,9 +28,9 @@ public enum LiteRtSamplerType
 /// Sampler parameters for a conversation or a session. Construct one and set it on
 /// <see cref="LiteRtConversationOptions.Sampler"/> or <see cref="LiteRtSessionOptions.Sampler"/>. A constructed instance sends <b>all</b> fields to
 /// the engine — replacing any sampler parameters the model file itself carries — so set the ones you
-/// care about and leave the rest at their defaults. The defaults below (<see cref="LiteRtSamplerType.TopP"/>,
-/// 40, 0.95, 1.0, seed 0) are the same values Google's official bindings fill in for unset fields, so a
-/// partial configuration behaves identically across the LiteRT-LM ecosystem.
+/// care about and leave the rest at their defaults: <see cref="LiteRtSamplerType.TopP"/>, top-k 40, top-p
+/// 0.95, temperature 1.0 and seed 0. The Python package of LiteRT-LM v0.20.0 fills unset fields with top-k 1
+/// and the same other values, so a partial configuration can decode differently there.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -52,17 +52,23 @@ public enum LiteRtSamplerType
 /// conversations whose samplers differ, sent turn by turn.
 /// </para>
 /// <para>
-/// <b>With speculative decoding.</b> Measured on LiteRT-LM v0.20.0 (gemma-4 E2B, win-x64, CPU) with
-/// <see cref="LiteRtConversationOptions.EnableSpeculativeDecoding"/> on: a sampled reply follows the seed
-/// (seeds 7, 8 and 9 give three different replies), and an argmax reply equals the plain argmax reply.
-/// Not measured on GPU.
+/// <b>With speculative decoding.</b> Measured on LiteRT-LM v0.20.0 (gemma-4 E2B, win-x64) with
+/// <see cref="LiteRtConversationOptions.EnableSpeculativeDecoding"/> on:
 /// </para>
+/// <list type="bullet">
+/// <item>CPU: a sampled reply follows the seed (seeds 7, 8 and 9 give three different replies), and an argmax
+/// reply equals the plain argmax reply.</item>
+/// <item>GPU (WebGPU on Direct3D 12, one NVIDIA RTX 3080, Float32): a sampled reply follows the seed (seeds 7,
+/// 8 and 9 give three replies, the same in two processes), but an argmax reply with speculative decoding on
+/// differed from the argmax reply with it off on the same engine, in 2 of 2 processes.</item>
+/// </list>
 /// </remarks>
 public sealed record LiteRtSamplerParams
 {
-    /// <summary>The sampling strategy. Default <see cref="LiteRtSamplerType.TopP"/> (the value the
-    /// official bindings use). With <see cref="LiteRtSamplerType.Unspecified"/> no sampler parameters
-    /// are sent at all — the engine's own default applies and the fields below are ignored.</summary>
+    /// <summary>The sampling strategy. Default <see cref="LiteRtSamplerType.TopP"/> (the strategy the
+    /// Python package of LiteRT-LM v0.20.0 always uses). With <see cref="LiteRtSamplerType.Unspecified"/>
+    /// no sampler parameters are sent at all — the engine's own default applies and the fields below are
+    /// ignored.</summary>
     public LiteRtSamplerType Strategy { get; init; } = LiteRtSamplerType.TopP;
 
     private readonly int _topK = 40;
@@ -113,8 +119,8 @@ public sealed record LiteRtSamplerParams
     }
 
     /// <summary>
-    /// Random seed for sampling. Default <c>0</c> — the same default as the engine and Google's
-    /// official bindings — which makes sampling <b>deterministic</b>: the same conversation state and
+    /// Random seed for sampling. Default <c>0</c> — the same default as the engine and the Python package
+    /// of LiteRT-LM v0.20.0 — which makes sampling <b>deterministic</b>: the same conversation state and
     /// prompt reproduce the same reply. Pass a different value (e.g. <c>Random.Shared.Next()</c>) for
     /// output that varies between runs.
     /// </summary>
@@ -138,8 +144,8 @@ internal static class NativeSampler
             return;
         LiteRtSamplerParams s = sampler;
 
-        // Build the opaque sampler params, set ALL four fields (create() zeroes them, not the ecosystem defaults
-        // the record always carries), copy them into the session config, then delete immediately (try/finally so
+        // Build the opaque sampler params, set ALL four fields (create() zeroes them, not the defaults the
+        // record always carries), copy them into the session config, then delete immediately (try/finally so
         // it can't leak). The strategy goes as given: on v0.20.0 the runtime decodes Greedy as argmax and TopK as
         // top-k sampling (measured on CPU and GPU).
         nint samplerParams;
@@ -154,8 +160,8 @@ internal static class NativeSampler
                 nameof(LiteRtLmNative.litert_lm_sampler_params_set_top_p));
             NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_temperature(samplerParams, s.Temperature),
                 nameof(LiteRtLmNative.litert_lm_sampler_params_set_temperature));
-            // Seed 0 (the default) = deterministic, matching the engine default and Google's official bindings
-            // (Kotlin defaults 0; python maps unset -> 0).
+            // Seed 0 (the default) = deterministic, matching the engine default; the Python package of
+            // LiteRT-LM v0.20.0 also fills an unset seed with 0.
             NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_sampler_params_set_seed(samplerParams, s.Seed),
                 nameof(LiteRtLmNative.litert_lm_sampler_params_set_seed));
             NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_session_config_set_sampler_params(sessionConfig, samplerParams),

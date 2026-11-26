@@ -9,25 +9,34 @@ namespace LiteRtLmSharp;
 
 /// <summary>
 /// A stateful conversation over a <see cref="LiteRtEngine"/>. Handles chat templating
-/// internally (mirrors the Gemini Chat APIs). Not thread-safe: serialize calls per instance — and
-/// serialize <b>sends per engine</b>, not just per conversation: multiple live conversations may be
-/// interleaved freely, but keep one generation in flight per engine. Upstream reports non-deterministic
-/// output and GPU-backend errors for concurrent generation on different conversations of one engine
-/// (LiteRT-LM#2807). The C API's threading model (<c>c/engine.h</c>) forbids overlapping calls on one
-/// conversation.
+/// internally (mirrors the Gemini Chat APIs). Not thread-safe: serialize calls per instance. The C API's
+/// threading model (<c>c/engine.h</c>) forbids overlapping calls on one conversation. Multiple live
+/// conversations of one engine may be interleaved freely; plan for one generation at a time per engine
+/// (see remarks).
 /// </summary>
 /// <remarks>
 /// <b>Interleaving vs. concurrency.</b> Switching between several live conversations of one engine turn by
-/// turn is supported (no state loss, replies stay correct, measured on CPU and GPU). What is <i>not</i>
-/// supported is two generations in flight on one engine at the same time: upstream reports
-/// non-deterministic output and GPU-backend errors (LiteRT-LM#2807). Native calls that go through the
-/// engine, such as <see cref="TokenCount"/> and creating a conversation, also wait for a generation in
-/// flight on any conversation of the engine. Do the scheduling at the application level: keep one send in
-/// flight per engine, and cut the running one with <see cref="CancelProcess"/> when something more urgent
-/// arrives (see <see cref="Clone"/> for keeping a checkpoint to continue from). With a
-/// <see cref="LiteRtSession"/> and a conversation on one engine, LiteRT-LM v0.20.0 ran an overlapping session
-/// decode and send one after the other, and both replies equaled their replies alone (measured on win-x64,
-/// gemma-4 E2B, CPU and GPU); that does not show that generation at the same time is safe.
+/// turn is supported (no state loss, replies stay correct, measured on CPU and GPU). Do the scheduling at
+/// the application level: keep one send in flight per engine, and cut the running one with
+/// <see cref="CancelProcess"/> when something more urgent arrives (see <see cref="Clone"/> for keeping a
+/// checkpoint to continue from).
+/// <para>
+/// A send started while another conversation of the engine was generating waited for it. Measured on
+/// LiteRT-LM v0.20.0 (win-x64, gemma-4 E2B):
+/// </para>
+/// <list type="bullet">
+/// <item>CPU: concurrent sends on two conversations gave the same replies as each one alone, and the
+/// runtime ran one generation to its end before it started the other.</item>
+/// <item>GPU (WebGPU on Direct3D 12, one NVIDIA RTX 3080, Float32): two blocking sends at once, and two
+/// streams at once, gave the same replies as each one alone in 20 of 20 rounds. The streams ran one after the
+/// other. Other GPUs were not measured.</item>
+/// <item>With a <see cref="LiteRtSession"/> and a conversation on one engine, an overlapping session decode and
+/// send ran one after the other, and both replies equaled their replies alone (CPU and GPU).</item>
+/// </list>
+/// <para>
+/// Native calls that go through the engine, such as <see cref="TokenCount"/> and creating a conversation,
+/// also wait for a generation in flight on any conversation of the engine.
+/// </para>
 /// </remarks>
 public sealed class LiteRtConversation : IDisposable
 {
@@ -92,10 +101,12 @@ public sealed class LiteRtConversation : IDisposable
     internal static LiteRtConversation Create(
         LiteRtEngine engine, LiteRtConversationOptions? options, bool engineIsMultimodal = false)
     {
-        // The native runtime supports one constrained-decoding mode per conversation: the
-        // tool-calling path (EnableConstrainedDecoding) or a custom provider (ConstraintProvider) —
-        // upstream docs/api/cpp/constrained-decoding.md says choose one. Checked before the platform
-        // guard below so an invalid combination reports the same error on every OS.
+        // The binding accepts one constrained-decoding mode per conversation: the tool-calling path
+        // (EnableConstrainedDecoding) or a custom provider (ConstraintProvider) — upstream
+        // docs/api/cpp/constrained-decoding.md says choose one. On LiteRT-LM v0.20.0 the runtime itself
+        // created a conversation with both and answered a send on it, but whether both took effect together
+        // was not measured. Checked before the platform guard below so an invalid combination reports the
+        // same error on every OS.
         if (options is { EnableConstrainedDecoding: true, ConstraintProvider: not null })
         {
             throw new ArgumentException(
@@ -122,11 +133,12 @@ public sealed class LiteRtConversation : IDisposable
                 ? null
                 : LiteRtJson.ResolveHistory(options.History, options.HistoryJson);
 
-            // A multimodal engine needs the conversation to carry a session config, otherwise the
-            // vision/audio executor never loads and the first attachment send fails with "Vision/Audio
-            // executor should not be null". A BARE session config is enough and is neutral for text, so
-            // attach one whenever the engine has an encoder enabled — even if the caller passed no
-            // sampler/output cap — so a plain CreateConversation() can send attachments without setup.
+            // A multimodal engine needs the conversation to be created with a conversation config. On
+            // LiteRT-LM v0.20.0 (CPU and GPU), a conversation created with none (NULL) failed its image send
+            // with "Vision executor should not be null", and the next send on it failed too; with a
+            // conversation config, with or without a session config in it, the vision executor loaded.
+            // engineIsMultimodal forces that config, so a plain CreateConversation() can send attachments
+            // without setup. It also attaches a bare session config, which is neutral for text.
             bool? speculative = options?.EnableSpeculativeDecoding;
 
             bool needsSessionConfig =
@@ -202,17 +214,16 @@ public sealed class LiteRtConversation : IDisposable
                         NativeError.ThrowIfFailed(
                             LiteRtLmNative.litert_lm_session_config_set_enable_speculative_decoding(sessionPtr, enableSpeculative),
                             nameof(LiteRtLmNative.litert_lm_session_config_set_enable_speculative_decoding));
-                    // Multimodal-only (no sampler/output cap/LoRA): the session config stays bare — its
-                    // mere presence is what lets the encoder executor load.
+                    // Multimodal-only (no sampler/output cap/LoRA): the session config stays bare. The
+                    // conversation config it sits in is what lets the encoder executor load.
 
                     NativeError.ThrowIfFailed(
                         LiteRtLmNative.litert_lm_conversation_config_set_session_config(configPtr, sessionPtr),
                         nameof(LiteRtLmNative.litert_lm_conversation_config_set_session_config));
                 }
 
-                // LiteRtJson.SystemMessage wraps the text in a content-parts ARRAY — a bare part object
-                // gets dropped by the chat template and the system turn renders empty (the old
-                // "SystemMessage silently ignored" bug; see the builder's doc for the full story).
+                // LiteRtJson.SystemMessage wraps the text in a content-parts ARRAY, one of the forms the
+                // runtime renders as the system turn (see the builder's doc).
                 if (options?.SystemMessage is not null)
                     NativeError.ThrowIfFailed(
                         LiteRtLmNative.litert_lm_conversation_config_set_system_message(configPtr, LiteRtJson.SystemMessage(options.SystemMessage)),
@@ -316,15 +327,16 @@ public sealed class LiteRtConversation : IDisposable
     /// engine was loaded with an explicit <c>MaxNumTokens</c>, the send methods guard the limit and
     /// throw <see cref="LiteRtContextOverflowException"/> rather than let the runtime reject a send at the
     /// end of the cache (a rejected prefill leaves the conversation failing every later send; LiteRT-LM v0.20.0,
-    /// CPU, gemma-4 E2B; GPU not measured).
+    /// gemma-4 E2B, CPU and GPU).
     /// </summary>
     /// <remarks>
     /// <b>This read is a native call and can block.</b> The C API reads the count through the engine, so it
-    /// queues behind a generation that is in flight on <i>any</i> conversation of the engine — measured at
-    /// up to ~12 s on gemma-4 E2B (CPU) when another conversation was decoding thousands of tokens. Use
-    /// <see cref="TokenCountCached"/> for display/diagnostics while generation is running, and this property
-    /// when the exact current value matters and nothing is generating. Every completed send refreshes the
-    /// cache, so after a send the two agree; a send that a cancel consumed (<see cref="IsCancelled"/>) does not.
+    /// queues behind a generation that is in flight on <i>any</i> conversation of the engine. The wait reached
+    /// up to ~12 s on gemma-4 E2B (CPU) while another conversation was decoding thousands of tokens (measured
+    /// with LiteRT-LM v0.18.0). Use <see cref="TokenCountCached"/> for display/diagnostics while generation is
+    /// running, and this property when the exact current value matters and nothing is generating. Every
+    /// completed send refreshes the cache, so after a send the two agree; a send that a cancel consumed
+    /// (<see cref="IsCancelled"/>) does not.
     /// </remarks>
     public int TokenCount
     {
@@ -447,8 +459,6 @@ public sealed class LiteRtConversation : IDisposable
     /// <see cref="LiteRtBenchmarkInfo.TotalInitTimeSeconds"/> is already set.
     /// The native per-turn accessors reject an index past the last turn, so this only reads a turn
     /// after confirming the corresponding turn count is &gt; 0.
-    /// Wraps a native surface Google still marks experimental in its own bindings; the reported
-    /// values may change with the native runtime version.
     /// </remarks>
     /// <exception cref="LiteRtException">Reading a benchmark value failed in the runtime.</exception>
     public LiteRtBenchmarkInfo? GetBenchmarkInfo()
@@ -543,15 +553,19 @@ public sealed class LiteRtConversation : IDisposable
     /// Cloning duplicates state in memory; to persist a conversation across process restarts use
     /// <see cref="LiteRtConversationOptions.History"/> instead.
     /// <para>
-    /// <b>The conversation must have advanced at least once</b> (<see cref="TokenCount"/> &gt; 0): the
-    /// native clone duplicates the <i>prefilled</i> state, and creating a conversation prefills nothing —
-    /// the system message, tools and <see cref="LiteRtConversationOptions.History"/> are only pushed
-    /// into the KV cache by the first send. Cloning a never-sent conversation is not rejected natively but
-    /// the result is unreliable: the first clone happens to work (it pays the parent's prefill itself),
-    /// and after any other conversation runs on the engine the parent and its later clones continue that
-    /// other conversation's context instead of their own (observed on LiteRT-LM v0.15.0 and v0.16.0, CPU
-    /// and GPU). To keep a reusable "base" (system prompt + tools) to branch from, send one real turn on
-    /// it first, then clone.
+    /// <b>The conversation must have advanced at least once</b> (<see cref="TokenCount"/> &gt; 0); this
+    /// method throws otherwise. The native clone duplicates the <i>prefilled</i> state, and creating a
+    /// conversation prefills nothing — the system message, tools and
+    /// <see cref="LiteRtConversationOptions.History"/> are only pushed into the KV cache by the first send. To
+    /// keep a reusable "base" (system prompt + tools) to branch from, send one real turn on it first, then
+    /// clone.
+    /// </para>
+    /// <para>
+    /// The runtime itself does not reject a clone of a never-sent conversation. On LiteRT-LM v0.15.0 and
+    /// v0.16.0 (CPU and GPU), after any other conversation ran on the engine, the parent and its later clones
+    /// continued that other conversation's context instead of their own. On v0.20.0 (win-x64; gemma-4 E2B on
+    /// CPU, gemma-4 E4B on GPU), the never-sent conversation, a clone of it and later clones all kept their own
+    /// context in 10 of 10 runs, before and after another conversation ran.
     /// </para>
     /// <para>
     /// <b>A clone is also a checkpoint.</b> A send that is cut short (a cancelled <c>SendAsync</c>, an
@@ -559,8 +573,10 @@ public sealed class LiteRtConversation : IDisposable
     /// <c>CANCELLED</c> to every later send, and a clone taken after the cut does too, so this method refuses
     /// it. Take the clone <i>before</i> a send that might be cut, and continue on the clone if it is. The same
     /// applies to a send that failed during generation: the runtime keeps the failure for that conversation,
-    /// so clone before the send, not after it. This method cannot tell that a blocking send failed, and the clone
-    /// it returns then fails too.
+    /// so clone before the send, not after it. This method cannot tell that a blocking send failed, so it does
+    /// not refuse that clone. On LiteRT-LM v0.20.0 (CPU and GPU), a clone taken after a send whose prefill the
+    /// runtime rejected failed every send. After a message that the runtime rejected before its prefill (an
+    /// undecodable image), the conversation and its clone kept working.
     /// </para>
     /// <para>
     /// <b>Re-sending a message on a clone, GPU backend.</b> On LiteRT-LM v0.18.0, when a clone's first send repeated
@@ -581,6 +597,12 @@ public sealed class LiteRtConversation : IDisposable
     /// context. On v0.20.0, the token count read after a reply with thinking already leaves the thinking out, and a
     /// clone taken then holds the same count (measured on CPU, gemma-4 E2B).
     /// </para>
+    /// <para>
+    /// <b>Continuing on a clone, GPU backend.</b> On LiteRT-LM v0.20.0 (gemma-4 E2B), continuing on a clone
+    /// saves the replay of the conversation only when nothing else generated in between. After the original or
+    /// another conversation generated, the clone's first send took as long as a
+    /// <see cref="LiteRtConversationOptions.History"/> restore of the same conversation, or longer.
+    /// </para>
     /// </remarks>
     /// <exception cref="InvalidOperationException">
     /// The conversation has not advanced yet (<see cref="TokenCount"/> is 0), so there is no prefilled
@@ -596,15 +618,16 @@ public sealed class LiteRtConversation : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         // A cancelled conversation clones into an empty conversation that also answers CANCELLED (measured
-        // on LiteRT-LM v0.18.0, CPU and GPU), so the checkpoint has to be taken before the send.
+        // on LiteRT-LM v0.18.0 and v0.20.0, CPU and GPU), so the checkpoint has to be taken before the send.
         if (_cancelled)
             throw new InvalidOperationException(
                 "Cannot clone a conversation whose send was cut short: the runtime fails every later send on it, " +
                 "and a clone of it fails too. To continue after a cancellation, take the " +
                 "Clone() before the send that might be cut and continue on the clone, or restore the turns " +
                 "on a new conversation through LiteRtConversationOptions.History.");
-        // Nothing prefilled yet: the native clone would copy an empty state and the branch silently drifts
-        // onto whatever conversation ran last on the engine (see the doc above). Fail loudly instead.
+        // Nothing prefilled yet: the native clone would copy an empty state. On LiteRT-LM v0.15.0 and v0.16.0
+        // the branch drifted onto whatever conversation ran last on the engine (see the doc above), so this
+        // fails loudly instead.
         if (TokenCount <= 0)
             throw new InvalidOperationException(
                 "Cannot clone a conversation that has not advanced yet: Clone() duplicates the prefilled " +
@@ -704,8 +727,8 @@ public sealed class LiteRtConversation : IDisposable
     /// as consumed: dispose it and continue on a fresh one. To keep the earlier turns without replaying them,
     /// take a <see cref="Clone"/> before the send and continue on the clone; otherwise restore prior turns via
     /// <see cref="LiteRtConversationOptions.History"/>. Sending again on a
-    /// cancelled conversation returns <c>CANCELLED</c> for every later call (LiteRT-LM v0.16.0 and v0.18.0)
-    /// or hangs (v0.14.0); the engine itself is unaffected. While the send is in flight, do not touch the
+    /// cancelled conversation returns <c>CANCELLED</c> for every later call (LiteRT-LM v0.18.0 and v0.20.0);
+    /// the engine itself is unaffected. While the send is in flight, do not touch the
     /// conversation from other threads — cancellation, and reading <see cref="TokenCountCached"/> or
     /// <see cref="IsContextFull"/>, are the only supported concurrent operations.
     /// </summary>
@@ -751,8 +774,8 @@ public sealed class LiteRtConversation : IDisposable
     /// treat the conversation as consumed: dispose it and continue on a fresh one. To keep the earlier turns without
     /// replaying them, take a <see cref="Clone"/> before the send and continue on the clone; otherwise restore
     /// prior turns via <see cref="LiteRtConversationOptions.History"/>. Sending again on a
-    /// cancelled conversation returns <c>CANCELLED</c> for every later call (LiteRT-LM v0.16.0 and v0.18.0)
-    /// or hangs (v0.14.0); the engine itself is unaffected. Mirrors the native <c>cancel_process</c> (the
+    /// cancelled conversation returns <c>CANCELLED</c> for every later call (LiteRT-LM v0.18.0 and v0.20.0);
+    /// the engine itself is unaffected. Mirrors the native <c>cancel_process</c> (the
     /// Kotlin binding's <c>cancelProcess</c> / the JS binding's <c>cancel</c>).
     /// </summary>
     public void CancelProcess()
@@ -861,8 +884,9 @@ public sealed class LiteRtConversation : IDisposable
 
     /// <summary>
     /// The KV overflow guard (see <see cref="LiteRtContextOverflowException"/>), run before every send.
-    /// Active only when the engine was loaded with an explicit <see cref="LiteRtEngineOptions.MaxNumTokens"/>
-    /// (the C API exposes no getter for the engine's internal default, so an unset limit is unknowable).
+    /// Active only when the engine was loaded with an explicit <see cref="LiteRtEngineOptions.MaxNumTokens"/>.
+    /// The C API exposes the engine's internal default only through the benchmark info of an engine in
+    /// benchmark mode, and this binding does not bind that getter.
     /// Two layers:
     /// (1) a hard stop — a conversation at the guard ceiling (the shared predicate behind
     ///     <see cref="IsContextFull"/>, so signal and stop can never disagree) throws instead of reaching
@@ -1003,10 +1027,13 @@ public sealed class LiteRtConversation : IDisposable
     /// Low-level escape hatch: sends a raw message JSON and returns the raw response JSON.
     /// Use when you need full control over the wire format.
     /// </summary>
+    /// <remarks><paramref name="messageJson"/> is one message JSON object per call. On LiteRT-LM v0.20.0 a
+    /// JSON array fails with <c>INVALID_ARGUMENT</c> ("Message must be a JSON object."), and the conversation
+    /// stays usable (measured on win-x64, CPU, gemma-4 E2B).</remarks>
     /// <exception cref="LiteRtContextOverflowException">Sending would overflow the KV cache sized by
     /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> — the conversation is full (or the message's
-    /// prefill leaves no room to reply); the runtime would reject the send (LiteRT-LM v0.20.0, CPU, gemma-4 E2B;
-    /// GPU not measured). Only thrown when
+    /// prefill leaves no room to reply); the runtime would reject the send (LiteRT-LM v0.20.0, gemma-4 E2B,
+    /// CPU and GPU). Only thrown when
     /// the engine was loaded with an explicit <c>MaxNumTokens</c>. A send carrying media or a non-null
     /// <paramref name="extraContext"/> gets only the conversation-full check (its prefill cost is not
     /// measurable managed-side) — leave headroom under the limit for those.</exception>
@@ -1098,9 +1125,7 @@ public sealed class LiteRtConversation : IDisposable
     /// <remarks>The rendered string is exactly what the next send would prefill: on a conversation whose
     /// preface (system message + tools + history) has not been consumed by a first send yet, it
     /// <b>includes the preface</b>; after the first send it is the turn alone — do not add
-    /// <see cref="RenderPreface"/> on top when measuring a first send's cost. Wraps a native entry point
-    /// Google still marks experimental in its own bindings; the rendered format may change with the
-    /// native runtime version.</remarks>
+    /// <see cref="RenderPreface"/> on top when measuring a first send's cost.</remarks>
     public string RenderMessage(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
@@ -1137,8 +1162,6 @@ public sealed class LiteRtConversation : IDisposable
     /// consume up front, or to inspect the templated preamble. Complements
     /// <see cref="RenderMessage(string)"/>, which renders one user turn.
     /// </summary>
-    /// <remarks>Wraps a native entry point Google still marks experimental in its own bindings; the
-    /// rendered format may change with the native runtime version.</remarks>
     /// <exception cref="LiteRtException">The native render call failed.</exception>
     public string RenderPreface()
     {
@@ -1197,11 +1220,21 @@ public sealed class LiteRtConversation : IDisposable
 
     /// <summary>
     /// Appended to a failed send when the engine was loaded with a <c>MaxNumTokens</c> below the largest
-    /// prefill signature of the published gemma conversions (1024): the native loader accepts the smaller
-    /// limit, but prefill breaks inside the native graph once an input spans more than the smallest work
-    /// group (an internal <c>DYNAMIC_UPDATE_SLICE</c> error). The C API cannot report the signatures, so
-    /// this is guidance on failure rather than up-front validation.
+    /// prefill signature of the published gemma conversions (1024) and the failure matches
+    /// <see cref="IsSmallContextFailure"/>. The C API cannot report the signatures, so this is guidance on
+    /// failure rather than up-front validation.
     /// </summary>
+    /// <remarks>
+    /// Below 1024 the outcome depends on the value and the backend (see the remarks of
+    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/>). Measured on LiteRT-LM v0.20.0 (win-x64, gemma-4 E2B):
+    /// <list type="bullet">
+    /// <item>CPU: 100 fails when the engine is created; 512 loads, but every text send fails with
+    /// "Failed to allocate tensors". The native log names a <c>DYNAMIC_UPDATE_SLICE</c> node; the exception
+    /// text does not.</item>
+    /// <item>GPU: 512 accepted a 427-token first message; 100 failed every send.</item>
+    /// </list>
+    /// On both backends, no blocking send returned an empty reply: every failure raised an exception.
+    /// </remarks>
     internal const string SmallContextSendHint =
         "The engine was loaded with LiteRtEngineOptions.MaxNumTokens below 1024. The native executor " +
         "accepts that, but a send whose prefill spans more than its smallest work group then fails inside " +
@@ -1209,9 +1242,12 @@ public sealed class LiteRtConversation : IDisposable
         "message was longer than a short sentence, reload the engine with MaxNumTokens >= 1024.";
 
     /// <summary>Whether a send failure on an engine below 1024 tokens looks like the small-context
-    /// failure (v0.18.0 reports it as "Failed to invoke the compiled model Failed to allocate tensors"),
-    /// or the runtime gave no reason; any other reason, such as a cancellation or a bad LoRA adapter,
-    /// speaks for itself.</summary>
+    /// failure (LiteRT-LM v0.20.0 on CPU reports "Failed to allocate tensors"), or the runtime gave no
+    /// reason; any other reason, such as a cancellation or a bad LoRA adapter, speaks for itself.</summary>
+    /// <remarks>It does not match a prefill that does not fit the context. With <c>MaxNumTokens</c> 1000 and
+    /// the context guard off, such a message failed with <c>FAILED_PRECONDITION</c> ("Prefill input length
+    /// exceeds available state entries") as the first send, or with <c>RESOURCE_EXHAUSTED</c> after an earlier
+    /// message (LiteRT-LM v0.20.0, CPU and GPU).</remarks>
     internal static bool IsSmallContextFailure(string? nativeMessage) =>
         nativeMessage is null
         || nativeMessage.Contains("allocate tensors", StringComparison.OrdinalIgnoreCase)
@@ -1276,8 +1312,9 @@ public sealed class LiteRtConversation : IDisposable
     /// </summary>
     private ConversationOptionalArgsHandle? BuildOptionalArgs(LiteRtSendOptions? options, bool hasMedia)
     {
-        // The budget only matters for images, and v0.18.0 validates it against the per-image cap on every send
-        // it is attached to: attached to a text-only turn, a budget above the cap would fail that turn too.
+        // The budget only matters for images, and the runtime (v0.18.0 and v0.20.0) validates it against the
+        // per-image cap on every send it is attached to: attached to a text-only turn, a budget above the cap
+        // would fail that turn too.
         int budget = !hasMedia ? 0 : options is { VisualTokenBudget: > 0 } ? options.VisualTokenBudget : _visualTokenBudget;
         int maxOutputTokens = options is { MaxOutputTokens: > 0 } ? options.MaxOutputTokens : 0;
         bool hasDecodingOptions = options is not null &&

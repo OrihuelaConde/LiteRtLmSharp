@@ -48,7 +48,7 @@ jobs:
           dotnet-version: '10.0.x'
 
       # The v0.16.0 Linux library hard-depended on the Vulkan loader (DT_NEEDED libvulkan.so.1); the
-      # v0.18.0 ones load without it, so nothing is installed here. The log records whether this runner
+      # v0.20.0 ones list no such dependency, so nothing is installed here. The log records whether this runner
       # image happens to carry a loader, which tells whether this run proved the "no libvulkan1" claim.
       - name: Report the Vulkan loader (linux)
         if: startsWith(matrix.rid, 'linux-')

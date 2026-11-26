@@ -19,9 +19,10 @@ name: Model tests
 # Model choice: gemma-4-E2B-it (litert-community, ungated) — deliberately NOT a smaller one:
 #  - the small Gemma .litertlm repos (gemma-3-270m-it, Gemma3-1B-IT, functiongemma-*) are
 #    gated on Hugging Face (license acceptance + token), which this job avoids needing;
-#  - Qwen3-0.6B is ungated but its chat template rejects the tools injection ("tried to use
-#    + operator on unsupported types map and string" → send_message returns null), so it
-#    cannot exercise the tool-calling path. Both verified 2026-06-12.
+#  - Qwen3-0.6B is ungated but does not exercise the tool-calling path. With LiteRT-LM v0.20.0
+#    on win-x64 CPU and one tool declared, its chat template no longer rejects a send, but one
+#    send with thinking off answered in text with no tool call. Rendering the conversation's
+#    preface failed ("Failed to apply template: undefined value"). The gating was verified 2026-06-12.
 
 on:
   # Reusable: ci.yml calls this on every push/PR with platforms=all for per-commit model validation
@@ -144,7 +145,7 @@ jobs:
           Set-ItemProperty $key DumpCount 3
 
       # The v0.16.0 Linux library hard-depended on the Vulkan loader (DT_NEEDED libvulkan.so.1); the
-      # v0.18.0 ones load without it, so nothing is installed here. The log records whether this runner
+      # v0.20.0 ones list no such dependency, so nothing is installed here. The log records whether this runner
       # image happens to carry a loader, which tells whether this run proved the "no libvulkan1" claim.
       - name: Report the Vulkan loader (linux)
         if: startsWith(matrix.rid, 'linux-')

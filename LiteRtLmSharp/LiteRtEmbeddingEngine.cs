@@ -449,7 +449,8 @@ public sealed record LiteRtEmbeddingEngineOptions
     /// <see cref="LiteRtEngineOptions.ActivationDataType"/>: EmbeddingGemma's activations exceed the float16
     /// range, so its model card advises against float16, which is the runtime's fallback on the GPU backend.
     /// The CPU backend runs float32 either way. Float16 measured no faster on a desktop GPU but about twice
-    /// as fast per sentence on a phone GPU (Adreno 650), with vectors slightly further from the CPU ones. Set
+    /// as fast per sentence on a phone GPU (Adreno 650), with vectors slightly further from the CPU ones
+    /// (measured with LiteRT-LM v0.18.0). Set
     /// <see cref="LiteRtActivationDataType.Float16"/> to make that trade, or <c>null</c> to let the runtime
     /// choose (the model's preferred type, else float16 on GPU).
     /// </summary>

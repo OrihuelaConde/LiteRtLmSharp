@@ -12,8 +12,10 @@ public sealed class LiteRtEngine : IDisposable
 {
     private readonly EngineHandle _engine;
     // Whether the engine was loaded with a vision/audio encoder enabled. Conversations spawned from a
-    // multimodal engine get a session config attached automatically (the encoder executor only loads
-    // when one is present), so a plain CreateConversation() can send image/audio without extra setup.
+    // multimodal engine always get a conversation config (on LiteRT-LM v0.20.0 a conversation created
+    // without one failed its image send: the vision executor did not load), so a plain CreateConversation()
+    // can send image/audio without extra setup. The bare session config inside it is not what loads the
+    // executor.
     private readonly bool _isMultimodal;
     private bool _disposed;
 
@@ -44,8 +46,9 @@ public sealed class LiteRtEngine : IDisposable
     internal EngineHandle Handle => _engine;
 
     /// <summary>The context limit the engine was loaded with (<see cref="LiteRtEngineOptions.MaxNumTokens"/>);
-    /// 0 when the caller left the engine default, whose value the C API does not expose — the KV overflow
-    /// guard is only active when this is known.</summary>
+    /// 0 when the caller left the engine default, which the binding does not read (the C API reports it only in
+    /// the benchmark info of an engine in benchmark mode) — the KV overflow guard is only active when this is
+    /// known.</summary>
     internal int MaxNumTokens { get; }
 
     /// <summary>Whether the engine was loaded with <see cref="LiteRtEngineOptions.EnableBenchmark"/>, so its
@@ -368,8 +371,9 @@ public sealed class LiteRtEngine : IDisposable
     /// <remarks>
     /// <b>This call is subject to the engine's serializer.</b> The native conversation is created through
     /// the engine, so it waits for a generation that is in flight on any conversation of this engine to
-    /// finish first — measured at 46 s (gemma-4 E2B, CPU) behind a 1000-token reply, with no way to cancel
-    /// the wait. Create the conversations you need before starting a long generation, or accept the wait.
+    /// finish first — measured at 46 s with LiteRT-LM v0.18.0 (gemma-4 E2B, CPU) behind a 1000-token reply,
+    /// with no way to cancel the wait. Create the conversations you need before starting a long generation,
+    /// or accept the wait.
     /// (The same applies to <see cref="LiteRtConversation.TokenCount"/>; <see cref="LiteRtEngine.Tokenize"/>
     /// and disposing an idle conversation are unaffected.)
     /// </remarks>

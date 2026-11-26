@@ -212,8 +212,8 @@ public sealed class ModelRow : INotifyPropertyChanged
         if (backend.Length == 0) return;
 
         // Speculative decoding is fixed at engine creation, so ask right before loading — only for
-        // models that ship an MTP drafter (others would just no-op). Tying it to the load keeps the
-        // choice coupled to the engine restart instead of a switch sitting on the row.
+        // models that ship an MTP drafter (on a model without one, engine creation fails). Tying it
+        // to the load keeps the choice coupled to the engine restart instead of a switch sitting on the row.
         bool speculative = Model.SupportsSpeculativeDecoding && await _page.AskSpeculativeDecoding();
         bool thinking = await _page.AskThinking();
 

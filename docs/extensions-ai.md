@@ -106,9 +106,13 @@ services.AddKeyedLiteRtChatClient("assistant", gemma,
 |---|---|---|
 | **Engines loaded** | One, shared by the keys | One per key |
 | **`AllowMultipleEngines`** | Not needed | Required on every one of them |
-| **Replies** | One at a time across the keys | Can run at the same time, but a second engine adds throughput only on a desktop CPU |
+| **Replies** | One at a time across the keys | Can run at the same time, but a second engine adds throughput only on a desktop CPU (measured with LiteRT-LM v0.18.0) |
 | **Memory** | One model in memory | Each engine holds its own |
-| **`LoraPath` set in a key's template** | Applies to every key that shares the engine | Applies to that key |
+| **`LoraPath` set in a key's template** | Applies to that key | Applies to that key |
+
+Even on a shared engine, a key without `LoraPath` answers normally next to a key with an adapter, because an
+adapter applies only to the conversations that set it. This was measured on the CPU backend with LiteRT-LM v0.20.0
+on win-x64, using a LiteRT-LM test model and its rank-32 adapter. The GPU backend wasn't measured.
 
 These rules apply to every registration under a key:
 
@@ -141,7 +145,7 @@ instead, and [Cancelled and failed sends](#cancelled-and-failed-sends) lists the
 
 > **Note:** One of those cases is `EnableConstrainedDecoding`, which is recommended for tools. A run cancelled while
 > the model is generating ends a session that uses it, unless you set `CheckpointConstrainedConversations`, which adds
-> about a second to every turn.
+> about a second to every turn (measured with LiteRT-LM v0.18.0).
 
 A stateful conversation lives in memory, so the session does not survive a process restart. To persist sessions,
 use the default stateless mode, where Agent Framework keeps the messages.
@@ -195,8 +199,14 @@ prebuilts embed the constraint provider). Tools still work without it; arguments
 grammar-constrained. On a plain `ChatOptions`, set the `enable_constrained_decoding` key in
 `AdditionalProperties` instead.
 
-**Tool choice (`ChatOptions.ToolMode`).** The native API has no `tool_choice` parameter (the model always
-decides), so the connector emulates the MEAI modes as best it can:
+**Tool choice (`ChatOptions.ToolMode`).** The connector emulates the MEAI modes as best it can. The C API
+declares a native `tool_choice` setting, but the connector doesn't use it, because on LiteRT-LM v0.20.0
+(measured on win-x64) it doesn't force a call:
+
+- Without constrained decoding, the runtime accepts every value and ignores it.
+- With constrained decoding, every value other than `auto` fails with `FAILED_PRECONDITION`.
+
+The modes map as follows:
 
 | `ToolMode` | Behavior |
 |---|---|
@@ -216,9 +226,8 @@ it, but may ignore the instruction for a clearly-unrelated prompt. (Semantic Ker
 
 ## Structured output (`ResponseFormat`)
 
-A JSON-schema `ChatOptions.ResponseFormat` is **enforced during sampling** (native LiteRT-LM v0.15.0+):
-the client arms the LlGuidance constraint provider on the conversation and attaches the schema as a
-per-send constraint, so every token the model emits is masked to schema-conforming continuations — the
+A JSON-schema `ChatOptions.ResponseFormat` is **enforced during sampling**: the client arms the LlGuidance
+constraint provider on the conversation and attaches the schema as a per-send constraint, so every token the model emits is masked to schema-conforming continuations — the
 reply is *guaranteed* to be a JSON document matching the schema, not just nudged toward it.
 
 ```csharp
@@ -233,10 +242,11 @@ Rules and caveats:
 
 - **Schema-less `ChatResponseFormat.Json` ("JSON mode") is not enforced** — without a schema there is
   nothing precise to constrain, so it keeps the previous prompt-driven behavior.
-- **Not combinable with `Tools` on one request.** The schema masks every generated token, which
-  makes emitting a tool call impossible, so a request carrying both throws `ArgumentException`. Run
-  the tool phase first, then request the schema-formatted answer in a separate call. In stateful
-  mode both phases can share one conversation: set `ConstraintProvider` on the client's
+- **Not combinable with `Tools` on one request.** A request carrying both throws `ArgumentException`.
+  Through the C API, which has no such check, a send that carried both tools and a regex constraint
+  returned plain text with no tool call (measured once, LiteRT-LM v0.20.0, win-x64, CPU, gemma-4 E2B).
+  Run the tool phase first, then request the schema-formatted answer in a separate call.
+  In stateful mode both phases can share one conversation: set `ConstraintProvider` on the client's
   conversation-options template, run the tool request without a `ResponseFormat`, then send the
   schema-formatted request as a continuation of the same `ConversationId` — the reply is
   schema-enforced and informed by the tool results (covered by a model test).
@@ -245,9 +255,10 @@ Rules and caveats:
   and leaves the conversation resumable; to make every conversation schema-capable, set
   `LiteRtConversationOptions.ConstraintProvider = LiteRtConstraintProvider.LlGuidance` on the
   client's conversation-options template.
-- When a schema request is active, the tool-calling `enable_constrained_decoding` knob is dropped for
-  that conversation (the two constrained-decoding modes are mutually exclusive natively, and the
-  tool path is meaningless without tools).
+- When a schema request is active, the client drops the tool-calling `enable_constrained_decoding`
+  knob for that conversation. That is the binding's rule: it uses one constrained-decoding mode per
+  conversation, and the tool path has no use without tools. The runtime itself accepts both modes on
+  one conversation, but whether both take effect together wasn't measured.
 
 ## Banning repeats and tokens: `NoRepeatNgramSize` / `SuppressTokens`
 
@@ -271,8 +282,8 @@ var options = new LiteRtChatOptions
 - `SuppressTokens` forces the listed ids' logits to `-inf` on every step. Find ids with `LiteRtEngine.Tokenize`;
   most words tokenize differently with and without a leading space, so ban both. Negative ids are rejected;
   ids outside the vocabulary are ignored natively.
-- Both apply per request and require native LiteRT-LM v0.15.0+. The Semantic Kernel connector exposes the
-  same two knobs on `LiteRtPromptExecutionSettings`.
+- Both apply per request. The Semantic Kernel connector exposes the same two knobs on
+  `LiteRtPromptExecutionSettings`.
 
 ## Reasoning ("thinking")
 
@@ -326,7 +337,7 @@ var template = new LiteRtConversationOptions
 {
     SystemMessage = "You are a terse, on-device assistant.",
     VisualTokenBudget = 70,           // ~70 tokens per image instead of ~260 (Gemma 4: 70, 140 or 280)
-    FilterThinkingFromKvCache = true, // keep long reasoning out of later turns' context
+    FilterThinkingFromKvCache = true, // optional: with LiteRT-LM v0.20.0 the runtime drops reasoning from the context anyway (measured on CPU)
 };
 
 using IChatClient client = new LiteRtChatClient(engine, modelId: "gemma-4-E2B-it", optionsTemplate: template);
@@ -414,10 +425,6 @@ carries a `ConversationId`):
 - Disposing the client disposes every live conversation. Conversations don't expire with time, so size the cap
   for your concurrency.
 
-> Multiple live conversations require **native LiteRT-LM v0.15.0+**. Earlier runtimes silently lost a
-> suspended conversation's state whenever another conversation advanced, so this mode was hard-limited to a
-> single live conversation (and forking was unavailable) until that fix shipped.
-
 ### Cancelled and failed sends
 
 A send that is cut short [leaves its native conversation unusable](conversation-state.md#continue-after-a-cancellation).
@@ -481,12 +488,12 @@ ends: its id stops working, and using it throws `ArgumentException`, so start a 
 |---|---|
 | The first turn of a conversation, tool calls included | Nothing comes before it. This applies even when stream updates already carried the id |
 | Any turn of a conversation with constrained decoding or a constraint provider, by default | Cloning it is slow, as the next paragraph explains |
-| A turn that starts with tool results, when no earlier turn is waiting for them | A retry couldn't avoid the GPU problem under "Other things to know". A fork doesn't inherit its parent's waiting turn, so results sent on a branch count |
+| A turn that starts with tool results, when no earlier turn is waiting for them | A retry would repeat the discarded tool results, and repeating a discarded send gave a wrong reply on the GPU with LiteRT-LM v0.18.0 (see **Sending the same message again** under "Other things to know"). A fork doesn't inherit its parent's waiting turn, so results sent on a branch count |
 | Any turn on a backend that cannot clone | The checkpoint is a clone |
 
 **Constrained conversations.** Cloning a conversation with `EnableConstrainedDecoding`, a `ConstraintProvider`, or a
-JSON-schema `ResponseFormat` on its first call rebuilds its constraints, which takes about a second on LiteRT-LM
-v0.18.0. The client would pay that on every turn,
+JSON-schema `ResponseFormat` on its first call rebuilds its constraints, which takes about a second (measured with
+LiteRT-LM v0.18.0). The client would pay that on every turn,
 whether or not the turn is cancelled, so by default it takes no checkpoint on these conversations. To keep their id
 after a cancelled send, accept that cost and turn the checkpoint on:
 
@@ -501,15 +508,23 @@ using IChatClient client = new LiteRtChatClient(engine, statefulConversations: n
 
 - **Cost.** On a text conversation, the checkpoint costs no measurable time or memory until it is used. Inline
   attachments are copied once per checkpoint, which a file-path attachment avoids.
-- **Sending the same message again.** On the GPU backend, if another conversation generated in between, the runtime
-  can give a wrong or empty reply when a checkpoint's first send repeats the discarded message
-  ([LiteRT-LM #4394](https://github.com/google-ai-edge/LiteRT-LM/issues/4394)). To avoid that, on every backend, the
-  client appends a zero-width space to a message that repeats it. The reply can differ from the one the model would
-  otherwise give.
+- **Cost of a rollback on the GPU.** On the GPU backend, going back to a checkpoint saved the replay of the
+  thread only when nothing else had generated in between. When the original conversation or another one had
+  generated in between, a checkpoint's first send was as slow as restoring the same conversation from `History`,
+  or slower. This was measured on clones of a conversation directly, not through the chat client, with LiteRT-LM
+  v0.20.0 on win-x64 (NVIDIA RTX 3080, gemma-4 E2B, `Float32`, a 2,293-token conversation). The CPU backend
+  wasn't measured for this case.
+- **Sending the same message again.** The client sends a repeated message as it is. With LiteRT-LM v0.20.0 on
+  the GPU backend, a checkpoint's first send that repeated the discarded message, after another conversation had
+  generated, gave a correct reply in 100 of 100 runs on win-x64 (NVIDIA RTX 3080, gemma-4 E2B, `Float32`). Other
+  GPUs, `Float16`, and other models weren't measured. With v0.18.0, the same case gave a wrong reply
+  ([LiteRT-LM #4394](https://github.com/google-ai-edge/LiteRT-LM/issues/4394)).
 - **Tool calls in a stream.** In the stateful mode, a stream delivers a reply's tool calls together when the reply
   ends, after any text in it. That is why stopping at them keeps the turn.
-- **Reasoning.** A rollback does not remove earlier reasoning from the KV cache, so on a reasoning conversation
-  that reasoning stays in the context.
+- **Reasoning.** The runtime removes a reply's reasoning from the KV cache right after the reply, so a checkpoint
+  holds no earlier reasoning, and a rollback leaves none in the context. This was measured on the CPU backend
+  (LiteRT-LM v0.20.0, win-x64, gemma-4 E2B); the GPU backend, and replies that a checkpoint generates later, weren't
+  measured.
 
 ### Forking a conversation
 
@@ -540,12 +555,17 @@ model's working memory of the thread, so it grows across the thread rather than 
 stateless mode.
 
 **The context limit is a hard wall, so let the guard police it.** A long stateful thread, a multi-round tool
-loop especially, eventually approaches the engine's `MaxNumTokens`, and the native runtime does not check
-it: an unguarded overflow corrupts native memory and crashes the process on a later call. Load the engine
-with an **explicit** `MaxNumTokens`, as the snippets above do, to arm LiteRtLmSharp's overflow guard:
-replies are clamped to the remaining context, and a send that no longer fits throws
-`LiteRtContextOverflowException` instead. Sends carrying media get only the conversation-full check, because
-LiteRtLmSharp can't measure their token cost ahead of time, so leave headroom when attachments are in play.
+loop especially, eventually approaches the engine's `MaxNumTokens`. Load the engine with an **explicit**
+`MaxNumTokens`, as the snippets above do, to arm LiteRtLmSharp's overflow guard: replies are clamped to the
+remaining context, and a send that no longer fits throws `LiteRtContextOverflowException`. Sends carrying media get
+only the conversation-full check, because LiteRtLmSharp can't measure their token cost ahead of time, so leave
+headroom when attachments are in play.
+
+Without the guard, the runtime stops a reply when the context is full and rejects the next send with
+`RESOURCE_EXHAUSTED`. It also rejects a message that doesn't fit, or that lands in the last free entries of the
+context, and after that every send on the conversation fails with `INTERNAL`. No crash was seen. This was
+measured with LiteRT-LM v0.20.0 on win-x64 with gemma-4 E2B, on the CPU and, in the cases measured there, on the
+GPU.
 
 The guard rejects a send for one of two reasons. Both throw `LiteRtContextOverflowException`, and the start of its
 message tells them apart:
@@ -559,16 +579,29 @@ The second rejection has one exception. On a send of tool results, when the chec
 the conversation goes back to that checkpoint as in [Cancelled and failed sends](#cancelled-and-failed-sends), and its
 id keeps working.
 
-You don't have to wait for that exception to find out. A reply that filled the context carries
-`ChatFinishReason.Length` in the same turn, on the blocking response and on the final update of a clamped stream,
-which otherwise just stops. Treat `Length` as "this conversation is over". It takes priority over `ToolCalls` even
-when the response carries tool calls, because sending their results would throw. `FunctionInvokingChatClient` doesn't
-check the finish reason and keeps looping on tool calls, so an unattended tool loop still ends in the exception. To
-act before you hit the wall, track `Usage.TotalTokenCount` against `MaxNumTokens` and wind down early.
+You don't have to wait for that exception to find out. A reply that filled the context, or that the guard cut at the
+context limit, carries `ChatFinishReason.Length` in the same turn, on the blocking response and on the final update
+of a clamped stream, which otherwise stops without a signal. It takes priority over `ToolCalls` even when the
+response carries tool calls, because you shouldn't continue a reply that was cut at the limit as it is.
+
+`Length` doesn't always mean that the next send throws. After a reply with reasoning, the runtime removes the
+reasoning from the KV cache, so the context can have room again and the thread can continue;
+`Usage.TotalTokenCount` shows how much the conversation holds. For example, with LiteRT-LM v0.20.0 on
+win-x64 (gemma-4 E2B, `MaxNumTokens` 1,024), a reply cut at 966 tokens finished with `Length` and left the
+conversation holding:
+
+| Backend | Reasoning tokens in the reply | Tokens held after the reply |
+|---|---|---|
+| CPU | 668 | 339 |
+| GPU (NVIDIA RTX 3080, `Float32`) | 818 | 189 |
+
+`FunctionInvokingChatClient` doesn't check the finish reason and keeps looping on tool calls, so an unattended tool
+loop can still end in the exception. To act before you hit the wall, track `Usage.TotalTokenCount` against
+`MaxNumTokens` and wind down early.
 
 ## Multimodal (image / audio)
 
-On a multimodal model, attach an image or audio clip to the final user message as a `DataContent` (inline
+On a multimodal model, attach an image or audio clip to a user message as a `DataContent` (inline
 bytes) or a file-path `UriContent`, with an `image/*` or `audio/*` media type:
 
 ```csharp
@@ -588,9 +621,10 @@ The engine must have been loaded with the matching modality enabled — `LiteRtE
 images, `AudioBackend` for audio — on a multimodal model (e.g. the Gemma 4 E-series). Without it the send
 throws with a message naming the likely cause.
 
-Only the **final** (triggering) user message's media is sent; media on earlier history turns is not replayed
-(the stateless connector restores prior turns as text). Remote (non-`file://`) URIs are skipped — the
-on-device engine cannot fetch them, so supply bytes or a local file.
+In the stateless (default) mode, the client also sends the media of earlier user turns with the restored
+history, so the model can answer about an image from an earlier turn. This was measured with an image, with
+LiteRT-LM v0.20.0 on win-x64 (gemma-4 E2B, CPU and GPU). Remote (non-`file://`) URIs are skipped — the on-device engine cannot fetch them, so supply bytes
+or a local file.
 
 ## Token usage
 
@@ -605,7 +639,11 @@ long? total = response.Usage?.TotalTokenCount;   // e.g. to track how full the c
 The input/output split (`InputTokenCount` / `OutputTokenCount`) is populated **only when the engine was loaded
 with `EnableBenchmark = true`** — it comes from the engine's benchmark counters (the overhead is just timing
 bookkeeping). Without it those stay `null`, and a note is left under `response.AdditionalProperties` (key
-`litertlm.usage_note`) explaining how to enable them:
+`litertlm.usage_note`) explaining how to enable them.
+
+`InputTokenCount` is the prefill of the send's own messages (`LiteRtBenchmarkInfo.LastSendPrefillTokenCount`). After
+a reply with reasoning, the runtime records the refill of the KV cache as a later prefill turn; `InputTokenCount`
+leaves that refill out. This holds on CPU and GPU with LiteRT-LM v0.20.0 (win-x64, gemma-4 E2B).
 
 ```csharp
 using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
@@ -613,7 +651,7 @@ using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
     ModelPath = "…", Backend = LiteRtBackend.Cpu, EnableBenchmark = true,   // also enables Input/OutputTokenCount
 });
 // …
-long? input = response.Usage?.InputTokenCount;     // prefill tokens
+long? input = response.Usage?.InputTokenCount;     // prefill tokens of this send
 long? output = response.Usage?.OutputTokenCount;   // decode tokens
 ```
 
@@ -643,10 +681,13 @@ Options, task instructions and measurements are in the [Embeddings guide](embedd
   very long chats, opt into [stateful conversations](#stateful-conversations-opt-in) (keep the live native
   conversation alive between calls and re-prefill only the new turn) or drive the native
   [`LiteRtConversation`](conversation-state.md) API directly.
-- **Serialized per engine.** Every client over one engine shares a gate, because the native runtime does not
-  support two generations in flight on one engine and conversations are not thread-safe. Clients over different
-  engines (loaded with `AllowMultipleEngines`) do not wait for each other. A stream holds the gate until you
-  read it to the end or dispose it, so calling any client over the same engine (or `ForkAsync`) from inside
+- **Serialized per engine.** Every client over one engine shares a gate, so one generation runs at a time per
+  engine. The gate is the binding's choice, and a `LiteRtConversation` isn't thread-safe. Through the core
+  conversation API, which has no gate, with gemma-4 E2B on win-x64 and LiteRT-LM v0.20.0, concurrent sends on
+  different conversations of one engine gave correct replies on the CPU, where the runtime queued them per
+  engine, and, with blocking sends, on the GPU. Clients over different engines (loaded with
+  `AllowMultipleEngines`) do not wait for each other. A stream holds the gate until you read it to the end or
+  dispose it, so calling any client over the same engine (or `ForkAsync`) from inside
   the loop that reads the stream waits forever: finish or dispose the stream first.
 - **Engine ownership.** Pass a `LiteRtEngine` you own (you dispose it), or register from
   `LiteRtEngineOptions` so the container loads/owns/disposes the engine. The same
@@ -657,12 +698,10 @@ Options, task instructions and measurements are in the [Embeddings guide](embedd
   message, or a tool message (the function-calling continuation, appended by `UseFunctionInvocation()` /
   Semantic Kernel); the assistant tool-call turn is restored as history and the tool results are returned.
   A `system` message is restored through the [`History`](conversation-state.md) path (as a leading
-  `LiteRtMessage.System(...)`), so this connector was **never** affected by the pre-v0.14.0
-  `LiteRtConversationOptions.SystemMessage` bug; it does not use that property.
+  `LiteRtMessage.System(...)`).
 - **Engine options.** Any `LiteRtEngineOptions` you pass to `AddLiteRtChatClient` / `new LiteRtChatClient`
-  flows straight through, including the ones added in v0.14.0 (`NumThreads` / `AudioNumThreads`, the LoRA
-  ranks); the connector surface is unchanged. Engine-level settings such as `ActivationDataType`
-  (`Float32` by default since 1.3.0, see [Engine tuning](engine-tuning.md)) are fixed when the engine
+  flows straight through, including `NumThreads` / `AudioNumThreads` and the LoRA ranks. Engine-level
+  settings such as `ActivationDataType` (`Float32` by default since 1.3.0, see [Engine tuning](engine-tuning.md)) are fixed when the engine
   loads, so they go in those options, not in `ChatOptions`. The same holds for
   `LiteRtEmbeddingEngineOptions` and `AddLiteRtEmbeddingGenerator`.
 - **Testing your app code.** `IChatClient` is the intended seam for unit tests: have your code depend on

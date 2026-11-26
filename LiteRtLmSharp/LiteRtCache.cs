@@ -9,7 +9,8 @@ namespace LiteRtLmSharp;
 /// <remarks>
 /// Each mode is an explicit value, so a cache location can never be confused with a directory path
 /// that happens to look like a special token. The default value (<c>default(LiteRtCache)</c>) is
-/// <see cref="Default"/>.
+/// <see cref="Default"/>. The cache files are named after the model file, and within one process a path's
+/// cache key is fixed at its first load; see <see cref="LiteRtEngineOptions.Cache"/>.
 /// </remarks>
 public readonly struct LiteRtCache : IEquatable<LiteRtCache>
 {
@@ -25,7 +26,10 @@ public readonly struct LiteRtCache : IEquatable<LiteRtCache>
     /// <summary>Disable the on-disk cache entirely.</summary>
     public static LiteRtCache Disabled => new(":nocache");
 
-    /// <summary>Keep the cache in RAM only (CPU backend only; not available on Windows).</summary>
+    /// <summary>Keep the cache in RAM only, without writing a cache file (CPU backend only).</summary>
+    /// <remarks>On win-x64 with LiteRT-LM v0.20.0 (gemma-4 E2B and Qwen3-0.6B), the CPU engine loads, answers
+    /// and writes no cache file; on GPU, engine creation fails with UNKNOWN ("Failed to modify graph with
+    /// delegate"). The CPU result was the same with LiteRT-LM v0.18.0.</remarks>
     public static LiteRtCache InMemory => new(":memory");
 
     /// <summary>Use a specific directory for the cache.</summary>

@@ -125,7 +125,8 @@ jobs:
           done
 
           # win-x64 must carry the DirectX Shader Compiler pair: the official Dawn backend has no FXC
-          # fallback, and the consumer smoke's GPU leg cannot prove their presence on a GPU-less runner.
+          # fallback (without dxcompiler.dll the GPU engine fails to create), and the consumer smoke's
+          # GPU leg cannot prove their presence on a GPU-less runner.
           if [ -d runtimes/win-x64/native ] && [ -n "$(ls runtimes/win-x64/native 2>/dev/null)" ]; then
             for dxc in dxcompiler.dll dxil.dll; do
               [ -f "runtimes/win-x64/native/$dxc" ] || { echo "::error::win-x64 natives lack $dxc (Dawn on D3D12 requires it)"; exit 1; }

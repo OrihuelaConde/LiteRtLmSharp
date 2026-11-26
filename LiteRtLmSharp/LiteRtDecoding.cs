@@ -145,9 +145,9 @@ public sealed record LiteRtConstraint
     private readonly LiteRtConstraintType _type;
 
     /// <summary>How to interpret <see cref="Pattern"/>. Must be a defined member — an out-of-range
-    /// value (including the unset <c>default</c>) is rejected here rather than passed to the native
-    /// layer, whose constraint compiler does not police the enum (an undefined value reaches
-    /// undefined behavior in the LlGuidance bridge).</summary>
+    /// value (including the unset <c>default</c>) is rejected here, when the constraint is built. The native
+    /// layer also rejects an undeclared constraint type, with <c>INVALID_ARGUMENT</c> (LiteRT-LM
+    /// v0.20.0).</summary>
     /// <exception cref="System.ArgumentOutOfRangeException">The value is not
     /// <see cref="LiteRtConstraintType.Regex"/> or <see cref="LiteRtConstraintType.JsonSchema"/>.</exception>
     public required LiteRtConstraintType Type
@@ -188,13 +188,13 @@ public sealed record LiteRtConstraint
 /// <summary>
 /// Provider used to compile and enforce custom <see cref="LiteRtConstraint"/>s (the "custom
 /// constrained decoding" path). Distinct from <see cref="LiteRtConversationOptions.EnableConstrainedDecoding"/>,
-/// which is the <b>tool-calling</b> constrained-decoding path — the native runtime supports only one
-/// of the two per conversation.
+/// which is the <b>tool-calling</b> constrained-decoding path — this binding accepts only one of the two
+/// per conversation.
 /// </summary>
 public enum LiteRtConstraintProvider
 {
     /// <summary>The <a href="https://github.com/guidance-ai/llguidance">llguidance</a> engine
-    /// (regex, JSON Schema). Compiled into the native library from source — unlike the tool-calling
-    /// constraint provider, it does not depend on a platform prebuilt.</summary>
+    /// (regex, JSON Schema). Built into the official native library, as the tool-calling constraint
+    /// provider is; neither depends on a separate platform prebuilt.</summary>
     LlGuidance = 1,
 }

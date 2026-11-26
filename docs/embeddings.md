@@ -12,16 +12,17 @@ consume directly. `LiteRtModelInfo` reads a model file's metadata without loadin
 
 ## Requirements
 
-- The LiteRT-LM v0.18.0 natives (LiteRtLmSharp 1.3.0 and later). The embedding engine and the model
-  metadata reader are part of the v0.18.0 C API.
+- LiteRtLmSharp 1.3.0 or later. The embedding engine and the model metadata reader are part of the
+  LiteRT-LM C API since v0.18.0, the version that LiteRtLmSharp 1.3.0 ships.
 - An embedding model in `.litertlm` format. This project validates
   [EmbeddingGemma 2 Text 270M](https://huggingface.co/litert-community/embeddinggemma-2-text-270m-litert-lm)
   (`embeddinggemma-2-text-270m.litertlm`, 165 MB, Apache 2.0, no sign-in needed to download). The
   same repository has variants compiled for specific NPUs (Google Tensor, Qualcomm, MediaTek, Intel);
   LiteRtLmSharp does not support NPUs, so use the plain file on CPU or GPU.
 - Text input. EmbeddingGemma 2 also comes in larger bundles that embed images, audio and video; the
-  binding does not expose those inputs yet. Use the text-only bundle: the larger ones load their vision
-  and audio encoders anyway, which costs memory and load time for nothing.
+  binding does not expose those inputs yet. Use the text-only bundle. The text-vision bundle (440M) gives
+  the same text vectors, but it loads its vision encoder even for text-only use (LiteRT-LM v0.20.0,
+  win-x64, CPU), and a loaded encoder costs memory and load time (measured with LiteRT-LM v0.18.0).
 
 ## Quick start
 
@@ -66,7 +67,7 @@ new or changed texts. `engine.Dimension` gives the vector length (768 for Embedd
 EmbeddingGemma 2 is trained with a short instruction in front of each text that says what the vector is
 for: a search query and the documents it searches are embedded differently. The runtime does not add
 the instruction, so prepend it to every text yourself. Without it the model still works, at lower
-quality.
+quality according to the model card.
 
 Two official sources list different instructions:
 
@@ -149,9 +150,9 @@ hundred tokens and embedding each passage usually retrieves better than one vect
 | Option | Default | Notes |
 |---|---|---|
 | `Backend` | `Cpu` | `Gpu` is faster for longer texts (see [Performance](#performance)). The GPU vectors differ slightly from the CPU ones (cosine similarity 0.9994 between them in our measurement), so index and search on the same backend. |
-| `ActivationDataType` | `Float32` | Like the chat engine, the embedding engine defaults to float32. The EmbeddingGemma 2 model card advises against float16 (its activations exceed the float16 range, which degrades the vectors silently), and on GPU the runtime would otherwise fall back to float16: in our measurement those vectors had a cosine similarity of 0.9965 with the CPU ones and slightly narrower ranking margins. Float32 cost no speed on a desktop GPU, but on a phone GPU float16 was about twice as fast per sentence (see [Performance](#performance)). The CPU backend runs float32 either way. Set `Float16` to make that trade, or `null` to let the runtime choose. |
+| `ActivationDataType` | `Float32` | Like the chat engine, the embedding engine defaults to float32. The EmbeddingGemma 2 model card advises against float16 (its activations exceed the float16 range, which degrades the vectors silently), and on GPU the runtime would otherwise fall back to float16: in our measurement those vectors had a cosine similarity of 0.9965 with the CPU ones and slightly narrower ranking margins. Float32 cost no speed on a desktop GPU, but on a phone GPU float16 was about twice as fast per sentence (measured with LiteRT-LM v0.18.0; see [Performance](#performance)). The CPU backend runs float32 either way. Set `Float16` to make that trade, or `null` to let the runtime choose. |
 | `MaxInputLength`, `MinInputLength` | The model's limits | See [Input length](#input-length). |
-| `Cache` | Next to the model file | Compiled artifacts written on the first load (67 MB on CPU, 74 MB on GPU for EmbeddingGemma 2 Text 270M). A `LiteRtCache.Directory` must already exist: the runtime does not create it, so `Load` throws `ArgumentException`. |
+| `Cache` | Next to the model file | Compiled artifacts written on the first load (67 MB on CPU, 74 MB on GPU for EmbeddingGemma 2 Text 270M, measured with LiteRT-LM v0.18.0). A `LiteRtCache.Directory` must already exist: the runtime does not create it, so `Load` throws `ArgumentException`. |
 | `NumThreads` | Runtime default | CPU only. |
 
 ## Performance
@@ -171,16 +172,22 @@ after a warm-up; texts carry the document instruction.
 - **Batching saves call overhead, not compute.** The runtime embeds the texts of a batch one after
   another, so 32 texts in one `EmbedBatch` call take as long as 32 `Embed` calls. If one text in a batch
   fails (for example, a text too long under `OverflowStrategy.Error`), the whole call fails.
-- **Memory on CPU** grows with the longest signature you use: the process peaked at about 0.42 GB with
-  `MaxInputLength = 512`, 0.53 GB with the default 1,024, and 0.98 GB after embedding a text that
-  needed the 2,048-token signature (`MaxInputLength = 2048`).
-- **Memory on GPU (Windows, WebGPU)**: the working set grew by about 0.4 GB at load, but the process's
-  committed memory grew by about 3.6 GB at the default limit and 7.1 GB with `MaxInputLength = 2048`.
-  On a machine with a small page file, keep `MaxInputLength` as low as your texts allow.
-- **On a phone** (Moto G100, Snapdragon 870 with an Adreno 650 GPU, Android 12): one sentence takes
-  504 ms on CPU, 188 ms on GPU with `Float32` and 103 ms with `Float16`; the GPU vectors have a cosine
-  similarity to the CPU ones of 0.9995 (`Float32`) and 0.9962 (`Float16`). Loading takes about 4 s on CPU
-  and about 22 s on GPU the first time, while the GPU kernels are compiled into the cache.
+- **Memory on CPU** grows with the longest signature you use. Measured with LiteRT-LM v0.18.0, the
+  process peaked at about 0.42 GB with `MaxInputLength = 512`, 0.53 GB with the default 1,024, and
+  0.98 GB after embedding a text that needed the 2,048-token signature (`MaxInputLength = 2048`).
+- **Memory on GPU (Windows, WebGPU)**: measured with LiteRT-LM v0.18.0, the working set grew by about
+  0.4 GB at load, but the process's committed memory grew by about 3.6 GB at the default limit and
+  7.1 GB with `MaxInputLength = 2048`. On a machine with a small page file, keep `MaxInputLength` as low
+  as your texts allow.
+- **On a phone** (Moto G100, Snapdragon 870 with an Adreno 650 GPU, Android 12, measured with LiteRT-LM
+  v0.18.0), loading takes about 4 s on CPU and about 22 s on GPU the first time, while the GPU kernels
+  are compiled into the cache. Per sentence:
+
+  | Backend | One sentence | Cosine similarity to the CPU vectors |
+  |---|---|---|
+  | CPU | 504 ms | — |
+  | GPU, `Float32` | 188 ms | 0.9995 |
+  | GPU, `Float16` | 103 ms | 0.9962 |
 
 ## Threads, lifetime and the chat engine
 
@@ -191,13 +198,15 @@ after a warm-up; texts carry the document instruction.
 - **Alongside a chat engine.** An embedding engine does not count toward the one-live-engine rule of
   `LiteRtEngine`, so an app can keep a chat model and an embedding model loaded at the same time, for
   example to retrieve passages and then answer with them. Validated on CPU and GPU (win-x64), including
-  embeddings computed while the chat engine streams a reply. Known issue on win-x64 GPU: the full test
-  suite, which loads and disposes many engines in one process, has ended a few times with the process
-  exiting without an error, once inside the coexistence test; isolated runs and the last 21 full runs
-  were clean. The
-  [roadmap](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md) tracks it. On a phone the chat model dominates memory:
-  on a Moto G100 (8 GB), gemma-4-E2B on GPU takes about 1.8 GB and the embedding engine adds about 120 MB
-  on CPU or 260 MB on GPU, and the same retrieve-then-answer flow ran with about 0.4 to 0.5 GB of the
+  embeddings computed while the chat engine streams a reply.
+- **Many engines in one process on win-x64 GPU.** With LiteRT-LM v0.18.0, a process that loaded and
+  disposed many engines (the project's full test suite) exited a few times without an error, once while a
+  chat engine and an embedding engine ran together; isolated runs and the last 21 full runs were clean.
+  With LiteRT-LM v0.20.0 this did not occur in 12 full runs on the GPU backend (RTX 3080). The
+  [roadmap](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md) tracks it.
+- **On a phone the chat model dominates memory.** On a Moto G100 (8 GB), measured with LiteRT-LM
+  v0.18.0, gemma-4-E2B on GPU takes about 1.8 GB. The embedding engine adds about 120 MB on CPU or
+  260 MB on GPU. A retrieve-then-answer flow with both engines ran with about 0.4 to 0.5 GB of the
   device's memory still available.
 - **Model check.** `Load` reads the file's metadata first and throws `ArgumentException` when the file
   is a language model (load those with `LiteRtEngine.Load`).

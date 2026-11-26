@@ -7,10 +7,12 @@ namespace LiteRtLmSharp.Native;
 /// Resolves the <c>LiteRtLm</c> native library. Probes the assembly directory and the NuGet
 /// <c>runtimes/&lt;rid&gt;/native</c> layout. The official LiteRT-LM prebuilt is one monolithic
 /// library per platform, so the only companions that exist today are the DirectX Shader Compiler
-/// pair on win-x64 (<c>dxcompiler.dll</c>, <c>dxil.dll</c>), which Dawn loads at runtime by base
-/// name through a <c>LoadLibrary</c> search that never covers the NuGet <c>runtimes/</c>
-/// subdirectory; the resolver pre-loads every other library in the folder so those by-name loads
-/// hit the already-loaded module. Linux/macOS get the same treatment with <c>RTLD_GLOBAL</c>
+/// pair on win-x64 (<c>dxcompiler.dll</c>, <c>dxil.dll</c>). Dawn loads <c>dxcompiler.dll</c> at
+/// runtime by base name, through a <c>LoadLibrary</c> search that never covers the NuGet
+/// <c>runtimes/</c> subdirectory, and the GPU engine fails to create without it (LiteRT-LM v0.20.0,
+/// WebGPU on Direct3D 12); <c>dxil.dll</c> ships beside it. The resolver pre-loads every other
+/// library in the folder so those by-name loads hit the already-loaded module. Linux/macOS get the
+/// same treatment with <c>RTLD_GLOBAL</c>
 /// (a no-op with the current single-file layout). Registered lazily from
 /// <see cref="LiteRtEngine"/>'s static constructor.
 /// When the library cannot be resolved, throws a <see cref="DllNotFoundException"/> whose message
@@ -243,10 +245,14 @@ internal static partial class NativeLibraryResolver
 
     /// <summary>
     /// File-name prefixes of the companion libraries the pre-1.2.0 self-built packages shipped next to the
-    /// engine (the LiteRT runtime, the GPU accelerators and samplers, Dawn, the constraint provider). The
-    /// official monolithic library embeds all of them but still tries to load them by name first, so a
-    /// stale copy left in an output folder (a <c>dotnet publish -o</c> over a 1.1.x publish) must never be
-    /// pre-loaded: it would bind an older runtime to the current engine.
+    /// engine (the LiteRT runtime, the GPU accelerators and samplers, Dawn, the constraint provider). A stale
+    /// copy left in an output folder (a <c>dotnet publish -o</c> over a 1.1.x publish) must never be pre-loaded:
+    /// it would bind an older runtime to the current engine. The official monolithic library embeds all of
+    /// them. It still carries the file names of its accelerator and sampler plugins (on win-x64,
+    /// <c>libLiteRtGpuAccelerator.dll</c>, <c>libLiteRtWebGpuAccelerator.dll</c>,
+    /// <c>libLiteRtVulkanAccelerator.dll</c> and <c>libLiteRtTopKWebGpuSampler.dll</c>), but none for Dawn or
+    /// the constraint provider. With files under those names beside it, a GPU engine had none of them loaded,
+    /// checked after its load and after a send (LiteRT-LM v0.20.0, win-x64).
     /// </summary>
     private static readonly string[] RetiredCompanionPrefixes =
         ["libLiteRt", "LiteRt", "libwebgpu_dawn", "webgpu_dawn", "libGemmaModelConstraintProvider", "GemmaModelConstraintProvider"];

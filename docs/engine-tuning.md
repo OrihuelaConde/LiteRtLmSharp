@@ -24,18 +24,17 @@ using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
 });
 ```
 
-- **Only the GPU backend honors this, and only as F32 vs F16.** `Float32` runs activations at full
-  precision. `Float16` uses half the activation memory, with a precision loss that is NOT always small
-  (below). `null` lets the runtime choose: the precision the model file declares for its text model
+- **Only the GPU backend honors this.** `Float32` runs activations at full precision. `Float16` uses
+  half the activation memory, with a precision loss that is NOT always small (below). `null` lets the runtime choose: the precision the model file declares for its text model
   (F16 for the Gemma 4 E-series), else F16 on GPU.
 - **It sets the text executor only.** The vision and audio encoders run at the precision the model file
   declares for them, else F32, and no option changes that. The Gemma 4 E-series declares F16 for its
   vision encoder, so on GPU its images are encoded in F16 whatever this setting says.
-- **On CPU it is a no-op**: the CPU/XNNPACK path does not read it (the executor only switches the GPU
-  delegate to FP16 when the setting is F16 and the backend is GPU).
-- **`Int16` / `Int8` are accepted but not distinctly implemented** by the shipped executors: on GPU they
-  fold into F16, on CPU they are ignored. They exist only to mirror the native enum — do not expect
-  8/16-bit activation quantization from them.
+- **On CPU it has no effect.** With gemma-4 E2B on CPU, `Float16`, `Float32` and `Int8` gave
+  byte-identical replies (LiteRT-LM v0.20.0, win-x64).
+- **Don't use `Int16` or `Int8`.** The binding accepts them because they mirror the native enum, but
+  on GPU they produced unusable text. With gemma-4 E2B on an RTX 3080 (LiteRT-LM v0.20.0), the replies
+  passed 1 of 43 output checks across extraction, digit, arithmetic and counting prompts.
 - **What F32 costs.** gemma-4-E2B, LiteRT-LM v0.18.0, medians of 3 runs:
 
   | GPU | Decode F16 → F32 | Time to first token F16 → F32 | Memory |
@@ -67,9 +66,12 @@ unanswered — see google-ai-edge/LiteRT-LM#2637, #2727, #2202, and the export-g
   any post-processing), dates resolved against the wrong reference, relations between extracted
   entities inverted or attached to the wrong entity — and passes **16/16 across 3 consecutive runs
   with `Float32`**, with clean digits in the raw output and **no measurable speed cost** on that GPU
-  (~32 s either way; F32 compute was not the bottleneck).
-- The same F16→F32 flip reproduces on a **non-Gemma model** (Ministral-3-3B q4: 13/16 → 16/16), so it
-  is a property of the GPU text executor's precision, not of one model family.
+  (~32 s either way; F32 compute was not the bottleneck). Ministral-3-3B q4 showed the same flip
+  (13/16 → 16/16). These benchmark figures were measured with LiteRT-LM v0.14.0.
+- With LiteRT-LM v0.20.0 on the same GPU, gemma-4 E2B with F16 still writes 3052 for 1024 + 2048
+  (`Float32` gives 3072). On Ministral-3-3B q4, a different set of 43 output checks (the one described
+  under `Int16` and `Int8` above) passed 43 of 43 with both F16 and F32, in two separate runs each. The
+  16-check benchmark was not repeated with v0.20.0.
 - F16 did not only corrupt digits — it degraded reasoning quality (which entity a fact belongs to,
   which date a relative expression resolves to), which is easy to misattribute to the model or the
   prompt.
@@ -77,8 +79,9 @@ unanswered — see google-ai-edge/LiteRT-LM#2637, #2727, #2202, and the export-g
 
 **This is why the binding defaults to `Float32` since 1.3.0.** Before that, the default followed the
 runtime (F16 on GPU) and the recommendation was to set `Float32` by hand. If you opt into `Float16`, A/B
-it once on your target GPU with your own outputs: the cost of F32 is activation memory and possibly
-speed on GPUs with weak F32 throughput; on the desktop GPU we measured (RTX 3080) it cost no speed.
+it once on your target GPU with your own outputs. The cost of F32 is activation memory, and possibly
+speed on GPUs with weak F32 throughput. On the desktop GPU we tested, an RTX 3080, it cost no speed
+(measured with LiteRT-LM v0.18.0).
 
 ## Prefill chunk size — `PrefillChunkSize`
 
@@ -119,8 +122,7 @@ ParallelFileSectionLoading = false,   // serial, single-threaded load
 ## Experimental YNNPACK delegate — `EnableYnnpack`
 
 Lets the experimental [YNNPACK](https://github.com/google/XNNPACK/tree/master/ynnpack) delegate take the
-CPU operations it supports before XNNPACK. `null` (default) leaves the engine default (off). Requires native
-LiteRT-LM v0.16.0+.
+CPU operations it supports before XNNPACK. `null` (default) leaves the engine default (off).
 
 ```csharp
 EnableYnnpack = true,   // CPU backend, linux-arm64 only
@@ -128,15 +130,16 @@ EnableYnnpack = true,   // CPU backend, linux-arm64 only
 
 - **CPU backend only**; the GPU backends ignore it.
 - **linux-arm64 only.** Of the official libraries, only linux-arm64 (the Raspberry Pi target) carries the
-  YNNPACK kernels (a model test on CI's arm64 leg loads an engine with the flag on and generates). On every other platform the v0.18.0
-  libraries reject it at engine creation with `UNIMPLEMENTED` (v0.16.0 ignored it), and the exception
-  names the setting. Measure on the target device before assuming a speed-up.
+  YNNPACK kernels (a model test on CI's arm64 leg loads an engine with the flag on and generates). On
+  every other platform the v0.20.0 libraries reject it at engine creation with `UNIMPLEMENTED` (v0.16.0
+  ignored it), and the exception names the setting. Measure on the target device before assuming a
+  speed-up.
 
 ## Vision token cap — `MaxVisionTokensPerImage`
 
 An upper bound on the vision tokens one image may expand to: the engine loads the vision encoder
-signatures up to the cap, rounded up to the next signature (native v0.18.0+). It caps the size; the
-per-image budget chooses it.
+signatures up to the cap, rounded up to the next signature. It caps the size; the per-image budget
+chooses it.
 
 ```csharp
 MaxVisionTokensPerImage = 140,   // engine-wide ceiling (Gemma 4 signatures: 70, 140, 280)
@@ -144,7 +147,7 @@ MaxVisionTokensPerImage = 140,   // engine-wide ceiling (Gemma 4 signatures: 70,
 // new LiteRtConversationOptions { VisualTokenBudget = 140 }
 ```
 
-- Images still expand to the model's default size (about 256 tokens on Gemma 4) unless
+- Images still expand to the model's default size (260 tokens on gemma-4-E2B-it) unless
   `VisualTokenBudget` asks for less, so a cap below that default needs a budget at or below the cap on
   every image send. Without one the send fails with `INVALID_ARGUMENT` ("No signature found…"), and a
   budget above the cap fails the same way.
@@ -158,9 +161,9 @@ MaxVisionTokensPerImage = 140,   // engine-wide ceiling (Gemma 4 signatures: 70,
 
 ## Metal residency — `EnableMetalResidencySet`
 
-Keeps the model weights and allocations resident in GPU memory through Apple's `MTLResidencySet` API
-(native v0.18.0+). Apple platforms with the Metal GPU backend only; other platforms and backends ignore
-it, which the model-backed test checks on Windows. On macOS the GPU backend runs WebGPU over Metal (see the
+Keeps the model weights and allocations resident in GPU memory through Apple's `MTLResidencySet` API.
+Apple platforms with the Metal GPU backend only; other platforms and backends ignore it, which the
+model-backed test checks on Windows. On macOS the GPU backend runs WebGPU over Metal (see the
 [native ABI notes](native-abi.md)), so measure its effect on the target device rather than assume one.
 
 ## CPU thread counts: `NumThreads` / `AudioNumThreads`
@@ -183,7 +186,7 @@ AudioNumThreads = 2,   // audio executor CPU threads (only when audio is enabled
 
 ## LoRA adapters: engine ranks and adapter paths
 
-Loading a low-rank adaptation on top of a LoRA-enabled base model has two layers, both added in v0.14.0:
+Loading a low-rank adaptation on top of a LoRA-enabled base model has two layers:
 
 - **Engine-level** `LiteRtEngineOptions.LoraRank` / `SupportedLoraRanks` (and the `AudioLoraRank` /
   `SupportedAudioLoraRanks` variants) declare the adapter rank(s) the engine compiles for. The
@@ -192,17 +195,13 @@ Loading a low-rank adaptation on top of a LoRA-enabled base model has two layers
   which is opened when the conversation is created, so a bad path **fails fast** with `LiteRtException`
   at `CreateConversation`, not mid-generation.
 
-Requires a LoRA-enabled model. What the runtime does at v0.18.0, measured on CPU with upstream's LoRA test
-bundle and its rank-32 adapter:
+Requires a LoRA-enabled model. What the runtime does with LiteRT-LM v0.20.0, measured on CPU with
+upstream's LoRA test bundle and its rank-32 adapter:
 
 - **The adapter changes generation**, deterministically (the v0.14.0 and v0.15.0 runtimes rejected every
   text adapter with "Lora is not supported").
-- **It applies to the whole engine, not to its conversation.** After a conversation with `LoraPath` has
-  generated, conversations without an adapter on the same engine generate with it too. While a
-  conversation with an adapter exists, a send on a conversation without one fails with
-  `LiteRtStatusCode.Internal` ("No LoRA ID is set").
-- **So use one adapter per engine.** To switch adapters or to return to the base model, dispose the
-  conversations and the engine and load it again.
+- **It applies to its own conversation only.** On the same engine, a conversation without an adapter
+  answers normally while a conversation with an adapter exists, for blocking and streamed sends.
 - **The published gemma-4 bundles carry no LoRA slots**
   ([LiteRT-LM#3173](https://github.com/google-ai-edge/LiteRT-LM/issues/3173)): an adapter is accepted
   and has no effect on them, with or without `LoraRank`.
@@ -234,10 +233,16 @@ if (chat.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b)
         $"TTFT {b.TimeToFirstTokenSeconds:F2}s · init {b.TotalInitTimeSeconds:F2}s");
 ```
 
-`GetBenchmarkInfo()` returns `null` when benchmarking was not enabled or no turn has completed. It
-exposes the latest turn's `LastPrefillTokenCount` / `LastDecodeTokenCount`, the matching
+`GetBenchmarkInfo()` returns `null` only when benchmarking was not enabled. Before the first send, it
+returns a `LiteRtBenchmarkInfo` with 0 prefill and 0 decode turns, which is why the snippet checks
+`NumDecodeTurns`.
+It exposes the latest turn's `LastPrefillTokenCount` / `LastDecodeTokenCount`, the matching
 `LastPrefillTokensPerSecond` / `LastDecodeTokensPerSecond`, plus `TimeToFirstTokenSeconds` and
 `TotalInitTimeSeconds`.
+
+After a reply with thinking, the runtime records the KV-cache refill that follows the reply as a second
+prefill turn. `LastPrefillTokenCount` and `LastPrefillTokensPerSecond` then describe that refill, not
+your message. To get the prefill size of the send's own message, read `LastSendPrefillTokenCount`.
 
 ### Synthetic, content-independent benchmark — `BenchmarkPrefillTokens` / `BenchmarkDecodeTokens`
 
@@ -270,5 +275,7 @@ Two caveats:
 - **Setting either count turns benchmark mode on** (the same switch as `EnableBenchmark`), so
   `GetBenchmarkInfo()` works even without `EnableBenchmark`.
 
-This is the mechanism the project's CI A/B harness uses to compare speculative decoding on and off; the
-measured numbers and method are in [speculative-decoding.md](speculative-decoding.md).
+The project's CI compares speculative decoding on and off with a real prompt instead of these synthetic
+counts: it sends one fixed prompt with `EnableBenchmark` on, once with the drafter off and once with it
+on. The method and the
+measured numbers are in [speculative-decoding.md](speculative-decoding.md).

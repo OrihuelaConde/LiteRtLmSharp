@@ -7,15 +7,19 @@ for the x86_64 emulator).
 A **`net10.0` library is consumable from `net10.0-android` apps** → **the managed package does
 NOT need multi-targeting**. Android only needs the native `.so` binaries and a per-RID runtime
 package. The API surface (`[LibraryImport]`, `NativeLibrary`, `[UnmanagedCallersOnly]`,
-P/Invoke) works on .NET Android (CoreCLR).
+P/Invoke) works on .NET for Android, which runs the Android RIDs on Mono, not CoreCLR. One Mono
+difference matters to the binding: Mono discards an exception thrown by a `DllImportResolver`, so the
+binding checks the native library's version from its public entry points instead of relying on the
+resolver.
 
 ## Pieces (status)
 
 - **Native binary** (`native-release.yml`): ✅ Google's official `liblitert-lm.so` for
   `android_arm64` and `android_x86_64`, each shipped as a single `libLiteRtLm.so` with the
   OpenCL/WebGPU accelerators, the GPU samplers and the constraint provider embedded (16 KB page
-  alignment, the Google Play requirement, is asserted by the workflow). The v0.18.0 libraries require
-  Android 7.0 (API 24) or later. Until v0.15.0 it was built here with Bazel and shipped
+  alignment, the Google Play requirement, is asserted by the workflow). The v0.20.0 libraries declare
+  Android 7.0 (API 24) as their minimum. They have run on API 35 only (the x86_64 emulator); loading on
+  API 24 was not tested. Until v0.15.0 it was built here with Bazel and shipped
   next to upstream's companion `.so` files; the sections below that mention companions or the
   sampler patch describe that era and are kept as the diagnostic record.
 - **Runtime packages** `LiteRtLmSharp.runtime.android-arm64` and `LiteRtLmSharp.runtime.android-x64`:
@@ -30,9 +34,11 @@ P/Invoke `"LiteRtLm"` → the runtime loads `libLiteRtLm.so` from the app's nati
 APK) and falls back to the default `NativeLibrary.TryLoad("LiteRtLm")` → resolves. There are no
 companion libraries any more: accelerators, samplers and the constraint provider are inside the
 one file. The vendor `libOpenCL.so` is still `dlopen`'d at runtime and needs the manifest
-declaration described below; the sampler factory tries `libLiteRtTopKOpenClSampler.so` first and
-then uses its embedded copy, so the logcat line `OpenCL sampler not available, falling back to
-statically linked C API` is expected on every GPU run (sampling stays on the GPU).
+declaration described below. The logcat line `OpenCL sampler not available, falling back to statically
+linked C API` does not mean CPU sampling: with the official v0.16.0 library, the device printed it on
+every GPU run while sampling stayed on the GPU through the embedded sampler. In the v0.20.0 sources, the
+sampler factory tries its statically linked sampler first and logs a fallback only at verbose level, so
+the line may no longer appear. This was not checked on a device with v0.20.0.
 
 ## Consumption (MAUI / .NET Android)
 ```xml
@@ -45,26 +51,50 @@ The `.litertlm` model (~2.5 GB for E2B) is **not packed** into the APK: download
 storage on first run and pass its path to `LiteRtEngine.Load`.
 
 ## Validation status
+LiteRT-LM v0.20.0 is validated on the x86_64 emulator only (items 4 and 8). It is not validated on a
+physical Android device: the last device validation is item 7 (LiteRtLmSharp 1.3.0, LiteRT-LM v0.18.0).
+
 1. ✅ (self-built era) `build-native.yml` android green (the runner's NDK sufficed; dynamic-list
    applies; symbols OK). Since v0.16.0: `native-release.yml` repackages the official library.
 2. ✅ `pack-nuget.yml` produces `LiteRtLmSharp.runtime.android-arm64`.
 3. ✅ **Validated on a physical device** (Moto G100, Android 12): model load, chat, streaming —
    **CPU and GPU** (see the GPU diagnosis below). Sample app in `samples/Maui`.
 4. ✅ `android-x64` (x86_64 emulator): the official library ships as `LiteRtLmSharp.runtime.android-x64`,
-   and the MAUI sample's Release APK carries both ABIs (`lib/arm64-v8a/` and `lib/x86_64/`, 58.5 MB in
-   total). Emulators expose no OpenCL GPU, so the emulator runs the CPU backend. Validated on an API 35
-   x86_64 emulator (2026-10-06, 8 cores, WHPX acceleration) with an app built from the packed packages:
-   gemma-4-E2B chats on CPU at 14.8 tok/s decode, and EmbeddingGemma 2 returns the same vectors as on
-   desktop. Copy models into the app's own external files folder after the app has created it: a folder
-   created by `adb` belongs to the shell user, and the app cannot read it.
-5. ✅ Re-tested on device with the patched samplers: **the patchelf works** (device==local
+   and the MAUI sample's Release APK for `net10.0-android` carries both ABIs (`lib/arm64-v8a/` and
+   `lib/x86_64/`; 45.7 MB in total with the v0.20.0 libraries).
+
+   An app built from the packed packages works on the emulator with the CPU backend: gemma-4-E2B chats
+   and each reply ends on its own, and EmbeddingGemma 2 returns 768-dimension vectors that are identical
+   across runs (cosine similarity 0.870 between the two sentences of the test pair). This was validated
+   with LiteRT-LM v0.20.0 on an API 35 x86_64 emulator with 6 cores and WHPX acceleration. Emulator speed
+   depends on the host, so this page gives no decode speed for the emulator.
+
+   Use the CPU backend on emulators. On an emulator in its host GPU mode, `LiteRtEngine.Load` with
+   `Backend = Gpu` throws `LiteRtException` (`litert_lm_engine_create failed: UNKNOWN: Failed to modify
+   graph with delegate`) and the app keeps running. Other emulator GPU setups were not measured.
+
+   To run a model on the emulator, copy it into the app's own external files folder after the app has
+   created it: a folder created by `adb` belongs to the shell user, and the app cannot read it.
+
+   The following table shows memory use on the same emulator with LiteRT-LM v0.20.0 and the CPU
+   backend. The one-engine rows measure a gemma-4-E2B engine. The extra-engine rows come from three CPU
+   engines loaded at once with `AllowMultipleEngines`, each of which replied in turn:
+
+   | Measurement | Value |
+   |---|---|
+   | One engine after one reply, resident (RSS) | 1,402 to 1,403 MiB |
+   | One engine after one reply, proportional (PSS) | 1,285 to 1,286 MiB |
+   | Each extra engine, proportional (PSS) | 252 to 257 MiB more |
+   | Each extra engine, available device memory (`MemAvailable`) | 254 to 261 MiB less |
+
+5. ✅ (self-built era) Re-tested on device with the patched samplers: **the patchelf works** (device==local
    checksums; zero `sampler_factory` warnings → GPU sampling active; correct output). No
    perceptible speed gain yet: the big jump (~3×, #2211) additionally requires speculative
    decoding, now exposed as `LiteRtEngineOptions.EnableSpeculativeDecoding`
-   (`litert_lm_engine_settings_set_enable_speculative_decoding`). ✅ Measured on this device
-   (Adreno 650, OpenCL, 2026-06-16): also neutral (~1.01×, 14.1 vs 13.9 tok/s). logcat confirms MTP
-   runs correctly on GPU (drafter compiles on OpenCL, GPU sampler active, no fallback), but draft
-   acceptance is only ~32% — too low to beat the drafter overhead on this older GPU. Same story on
+   (`litert_lm_engine_settings_set_enable_speculative_decoding`). ✅ On this device (Adreno 650,
+   OpenCL, 2026-06-16) it was also neutral (~1.01×, 14.1 vs 13.9 tok/s, measured with LiteRT-LM
+   v0.13.1). logcat confirms MTP runs correctly on GPU (drafter compiles on OpenCL, GPU sampler
+   active, no fallback), but draft acceptance is only ~32% — too low to beat the drafter overhead on this older GPU. Same story on
    desktop (CPU regresses; WebGPU, which on v0.13.1 needed the cache off, does not speed up). A newer flagship
    GPU is the remaining thing to try. See [speculative-decoding.md](speculative-decoding.md).
 6. ✅ **Official v0.16.0 prebuilt validated on the same device (2026-09-05)**: the MAUI sample with
@@ -96,15 +126,40 @@ storage on first run and pass its path to `LiteRtEngine.Load`.
    about 120 MB on CPU or 260 MB on GPU, and a retrieve-then-answer flow (with an embedding computed while
    the reply streams) completed with about 0.4 to 0.5 GB of device memory still available.
 
+8. ✅ **Sessions, checkpoints, and model sync with LiteRT-LM v0.20.0** on the x86_64 emulator of item 4
+   (API 35, CPU backend):
+   - Session API: `CreateSession`, `Prefill`, and `Decode` returned the expected reply and moved the
+     session through `Fresh`, `Prefilled`, and `Decoded`. `LiteRtConversation.Clone` works after a first
+     send.
+   - Checkpoints (experimental): a `RewindTo` to a checkpoint saved in `Decoded` brought back the first
+     pass. `Reset` after one turn and after three turns gave the same reply as a new session. After a
+     prefill longer than the context failed with `InvalidArgument` and left the session `Faulted`,
+     `RewindTo` returned it to `Prefilled` and `Decode` replied.
+   - Model sync (experimental): over cleartext HTTP with the default `HttpClient`, `CreatePlanAsync`
+     gave the same plans as on Windows x64. `UpdateAsync` applied differential updates to a separate
+     output file that matched the remote file, and fell back to whole-file downloads against a server
+     that ignores range requests.
+
+   Not measured on Android, among others:
+   - Sessions: `PrefillAsync`, `DecodeAsync`, `DecodeStreamingAsync`, and cancellation.
+   - Checkpoints: a rewind to a checkpoint saved in `Prefilled` on a healthy session, `Reset` from
+     `Faulted`, whether a `Faulted` session refuses the other calls, and the start-token rule after
+     `Reset`.
+   - Model sync: in-place updates, HTTPS, redirects, real model sizes, and the free-space check in app
+     storage.
+
+   See [sessions.md](sessions.md) and [model-sync.md](model-sync.md).
+
 ## Risks
 - Vendor GPU drivers (see the diagnosis below): older Adreno Vulkan drivers break Dawn's shaders,
   and OpenCL must be reachable through the manifest declaration.
 - Model size/memory on low-RAM devices.
 - Activation precision on mobile GPUs. Since 1.3.0 the binding asks for F32 activations by default
   (`LiteRtEngineOptions.ActivationDataType`), because the runtime's F16 default corrupts structured
-  output on the desktop GPUs we measured. On the Moto G100 F32 costs about 5% of decode speed, doubles the
-  time to first token and uses about 150 MB more RAM (item 7). If a phone runs too slowly or out of memory
-  on GPU, try `ActivationDataType = LiteRtActivationDataType.Float16` and check your outputs.
+  output on the desktop GPUs we measured. On the Moto G100, F32 costs about 5% of decode speed, doubles
+  the time to first token and uses about 150 MB more RAM (item 7, measured with LiteRT-LM v0.18.0). If a
+  phone runs too slowly or out of memory on GPU, try
+  `ActivationDataType = LiteRtActivationDataType.Float16` and check your outputs.
 
 ## Android GPU — full diagnosis (validated on device, 2026-06-10)
 
@@ -133,7 +188,7 @@ With this, logcat shows `tflite: Loaded OpenCL library with dlopen` and **the re
 OpenCL over Dawn on its own** (measured with the self-built 7-`.so` set; the official monolith
 behaves the same) → correct text on GPU.
 Expected profile: slower GPU init (weight upload + CL kernel compilation, ~17 s on the test
-device), faster decode than CPU.
+device, measured with LiteRT-LM v0.13.1), faster decode than CPU.
 
 ### Historical: TopK samplers failed to load → patchelf (self-built era, v0.13.1 → v0.15.0)
 > Resolved by the official v0.16.0 prebuilt, which embeds the samplers; there is no patchelf and no

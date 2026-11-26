@@ -13,8 +13,9 @@ all running locally via LiteRtLmSharp.
 - **Models tab** — catalog of Gemma 4 models from `litert-community` (Hugging Face): download with
   progress + resume, delete, pick CPU/GPU and load. Loading while another model is active swaps
   the engine in-place (no app restart) — same pattern as Google's Edge Gallery. When you load an
-  MTP-capable model it also asks whether to enable speculative decoding (default on; on GPU the disk
-  cache is turned off automatically, which that combo requires — see `docs/speculative-decoding.md`).
+  MTP-capable model it also asks whether to enable speculative decoding (default on; see
+  `docs/speculative-decoding.md`). The engine keeps the default disk cache with or without speculative
+  decoding.
 - **Chat tab** — streaming chat with Stop (cancellation), New conversation, and a gauge showing
   context usage, elapsed time and (when available) decode tokens/sec · time-to-first-token. The
   header shows the loaded model, backend and speculative on/off. On a multimodal model (the Gemma 4
@@ -34,7 +35,7 @@ project so they always exercise the current source; consumers should use the NuG
 instead — see the repo README):
 
 - Android: extract `litertlm-android_arm64.tar.gz` (devices) and `litertlm-android_x86_64.tar.gz`
-  (emulator) from the `native-v0.18.0` GitHub release into `runtimes/android-arm64/native/` and
+  (emulator) from the `native-v0.20.0` GitHub release into `runtimes/android-arm64/native/` and
   `runtimes/android-x64/native/`
 - Windows: `litertlm-windows_x86_64.tar.gz` into `runtimes/win-x64/native/`
 
@@ -44,8 +45,8 @@ pwsh scripts/restore-natives.ps1 -Rid android-arm64,android-x64,win-x64
 
 ## Run on an Android device
 
-Physical **arm64** device, Android 7.0+ (API 24), ideally 8 GB+ RAM for Gemma 4 E2B. Enable USB
-debugging, plug in, then:
+Physical **arm64** device, Android 7.0+ (API 24, the minimum the sample and the native libraries
+declare), ideally 8 GB+ RAM for Gemma 4 E2B. Enable USB debugging, plug in, then:
 
 ```
 cd samples/Maui
@@ -55,8 +56,11 @@ dotnet build -f net10.0-android -t:Run
 (or F5 in Visual Studio with the device selected). In the app: Models → Download E2B (~2.5 GB,
 resumable) → Load → CPU → chat.
 
-The APK also carries the x86_64 library for the **Android emulator** (x86_64 image, API 24+). Use the
-**CPU** backend there: emulators expose no OpenCL GPU. Give the emulator enough RAM for the model.
+The APK also carries the x86_64 library for the **Android emulator** (x86_64 image; validated on
+API 35). Use the **CPU** backend there: on an emulator in its host GPU mode, loading with the GPU
+backend throws `LiteRtException` (`Failed to modify graph with delegate`). Give the emulator enough RAM
+for the model: with LiteRT-LM v0.20.0 on API 35, one gemma-4-E2B engine on CPU reached
+1,402 to 1,403 MiB resident (RSS) after one reply.
 
 ## Run on Windows
 
