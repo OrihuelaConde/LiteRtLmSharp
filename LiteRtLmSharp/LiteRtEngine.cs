@@ -11,6 +11,11 @@ namespace LiteRtLmSharp;
 public sealed class LiteRtEngine : IDisposable
 {
     private readonly EngineHandle _engine;
+
+    // The C API forbids overlapping calls on one handle (c/engine.h), and sends of this engine's conversations
+    // call the tokenizer from whatever thread sends. This gate serializes the tokenizer calls only; no call made
+    // under it waits for a generation.
+    private readonly Lock _tokenizerGate = new();
     // Whether the engine was loaded with a vision/audio encoder enabled. Conversations spawned from a
     // multimodal engine always get a conversation config (on LiteRT-LM v0.20.0 a conversation created
     // without one failed its image send: the vision executor did not load), so a plain CreateConversation()
@@ -421,8 +426,9 @@ public sealed class LiteRtEngine : IDisposable
     /// <remarks>
     /// The tokenizer runs on the engine handle, and the C API's threading model (<c>c/engine.h</c>) forbids
     /// overlapping calls that use the same handle. Some sends of this engine's conversations call the
-    /// tokenizer too (see the remarks of <see cref="LiteRtConversation"/>). The binding does not serialize
-    /// these calls, so keep this method, <see cref="Detokenize"/> and those sends from overlapping.
+    /// tokenizer too (see the remarks of <see cref="LiteRtConversation"/>). The binding runs the tokenizer
+    /// calls of one engine one at a time. It does not serialize them with the other calls that use the engine
+    /// handle, such as creating a conversation or a session.
     /// </remarks>
     /// <exception cref="LiteRtException">The native tokenizer call failed.</exception>
     public int[] Tokenize(string text)
@@ -470,9 +476,10 @@ public sealed class LiteRtEngine : IDisposable
     private unsafe TokenizeResultHandle TokenizeNative(string text)
     {
         nint resultPtr;
-        NativeError.ThrowIfFailed(
-            LiteRtLmNative.litert_lm_engine_tokenize(_engine.Ptr, text, &resultPtr),
-            nameof(LiteRtLmNative.litert_lm_engine_tokenize));
+        LiteRtStatusCode status;
+        lock (_tokenizerGate)
+            status = LiteRtLmNative.litert_lm_engine_tokenize(_engine.Ptr, text, &resultPtr);
+        NativeError.ThrowIfFailed(status, nameof(LiteRtLmNative.litert_lm_engine_tokenize));
         return new TokenizeResultHandle(resultPtr);
     }
 
@@ -507,7 +514,10 @@ public sealed class LiteRtEngine : IDisposable
         nint resultPtr;
         LiteRtStatusCode status;
         fixed (int* p = tokens)
-            status = LiteRtLmNative.litert_lm_engine_detokenize(_engine.Ptr, p, (nuint)tokens.Length, &resultPtr);
+        {
+            lock (_tokenizerGate)
+                status = LiteRtLmNative.litert_lm_engine_detokenize(_engine.Ptr, p, (nuint)tokens.Length, &resultPtr);
+        }
         NativeError.ThrowIfFailed(status, nameof(LiteRtLmNative.litert_lm_engine_detokenize));
 
         using var result = new DetokenizeResultHandle(resultPtr);
@@ -536,7 +546,10 @@ public sealed class LiteRtEngine : IDisposable
     private unsafe LiteRtTokenUnion? ReadStartToken()
     {
         nint ptr;
-        if (LiteRtLmNative.litert_lm_engine_get_start_token(_engine.Ptr, &ptr) != LiteRtStatusCode.Ok)
+        LiteRtStatusCode status;
+        lock (_tokenizerGate)
+            status = LiteRtLmNative.litert_lm_engine_get_start_token(_engine.Ptr, &ptr);
+        if (status != LiteRtStatusCode.Ok)
         {
             // Read as "none declared", the value the binding has always returned for a failed read.
             NativeError.Clear();
@@ -562,7 +575,10 @@ public sealed class LiteRtEngine : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         nint ptr;
-        if (LiteRtLmNative.litert_lm_engine_get_stop_tokens(_engine.Ptr, &ptr) != LiteRtStatusCode.Ok)
+        LiteRtStatusCode status;
+        lock (_tokenizerGate)
+            status = LiteRtLmNative.litert_lm_engine_get_stop_tokens(_engine.Ptr, &ptr);
+        if (status != LiteRtStatusCode.Ok)
         {
             // Read as "none declared", the value the binding has always returned for a failed read.
             NativeError.Clear();

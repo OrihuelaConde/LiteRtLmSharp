@@ -105,15 +105,15 @@ public sealed record LiteRtSamplerParams
 
     /// <summary>Sampling temperature: higher is more random, 0 is greedy/argmax (measured: with TopP,
     /// temperature 0 gives the same replies as <see cref="LiteRtSamplerType.Greedy"/>, whatever the seed).
-    /// Must be a non-negative number. Default 1.0.</summary>
-    /// <exception cref="System.ArgumentOutOfRangeException">The value is NaN or negative.</exception>
+    /// Must be a finite, non-negative number. Default 1.0.</summary>
+    /// <exception cref="System.ArgumentOutOfRangeException">The value is NaN, infinite or negative.</exception>
     public float Temperature
     {
         get => _temperature;
         init
         {
-            if (float.IsNaN(value) || value < 0f)
-                throw new ArgumentOutOfRangeException(nameof(value), value, "Temperature must be a non-negative number.");
+            if (!float.IsFinite(value) || value < 0f)
+                throw new ArgumentOutOfRangeException(nameof(value), value, "Temperature must be a finite, non-negative number.");
             _temperature = value;
         }
     }

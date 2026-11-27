@@ -221,7 +221,10 @@ responses functions and wraps 9 of them in `LiteRtSession`; see the Raw Session 
    reproduce with v0.20.0 on the one GPU measured, and other GPUs and `Float16` activations were not
    measured. (c) The speculative decoding config (`Adaptive` mode, lenience) is not wrapped, and
    `EnableSpeculativeDecoding` relies on the two setters that C API 1.0.0 deprecated (see the C API coverage
-   note above).
+   note above). (d) A session decode ignores an error that arrives on a chunk that is not the final one: the
+   decode ends by its final chunk alone. No such chunk sequence was seen with v0.20.0; check it again at the
+   next repin. (e) The Android packaging check finds the OpenCL sampler's names in the arm64 library, which
+   does not show that the sampler is embedded; a GPU run on a device does.
 
 -5. **AFTER 1.3.0 (open as of 2026-10-12).** (a) ✅ Pull request #15, the first external contribution
    (opt-in second engine, non-blocking `TokenCount`, sampler diagnostics), was merged on

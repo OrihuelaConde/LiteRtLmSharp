@@ -240,6 +240,13 @@ later release. The C# compiler reports each use as an error until you suppress t
   This includes a registration without a key after a `serviceId`, because the first `serviceId`
   is also registered without a key, so register the one without a key first. The same engine or equal options again
   still does nothing.
+- **`LiteRtSamplerParams.Temperature` must be finite.** An infinite temperature now throws
+  `ArgumentOutOfRangeException`, like NaN and negative values. The LiteRT-LM v0.20.0 C API requires a finite
+  temperature.
+- **A chat request without tools does not ask for constrained decoding.** `LiteRtChatClient` and the Semantic
+  Kernel connector used to pass `EnableConstrainedDecoding` to the runtime even when the request offered no
+  tools. With LiteRT-LM v0.20.0 that can end a text reply at its first line break, so the flag now applies only
+  to requests with tools.
 - **Chat clients over one engine take turns.** Each `LiteRtChatClient` used to serialize only its own calls, so two
   clients over one engine could put two generations in flight on it. Now they wait for each other, so the clients
   over one engine run one generation at a time. An open stream counts until you read it to the end or dispose it,

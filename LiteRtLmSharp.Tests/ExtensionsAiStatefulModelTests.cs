@@ -397,7 +397,12 @@ public sealed class ExtensionsAiStatefulModelTests(ITestOutputHelper output)
         using var engine = LiteRtEngine.Load(Options());
         using var client = new LiteRtChatClient(
             engine,
-            optionsTemplate: new LiteRtConversationOptions { EnableConstrainedDecoding = true },
+            // The flag reaches the runtime only on a conversation with tools.
+            optionsTemplate: new LiteRtConversationOptions
+            {
+                EnableConstrainedDecoding = true,
+                Tools = [new LiteRtTool("get_weather", "Gets the weather of a city.", """{"type":"object","properties":{"city":{"type":"string"}}}""")],
+            },
             statefulConversations: new LiteRtStatefulConversationOptions());
 
         string id = (await client.GetResponseAsync(
@@ -425,7 +430,12 @@ public sealed class ExtensionsAiStatefulModelTests(ITestOutputHelper output)
         using var engine = LiteRtEngine.Load(Options());
         using var client = new LiteRtChatClient(
             engine,
-            optionsTemplate: new LiteRtConversationOptions { EnableConstrainedDecoding = true },
+            // The flag reaches the runtime only on a conversation with tools.
+            optionsTemplate: new LiteRtConversationOptions
+            {
+                EnableConstrainedDecoding = true,
+                Tools = [new LiteRtTool("get_weather", "Gets the weather of a city.", """{"type":"object","properties":{"city":{"type":"string"}}}""")],
+            },
             statefulConversations: new LiteRtStatefulConversationOptions { CheckpointConstrainedConversations = true });
 
         string id = (await client.GetResponseAsync(

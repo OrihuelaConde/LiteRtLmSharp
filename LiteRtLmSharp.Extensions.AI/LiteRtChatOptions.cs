@@ -41,7 +41,9 @@ public sealed class LiteRtChatOptions : ChatOptions
     /// </summary>
     /// <remarks>
     /// Backed by the <c>enable_constrained_decoding</c> key in <see cref="ChatOptions.AdditionalProperties"/>.
-    /// Tools still work without it (arguments are simply not grammar-constrained).
+    /// Tools still work without it (arguments are simply not grammar-constrained). A request that offers no
+    /// tools ignores the flag: without tools, LiteRT-LM v0.20.0 can end a constrained text reply at its first
+    /// line break.
     /// </remarks>
     [JsonIgnore]
     public bool EnableConstrainedDecoding

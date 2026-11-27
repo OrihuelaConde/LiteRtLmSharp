@@ -313,6 +313,10 @@ internal static class LiteRtChatMapping
         // "Present" for tools = ChatOptions carries tools; then ToTools honors ToolMode (None → no tools, and it
         // does NOT fall back to the template). Only a request with no tools at all uses the template's tools.
         IReadOnlyList<LiteRtTool>? tools = options?.Tools is { Count: > 0 } ? ToTools(options) : template?.Tools;
+        // Tool-calling constrained decoding does nothing useful without tools, and with LiteRT-LM v0.20.0 it can
+        // end a text reply at its first line break, so a request without tools does not ask for it.
+        if (tools is not { Count: > 0 })
+            constrained = false;
 
         // System message: the per-request system message (a leading System turn in history) wins; the template's
         // SystemMessage is used only when the request carries none — guaranteeing there are never two system

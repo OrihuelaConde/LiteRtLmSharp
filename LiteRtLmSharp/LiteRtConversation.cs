@@ -44,9 +44,9 @@ namespace LiteRtLmSharp;
 /// measures its message and, after a reply that the guard capped, can measure the reply. The first send on the
 /// engine with <see cref="LiteRtSendOptions.EnableThinking"/> set to <c>false</c> looks up a token with it.
 /// <see cref="LiteRtEngine.Tokenize"/> and <see cref="LiteRtEngine.Detokenize"/> use the same handle. Two such
-/// calls on different threads at once overlap on the engine handle, which <c>c/engine.h</c> forbids. The
-/// binding does not serialize them, so keep them from overlapping in the application, for example by keeping
-/// one send in flight per engine.
+/// calls on different threads at once would overlap on the engine handle, which <c>c/engine.h</c> forbids, so
+/// the binding runs the tokenizer calls of one engine one at a time. It does not serialize them with the other
+/// calls that use the engine handle, such as creating a conversation or a session.
 /// </para>
 /// </remarks>
 public sealed class LiteRtConversation : IDisposable
@@ -924,7 +924,9 @@ public sealed class LiteRtConversation : IDisposable
             LiteRtContextGuard.ThrowContextFull(used, limit);
         LiteRtContextGuard.ThrowIfContextFull(used, limit);
 
-        if (unmeasured)
+        // A count that could not be read is unknown, not zero: sizing the decode cap from it would treat the
+        // conversation as empty.
+        if (unmeasured || used < 0)
             return options;
 
         int inputTokens;

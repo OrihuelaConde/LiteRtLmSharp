@@ -51,7 +51,7 @@ the packaging steps are the same for both. What each job does, per platform:
 |---|---|---|---|
 | linux-x64 | `lib/linux_x86_64/liblitert-lm.so` / `manylinux_*_x86_64` wheel | `libLiteRtLm.so` | x86-64 ELF; ≥ 140 `litert_lm_*` exports incl. the engine/stream entry points; no `libLiteRt*` companion dependency; fails when the library lists `libvulkan.so.1` as a dependency |
 | linux-arm64 | `lib/linux_arm64/liblitert-lm.so` / `manylinux_*_aarch64` wheel | `libLiteRtLm.so` | AArch64 ELF; same checks as linux-x64 |
-| android-arm64 | `lib/android_arm64/liblitert-lm.so` / `android_*_arm64_v8a` wheel | `libLiteRtLm.so` | AArch64 ELF; same export check; **OpenCL TopK sampler embedded** (`LiteRtTopKOpenClSampler_*`); 16 KB page alignment (Google Play) |
+| android-arm64 | `lib/android_arm64/liblitert-lm.so` / `android_*_arm64_v8a` wheel | `libLiteRtLm.so` | AArch64 ELF; same export check; OpenCL TopK sampler names present (`LiteRtTopKOpenClSampler_*`; from C API 1.0.0 the library no longer exports them, and the check warns because the names alone do not show that the sampler is embedded); 16 KB page alignment (Google Play) |
 | android-x64 | `lib/android_x86_64/liblitert-lm.so` / `android_*_x86_64` wheel | `libLiteRtLm.so` | x86-64 ELF; same checks as android-arm64, except that a missing OpenCL sampler only warns |
 | win-x64 | `lib/windows_x86_64/bin/litert-lm.dll` / `win_amd64` wheel | `LiteRtLm.dll` + `dxcompiler.dll` + `dxil.dll` | x64 image; export check; no separate LiteRt import; **no VC++ runtime import** (static CRT); the DXC zip is pinned by sha256 |
 | osx-arm64 | `lib/macos_arm64/liblitert-lm.dylib` / `macosx_*_arm64` wheel | `libLiteRtLm.dylib` | arm64; export check; no `libLiteRt*` companion in the load commands, which the log lists |

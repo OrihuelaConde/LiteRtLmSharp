@@ -345,7 +345,8 @@ public sealed class LiteRtChatClient : IChatClient
             return pending;
         }
         startsTurn = true;
-        LiteRtConversation? checkpoint = newConversation || (entry.CloneIsSlow && !_checkpointConstrained)
+        // A turn that starts with tool results is never rolled back (see RecoverFailedTurn), so it takes no checkpoint.
+        LiteRtConversation? checkpoint = newConversation || trigger.IsToolResults || (entry.CloneIsSlow && !_checkpointConstrained)
             ? null
             : TakeCheckpoint(conversation);
         return new TurnCheckpoint(checkpoint, entry.SnapshotToolCalls(), trigger.UserText);
@@ -658,10 +659,12 @@ public sealed class LiteRtChatClient : IChatClient
                     if (startsTurn)
                         turn.Checkpoint?.Dispose();   // a turn in progress stays as it was
                 }
-                else if (completed || (!failed && !streamed!.IsCancelled))
+                else if (!(streamed?.IsCancelled ?? false) && (completed || !failed))
                 {
                     // A clean end, or a consumer that stopped reading after the model had finished the reply
-                    // (for example at its tool calls): the turn stands, as it would for a blocking send.
+                    // (for example at its tool calls): the turn stands, as it would for a blocking send. A stream
+                    // that the core marked cancelled does not stand even when it ran to its end: its
+                    // conversation is consumed.
                     EndSend(streamedEntry!, turn, sawToolCall);
                 }
                 else

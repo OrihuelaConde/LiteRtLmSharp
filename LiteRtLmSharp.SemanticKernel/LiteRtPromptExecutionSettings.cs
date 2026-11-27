@@ -43,7 +43,8 @@ public sealed class LiteRtPromptExecutionSettings : PromptExecutionSettings
 
     /// <summary>Force schema-constrained output so function-call arguments parse reliably
     /// (<c>"enable_constrained_decoding"</c>) — recommended when using tools. Off by default; only meaningful
-    /// with a <see cref="PromptExecutionSettings.FunctionChoiceBehavior"/>. Tools still work without it.</summary>
+    /// with a <see cref="PromptExecutionSettings.FunctionChoiceBehavior"/>: a request that offers no tools
+    /// ignores it. Tools still work without it.</summary>
     [JsonIgnore]
     public bool? EnableConstrainedDecoding { get => GetBoolean("enable_constrained_decoding"); set => Set("enable_constrained_decoding", value); }
 

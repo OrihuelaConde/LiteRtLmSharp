@@ -64,7 +64,9 @@ if [ "$kind" = android ]; then
   for sym in LiteRtTopKOpenClSampler_Create LiteRtTopKOpenClSampler_CanHandleInput LiteRtTopKOpenClSampler_SetInferenceFuncAndInputTensors; do
     if ! grep -qx "$sym" <<< "$defined"; then
       if grep -q "$sym" <<< "$sampler_strings"; then
-        echo "note: $sym is not exported, but the binary names it."
+        # The library carries these names for its dynamic-load path too, so this does not show that the sampler
+        # is embedded. Only a run on a device with the GPU backend does.
+        echo "::warning::$sym is not exported; the binary names it, which does not verify that the OpenCL sampler is embedded."
         continue
       fi
       if [ "$machine" = AArch64 ]; then
