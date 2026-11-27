@@ -5,7 +5,7 @@ using Xunit.Abstractions;
 namespace LiteRtLmSharp.Tests;
 
 /// <summary>Model-free checks of the embedding and model-info surface: argument validation that must hold
-/// before any native call.</summary>
+/// before any native call, and how the metadata reader's paths reach the native side.</summary>
 public class EmbeddingValidationTests
 {
     [Fact]
@@ -74,6 +74,122 @@ public class EmbeddingValidationTests
             Assert.Equal("/modelos-José/m.litertlm\0"u8.ToArray(), utf8);
         }
     }
+
+    /// <summary>On Windows a non-ASCII path reaches the metadata reader as bytes both of its opens agree on:
+    /// UTF-8 under the UTF-8 code page, else ASCII (the 8.3 alias, or a DOS device name that exists only
+    /// while the lease is held).</summary>
+    [SkippableFact]
+    public void NarrowPath_Acquire_GivesBothOpensOneName()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows only.");
+        string dir = Path.Combine(Path.GetTempPath(), $"modelos-José-日本語-😀-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string file = Path.Combine(dir, "modelo-ñ.litertlm");
+            File.WriteAllBytes(file, [1, 2, 3]);
+            byte[] encoded = Native.NarrowPath.Encode(file, out bool encodes);
+            string? alias;
+            using (Native.NarrowPath.Lease lease = Native.NarrowPath.Acquire(file))
+            {
+                Assert.True(lease.Opens);
+                Assert.Equal(!encodes, lease.IsDeviceAlias);
+                if (!lease.IsDeviceAlias)
+                {
+                    Assert.Equal(encoded, lease.Bytes);
+                    return;
+                }
+                Assert.All(lease.Bytes, b => Assert.True(b < 128));
+                alias = System.Text.Encoding.ASCII.GetString(lease.Bytes, 0, lease.Bytes.Length - 1);
+                Assert.StartsWith(@"\\?\LiteRtLmSharp-", alias, StringComparison.Ordinal);
+                Assert.Equal(3, File.ReadAllBytes(alias).Length);
+            }
+            Assert.False(File.Exists(alias), "The DOS device alias outlived its lease.");
+            using Native.NarrowPath.Lease without = Native.NarrowPath.Acquire(file, allowDeviceAlias: false);
+            Assert.False(without.Opens);
+            Assert.False(without.IsDeviceAlias);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// <summary>The DOS device alias targets the extended-length form of a full path: <c>\\?\UNC\</c> for a
+    /// UNC path, <c>\\?\</c> for a drive path, and a device path unchanged.</summary>
+    [Fact]
+    public void NarrowPath_ExtendedPath_PrefixesDriveAndUncPaths()
+    {
+        Assert.Equal(@"\\?\C:\modelos-José\m.litertlm", Native.NarrowPath.ExtendedPath(@"C:\modelos-José\m.litertlm"));
+        Assert.Equal(@"\\?\UNC\server\share\m.litertlm", Native.NarrowPath.ExtendedPath(@"\\server\share\m.litertlm"));
+        Assert.Equal(@"\\?\C:\m.litertlm", Native.NarrowPath.ExtendedPath(@"\\?\C:\m.litertlm"));
+        Assert.Equal(@"\\?\UNC\server\share\m.litertlm", Native.NarrowPath.ExtendedPath(@"\\?\UNC\server\share\m.litertlm"));
+        Assert.Equal(@"\\.\C:\m.litertlm", Native.NarrowPath.ExtendedPath(@"\\.\C:\m.litertlm"));
+    }
+
+    /// <summary>A non-ASCII path longer than <c>MAX_PATH</c> gets an alias too, which reads the file and
+    /// goes with the lease.</summary>
+    [SkippableFact]
+    public void NarrowPath_Acquire_AliasesAPathLongerThanMaxPath()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows only.");
+        string root = Path.Combine(Path.GetTempPath(), $"modelos-José-{Guid.NewGuid():N}");
+        string dir = root;
+        while (dir.Length < 300)
+            dir = Path.Combine(dir, "segment-0123456789");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string file = Path.Combine(dir, "modelo-ñ.litertlm");
+            File.WriteAllBytes(file, [1, 2, 3]);
+            Native.NarrowPath.Encode(file, out bool encodes);
+            string? alias;
+            using (Native.NarrowPath.Lease lease = Native.NarrowPath.Acquire(file))
+            {
+                Assert.True(lease.Opens, "No ASCII alias was made for a path longer than MAX_PATH.");
+                if (encodes)
+                    return;
+                Assert.True(lease.IsDeviceAlias);
+                alias = System.Text.Encoding.ASCII.GetString(lease.Bytes, 0, lease.Bytes.Length - 1);
+                Assert.Equal(3, File.ReadAllBytes(alias).Length);
+            }
+            Assert.False(File.Exists(alias), "The DOS device alias outlived its lease.");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>An existing file that the native reader cannot open (here, held by another handle that
+    /// shares nothing) fails with the runtime's UNKNOWN status. The message names the caller's path and, when
+    /// the runtime's reason names the temporary alias, says what that alias is.</summary>
+    [SkippableFact]
+    public void ModelInfo_FileThatCannotBeOpened_ReportsUnknownAndTheCallersPath()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows only.");
+        // The alias hint depends on the runtime's reason, which a silenced log would drop.
+        LiteRtEngine.SetMinLogLevel(3);
+        string dir = Path.Combine(Path.GetTempPath(), $"modelos-José-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string file = Path.Combine(dir, "modelo-ñ.litertlm");
+            File.WriteAllBytes(file, new byte[4096]);
+            Native.NarrowPath.Encode(file, out bool encodes);
+            LiteRtException ex;
+            using (new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.None))
+                ex = Assert.Throws<LiteRtException>(() => LiteRtModelInfo.Read(file));
+            Assert.Equal(LiteRtStatusCode.Unknown, ex.StatusCode);
+            Assert.Contains($"'{file}'", ex.Message, StringComparison.Ordinal);
+            if (!encodes)
+                Assert.Contains("a temporary ASCII alias of", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }
 
 /// <summary>
@@ -122,6 +238,11 @@ public sealed class EmbeddingModelTests(ITestOutputHelper output)
         Assert.Equal(768, info.EmbeddingDimension);
         Assert.Contains(128, info.EmbeddingInputLengths);
         Assert.Contains(LiteRtModality.Text, info.InputModalities);
+        // The runtime reports the sampler and the vision lengths of an embedding model as not found: they
+        // read as undeclared, and the expected failures leave no message on the thread.
+        Assert.Null(info.DefaultSampler);
+        Assert.Empty(info.VisionTokenSizes);
+        Assert.Null(System.Runtime.InteropServices.Marshal.PtrToStringUTF8(Native.LiteRtLmNative.litert_lm_get_last_error_message()));
     }
 
     [SkippableFact]
@@ -137,6 +258,8 @@ public sealed class EmbeddingModelTests(ITestOutputHelper output)
         Assert.Equal(LiteRtModelType.LanguageModel, info.ModelType);
         Assert.Null(info.EmbeddingDimension);
         Assert.Empty(info.EmbeddingInputLengths);
+        Assert.True(info.MaxContextTokens > 0);
+        Assert.Null(System.Runtime.InteropServices.Marshal.PtrToStringUTF8(Native.LiteRtLmNative.litert_lm_get_last_error_message()));
     }
 
     [SkippableFact]
@@ -476,25 +599,82 @@ public sealed class EmbeddingModelTests(ITestOutputHelper output)
         Assert.Contains("texts[1]", ex.Message, StringComparison.Ordinal);
     }
 
-    /// <summary>The metadata reader opens a path with non-ASCII characters (on Windows the native side reads
-    /// paths in the ANSI code page). Uses the small LoRA test bundle next to LITERTLM_TEST_MODEL when present.</summary>
+    /// <summary>The metadata reader opens paths with non-ASCII characters, inside and outside the ANSI code
+    /// page (on Windows the native side opens a path both as UTF-8 and in the ANSI code page), and reads the
+    /// same metadata as from an ASCII path, also from parallel calls. Without an ASCII alias such a path
+    /// fails with guidance. Uses the small LoRA test bundle next to LITERTLM_TEST_MODEL when present.</summary>
     [SkippableFact]
     public void ModelInfo_ReadsAPathWithNonAsciiCharacters()
     {
         Skip.If(string.IsNullOrEmpty(ChatModel) || !File.Exists(ChatModel), "Set LITERTLM_TEST_MODEL to run.");
         string small = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(ChatModel!))!, "test_lm_lora.litertlm");
         Skip.If(!File.Exists(small), "Place test_lm_lora.litertlm next to LITERTLM_TEST_MODEL to run.");
-        string dir = Path.Combine(Path.GetTempPath(), $"modelos-José-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        try
+        LiteRtModelInfo expected = LiteRtModelInfo.Read(small);
+        foreach (string name in new[] { "modelos-José", "モデル-日本語", "models-😀" })
         {
-            string copy = Path.Combine(dir, "test_lm_lora.litertlm");
-            File.Copy(small, copy);
-            Assert.Equal(LiteRtModelType.LanguageModel, LiteRtModelInfo.Read(copy).ModelType);
+            string dir = Path.Combine(Path.GetTempPath(), $"{name}-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dir);
+            try
+            {
+                string copy = Path.Combine(dir, "modelo-ñ.litertlm");
+                File.Copy(small, copy);
+                LiteRtModelInfo[] infos = new LiteRtModelInfo[4];
+                Parallel.For(0, infos.Length, i => infos[i] = LiteRtModelInfo.Read(copy));
+                foreach (LiteRtModelInfo info in infos)
+                {
+                    Assert.Equal(LiteRtModelType.LanguageModel, info.ModelType);
+                    Assert.Equal(expected.MaxContextTokens, info.MaxContextTokens);
+                    Assert.Equal(expected.IsDynamicContext, info.IsDynamicContext);
+                    Assert.Equal(expected.InputModalities, info.InputModalities);
+                    Assert.Equal(expected.SupportedBackends[LiteRtModality.Text], info.SupportedBackends[LiteRtModality.Text]);
+                }
+
+                if (OperatingSystem.IsWindows())
+                {
+                    Native.NarrowPath.Encode(copy, out bool encodes);
+                    if (!encodes)
+                    {
+                        var ex = Assert.Throws<LiteRtException>(() => LiteRtModelInfo.ReadCore(copy, allowDeviceAlias: false));
+                        output.WriteLine($"{name}, no alias: [{ex.StatusCode}] {ex.Message}");
+                        Assert.Contains(copy, ex.Message, StringComparison.Ordinal);
+                        Assert.Contains("ASCII alias", ex.Message, StringComparison.Ordinal);
+                    }
+                }
+            }
+            finally
+            {
+                Directory.Delete(dir, recursive: true);
+            }
         }
-        finally
+    }
+
+    /// <summary>The runtime validates the enum values the binding passes through: an undeclared overflow
+    /// strategy fails the call, and an undeclared activation type fails the load, both with the runtime's
+    /// reason.</summary>
+    [SkippableFact]
+    public void UndeclaredEnumValues_FailWithTheRuntimeReason()
+    {
+        SkipWithoutEmbeddingModel();
+        LiteRtEngine.SetMinLogLevel(3);
+        using (var engine = LoadEngine())
         {
-            Directory.Delete(dir, recursive: true);
+            var call = Assert.Throws<LiteRtException>(() => engine.Embed("text", new LiteRtEmbeddingOptions { OverflowStrategy = (LiteRtInputOverflowStrategy)7 }));
+            output.WriteLine(call.Message);
+            Assert.Equal(LiteRtStatusCode.InvalidArgument, call.StatusCode);
+            Assert.Equal(
+                "litert_lm_embedding_options_set_input_overflow_strategy failed: INVALID_ARGUMENT: Unknown LiteRtLmInputOverflowStrategy.",
+                call.Message);
+            // The engine keeps working after the rejected call.
+            Assert.Equal(768, engine.Embed(Document + "after").Length);
         }
+        var load = Assert.Throws<LiteRtException>(() => LiteRtEmbeddingEngine.Load(new LiteRtEmbeddingEngineOptions
+        {
+            ModelPath = EmbeddingModel!, Backend = Backend, ActivationDataType = (LiteRtActivationDataType)7,
+        }));
+        output.WriteLine(load.Message);
+        Assert.Equal(LiteRtStatusCode.InvalidArgument, load.StatusCode);
+        Assert.Equal(
+            "litert_lm_embedding_engine_settings_set_activation_data_type failed: INVALID_ARGUMENT: Unknown LiteRtLmActivationDataType.",
+            load.Message);
     }
 }

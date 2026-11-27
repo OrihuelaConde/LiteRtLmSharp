@@ -7,6 +7,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace LiteRtLmSharp.Tests;
 
@@ -324,6 +325,47 @@ public class DecodingOptionsMappingTests
         Assert.False(LiteRtConversation.IsSmallContextFailure(
             "RET_CHECK failure (context_handler.h:77) HasRuntimeConfig() Runtime config not found"));
     }
+
+    /// <summary>A send's suppressed tokens: the thinking channel's open token (here 100) is added only to a send
+    /// that turns thinking off, after the caller's own ids and only once, and only when the model has the token.
+    /// Every other send keeps the caller's list as it is, so a later send that inherits the conversation's
+    /// thinking suppresses nothing. Lists are written as comma-separated ids; "" is an empty list.</summary>
+    [Theory]
+    [InlineData(null, false, 100, "100")]
+    [InlineData("", false, 100, "100")]
+    [InlineData("5,6", false, 100, "5,6,100")]
+    [InlineData("100,5", false, 100, "100,5")]
+    [InlineData("5", true, 100, "5")]
+    [InlineData("5", null, 100, "5")]
+    [InlineData(null, true, 100, null)]
+    [InlineData(null, null, 100, null)]
+    [InlineData(null, false, null, null)]
+    [InlineData("5", false, null, "5")]
+    [InlineData("", true, 100, "")]
+    public void SendSuppressTokens_AddsTheChannelTokenOnlyToAThinkingOffSend(
+        string? caller, bool? enableThinking, int? channelOpen, string? expected)
+    {
+        int[]? callerIds = caller is null ? null : caller.Length == 0 ? [] : [.. caller.Split(',').Select(int.Parse)];
+        IReadOnlyList<int>? result = LiteRtConversation.SendSuppressTokens(callerIds, enableThinking, channelOpen);
+        Assert.Equal(expected, result is null ? null : string.Join(",", result));
+        if (expected == caller)
+            Assert.Same(callerIds, result);
+    }
+
+    /// <summary>The lookup of the thinking channel's open token: an id only when the text is one token that
+    /// detokenizes back to the same text; <c>null</c> for several tokens, a round trip that gives other text, or a
+    /// tokenizer error.</summary>
+    [Fact]
+    public void SingleTokenOf_ReturnsAnIdOnlyForOneTokenThatRoundTrips()
+    {
+        const string text = "<|channel>";
+        Assert.Equal(100, LiteRtEngine.SingleTokenOf(text, _ => [100], _ => text));
+        Assert.Null(LiteRtEngine.SingleTokenOf(text, _ => [27, 100], _ => text));
+        Assert.Null(LiteRtEngine.SingleTokenOf(text, _ => [], _ => ""));
+        Assert.Null(LiteRtEngine.SingleTokenOf(text, _ => [100], _ => "<|chan"));
+        Assert.Null(LiteRtEngine.SingleTokenOf(text, _ => throw new LiteRtException("tokenize failed"), _ => text));
+        Assert.Null(LiteRtEngine.SingleTokenOf(text, _ => [100], _ => throw new LiteRtException("detokenize failed")));
+    }
 }
 
 /// <summary>
@@ -445,10 +487,11 @@ public sealed class DecodingConnectorModelTests
         Assert.DoesNotContain("Paris", suppressed[0].Content ?? "", StringComparison.Ordinal);
     }
 
-    /// <summary>The experimental YNNPACK toggle (native v0.16.0+) reaches the engine settings. Only the
+    /// <summary>The experimental YNNPACK toggle reaches the engine settings. Only the
     /// linux-arm64 library carries the YNNPACK kernels: there an engine loaded with it on the CPU backend
-    /// creates and generates (CI's arm64 leg). The other official v0.18.0 libraries reject the flag at engine
-    /// creation with UNIMPLEMENTED (v0.16.0 ignored it), and the exception names the setting.</summary>
+    /// creates and generates (CI's arm64 leg). The other official libraries reject the flag at engine creation
+    /// with UNIMPLEMENTED (v0.18.0, and v0.20.0 measured on win-x64 CPU with gemma-4 E2B; v0.16.0 ignored it), and the exception names
+    /// the setting.</summary>
     [SkippableFact]
     public void EngineLoad_WithYnnpack_GeneratesOnLinuxArm64_AndIsRejectedElsewhere()
     {
@@ -571,20 +614,16 @@ public sealed class DecodingConnectorModelTests
 
 /// <summary>
 /// Model-backed scenarios for the v0.15.0 decoding features (suppress tokens, no-repeat-ngram,
-/// thinking budget, LlGuidance constraints). Set LITERTLM_TEST_MODEL to run; sends rely on the
+/// thinking budget, LlGuidance constraints). Set LITERTLM_TEST_MODEL to run; most sends rely on the
 /// engine's default sampling (deterministic at the seed-0 default) — see the sampler note below.
 /// </summary>
-public sealed class DecodingModelTests(EngineFixture fixture) : IClassFixture<EngineFixture>
+public sealed class DecodingModelTests(EngineFixture fixture, ITestOutputHelper output) : IClassFixture<EngineFixture>
 {
     private readonly EngineFixture _fixture = fixture;
+    private readonly ITestOutputHelper _output = output;
 
-    // No explicit sampler anywhere in these tests: the engine's internal default sampling is
-    // deterministic at its seed-0 default, and an explicit Greedy/TopK sampler CANNOT be used on the
-    // CPU backend — the native CPU sampler factory only implements TopP (both v0.14.0 and v0.15.0;
-    // sampler_factory.cc CreateCpuSampler), so a send that needs a fresh Greedy/TopK sampler fails
-    // with UNIMPLEMENTED "Sampler type: N not implemented yet" (and whether it needs one is
-    // order-dependent: an earlier TopP/default conversation leaves a sampler behind that later
-    // conversations silently reuse). Verified against both native eras on win-x64 CPU, 2026-08-09.
+    // Most tests here set no sampler: they rely on the engine's internal default sampling, which is deterministic
+    // at its seed-0 default. The per-send thinking tests on a follow-up set argmax explicitly.
 
     /// <summary>Suppressing every token id of the expected answer word must keep that word out of the
     /// reply — the most directly observable of the new logit processors (the id's logit is forced to
@@ -680,8 +719,7 @@ public sealed class DecodingModelTests(EngineFixture fixture) : IClassFixture<En
 
     /// <summary>LlGuidance regex constraint: the reply must match the pattern exactly — constrained
     /// sampling masks every token that cannot extend a valid match. Also the readiness probe for the
-    /// from-source LlGuidance provider on every platform (unlike tool-calling constrained decoding,
-    /// whose linux-x64 prebuilt provider is broken — see the guard in LiteRtConversation.Create).</summary>
+    /// LlGuidance provider on every platform.</summary>
     [SkippableFact]
     public void Send_WithLlGuidanceRegexConstraint_OutputMatchesPattern()
     {
@@ -792,6 +830,86 @@ public sealed class DecodingModelTests(EngineFixture fixture) : IClassFixture<En
 
         Assert.False(string.IsNullOrEmpty(response.Thinking),
             "Per-send EnableThinking=true did not produce a thinking trace on a plain conversation.");
+    }
+
+    /// <summary>Per-send thinking override, OFF direction, on a follow-up: after a first reply with thinking,
+    /// a send that sets <c>EnableThinking = false</c> answers without a thinking trace, and the next send without
+    /// options thinks again. The model's template switches thinking on only in the system turn, which the runtime
+    /// prefills with the first message, so the runtime alone keeps thinking on. The control is the same
+    /// conversation with the binding's suppression of the token that opens the thinking channel turned off: its
+    /// follow-up carries a thinking trace (435 characters on CPU, 434 on GPU; LiteRT-LM v0.20.0, gemma-4 E2B,
+    /// argmax). The test skips when the control's follow-up does not think, because it then cannot show the
+    /// suppression; the checks on the reply itself run before that skip.</summary>
+    [SkippableFact]
+    public void Send_PerSendThinkingFalse_OnAFollowUp_AnswersWithoutThinking()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        (LiteRtResponse First, LiteRtResponse Off, LiteRtResponse Inherit) Run(bool suppress)
+        {
+            using var conv = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions
+            {
+                EnableThinking = true, MaxOutputTokens = 512, Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 1 },
+            });
+            conv.SuppressThinkingChannelWhenThinkingOff = suppress;
+            LiteRtResponse first = conv.Send("Think briefly about bridges, then reply with one short sentence about bridges.");
+            LiteRtResponse off = conv.Send("What is the capital of France? Answer in one short sentence.", attachments: null,
+                new LiteRtSendOptions { EnableThinking = false });
+            LiteRtResponse inherit = conv.Send("Write two sentences about rivers.");
+            string arm = suppress ? "suppressed" : "control";
+            _output.WriteLine($"{arm}: first thinking {first.Thinking?.Length ?? 0} chars; off thinking {off.Thinking?.Length ?? 0} " +
+                              $"chars, answer '{off.Text}'; inherit thinking {inherit.Thinking?.Length ?? 0} chars");
+            return (first, off, inherit);
+        }
+
+        var control = Run(suppress: false);
+        var suppressed = Run(suppress: true);
+
+        Assert.False(string.IsNullOrWhiteSpace(suppressed.Off.Text));
+        Assert.DoesNotContain("<|channel>", suppressed.Off.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("<channel|>", suppressed.Off.Text, StringComparison.Ordinal);
+        Skip.If(string.IsNullOrEmpty(control.First.Thinking),
+            "The first reply carried no thinking on this backend, so the follow-up cannot show the suppression.");
+        Skip.If(string.IsNullOrEmpty(control.Off.Thinking),
+            "Without the binding's suppression the follow-up does not think on this backend, so it cannot show the suppression.");
+        Assert.True(_fixture.Engine!.ThinkingChannelOpenToken is not null,
+            "The follow-up thinks, but the binding found no single token for '<|channel>' in this model's tokenizer.");
+        Assert.True(string.IsNullOrEmpty(suppressed.Off.Thinking),
+            $"Per-send EnableThinking=false left a thinking trace on a follow-up ({suppressed.Off.Thinking?.Length} chars).");
+
+        // The override holds for one send: the next send without options inherits the conversation's thinking.
+        Skip.If(string.IsNullOrEmpty(control.Inherit.Thinking),
+            "The send after the follow-up does not think on this backend even without the suppression, so it cannot " +
+            "show that the conversation's thinking comes back.");
+        Assert.False(string.IsNullOrEmpty(suppressed.Inherit.Thinking),
+            "The send after a per-send EnableThinking=false did not think: the override stuck to the conversation.");
+    }
+
+    /// <summary>Pins a native limitation: on a conversation whose first send did not think, a later send that
+    /// sets <c>EnableThinking = true</c> does not think either. The model's template switches thinking on only in
+    /// the system turn, which the runtime prefilled with the first message, and no binding change measured turns it
+    /// on later. If the runtime honoured a per-send thinking switch on a follow-up, this reply would carry a thinking
+    /// trace and the test would fail; the remarks of <see cref="LiteRtSendOptions.EnableThinking"/> then need
+    /// rewording.</summary>
+    [SkippableFact]
+    public void Send_PerSendThinkingTrue_OnAFollowUp_DoesNotThink()
+    {
+        Skip.If(_fixture.Engine is null, "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+
+        using var conv = _fixture.Engine!.CreateConversation(new LiteRtConversationOptions
+        {
+            MaxOutputTokens = 512, Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 1 },
+        });
+        LiteRtResponse first = conv.Send("Reply with one short sentence about bridges.");
+        _output.WriteLine($"first: thinking {first.Thinking?.Length ?? 0} chars, answer '{first.Text}'");
+        Assert.True(string.IsNullOrEmpty(first.Thinking));
+
+        LiteRtResponse on = conv.Send("What is 17 times 23? Think it through, then answer.", attachments: null,
+            new LiteRtSendOptions { EnableThinking = true });
+        _output.WriteLine($"on: thinking {on.Thinking?.Length ?? 0} chars, answer '{on.Text}'");
+        Assert.True(string.IsNullOrEmpty(on.Thinking),
+            $"Per-send EnableThinking=true now thinks on a follow-up ({on.Thinking?.Length} chars): the runtime honours it.");
+        Assert.False(string.IsNullOrWhiteSpace(on.Text));
     }
 
     /// <summary>The custom prompt template override reaches the renderer: RenderMessage on a

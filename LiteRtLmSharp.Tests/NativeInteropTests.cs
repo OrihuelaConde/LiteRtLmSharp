@@ -26,30 +26,6 @@ public class NativeInteropTests
         var options = new LiteRtEngineOptions { ModelPath = "does-not-exist.litertlm" };
         Assert.Throws<ArgumentException>(() => LiteRtEngine.Load(options));
     }
-
-    /// <summary>
-    /// Proves the multimodal conversation optional-args C ABI functions resolve and are callable
-    /// without a model (create → set visual token budget → delete) — the native plumbing behind
-    /// <see cref="LiteRtConversationOptions.VisualTokenBudget"/>. Mirrors
-    /// <see cref="NativeLibrary_Loads_And_LogLevelCallSucceeds"/>; throws
-    /// <see cref="EntryPointNotFoundException"/> on a native binary predating the multimodal API.
-    /// </summary>
-    [Fact]
-    public void OptionalArgs_NativeEntrypoints_Resolve()
-    {
-        // Touch LiteRtEngine first so its static ctor runs NativeLibraryResolver.Initialize(): this
-        // test calls the native lib DIRECTLY (not via LiteRtEngine), and on Linux the .so lives in
-        // runtimes/<rid>/native and is only found once the resolver is registered. Without this the
-        // call fails with DllNotFoundException when it happens to run before any other LiteRtEngine
-        // use (real consumers always create an engine first, so this just mirrors that setup).
-        LiteRtEngine.SetMinLogLevel(3);
-
-        nint args = LiteRtLmNative.litert_lm_conversation_optional_args_create();
-        Assert.NotEqual(nint.Zero, args);
-        // The only setter the C API exposes — must not throw on a version-matched binary.
-        LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget(args, 128);
-        LiteRtLmNative.litert_lm_conversation_optional_args_delete(args);
-    }
 }
 
 /// <summary>
@@ -149,8 +125,8 @@ public class ApiGuardsTests
     [Fact]
     public void SamplerType_KeepsUnspecifiedMember_ForPublicCompat()
     {
-        // The native v0.14.0 enum dropped its "unspecified" member, but the PUBLIC enum must keep it at 0
-        // (removing it would be a breaking change); the binding maps it to TopP at the native boundary.
+        // The PUBLIC enum keeps "unspecified" at 0 (removing it would be a breaking change); the binding sends
+        // no sampler parameters for it, so the engine's default sampler applies.
         Assert.Equal(0, (int)LiteRtSamplerType.Unspecified);
         Assert.Equal(LiteRtSamplerType.Unspecified, default(LiteRtSamplerType));
     }
@@ -912,7 +888,9 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
             $"Streaming teardown did not complete promptly (took {sw.Elapsed.TotalSeconds:F1}s).");
     }
 
-    /// <summary>Plain blocking chat. Skipped unless LITERTLM_TEST_MODEL is set.</summary>
+    /// <summary>Plain blocking chat. The fixture engine is loaded without
+    /// <see cref="LiteRtEngineOptions.EnableBenchmark"/>, so <see cref="LiteRtConversation.GetBenchmarkInfo"/>
+    /// returns <c>null</c> after the send. Skipped unless LITERTLM_TEST_MODEL is set.</summary>
     [SkippableFact]
     public void Chat_Blocking_ProducesText()
     {
@@ -923,6 +901,7 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
 
         Assert.False(string.IsNullOrWhiteSpace(response.Text),
             $"Expected a non-empty blocking response. Raw: {response.RawJson}");
+        Assert.Null(conversation.GetBenchmarkInfo());
     }
 
     /// <summary>Reasoning mode via extra context: a conversation created with EnableThinking = true and
@@ -1160,7 +1139,7 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     /// Preface rendering: <see cref="LiteRtConversation.RenderPreface"/> returns the templated preamble
     /// (system message + tools + history) without sending, and does not change conversation state. A
     /// conversation created with a system message renders a non-empty preface that includes the system
-    /// text; a bare conversation renders without throwing. Requires native LiteRT-LM v0.14.0+. Skipped
+    /// text; a bare conversation renders without throwing. Skipped
     /// unless LITERTLM_TEST_MODEL is set.
     /// </summary>
     [SkippableFact]
@@ -1186,10 +1165,8 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     /// <summary>
     /// LoRA negative coverage: a conversation created with a <see cref="LiteRtConversationOptions.LoraPath"/>
     /// pointing at a nonexistent file must fail with a coherent <see cref="LiteRtException"/> at creation
-    /// (the native side opens the adapter file at set time), not crash the process. We cannot assert the
-    /// SUCCESS path — no LoRA adapter artifact is available — so this pins only the honest failure mode.
-    /// Requires native LiteRT-LM v0.14.0+ (older binaries lack the entry point). Skipped unless
-    /// LITERTLM_TEST_MODEL is set.
+    /// (the native side opens the adapter file at set time), not crash the process. The success path is
+    /// asserted by <see cref="LoraTextAdapterTests"/>. Skipped unless LITERTLM_TEST_MODEL is set.
     /// </summary>
     [SkippableFact]
     public void Lora_NonexistentAdapterPath_ThrowsCoherentException()
@@ -1293,8 +1270,7 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
     /// <summary>
     /// StreamToolCalls: with the flag on, the streaming path yields raw ToolCallDelta progress
     /// fragments while the model generates the tool call, and the complete parsed ToolCall chunk
-    /// still arrives after them; concatenated deltas must correspond to the same call. Requires
-    /// native v0.14.0+ (the config setter is new).
+    /// still arrives after them; concatenated deltas must correspond to the same call.
     /// </summary>
     [SkippableFact]
     public async Task ToolCalling_StreamToolCalls_YieldsDeltasBeforeCompleteCall()
@@ -1381,10 +1357,10 @@ public sealed class ModelTests(EngineFixture fixture) : IClassFixture<EngineFixt
 /// API) with the MTP drafter OFF vs ON, on the same fixed prompt, and confirms both runs still
 /// produce coherent, non-empty text. The speedup ratio is logged for the docs/CI record.
 /// <para>
-/// Sampler note: the v0.13.1 native build only implements the TopP sampler (Greedy/TopK return
-/// "not implemented yet"), so the runs are stochastic and the two outputs are NOT expected to be
-/// byte-identical — we therefore assert coherence + measured throughput (the real deliverable) and
-/// log output similarity rather than asserting equality. A fixed seed keeps each run reproducible.
+/// Sampler note: both runs use the same seeded TopP sampler, and with speculative decoding a sampled
+/// reply can differ from the plain one for the same seed (measured on LiteRT-LM v0.20.0, CPU), so the test
+/// asserts coherence and measured throughput (the real deliverable) and logs both outputs rather than
+/// asserting equality.
 /// </para>
 /// <para>
 /// This class loads its OWN engines (it does NOT take <see cref="EngineFixture"/>) and disposes each
@@ -1468,9 +1444,8 @@ public sealed class SpeculativeDecodingBenchmarkTests(ITestOutputHelper output)
         });
         using var conv = engine.CreateConversation(new LiteRtConversationOptions
         {
-            // TopP is the only sampler the v0.13.1 native build implements (Greedy/TopK return
-            // "not implemented yet"). A fixed seed keeps each run reproducible; speculative decoding
-            // preserves the output distribution, so coherence — not byte-equality — is what we check.
+            // A fixed seed keeps each run reproducible. The speculative and plain replies can differ for
+            // one seed, so coherence, not byte-equality, is what the test checks.
             Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 40, TopP = 0.95f, Temperature = 1.0f, Seed = 42 },
             MaxOutputTokens = MaxOutputTokens,
         });
@@ -1743,7 +1718,7 @@ public sealed class MultimodalModelTests(ITestOutputHelper output)
 /// (one engine alive at a time; the assembly disables parallelization). Skipped unless
 /// LITERTLM_TEST_MODEL is set; runs on LITERTLM_TEST_BACKEND (the CPU-only knobs only on CPU).
 /// </summary>
-public sealed class EngineTuningTests
+public sealed class EngineTuningTests(ITestOutputHelper output)
 {
     /// <summary>The opt-outs from the Float32 default: Float16, and <c>null</c> (no native call, the runtime's
     /// choice). The GPU backend reads the setting; the CPU backend ignores it.</summary>
@@ -1812,6 +1787,51 @@ public sealed class EngineTuningTests
         Assert.Equal(64, bench.LastDecodeTokenCount);
         Assert.True(bench.LastDecodeTokensPerSecond > 0, "Expected a decode throughput measurement.");
     }
+
+    /// <summary>
+    /// <see cref="LiteRtConversation.GetBenchmarkInfo"/> on a benchmark engine returns an info with zero turns
+    /// before the first send and one prefill and one decode turn after it (the <c>null</c> of an engine loaded
+    /// without <see cref="LiteRtEngineOptions.EnableBenchmark"/> is checked in
+    /// <see cref="ModelTests.Chat_Blocking_ProducesText"/>). If the runtime created no
+    /// benchmark info until a turn completed, the first read would be <c>null</c>; if the binding read a turn
+    /// at a zero turn count, the runtime's <c>OUT_OF_RANGE</c> would make it throw <see cref="LiteRtException"/>.
+    /// Skipped unless LITERTLM_TEST_MODEL is set.
+    /// </summary>
+    [SkippableFact]
+    public void GetBenchmarkInfo_BeforeTheFirstSend_ReportsZeroTurns()
+    {
+        string? model = Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
+        Skip.If(string.IsNullOrEmpty(model) || !File.Exists(model),
+            "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
+        LiteRtEngine.SetMinLogLevel(3);
+
+        using (var engine = LiteRtEngine.Load(new LiteRtEngineOptions
+        {
+            ModelPath = model!, Backend = LiteRtBackend.Cpu, MaxNumTokens = 2048, EnableBenchmark = true,
+        }))
+        {
+            using var conv = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
+
+            LiteRtBenchmarkInfo? before = conv.GetBenchmarkInfo();
+            output.WriteLine($"before any send: {before}");
+            Assert.NotNull(before);
+            Assert.Equal(0, before!.NumPrefillTurns);
+            Assert.Equal(0, before.NumDecodeTurns);
+            Assert.Equal(0, before.LastPrefillTokenCount);
+            Assert.Equal(0, before.LastDecodeTokenCount);
+            Assert.Equal(0d, before.TimeToFirstTokenSeconds);
+            Assert.True(before.TotalInitTimeSeconds > 0, "Expected the init time to be set before any send.");
+
+            conv.Send("Reply with one word: OK");
+            LiteRtBenchmarkInfo? after = conv.GetBenchmarkInfo();
+            output.WriteLine($"after one send: {after}");
+            Assert.NotNull(after);
+            Assert.Equal(1, after!.NumPrefillTurns);
+            Assert.Equal(1, after.NumDecodeTurns);
+            Assert.True(after.LastPrefillTokenCount > 0, "Expected the send's prefill token count.");
+            Assert.True(after.LastDecodeTokenCount > 0, "Expected the send's decode token count.");
+        }
+    }
 }
 
 /// <summary>
@@ -1830,7 +1850,7 @@ public sealed class UpstreamSuspendedStateSentinelTests
 {
     /// <summary>
     /// Interleave two live conversations from one engine: seed a fact on A, advance B, then ask A for the
-    /// fact. With suspended-state preservation working (native v0.15.0+), A recalls the number even though B
+    /// fact. With suspended-state preservation working, A recalls the number even though B
     /// advanced in between. (Until v0.15.0 this test asserted the OPPOSITE — the loss — as the tripwire that
     /// told us the day upstream fixed it. It fired on 2026-08-09.)
     /// </summary>
@@ -1909,9 +1929,11 @@ public sealed class LoraTextAdapterTests
     }
 
     /// <summary>An adapter changes the deterministic (seed-0 default sampling) continuation of the same prompt,
-    /// and two different adapters change it differently. Each adapter gets an engine of its own, because the
-    /// runtime applies an adapter to the whole engine (pinned below). No explicit sampler: the CPU sampler
-    /// factory implements only TopP and the default sampling is deterministic (see <c>DecodingModelTests</c>).</summary>
+    /// and two different adapters change it differently. The second adapter runs on a second engine, a
+    /// structure kept from LiteRT-LM v0.18.0, which applied an adapter to the whole engine; v0.20.0 applies it
+    /// to its conversation only (pinned below), but the three replies on one engine were not measured.
+    /// No explicit sampler: the default
+    /// sampling is deterministic (see <c>DecodingModelTests</c>).</summary>
     [SkippableFact]
     public void Lora_ValidTextAdapter_IsAppliedAndChangesGeneration()
     {
@@ -1934,14 +1956,12 @@ public sealed class LoraTextAdapterTests
     }
 
     /// <summary>
-    /// PINS AN UPSTREAM LIMITATION (LiteRT-LM v0.18.0): the adapter applies to the engine, not to its
-    /// conversation. After a conversation with the adapter has generated, a new conversation WITHOUT one
-    /// still generates the adapted text. The control first shows that generation without an adapter repeats
-    /// across conversations on this bundle. If this starts failing, upstream made adapters per conversation:
-    /// update the LoraRank / LoraPath docs and docs/engine-tuning.md.
+    /// The adapter applies to its conversation only (LiteRT-LM v0.20.0; v0.18.0 applied it to the whole engine,
+    /// so later conversations without one kept generating the adapted text). The control first shows that
+    /// generation without an adapter repeats across conversations on this bundle.
     /// </summary>
     [SkippableFact]
-    public void Lora_AdapterStaysOnTheEngine_AfterItsConversation()
+    public void Lora_AdapterAppliesOnlyToItsConversation()
     {
         Skip.If(Artifacts() is null, MissingArtifacts);
         var (loraModel, ones, _, _) = Artifacts()!.Value;
@@ -1954,35 +1974,35 @@ public sealed class LoraTextAdapterTests
         string afterwards = Generate(engine, adapter: null);
 
         Assert.NotEqual(baseline, adapted);
-        Assert.Equal(adapted, afterwards);
+        Assert.Equal(baseline, afterwards);
     }
 
     /// <summary>
-    /// PINS AN UPSTREAM LIMITATION (LiteRT-LM v0.18.0): while a conversation with an adapter exists, a send
-    /// on a conversation without one fails with INTERNAL ("No LoRA ID is set"), blocking or streamed.
+    /// While a conversation with an adapter exists, a conversation without one still generates its own text,
+    /// blocking or streamed, and the adapted conversation keeps its adapter (LiteRT-LM v0.20.0; v0.18.0 failed
+    /// the conversation without an adapter with INTERNAL "No LoRA ID is set").
     /// </summary>
     [SkippableFact]
-    public async Task Lora_SendWithoutAdapter_FailsWhileAnAdapterConversationExists()
+    public async Task Lora_SendWithoutAdapter_WorksWhileAnAdapterConversationExists()
     {
         Skip.If(Artifacts() is null, MissingArtifacts);
         var (loraModel, ones, _, _) = Artifacts()!.Value;
         LiteRtEngine.SetMinLogLevel(3);
         using var engine = LoadLoraEngine(loraModel);
+        string baseline = Generate(engine, adapter: null);
         using var plain = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
         using var adapted = engine.CreateConversation(new LiteRtConversationOptions { LoraPath = ones, MaxOutputTokens = 16 });
 
-        var ex = Assert.Throws<LiteRtException>(() => plain.Send(Prompt));
-        Assert.Equal(LiteRtStatusCode.Internal, ex.StatusCode);
-        Assert.Contains("LoRA", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(baseline, plain.Send(Prompt).Text ?? "");
+        string adaptedText = adapted.Send(Prompt).Text ?? "";
+        Assert.NotEqual(baseline, adaptedText);
 
-        // A fresh conversation: the one that just failed reports its failed task instead of the reason.
         using var streamedPlain = engine.CreateConversation(new LiteRtConversationOptions { MaxOutputTokens = 16 });
-        var streamed = await Assert.ThrowsAsync<LiteRtException>(async () =>
-        {
-            await foreach (var _ in streamedPlain.SendStreamingAsync(Prompt)) { }
-        });
-        Assert.Equal(LiteRtStatusCode.Internal, streamed.StatusCode);
-        Assert.Contains("LoRA", streamed.Message, StringComparison.Ordinal);
+        string streamed = "";
+        await foreach (LiteRtStreamChunk chunk in streamedPlain.SendStreamingAsync(Prompt))
+            if (chunk.Kind == LiteRtStreamChunkKind.Answer)
+                streamed += chunk.Text;
+        Assert.Equal(baseline, streamed);
     }
 
     /// <summary>

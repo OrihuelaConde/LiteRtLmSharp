@@ -125,8 +125,9 @@ public sealed class EngineService
             SystemMessage = "You are a concise, helpful assistant.",
             Sampler = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 40, TopP = 0.95f, Temperature = 0.8f },
             EnableThinking = LoadedThinking,
-            // The chat reuses one conversation across turns, so drop the (long) reasoning from the
-            // KV cache or it eats the context window on later turns.
+            // The chat reuses one conversation across turns, so the (long) reasoning must stay out of
+            // the KV cache. The runtime already removes it by default (measured with LiteRT-LM v0.20.0
+            // on win-x64 CPU); setting the option is optional and makes that choice explicit.
             FilterThinkingFromKvCache = LoadedThinking,
         })
         ?? throw new InvalidOperationException("No model loaded.");

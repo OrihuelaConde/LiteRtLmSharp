@@ -11,8 +11,8 @@ embedded (static CRT on Windows). Upstream distributes the same libraries throug
   renames functions (LiteRT-LM#3569).
 - **The `litert-lm-api` wheels on PyPI**, published with every release for Windows x64, Linux x64 and
   arm64, macOS arm64 and Android arm64 and x86_64. Each wheel is a ctypes wrapper around the C API
-  library (`litert_lm/liblitert-lm.{so,dylib}` / `litert_lm/litert-lm.dll`); the v0.18.0 libraries
-  export every function of the v0.18.0 headers. The Windows wheel also carries the DirectX Shader
+  library (`litert_lm/liblitert-lm.{so,dylib}` / `litert_lm/litert-lm.dll`); the v0.20.0 libraries
+  export every function of the v0.20.0 headers. The Windows wheel also carries the DirectX Shader
   Compiler pair, byte-identical to the one this repository pins.
 
 The iOS framework, `CLiteRTLM.xcframework.zip` (device + simulator slices), is a release asset in both
@@ -49,13 +49,13 @@ the packaging steps are the same for both. What each job does, per platform:
 
 | RID | Library (zip path / wheel) | Shipped as | Checks before packaging |
 |---|---|---|---|
-| linux-x64 | `lib/linux_x86_64/liblitert-lm.so` / `manylinux_*_x86_64` wheel | `libLiteRtLm.so` | x86-64 ELF; ≥ 140 `litert_lm_*` exports incl. the engine/stream entry points; no `libLiteRt*` companion dependency; reports whether the Vulkan loader is a hard dependency |
+| linux-x64 | `lib/linux_x86_64/liblitert-lm.so` / `manylinux_*_x86_64` wheel | `libLiteRtLm.so` | x86-64 ELF; ≥ 203 `litert_lm_*` exports (the number the binding declares) incl. `litert_lm_get_api_version` and the engine/stream entry points; no `libLiteRt*` companion dependency; fails when the library lists `libvulkan.so.1` as a dependency |
 | linux-arm64 | `lib/linux_arm64/liblitert-lm.so` / `manylinux_*_aarch64` wheel | `libLiteRtLm.so` | AArch64 ELF; same checks as linux-x64 |
-| android-arm64 | `lib/android_arm64/liblitert-lm.so` / `android_*_arm64_v8a` wheel | `libLiteRtLm.so` | AArch64 ELF; same export check; **OpenCL TopK sampler embedded** (`LiteRtTopKOpenClSampler_*`); 16 KB page alignment (Google Play) |
-| android-x64 | `lib/android_x86_64/liblitert-lm.so` / `android_*_x86_64` wheel | `libLiteRtLm.so` | x86-64 ELF; same checks as android-arm64, except that a missing OpenCL sampler only warns (emulators have no OpenCL) |
+| android-arm64 | `lib/android_arm64/liblitert-lm.so` / `android_*_arm64_v8a` wheel | `libLiteRtLm.so` | AArch64 ELF; same export check; OpenCL TopK sampler linked in: from C API 1.0.0 the library no longer exports the sampler's entry points, so the check requires three error messages from the sampler's own source, which the v0.20.0 Android libraries carry and the Linux ones don't (the sampler's names are in both, so they prove nothing); this shows that the sampler code is linked, not that it works on a device; 16 KB page alignment (Google Play) |
+| android-x64 | `lib/android_x86_64/liblitert-lm.so` / `android_*_x86_64` wheel | `libLiteRtLm.so` | x86-64 ELF; same checks as android-arm64, except that a missing OpenCL sampler only warns |
 | win-x64 | `lib/windows_x86_64/bin/litert-lm.dll` / `win_amd64` wheel | `LiteRtLm.dll` + `dxcompiler.dll` + `dxil.dll` | x64 image; export check; no separate LiteRt import; **no VC++ runtime import** (static CRT); the DXC zip is pinned by sha256 |
-| osx-arm64 | `lib/macos_arm64/liblitert-lm.dylib` / `macosx_*_arm64` wheel | `libLiteRtLm.dylib` | arm64; export check; system frameworks only in the load commands |
-| ios-arm64 | `CLiteRTLM.xcframework.zip` | `xcframeworks/CLiteRTLM.xcframework` (upstream name kept) | device slice present; export check on the device binary; logs the Metal companions the binary references by name |
+| osx-arm64 | `lib/macos_arm64/liblitert-lm.dylib` / `macosx_*_arm64` wheel | `libLiteRtLm.dylib` | arm64; export check; no `libLiteRt*` companion in the load commands, which the log lists |
+| ios-arm64 | `CLiteRTLM.xcframework.zip` | `xcframeworks/CLiteRTLM.xcframework` (upstream name kept) | device slice present; export check on the device binary; logs the Metal accelerator and TopK Metal sampler symbols linked into it |
 
 Every download is verified against the digest its host publishes: the **sha256 digest GitHub records
 for each release asset** (`fetch-upstream-asset.sh`; an asset without a digest is not packaged), or the
@@ -68,36 +68,53 @@ workflow takes the release's `THIRD_PARTY_NOTICES.txt` asset when there is one (
 without it get a file built by `notices-from-xcframework.py` from the license bundle inside the
 release's own `CLiteRTLM.xcframework` (the framework's LICENSE plus one license per third-party
 component); the v0.16.0 asset was itself built from the Apple frameworks and covered every platform.
-The `native-<tag>` release notes record both sources.
+The `native-<tag>` release notes record both sources. The v0.20.0 bundle has no Dawn entry, although
+the win-x64, linux-x64, linux-arm64 and osx-arm64 libraries link Dawn, so the script appends Dawn's
+license when the bundle lists no Dawn component. `THIRD-PARTY-NOTICES.md`, which every package carries,
+reproduces it too.
 
 ## Platform notes that matter to consumers
 
-- **Linux — no Vulkan loader needed for the CPU backend.** The v0.18.0 libraries carry no hard
-  dependency on `libvulkan.so.1` (the v0.16.0 one did: it did not load without `libvulkan1`). The GPU
-  backend runs on Vulkan, so it needs the GPU's Vulkan driver and the Vulkan loader.
+- **Linux — no hard dependency on the Vulkan loader.** The v0.20.0 linux-x64 and linux-arm64 libraries
+  do not list `libvulkan.so.1` as a dependency; the linux-arm64 one holds the name as a string, for a
+  `dlopen`. The v0.16.0 library did list it and did not load without `libvulkan1`. A CPU engine with
+  v0.20.0 was not tested on a machine without the Vulkan loader. The GPU backend runs on Vulkan, so it
+  needs the GPU's Vulkan driver and the Vulkan loader.
 - **linux-arm64.** The same library built for AArch64 (glibc 2.27+, like the x64 one). CI runs the
   model-backed suite on GitHub's arm64 runner (CPU). Upstream builds its YNNPACK kernels for this
   platform (`LiteRtEngineOptions.EnableYnnpack`).
-- **win-x64 — DXC.** The official library's Dawn backend requires the DirectX Shader Compiler on
-  Direct3D 12 and has no FXC fallback (without `dxil.dll` the GPU engine fails to create:
-  `DynamicLib.Open: dxil.dll Windows Error: 87`). The C API zip ships neither DLL, so the workflow adds
-  the pair from Microsoft's DXC release (v1.9.2602, pinned by hash; the exact pair validated on an
-  RTX 3080, and the same bytes the Windows wheel carries). No VC++ Redistributable is needed (static
-  CRT).
+- **win-x64 — DXC.** The runtime package ships the DirectX Shader Compiler pair, `dxcompiler.dll` and
+  `dxil.dll`, and the resolver loads both from `runtimes/win-x64/native` before the engine starts. No
+  VC++ Redistributable is needed (static CRT). The C API zip ships neither DLL, so the workflow adds the
+  pair from Microsoft's DXC release (v1.9.2602, pinned by hash; the exact pair validated on an RTX 3080,
+  and the same bytes the Windows wheel carries).
+
+  The official library's Dawn backend compiles its shaders with DXC on Direct3D 12. With LiteRT-LM
+  v0.20.0 and gemma-4 E2B on one NVIDIA RTX 3080 and its driver:
+  - Without `dxcompiler.dll`, the GPU engine fails to create with `UNKNOWN: no details, failed at
+    compiled_model.cc:1424.`, and the native log prints `DynamicLib.Open: dxcompiler.dll Windows Error:
+    87`.
+  - With `dxil.dll` removed, one run with the cache disabled loaded and answered.
 - **android-arm64 — one file.** Accelerators, samplers and the constraint provider are inside
-  `libLiteRtLm.so`; the sampler factory still tries `dlopen("libLiteRtTopKOpenClSampler.so")` first
-  and then uses its statically linked copy, which is why the runtime logs
-  `OpenCL sampler not available, falling back to statically linked C API` on every GPU run — that
-  line is expected and sampling stays on the GPU (verified on a Moto G100 / Adreno 650). The
-  vendor `libOpenCL.so` still needs the `<uses-native-library>` manifest entry ([android.md](android.md)).
-- **android-x64.** The same library built for x86_64, for the Android emulator. Emulators expose no
-  OpenCL GPU, so use the CPU backend there.
+  `libLiteRtLm.so`. The vendor `libOpenCL.so` still needs the `<uses-native-library>` manifest entry
+  ([android.md](android.md)). With LiteRT-LM v0.16.0 on a Moto G100 / Adreno 650, the sampler factory
+  tried `dlopen("libLiteRtTopKOpenClSampler.so")` first and then used its statically linked copy. The
+  runtime logged `OpenCL sampler not available, falling back to statically linked C API` on every GPU
+  run, and sampling stayed on the GPU. In the v0.20.0 sources the factory tries the statically linked
+  sampler first and logs the fallback only at verbose level, so that line may no longer appear. This was
+  not checked on a device with v0.20.0.
+- **android-x64.** The same library built for x86_64, for the Android emulator. Use the CPU backend on
+  emulators. With LiteRT-LM v0.20.0 on the x86_64 emulator (API 35), gemma-4 E2B chats on the CPU
+  backend. On an emulator in its host GPU mode, `LiteRtEngine.Load` with `Backend = Gpu` throws
+  `LiteRtException` (`UNKNOWN: Failed to modify graph with delegate`), and the process keeps running.
 - **osx-arm64.** The dylib's own install name is `@rpath/liblitert-lm.so` (sic); irrelevant, because
-  the resolver loads it by absolute path. The v0.18.0 library requires macOS 14 or later.
+  the resolver loads it by absolute path. The v0.20.0 library declares macOS 14 as its minimum.
 - **ios-arm64.** The framework keeps its upstream name (`CLiteRTLM`); the resolver loads
-  `Frameworks/CLiteRTLM.framework/CLiteRTLM`. The binary references `libLiteRtMetalAccelerator.dylib`
-  and `libLiteRtTopKMetalSampler.dylib` by name and the package ships neither, so iOS is CPU-only
-  until a Metal companion strategy is validated on hardware.
+  `Frameworks/CLiteRTLM.framework/CLiteRTLM`. The v0.20.0 framework links the Metal accelerator and
+  the TopK Metal sampler; it still names `libLiteRtMetalAccelerator.dylib` and
+  `libLiteRtTopKMetalSampler.dylib`, for the factory's dynamic-load path, and needs neither. Nothing
+  has run on an iOS device, so the CPU backend stays the supported path on iOS and the GPU backend is
+  untested there.
 
 ## Staying in sync with upstream
 
@@ -111,7 +128,8 @@ each release:
    `litert_lm_c_api-*.zip` asset when there is one and the PyPI wheels otherwise. Inspect the run, then
    run it again with `publish_release` to create the `native-<tag>` release.
 3. Bump `LiteRtLmVersion` in `Directory.Build.props`, `NATIVE_REF` in `ci.yml` and `model-tests.yml`,
-   and the default in `scripts/restore-natives.ps1`.
+   the default in `scripts/restore-natives.ps1`, and, in `native-release.yml`, the `litertlm_version`
+   input default and the `UPSTREAM_TAG` fallback.
 4. Run the full model-backed suite locally (CPU and GPU) and let CI run it on every desktop leg.
 
 Each package release records the native tag it ships (release notes + README compatibility table).

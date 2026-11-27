@@ -9,11 +9,6 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Requires native LiteRT-LM v0.15.0+: earlier runtimes silently lost a suspended conversation's state
-/// when another advanced, which is why this type stayed internal (and the stateful mode single-conversation)
-/// until that fix shipped.
-/// </para>
-/// <para>
 /// Forking builds on LiteRtLmSharp's native <see cref="LiteRtConversation.Clone"/>: the branch starts from a
 /// copy of the parent's prefilled KV-cache state (cheap — no re-prefill of the shared prefix) and then
 /// advances on its own. Neither branch affects the other, and the parent is untouched. Typical uses are
@@ -63,7 +58,7 @@ public sealed class LiteRtConversationBranching
     /// </param>
     /// <param name="cancellationToken">Cancels waiting to acquire the call gate, which every client over the
     /// same engine shares. Cloning itself is a fast, non-cancellable native copy (about a second on a
-    /// conversation with constrained decoding or a constraint provider).</param>
+    /// conversation with constrained decoding or a constraint provider, measured with LiteRT-LM v0.18.0).</param>
     /// <returns>
     /// A fresh <c>ConversationId</c> for the branch. It has identical semantics to any other conversation id:
     /// set it on <see cref="ChatOptions.ConversationId"/> to resume, re-fork, or evict it. The branch inherits
@@ -72,10 +67,7 @@ public sealed class LiteRtConversationBranching
     /// <remarks>
     /// Runs under the call gate every client over the same engine shares, so it cannot race an in-flight send
     /// or stream (the gate is held for the whole stream, so a fork called from inside the loop that reads a
-    /// stream over the same engine waits forever). On the GPU backend, do not make a branch's first send repeat
-    /// word for word a message the parent or a sibling branch sent after the fork (see
-    /// <see cref="LiteRtConversation.Clone"/>). The new branch
-    /// is stored in the same live-conversation cache as every other live conversation: it counts toward the
+    /// stream over the same engine waits forever). The new branch is stored in the same live-conversation cache as every other live conversation: it counts toward the
     /// cache's capacity and adding it may evict the least-recently-used conversation (potentially the
     /// parent). A parent reachable through this client has always advanced at least once (an id is only
     /// handed out after a send completes), which is exactly what <see cref="LiteRtConversation.Clone"/>

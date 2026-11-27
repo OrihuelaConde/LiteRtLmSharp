@@ -41,7 +41,9 @@ public sealed class LiteRtChatOptions : ChatOptions
     /// </summary>
     /// <remarks>
     /// Backed by the <c>enable_constrained_decoding</c> key in <see cref="ChatOptions.AdditionalProperties"/>.
-    /// Tools still work without it (arguments are simply not grammar-constrained).
+    /// Tools still work without it (arguments are simply not grammar-constrained). A request that offers no
+    /// tools ignores the flag: without tools, LiteRT-LM v0.20.0 can end a constrained text reply at its first
+    /// line break.
     /// </remarks>
     [JsonIgnore]
     public bool EnableConstrainedDecoding
@@ -53,7 +55,7 @@ public sealed class LiteRtChatOptions : ChatOptions
     /// <summary>
     /// Bans the reply from repeating any n-gram of this many tokens that it already produced during the same
     /// generation (the native no-repeat-ngram ban, tracked over the whole reply). <c>null</c> (default) = off.
-    /// Useful against a small model echoing a prompt template verbatim. Requires native LiteRT-LM v0.15.0+.
+    /// Useful against a small model echoing a prompt template verbatim.
     /// </summary>
     /// <remarks>
     /// Backed by the <c>no_repeat_ngram_size</c> key in <see cref="ChatOptions.AdditionalProperties"/>; maps to
@@ -70,8 +72,7 @@ public sealed class LiteRtChatOptions : ChatOptions
     /// <summary>
     /// Token ids the reply may never emit: each listed id's logit is forced to <c>-inf</c> on every decode
     /// step. Find ids with <see cref="LiteRtEngine.Tokenize"/>; most words tokenize differently with and
-    /// without a leading space, so ban both forms. <c>null</c>/empty (default) = none. Requires native
-    /// LiteRT-LM v0.15.0+.
+    /// without a leading space, so ban both forms. <c>null</c>/empty (default) = none.
     /// </summary>
     /// <remarks>
     /// Backed by the <c>suppress_tokens</c> key in <see cref="ChatOptions.AdditionalProperties"/> (stored as an

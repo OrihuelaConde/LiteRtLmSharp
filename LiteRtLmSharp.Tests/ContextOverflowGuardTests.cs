@@ -7,12 +7,12 @@ namespace LiteRtLmSharp.Tests;
 /// Pure unit tests for the KV overflow guard's arithmetic (<see cref="LiteRtContextGuard"/>) — the
 /// thresholds behind <see cref="LiteRtContextOverflowException"/>. No model needed, so these always
 /// run in CI. The live end-to-end behavior (a conversation grown to the limit throws instead of
-/// crashing the native runtime) is covered by <see cref="ContextOverflowModelTests"/>.
+/// reaching the runtime) is covered by <see cref="ContextOverflowModelTests"/>.
 /// </summary>
 public class ContextOverflowGuardTests
 {
     // The full/not-full boundary: full once fewer than MinPrefillReserve entries remain (the
-    // v0.15.0+ executor rejects any prefill below the model's smallest prefill-signature length).
+    // executor rejects any prefill below the model's smallest prefill-signature length).
     // LastSendable is the highest count that is still not full; shared by the pre-send hard stop and
     // the public IsContextFull signal so the two can never disagree.
     private const int LastSendable = 4096 - LiteRtContextGuard.MinPrefillReserve;
@@ -28,7 +28,7 @@ public class ContextOverflowGuardTests
     [InlineData(FullAt, 4096)]      // one entry short of the reserve — the executor would reject the prefill
     [InlineData(4096 - LiteRtContextGuard.SafetyMargin, 4096)] // where a clamped send lands by construction
     [InlineData(4096, 4096)]        // at the hard limit
-    [InlineData(4440, 4096)]        // past the limit — the exact field-reported state (crashed 0xC0000005 unguarded)
+    [InlineData(4440, 4096)]        // past the limit
     public void ThrowIfContextFull_AtOrPastTheCeiling_Throws(int used, int limit)
     {
         var ex = Assert.Throws<LiteRtContextOverflowException>(
@@ -71,7 +71,7 @@ public class ContextOverflowGuardTests
         => Assert.Equal(1, LiteRtContextGuard.DecodeBudget(
             tokenCount: 4096 - (128 + LiteRtContextGuard.SafetyMargin + 1), maxNumTokens: 4096, inputTokens: 128));
 
-    /// <summary>The v0.15.0 executor plans prefill in fixed work groups: a partial chunk still debits a
+    /// <summary>The executor plans prefill in fixed work groups: a partial chunk still debits a
     /// whole signature length. An input above one work group with fewer than two work groups remaining
     /// passes the flat token count but not the plan — the guard must reject it (typed) before the native
     /// layer rejects it (raw). The exact live repro: 180 input tokens against 200 remaining entries.</summary>
@@ -123,12 +123,53 @@ public class ContextOverflowGuardTests
     public void EffectiveOutputCap_TakesTheSmallerOfCallerCapAndBudget(int budget, int callerCap, int expected)
         => Assert.Equal(expected, LiteRtContextGuard.EffectiveOutputCap(budget, callerCap));
 
+    /// <summary>The truncation check behind <see cref="LiteRtConversation.LastReplyReachedContextLimit"/>: the
+    /// benchmark's exact decode count must reach the budget; a tokenized count, which is up to 4 tokens short of
+    /// what was decoded, must reach the budget less the safety margin, and at least 1, so a budget at or under
+    /// the margin does not mark an empty reply as cut.</summary>
+    [Theory]
+    [InlineData(965, 966, true, false)]
+    [InlineData(966, 966, true, true)]
+    [InlineData(967, 966, true, true)]
+    [InlineData(1, 16, true, false)]       // the floor of 1 applies to tokenized counts only
+    [InlineData(1, 17, false, true)]       // budget - 16 = 1
+    [InlineData(1, 18, false, false)]      // budget - 16 = 2
+    [InlineData(949, 966, false, false)]   // budget - 17
+    [InlineData(950, 966, false, true)]    // budget - 16
+    [InlineData(966, 966, false, true)]
+    [InlineData(0, 16, false, false)]      // a budget at the margin: an empty reply is not cut
+    [InlineData(1, 16, false, true)]
+    [InlineData(0, 1, false, false)]
+    [InlineData(0, 1, true, false)]
+    [InlineData(1, 1, true, true)]
+    public void ReplyUsedBudget_ComparesTheCountWithTheBudget(int decoded, int budget, bool exact, bool expected)
+        => Assert.Equal(expected, LiteRtContextGuard.ReplyUsedBudget(decoded, budget, exact));
+
+    /// <summary>The byte shortcut skips the tokenizer only for a reply that cannot reach the tokenized threshold
+    /// (at most one token per UTF-8 byte), and never for one that can.</summary>
+    [Theory]
+    [InlineData(949, 966, true)]
+    [InlineData(950, 966, false)]
+    [InlineData(0, 16, true)]
+    [InlineData(1, 16, false)]
+    [InlineData(0, 17, true)]
+    [InlineData(1, 17, false)]
+    [InlineData(1, 18, true)]
+    [InlineData(2, 18, false)]
+    public void TooShortToHaveUsedBudget_MatchesTheTokenizedThreshold(int bytes, int budget, bool expected)
+    {
+        Assert.Equal(expected, LiteRtContextGuard.TooShortToHaveUsedBudget(bytes, budget));
+        // A reply skipped by the shortcut cannot read as cut even if every byte were a token.
+        if (expected)
+            Assert.False(LiteRtContextGuard.ReplyUsedBudget(bytes, budget, exactCount: false));
+    }
+
     /// <summary>The guard probes raw SendRaw JSON for media on every guarded send, so MessageHasMedia must
     /// tolerate every shape a raw caller can produce — valid JSON with a non-object root included
     /// (JsonElement.TryGetProperty throws InvalidOperationException on those, so the shape needs its own
     /// check, not just the JsonException catch).</summary>
     [Theory]
-    [InlineData("[{\"role\":\"user\"}]")]   // array root — a raw caller batching messages
+    [InlineData("[{\"role\":\"user\"}]")]   // array root — the runtime rejects it; the guard still probes it before the native call
     [InlineData("\"just a string\"")]
     [InlineData("42")]
     [InlineData("null")]
@@ -139,19 +180,15 @@ public class ContextOverflowGuardTests
 }
 
 /// <summary>
-/// End-to-end regression tests for the KV-overflow crash (a stateful tool loop grew the live conversation past
-/// MaxNumTokens = 4096 and the next call killed the process with 0xC0000005 / 0xC0000374 heap
-/// corruption). With the guard, a conversation driven into its context limit throws
+/// End-to-end tests of the KV overflow guard: a conversation driven into its context limit throws
 /// <see cref="LiteRtContextOverflowException"/> and the engine stays healthy. Uses its OWN small
 /// engine (tiny context) rather than the shared fixture, so it loads/disposes per test.
 /// Set LITERTLM_TEST_MODEL to a .litertlm file to run.
 /// </summary>
 public sealed class ContextOverflowModelTests
 {
-    // Small enough to fill within a few capped turns, but not below the model's compiled prefill
-    // chunk: gemma-4-E2B rejects a 256- or 512-token KV outright (DYNAMIC_UPDATE_SLICE
-    // "update > operand" at tensor allocation — the KV cache must fit at least one prefill chunk,
-    // 1024 for this model).
+    // Small enough to fill within a few capped turns. Keep MaxNumTokens at or above the model's
+    // largest prefill signature (1024), as LiteRtEngineOptions.MaxNumTokens documents.
     private const int SmallContext = 1024;
 
 
@@ -172,7 +209,7 @@ public sealed class ContextOverflowModelTests
     /// <summary>
     /// Drives a conversation into its context limit with repeated sends. Every send must either
     /// complete with the KV cache still inside the limit (the decode clamp at work) or throw the
-    /// overflow exception — never crash the process (the unguarded outcome). Afterwards the engine
+    /// overflow exception — never reach the runtime with a send it would reject. Afterwards the engine
     /// must still serve a fresh conversation.
     /// </summary>
     [SkippableFact]
@@ -282,7 +319,9 @@ public sealed class ContextOverflowModelTests
     /// <summary>
     /// A "message doesn't fit" rejection happens BEFORE any native work, so in the stateful mode it must
     /// NOT evict the live conversation: the thread stays resumable and a shorter message on the same
-    /// ConversationId succeeds. (Only the terminal "context is full" rejection evicts.)
+    /// ConversationId succeeds. (Only the terminal "context is full" rejection evicts.) The same rejection of a
+    /// request without a ConversationId, blocking or streaming, leaves no conversation in the store: the caller
+    /// never received its id.
     /// </summary>
     [SkippableFact]
     public async Task StatefulThread_SurvivesAMessageThatDoesNotFit()
@@ -294,14 +333,29 @@ public sealed class ContextOverflowModelTests
         using var client = new LiteRtLmSharp.Extensions.AI.LiteRtChatClient(
             engine, statefulConversations: new LiteRtLmSharp.Extensions.AI.LiteRtStatefulConversationOptions());
 
+        string oversized = string.Join(" ", Enumerable.Repeat("many words that will not fit", 400));
         var chatOptions = new Microsoft.Extensions.AI.ChatOptions { MaxOutputTokens = 16 };
+
+        // Oversized first message of a new conversation, blocking and streaming: rejected up front, and the
+        // conversation the request created is not kept.
+        await Assert.ThrowsAsync<LiteRtContextOverflowException>(() => client.GetResponseAsync(
+            [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, oversized)], chatOptions));
+        Assert.Equal(0, client.Store!.Count);
+        await Assert.ThrowsAsync<LiteRtContextOverflowException>(async () =>
+        {
+            await foreach (Microsoft.Extensions.AI.ChatResponseUpdate _ in client.GetStreamingResponseAsync(
+                [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, oversized)], chatOptions))
+            {
+            }
+        });
+        Assert.Equal(0, client.Store!.Count);
+
         Microsoft.Extensions.AI.ChatResponse first = await client.GetResponseAsync(
             [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, "Reply with one short word: hello")],
             chatOptions);
         Assert.NotNull(first.ConversationId);
 
         // Oversized continuation: rejected up front, conversation untouched.
-        string oversized = string.Join(" ", Enumerable.Repeat("many words that will not fit", 400));
         chatOptions.ConversationId = first.ConversationId;
         await Assert.ThrowsAsync<LiteRtContextOverflowException>(() => client.GetResponseAsync(
             [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, oversized)], chatOptions));

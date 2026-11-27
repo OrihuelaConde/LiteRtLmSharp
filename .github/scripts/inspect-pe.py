@@ -29,8 +29,26 @@ capi = [n for n in exports if n.startswith("litert_lm_")]
 print(f"exports: {len(exports)} total, {len(capi)} litert_lm_*")
 if len(capi) < min_exports:
     sys.exit(f"::error::{path} exports {len(capi)} litert_lm_* functions, expected at least {min_exports}")
-for required in ("litert_lm_engine_create", "litert_lm_conversation_create",
-                 "litert_lm_conversation_send_message_stream", "litert_lm_stream_chunk_get_error"):
+REQUIRED = (
+    "litert_lm_get_api_version",
+    "litert_lm_engine_create", "litert_lm_conversation_create",
+    "litert_lm_conversation_send_message_stream", "litert_lm_stream_chunk_get_error",
+    # Session API. The same names are in .github/scripts/assert-elf-exports.sh, in SESSION_EXPORTS of
+    # .github/workflows/native-release.yml and in LiteRtLmSharp.Tests/SessionAbiTests.cs (SessionImports);
+    # change all four together.
+    "litert_lm_engine_create_session", "litert_lm_session_delete",
+    "litert_lm_session_cancel_process", "litert_lm_session_save_checkpoint",
+    "litert_lm_session_rewind_to_checkpoint", "litert_lm_session_rewind_to_step",
+    "litert_lm_session_run_prefill", "litert_lm_session_run_decode",
+    "litert_lm_session_run_decode_async", "litert_lm_session_run_text_scoring",
+    "litert_lm_session_config_set_apply_prompt_template", "litert_lm_responses_delete",
+    "litert_lm_responses_get_num_candidates", "litert_lm_responses_get_response_text_at",
+    "litert_lm_responses_get_score_at", "litert_lm_responses_get_token_length_at",
+    # Model sync entry points. The same names are in .github/scripts/assert-elf-exports.sh, in the Apple steps
+    # of .github/workflows/native-release.yml and in LiteRtLmSharp.Tests/ModelSyncAbiTests.cs (ModelSyncImports).
+    "litert_lm_model_sync_update", "litert_lm_model_sync_plan_create_from_file",
+)
+for required in REQUIRED:
     if required not in capi:
         sys.exit(f"::error::{path} lacks {required}")
 

@@ -147,28 +147,19 @@ public class StatefulConversationMappingTests
     // ─────────────────────── DI registration (Extensions.AI) ───────────────────────
 
     [Fact]
-    public void CutMessages_AreChanged_OneMoreZeroWidthSpacePerCut_UntilTheTurnEnds()
+    public void DiscardedToolCalls_AreCopiedToAFork()
     {
-        // Model-free: the entry's conversation is not used by this logic. The runtime problem this avoids is on the
-        // GPU backend, which most CI legs do not run.
+        // Model-free: the entry's conversation is not used by this logic.
         var entry = new LiteRtConversationStore.Entry(null!);
-        Assert.Equal("hello", entry.AvoidRepeatingACutMessage("hello"));
-
-        entry.RecordCutMessage("hello");
-        Assert.Equal("hello\u200B", entry.AvoidRepeatingACutMessage("hello"));
-        Assert.Equal("  hello \u200B", entry.AvoidRepeatingACutMessage("  hello "));   // the template trims whitespace
-        Assert.Equal("other", entry.AvoidRepeatingACutMessage("other"));
-        Assert.Null(entry.AvoidRepeatingACutMessage(null));
-
-        entry.RecordCutMessage("hello");
-        Assert.Equal("hello\u200B\u200B", entry.AvoidRepeatingACutMessage("hello"));
+        entry.DiscardToolCalls(["get_weather_0"]);
 
         var fork = new LiteRtConversationStore.Entry(null!);
         fork.CopyRollbackStateFrom(entry);
-        Assert.Equal("hello\u200B\u200B", fork.AvoidRepeatingACutMessage("hello"));
+        Assert.True(fork.IsDiscardedToolCall("get_weather_0"));
 
-        entry.ClearCutMessages();
-        Assert.Equal("hello", entry.AvoidRepeatingACutMessage("hello"));
+        // The fork has its own copy: a later call on the parent doesn't clear the fork's mark.
+        entry.RecordToolCall("get_weather_0", "get_weather");
+        Assert.True(fork.IsDiscardedToolCall("get_weather_0"));
     }
 
     [Fact]

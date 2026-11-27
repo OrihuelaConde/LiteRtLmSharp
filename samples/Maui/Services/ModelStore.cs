@@ -29,7 +29,8 @@ public sealed class ModelStore
             return;
         // The runtime drops cache files next to the model (XNNPack flags, GPU mldrift weights —
         // the latter can be as large as the model itself). They are all named
-        // "<model file name><suffix>", as is our ".partial", so one sweep removes everything.
+        // "<model file name><suffix>" (the suffix carries the model file's modification time and
+        // size), as is our ".partial", so one sweep removes everything.
         foreach (string file in Directory.GetFiles(ModelsDirectory, model.FileName + "*"))
             File.Delete(file);
     }

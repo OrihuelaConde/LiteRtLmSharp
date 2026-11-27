@@ -4,50 +4,11 @@ using Xunit;
 namespace LiteRtLmSharp.Tests;
 
 /// <summary>
-/// How sampler strategies reach the runtime (<see cref="LiteRtConversation.NativeSampler"/>) and the hint for
-/// the one sampler failure left, a model-declared sampler type the backend does not build. Model-free; the
-/// model-backed half is in <see cref="EngineImprovementsModelTests"/>.
+/// The hint for a sampler type the runtime does not implement, such as one the model file declares.
+/// Model-free; the model-backed sampler tests are in <see cref="EngineImprovementsModelTests"/>.
 /// </summary>
 public class SamplerDiagnosticsTests
 {
-    [Fact]
-    public void NativeSampler_ShouldSendGreedyAsTopPWithTopKOne_KeepingTheRest()
-    {
-        var greedy = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.Greedy, TopK = 40, TopP = 0.9f, Temperature = 0.7f, Seed = 5 };
-
-        var (type, topK, topP) = LiteRtConversation.NativeSampler(greedy);
-
-        Assert.Equal(LiteRtSamplerType.TopP, type);
-        Assert.Equal(1, topK);
-        Assert.Equal(0.9f, topP);
-    }
-
-    [Fact]
-    public void NativeSampler_ShouldSendTopKAsTopPWithTopPOne_KeepingTheRest()
-    {
-        var topKOnly = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopK, TopK = 8, TopP = 0.5f };
-
-        var (type, topK, topP) = LiteRtConversation.NativeSampler(topKOnly);
-
-        Assert.Equal(LiteRtSamplerType.TopP, type);
-        Assert.Equal(8, topK);
-        Assert.Equal(1.0f, topP);
-    }
-
-    [Theory]
-    [InlineData(LiteRtSamplerType.TopP)]
-    [InlineData(LiteRtSamplerType.Unspecified)]
-    public void NativeSampler_ShouldLeaveOtherStrategiesUnchanged(LiteRtSamplerType strategy)
-    {
-        var sampler = new LiteRtSamplerParams { Strategy = strategy, TopK = 12, TopP = 0.8f };
-
-        var (type, topK, topP) = LiteRtConversation.NativeSampler(sampler);
-
-        Assert.Equal(strategy, type);
-        Assert.Equal(12, topK);
-        Assert.Equal(0.8f, topP);
-    }
-
     [Theory]
     // The messages upstream emits (runtime/components/sampler_factory.cc, v0.14.0-v0.18.0, CPU backend).
     [InlineData("UNIMPLEMENTED: Sampler type: 3 not implemented yet.")]

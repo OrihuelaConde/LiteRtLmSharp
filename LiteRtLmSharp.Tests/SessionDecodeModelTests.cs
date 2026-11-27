@@ -1,0 +1,753 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+using LiteRtLmSharp.Native;
+using Xunit;
+using Xunit.Abstractions;
+
+namespace LiteRtLmSharp.Tests;
+
+/// <summary>Shared pieces of the session decode tests on a model.</summary>
+internal static class SessionDecodeHelpers
+{
+    /// <summary>Exact argmax over the TopP sampler (TopK = 1), so replies repeat from run to run.</summary>
+    public static readonly LiteRtSamplerParams Argmax = new() { Strategy = LiteRtSamplerType.TopP, TopK = 1 };
+
+    /// <summary>The test-only limit for one decode: a regression fails the test instead of hanging the suite. It
+    /// stays well under the hang timeouts of the test runs, so that the assert fails before the host is
+    /// killed.</summary>
+    public static readonly TimeSpan DrainLimit = TimeSpan.FromSeconds(60);
+
+    /// <summary>A prompt whose reply runs long, so that a cancel lands while it runs.</summary>
+    public const string CountPrompt = "Count upward starting from 1, one number per line, and never stop.";
+
+    /// <summary>Whether the tests run on the CPU backend.</summary>
+    public static bool IsCpu => LiteRtBackend.Parse(Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu") == LiteRtBackend.Cpu;
+
+    /// <summary>Whether the byte equalities these tests compare were measured on this platform: only on win-x64,
+    /// on CPU and GPU (LiteRT-LM v0.20.0, gemma-4 E2B). Elsewhere the tests assert states and non-empty text
+    /// instead.</summary>
+    public static bool SameBytesMeasured =>
+        OperatingSystem.IsWindows() && RuntimeInformation.ProcessArchitecture == Architecture.X64;
+
+    /// <summary>How many pieces a stream may still deliver after a cancel was requested: the piece that issues
+    /// it and pieces already queued for the reader. No piece after an issued cancel was seen on LiteRT-LM v0.20.0,
+    /// win-x64; the margin covers a reader that falls behind, which a slow machine makes more likely. A reply
+    /// that runs on past it was not stopped: without the native cancel, the reply of the cancel tests ran 47 to
+    /// 49 pieces past the request on win-x64.</summary>
+    public const int MaxPiecesAfterCancel = 32;
+
+    /// <summary>The output cap of the cancel tests: well above the cancel point plus
+    /// <see cref="MaxPiecesAfterCancel"/>, so that a cancel that does not stop the runtime shows.</summary>
+    public const int CancelCap = 64;
+
+    /// <summary>Sends <paramref name="text"/> with the drain limit and returns the reply text.</summary>
+    public static Task<string> SendWithin(LiteRtConversation conversation, string text)
+        => Task.Run(() => conversation.Send(text).Text ?? "").WaitAsync(DrainLimit);
+
+    /// <summary>Asserts that the native session was deleted. <see cref="SafeHandle.IsClosed"/> turns true only
+    /// when the last reference on a disposed handle is released, which runs the native delete; the retired
+    /// stream handles, which only the delete frees, confirm it.</summary>
+    public static void AssertNativeSessionDeleted(LiteRtSession session)
+    {
+        Assert.True(session.Handle.IsClosed);
+        Assert.Equal(0, session.Handle.RetiredCount);
+    }
+
+    /// <summary>Asserts that the runtime stopped after a cancel requested at piece
+    /// <paramref name="requestedAt"/> of a stream that delivered <paramref name="total"/> pieces.</summary>
+    public static void AssertStoppedAfterTheRequest(int requestedAt, int total)
+    {
+        int after = total - requestedAt;
+        Assert.True(after <= MaxPiecesAfterCancel,
+            $"{after} pieces arrived after the cancel was requested at piece {requestedAt}: the runtime was not stopped.");
+    }
+
+    /// <summary>The prompt text of one user turn for Gemma 4: <see cref="LiteRtConversation.RenderMessage"/> of a
+    /// fresh conversation without a system message. It ends with the model-turn prefix and holds no start
+    /// token.</summary>
+    public static string Prompt(LiteRtEngine engine, string user)
+    {
+        using LiteRtConversation conversation = engine.CreateConversation(new LiteRtConversationOptions { Sampler = Argmax });
+        return conversation.RenderMessage(user);
+    }
+
+    public static LiteRtSession Session(LiteRtEngine engine, int maxOutputTokens)
+        => engine.CreateSession(new LiteRtSessionOptions { Sampler = Argmax, MaxOutputTokens = maxOutputTokens });
+
+    public static Task<string> DecodeWithin(LiteRtSession session) => Task.Run(session.Decode).WaitAsync(DrainLimit);
+
+    /// <summary>Reads a stream to its end, with the drain limit, and returns its pieces.
+    /// <paramref name="onPiece"/> runs in the loop body after each piece; returning <c>false</c> leaves the
+    /// loop.</summary>
+    public static async Task<List<string>> StreamWithin(
+        LiteRtSession session, CancellationToken token = default, Func<int, bool>? onPiece = null)
+    {
+        var pieces = new List<string>();
+        await Task.Run(async () =>
+        {
+            await foreach (string piece in session.DecodeStreamingAsync(token))
+            {
+                pieces.Add(piece);
+                if (onPiece is not null && !onPiece(pieces.Count))
+                    break;
+            }
+        }).WaitAsync(DrainLimit);
+        return pieces;
+    }
+
+    /// <summary>The number of pieces of the reply to <paramref name="prompt"/>, streamed to its end on a new
+    /// session with the output cap of the cancel tests. With the argmax sampler it is the length that a session
+    /// with the same prompt reaches when no cancel stops it.</summary>
+    public static async Task<int> FullReplyPieces(LiteRtEngine engine, string prompt)
+    {
+        using LiteRtSession session = Session(engine, CancelCap);
+        session.Prefill(prompt);
+        return (await StreamWithin(session)).Count;
+    }
+
+    /// <summary>The text of a later user turn on Gemma 4: exactly what <see cref="LiteRtConversation.RenderMessage"/>
+    /// gives after a send, with no end-of-turn marker and no line break in front. After a reply, the session
+    /// already holds the position that ends the model's turn.</summary>
+    public static string NextTurn(string user) => $"<|turn>user\n{user}<turn|>\n<|turn>model\n";
+
+    /// <summary>Runs a blocking session call with the drain limit, so that a call that never returns fails the
+    /// test instead of hanging the suite.</summary>
+    public static Task Within(Action call) => Task.Run(call).WaitAsync(DrainLimit);
+
+    /// <summary>Asserts that a prefill, the three decodes and a save are refused with
+    /// <see cref="InvalidOperationException"/> before any native call, and leave the state and the gate as they
+    /// are.</summary>
+    private static async Task AssertRefusesPrefillDecodesAndSave(LiteRtSession session, LiteRtSessionState state)
+    {
+        Assert.Equal(state, session.State);
+        Assert.Throws<InvalidOperationException>(() => session.Prefill("Hello"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.PrefillAsync("Hello").WaitAsync(DrainLimit));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => DecodeWithin(session));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.DecodeAsync().WaitAsync(DrainLimit));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => StreamWithin(session));
+        Assert.Throws<InvalidOperationException>(() => session.SaveCheckpoint());
+        Assert.Equal(state, session.State);
+        Assert.False(session.IsCallInProgress);
+    }
+
+    /// <summary>Asserts that every member except Dispose refuses with <see cref="InvalidOperationException"/>
+    /// before any native call, and leaves the state and the gate as they are: a Cancelled session, or one that
+    /// a failure other than a prefill left Faulted. The rewind is checked with a checkpoint of the session
+    /// itself, so that the state refuses it and not the argument check; the refusal comes before the native
+    /// call, so the checkpoint need not exist in the runtime.</summary>
+    public static async Task AssertAcceptsOnlyDispose(LiteRtSession session, LiteRtSessionState state)
+    {
+        await AssertRefusesPrefillDecodesAndSave(session, state);
+        Assert.Throws<InvalidOperationException>(() => session.RewindTo(new LiteRtSessionCheckpoint(session, long.MaxValue, LiteRtSessionState.Prefilled)));
+        Assert.Throws<InvalidOperationException>(() => session.Reset());
+        Assert.Equal(state, session.State);
+        Assert.False(session.IsCallInProgress);
+    }
+
+    /// <summary>Asserts that a ContextFull session, or one that a failed prefill left Faulted, refuses a prefill,
+    /// the decodes and a save before any native call, as <see cref="AssertAcceptsOnlyDispose"/> does. It does not
+    /// call <see cref="LiteRtSession.RewindTo"/> or <see cref="LiteRtSession.Reset"/>: each caller runs one of
+    /// them next and checks that it is accepted.</summary>
+    public static Task AssertRefusesAllButRewindResetAndDispose(LiteRtSession session, LiteRtSessionState state)
+    {
+        Assert.True(state is LiteRtSessionState.ContextFull or LiteRtSessionState.Faulted, $"{state} is not a state that a rewind or a reset recovers.");
+        return AssertRefusesPrefillDecodesAndSave(session, state);
+    }
+
+    /// <summary>Waits until <paramref name="condition"/> holds, for a settlement that runs on the thread
+    /// pool.</summary>
+    public static async Task Eventually(Func<bool> condition, string what)
+    {
+        var wait = Stopwatch.StartNew();
+        while (!condition())
+        {
+            Assert.True(wait.Elapsed < DrainLimit, $"Timed out waiting for {what}.");
+            await Task.Delay(10);
+        }
+    }
+
+    /// <summary>The reply of the blocking native decode, which no member calls: a regression check that it
+    /// gives the same text as the stream that every decode member uses.</summary>
+    public static unsafe string NativeBlockingDecode(LiteRtSession session)
+    {
+        session.EnterCall();
+        bool referenced = false;
+        try
+        {
+            session.Handle.DangerousAddRef(ref referenced);
+            nint responses;
+            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_session_run_decode(session.Handle.Ptr, &responses),
+                nameof(LiteRtLmNative.litert_lm_session_run_decode));
+            try
+            {
+                nuint count;
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_responses_get_num_candidates(responses, &count),
+                    nameof(LiteRtLmNative.litert_lm_responses_get_num_candidates));
+                Assert.Equal((nuint)1, count);
+                nint text;
+                NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_responses_get_response_text_at(responses, 0, &text),
+                    nameof(LiteRtLmNative.litert_lm_responses_get_response_text_at));
+                return System.Runtime.InteropServices.Marshal.PtrToStringUTF8(text) ?? "";
+            }
+            finally
+            {
+                LiteRtLmNative.litert_lm_responses_delete(responses);
+            }
+        }
+        finally
+        {
+            if (referenced)
+                session.Handle.DangerousRelease();
+            session.ExitCall();
+        }
+    }
+}
+
+/// <summary>
+/// The session decode on a model, on one shared engine with a 1024-token context: the decode members against a
+/// conversation and against each other, a cut reply continued on a new session, cancels, the output cap,
+/// disposal during a stream, a conversation on the same engine, and UTF-8. The asserts are about the binding;
+/// where a test needs the model to do something, a skip guards that precondition.
+/// </summary>
+[Collection(SessionEngineCollection.Name)]
+public sealed class SessionDecodeModelTests(SessionEngineFixture fixture, ITestOutputHelper output)
+{
+    private static readonly string[] OraclePrompts =
+    [
+        "Explain in three sentences why the sky is blue.",
+        "Explica en tres frases cómo funciona un volcán.",
+    ];
+
+    private LiteRtEngine Engine
+    {
+        get
+        {
+            Skip.If(fixture.Engine is null, SessionModelHelpers.SkipReason);
+            return fixture.Engine;
+        }
+    }
+
+    private async Task<string> ConversationReply(string user)
+    {
+        using LiteRtConversation conversation = Engine.CreateConversation(
+            new LiteRtConversationOptions { Sampler = SessionDecodeHelpers.Argmax, MaxOutputTokens = 400 });
+        return await SessionDecodeHelpers.SendWithin(conversation, user);
+    }
+
+    /// <summary>A session that prefills the conversation's rendered turn and decodes gives the conversation's
+    /// reply byte for byte (measured equal on LiteRT-LM v0.20.0, win-x64, CPU and GPU).</summary>
+    [SkippableFact]
+    public async Task Decode_OfTheRenderedTurn_EqualsTheConversationReply()
+    {
+        LiteRtEngine engine = Engine;
+        foreach (string user in OraclePrompts)
+        {
+            string expected = await ConversationReply(user);
+            using LiteRtSession session = SessionDecodeHelpers.Session(engine, 400);
+            session.Prefill(SessionDecodeHelpers.Prompt(engine, user));
+            string reply = await SessionDecodeHelpers.DecodeWithin(session);
+            output.WriteLine($"conversation: {expected}\nsession:      {reply}");
+
+            Assert.Equal(LiteRtSessionState.Decoded, session.State);
+            Assert.False(session.IsCallInProgress);
+            if (SessionDecodeHelpers.SameBytesMeasured)
+                Assert.Equal(expected, reply);
+            else
+                Assert.False(string.IsNullOrWhiteSpace(reply));
+        }
+    }
+
+    /// <summary><see cref="LiteRtSession.Decode"/>, <see cref="LiteRtSession.DecodeAsync"/> and the concatenated
+    /// stream give the same text where the decode paths were measured to give the same bytes, and so does the
+    /// runtime's blocking decode, which no member calls (measured equal on LiteRT-LM v0.20.0, win-x64, CPU and
+    /// GPU).</summary>
+    [SkippableFact]
+    public async Task DecodeMembers_AndTheNativeBlockingDecode_GiveTheSameText()
+    {
+        LiteRtEngine engine = Engine;
+        string prompt = SessionDecodeHelpers.Prompt(engine, "Describe a sunrise in Spanish and in Japanese, one sentence each.");
+
+        async Task<string> Run(Func<LiteRtSession, Task<string>> decode)
+        {
+            using LiteRtSession session = SessionDecodeHelpers.Session(engine, 48);
+            session.Prefill(prompt);
+            string text = await decode(session);
+            Assert.Equal(LiteRtSessionState.Decoded, session.State);
+            return text;
+        }
+
+        string blocking = await Run(SessionDecodeHelpers.DecodeWithin);
+        string async = await Run(s => s.DecodeAsync().WaitAsync(SessionDecodeHelpers.DrainLimit));
+        string streamed = await Run(async s => string.Concat(await SessionDecodeHelpers.StreamWithin(s)));
+        string native;
+        using (LiteRtSession session = SessionDecodeHelpers.Session(engine, 48))
+        {
+            session.Prefill(prompt);
+            native = await Task.Run(() => SessionDecodeHelpers.NativeBlockingDecode(session)).WaitAsync(SessionDecodeHelpers.DrainLimit);
+        }
+        output.WriteLine($"Decode: {blocking}\nnative: {native}");
+
+        Assert.False(string.IsNullOrEmpty(blocking));
+        Assert.False(string.IsNullOrEmpty(streamed));
+        if (SessionDecodeHelpers.SameBytesMeasured)
+        {
+            Assert.Equal(blocking, streamed);
+            Assert.Equal(blocking, async);
+            Assert.Equal(blocking, native);
+        }
+    }
+
+    /// <summary>A conversation stream cut at a chunk boundary continues on a new session prefilled with the
+    /// rendered turn and the partial reply. On CPU on win-x64 the joined text equals the uncut reply byte for
+    /// byte (measured on LiteRT-LM v0.20.0); on GPU it was measured to differ, and elsewhere it was not measured,
+    /// so only the end state is asserted there.</summary>
+    [SkippableFact]
+    public async Task CutReply_ContinuedOnANewSession_CompletesTheReply()
+    {
+        LiteRtEngine engine = Engine;
+        string user = OraclePrompts[0];
+        var conversationOptions = new LiteRtConversationOptions { Sampler = SessionDecodeHelpers.Argmax, MaxOutputTokens = 400 };
+
+        var full = new List<string>();
+        using (LiteRtConversation conversation = engine.CreateConversation(conversationOptions))
+        {
+            await Task.Run(async () =>
+            {
+                await foreach (LiteRtStreamChunk chunk in conversation.SendStreamingAsync(user))
+                    if (chunk.Kind == LiteRtStreamChunkKind.Answer)
+                        full.Add(chunk.Text);
+            }).WaitAsync(SessionDecodeHelpers.DrainLimit);
+        }
+        Skip.If(full.Count < 6, $"The reply has {full.Count} pieces, too few to cut.");
+        int cut = full.Count / 3;
+        // The continuation gets its own cap of 400, so it ends where the uncut reply ended only when that reply
+        // ended by itself, not at its cap. Re-tokenizing the text can differ by a few tokens.
+        int fullTokens = engine.Tokenize(string.Concat(full)).Length;
+        bool endedByItself = fullTokens < 400 - 8;
+
+        var partial = new StringBuilder();
+        using (LiteRtConversation conversation = engine.CreateConversation(conversationOptions))
+        {
+            int taken = 0;
+            await Task.Run(async () =>
+            {
+                await foreach (LiteRtStreamChunk chunk in conversation.SendStreamingAsync(user))
+                {
+                    if (chunk.Kind != LiteRtStreamChunkKind.Answer)
+                        continue;
+                    partial.Append(chunk.Text);
+                    if (++taken == cut)
+                        break;
+                }
+            }).WaitAsync(SessionDecodeHelpers.DrainLimit);
+        }
+
+        using LiteRtSession session = SessionDecodeHelpers.Session(engine, 400);
+        session.Prefill(SessionDecodeHelpers.Prompt(engine, user) + partial);
+        string continued = await SessionDecodeHelpers.DecodeWithin(session);
+        output.WriteLine($"uncut: {fullTokens} tokens\npartial: {partial}\ncontinued: {continued}");
+
+        Assert.Equal(LiteRtSessionState.Decoded, session.State);
+        Assert.False(string.IsNullOrEmpty(continued));
+        if (SessionDecodeHelpers.IsCpu && SessionDecodeHelpers.SameBytesMeasured && endedByItself)
+            Assert.Equal(string.Concat(full), partial + continued);
+    }
+
+    /// <summary>The token of <see cref="LiteRtSession.DecodeAsync"/>, cancelled once the decode runs, cancels the
+    /// reply: the task throws <see cref="OperationCanceledException"/> and the session is Cancelled and refuses
+    /// every member. That the runtime stops is checked by the stream tests, which see the pieces; this member
+    /// shares their cancel path.</summary>
+    [SkippableFact]
+    public async Task DecodeAsync_TokenCancel_EndsCancelled()
+    {
+        LiteRtEngine engine = Engine;
+        string prompt = SessionDecodeHelpers.Prompt(engine, SessionDecodeHelpers.CountPrompt);
+        using LiteRtSession session = SessionDecodeHelpers.Session(engine, SessionDecodeHelpers.CancelCap);
+        session.Prefill(prompt);
+        using var cts = new CancellationTokenSource();
+        // The decode has started when the call returns, so the cancel comes during the decode, never before it.
+        Task<string> decode = session.DecodeAsync(cts.Token);
+        cts.Cancel();
+        Exception? error = await Record.ExceptionAsync(() => decode.WaitAsync(SessionDecodeHelpers.DrainLimit));
+        Assert.False(session.IsCallInProgress);
+        if (session.State == LiteRtSessionState.Decoded)
+        {
+            // The token fires as the reply starts, so the session can end Decoded only with a reply that ends
+            // within the margin of the stream tests. A longer full reply means that the token did not reach the
+            // decode.
+            int full = await SessionDecodeHelpers.FullReplyPieces(engine, prompt);
+            Assert.True(full <= SessionDecodeHelpers.MaxPiecesAfterCancel,
+                $"The session is Decoded and the full reply has {full} pieces: the token did not cancel the decode.");
+        }
+        Skip.If(error is null && session.State == LiteRtSessionState.Decoded, "The reply ended before the token fired.");
+        var ex = Assert.IsAssignableFrom<OperationCanceledException>(error);
+        Assert.Equal(cts.Token, ex.CancellationToken);
+        Skip.If(session.State == LiteRtSessionState.Decoded, "The reply ended before the cancel reached the runtime.");
+        await SessionDecodeHelpers.AssertAcceptsOnlyDispose(session, LiteRtSessionState.Cancelled);
+    }
+
+    /// <summary>The stream's token, cancelled in the loop body, stops the runtime within a few pieces, ends the
+    /// stream with <see cref="OperationCanceledException"/>, and leaves the session Cancelled.</summary>
+    [SkippableFact]
+    public async Task Stream_TokenCancel_EndsCancelled()
+    {
+        LiteRtEngine engine = Engine;
+        using LiteRtSession session = SessionDecodeHelpers.Session(engine, SessionDecodeHelpers.CancelCap);
+        session.Prefill(SessionDecodeHelpers.Prompt(engine, SessionDecodeHelpers.CountPrompt));
+        using var cts = new CancellationTokenSource();
+        const int RequestAt = 3;
+        int requestedAt = 0, total = 0;
+        Exception? error = await Record.ExceptionAsync(() => SessionDecodeHelpers.StreamWithin(session, cts.Token, count =>
+        {
+            total = count;
+            if (count == RequestAt)
+            {
+                requestedAt = count;
+                cts.Cancel();
+            }
+            return true;
+        }));
+        output.WriteLine($"cancel requested at piece {requestedAt}, {total} pieces, state {session.State}");
+        Assert.False(session.IsCallInProgress);
+        Skip.If(requestedAt == 0, $"The reply ended before piece {RequestAt}, so the token was not cancelled.");
+        SessionDecodeHelpers.AssertStoppedAfterTheRequest(requestedAt, total);
+        // A decode that settled before the token fired has nothing left to cancel.
+        Skip.If(error is null && session.State == LiteRtSessionState.Decoded, "The reply ended before the token fired.");
+        Assert.IsAssignableFrom<OperationCanceledException>(error);
+        Skip.If(session.State == LiteRtSessionState.Decoded, "The reply ended by itself right after the request.");
+        await SessionDecodeHelpers.AssertAcceptsOnlyDispose(session, LiteRtSessionState.Cancelled);
+    }
+
+    /// <summary>A stream left with <c>break</c> before its end cancels the decode: the enumerator's disposal waits
+    /// for the runtime, so the session is already Cancelled and free when the loop is left.</summary>
+    [SkippableFact]
+    public async Task Stream_LeftWithBreak_EndsCancelled()
+    {
+        LiteRtEngine engine = Engine;
+        string prompt = SessionDecodeHelpers.Prompt(engine, SessionDecodeHelpers.CountPrompt);
+        using LiteRtSession session = SessionDecodeHelpers.Session(engine, SessionDecodeHelpers.CancelCap);
+        session.Prefill(prompt);
+        List<string> pieces = await SessionDecodeHelpers.StreamWithin(session, onPiece: count => count < 2);
+        Assert.False(session.IsCallInProgress);
+        Skip.If(pieces.Count < 2, "The reply ended before its second piece, so the loop was not left early.");
+        if (session.State == LiteRtSessionState.Decoded)
+        {
+            // A reply that ends by itself within the margin after the break ends Decoded. A longer full reply
+            // means that the break did not cancel the decode.
+            int full = await SessionDecodeHelpers.FullReplyPieces(engine, prompt);
+            Assert.True(full - pieces.Count <= SessionDecodeHelpers.MaxPiecesAfterCancel,
+                $"The session is Decoded after a break at piece {pieces.Count}, and the full reply has {full} pieces: " +
+                "the break did not cancel the decode.");
+        }
+        Skip.If(session.State == LiteRtSessionState.Decoded, "The reply ended before the cancel reached the runtime.");
+        await SessionDecodeHelpers.AssertAcceptsOnlyDispose(session, LiteRtSessionState.Cancelled);
+    }
+
+    /// <summary><see cref="LiteRtSessionOptions.MaxOutputTokens"/> caps the reply, which ends Decoded without an
+    /// error, and the session then accepts the next turn: a prefill and a decode that ends.</summary>
+    [SkippableFact]
+    public async Task MaxOutputTokens_CapsTheReply_AndTheNextTurnRuns()
+    {
+        LiteRtEngine engine = Engine;
+        const int Cap = 8;
+        string prompt = SessionDecodeHelpers.Prompt(engine, SessionDecodeHelpers.CountPrompt);
+        int uncappedTokens;
+        using (LiteRtSession reference = SessionDecodeHelpers.Session(engine, 4 * Cap))
+        {
+            reference.Prefill(prompt);
+            uncappedTokens = engine.Tokenize(await SessionDecodeHelpers.DecodeWithin(reference)).Length;
+        }
+
+        using LiteRtSession session = SessionDecodeHelpers.Session(engine, Cap);
+        session.Prefill(prompt);
+        string reply = await SessionDecodeHelpers.DecodeWithin(session);
+        int tokens = engine.Tokenize(reply).Length;
+        output.WriteLine($"{tokens} tokens: {reply} (reply with a cap of {4 * Cap}: {uncappedTokens} tokens)");
+        Assert.Equal(LiteRtSessionState.Decoded, session.State);
+
+        // The turn after a capped reply: the prefill and the decode must both end, and the decode must reply.
+        // A capped reply holds no position for the end of the model's turn, and the measured next-turn text
+        // still gave the replies of a conversation after it.
+        await session.PrefillAsync(SessionDecodeHelpers.NextTurn("Name one color."))
+            .WaitAsync(SessionDecodeHelpers.DrainLimit);
+        Assert.Equal(LiteRtSessionState.Prefilled, session.State);
+        string next = await SessionDecodeHelpers.DecodeWithin(session);
+        output.WriteLine($"next turn: {next}");
+        Assert.Equal(LiteRtSessionState.Decoded, session.State);
+        Assert.False(string.IsNullOrEmpty(next));
+
+        // Only a reply that runs past the cap shows the cap at work. Re-tokenizing the text can merge or split
+        // tokens at the edges, so allow a small margin.
+        Skip.If(uncappedTokens <= Cap + 2, $"The reply ends by itself within {uncappedTokens} tokens.");
+        Assert.InRange(tokens, Cap - 2, Cap + 2);
+    }
+
+    /// <summary>A <see cref="LiteRtSession.Dispose"/> in the read loop cancels the decode: the runtime stops within
+    /// a few pieces, the stream throws <see cref="ObjectDisposedException"/>, and the native session is deleted
+    /// when the decode settles.</summary>
+    [SkippableFact]
+    public async Task Dispose_InsideTheReadLoop_EndsTheStream()
+    {
+        LiteRtEngine engine = Engine;
+        using LiteRtSession session = SessionDecodeHelpers.Session(engine, SessionDecodeHelpers.CancelCap);
+        session.Prefill(SessionDecodeHelpers.Prompt(engine, SessionDecodeHelpers.CountPrompt));
+        const int DisposeAt = 2;
+        int disposedAt = 0, total = 0;
+        Exception? error = await Record.ExceptionAsync(() => SessionDecodeHelpers.StreamWithin(session, onPiece: count =>
+        {
+            total = count;
+            if (count == DisposeAt)
+            {
+                disposedAt = count;
+                session.Dispose();
+            }
+            return true;
+        }));
+        output.WriteLine($"disposed at piece {disposedAt}, {total} pieces, outcome {error?.GetType().Name ?? "completed"}, state {session.State}");
+        Assert.False(session.IsCallInProgress);
+        Skip.If(disposedAt == 0, $"The reply ended before piece {DisposeAt}, so the session was not disposed during it.");
+        SessionDecodeHelpers.AssertNativeSessionDeleted(session);
+        Assert.Throws<ObjectDisposedException>(() => session.Prefill("Hello"));
+        SessionDecodeHelpers.AssertStoppedAfterTheRequest(disposedAt, total);
+        Skip.If(error is null && session.State == LiteRtSessionState.Decoded, "The reply ended by itself right after the request.");
+        Assert.IsType<ObjectDisposedException>(error);
+        Assert.Equal(LiteRtSessionState.Cancelled, session.State);
+    }
+
+    /// <summary>A <see cref="LiteRtSession.Dispose"/> from another thread during a stream returns without waiting
+    /// for the decode, the runtime stops within a few pieces, and the stream ends with
+    /// <see cref="ObjectDisposedException"/>.</summary>
+    [SkippableFact]
+    public async Task Dispose_FromAnotherThreadDuringAStream_EndsTheStream()
+    {
+        LiteRtEngine engine = Engine;
+        using LiteRtSession session = SessionDecodeHelpers.Session(engine, SessionDecodeHelpers.CancelCap);
+        session.Prefill(SessionDecodeHelpers.Prompt(engine, SessionDecodeHelpers.CountPrompt));
+        var firstPiece = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int seen = 0;
+        Task<List<string>> reader = SessionDecodeHelpers.StreamWithin(session, onPiece: count =>
+        {
+            Volatile.Write(ref seen, count);
+            firstPiece.TrySetResult();
+            return true;
+        });
+        await firstPiece.Task.WaitAsync(SessionDecodeHelpers.DrainLimit);
+        int disposedAt = 0;
+        bool busyAfterDispose = false;
+        var dispose = new Stopwatch();
+        await Task.Run(() =>
+        {
+            disposedAt = Volatile.Read(ref seen);
+            dispose.Start();
+            session.Dispose();
+            dispose.Stop();
+            // Read at once: a Dispose that does not wait returns while the decode still holds the gate.
+            busyAfterDispose = session.IsCallInProgress;
+        });
+        Exception? error = await Record.ExceptionAsync(() => reader);
+        int total = Volatile.Read(ref seen);
+        output.WriteLine($"dispose {dispose.Elapsed.TotalMilliseconds:F1} ms at piece {disposedAt}, {total} pieces, " +
+                         $"outcome {error?.GetType().Name ?? "completed"}, state {session.State}");
+        Assert.False(session.IsCallInProgress);
+        SessionDecodeHelpers.AssertNativeSessionDeleted(session);
+        SessionDecodeHelpers.AssertStoppedAfterTheRequest(disposedAt, total);
+        Skip.If(error is null && session.State == LiteRtSessionState.Decoded, "The reply ended by itself right after the request.");
+        Assert.True(busyAfterDispose, "The decode had ended when Dispose returned: Dispose waited for the decode.");
+        Assert.IsType<ObjectDisposedException>(error);
+        Assert.Equal(LiteRtSessionState.Cancelled, session.State);
+    }
+
+    /// <summary>A <see cref="LiteRtSession.Dispose"/> from another thread during the blocking
+    /// <see cref="LiteRtSession.Decode"/> cancels it: Decode throws <see cref="ObjectDisposedException"/>, the
+    /// session is Cancelled, and the native session is deleted when the decode settles.</summary>
+    [SkippableFact]
+    public async Task Dispose_FromAnotherThreadDuringABlockingDecode_EndsTheDecode()
+    {
+        LiteRtEngine engine = Engine;
+        using LiteRtSession session = SessionDecodeHelpers.Session(engine, SessionDecodeHelpers.CancelCap);
+        session.Prefill(SessionDecodeHelpers.Prompt(engine, SessionDecodeHelpers.CountPrompt));
+        Task<string> decode = Task.Run(session.Decode);
+        await SessionDecodeHelpers.Eventually(() => session.IsCallInProgress || decode.IsCompleted, "the decode to start");
+        // Past the checks of the call and into the native decode, which the count prompt keeps running.
+        await Task.Delay(20);
+        session.Dispose();
+        Exception? error = await Record.ExceptionAsync(() => decode.WaitAsync(SessionDecodeHelpers.DrainLimit));
+        output.WriteLine($"outcome {error?.GetType().Name ?? "completed"}, state {session.State}");
+        Assert.False(session.IsCallInProgress);
+        SessionDecodeHelpers.AssertNativeSessionDeleted(session);
+        Skip.If(error is ObjectDisposedException && session.State == LiteRtSessionState.Prefilled,
+            "The session was disposed before the decode started.");
+        Skip.If(error is null && session.State == LiteRtSessionState.Decoded, "The reply ended before the cancel reached the runtime.");
+        Assert.IsType<ObjectDisposedException>(error);
+        Assert.Equal(LiteRtSessionState.Cancelled, session.State);
+    }
+
+    /// <summary>A session and a conversation used in turn on one engine keep their own replies: each equals its run
+    /// alone (measured equal on LiteRT-LM v0.20.0, win-x64, CPU and GPU, with calls one after another).</summary>
+    [SkippableFact]
+    public async Task SessionAndConversation_Interleaved_KeepTheirOwnReplies()
+    {
+        LiteRtEngine engine = Engine;
+        const string SessionUser = "List five kinds of fruit, one per line.";
+        const string First = "My code word is TANGERINE. Reply OK.", Second = "What is my code word? One word.";
+        var conversationOptions = new LiteRtConversationOptions { Sampler = SessionDecodeHelpers.Argmax, MaxOutputTokens = 32 };
+        string prompt = SessionDecodeHelpers.Prompt(engine, SessionUser);
+
+        string sessionAlone;
+        using (LiteRtSession alone = SessionDecodeHelpers.Session(engine, 96))
+        {
+            alone.Prefill(prompt);
+            sessionAlone = await SessionDecodeHelpers.DecodeWithin(alone);
+        }
+        string firstAlone, secondAlone;
+        using (LiteRtConversation alone = engine.CreateConversation(conversationOptions))
+        {
+            firstAlone = await SessionDecodeHelpers.SendWithin(alone, First);
+            secondAlone = await SessionDecodeHelpers.SendWithin(alone, Second);
+        }
+
+        using LiteRtConversation conversation = engine.CreateConversation(conversationOptions);
+        using LiteRtSession session = SessionDecodeHelpers.Session(engine, 96);
+        session.Prefill(prompt);
+        string first = await SessionDecodeHelpers.SendWithin(conversation, First);
+        string sessionReply = await SessionDecodeHelpers.DecodeWithin(session);
+        string second = await SessionDecodeHelpers.SendWithin(conversation, Second);
+        output.WriteLine($"session: {sessionReply}\nconversation: {first} / {second}");
+
+        Assert.Equal(LiteRtSessionState.Decoded, session.State);
+        if (SessionDecodeHelpers.SameBytesMeasured)
+        {
+            Assert.Equal(sessionAlone, sessionReply);
+            Assert.Equal(firstAlone, first);
+            Assert.Equal(secondAlone, second);
+        }
+        else
+        {
+            Assert.False(string.IsNullOrWhiteSpace(sessionReply));
+            Assert.False(string.IsNullOrWhiteSpace(second));
+        }
+    }
+
+    /// <summary>A streamed reply with accented letters, CJK and emoji arrives as whole characters: no piece holds
+    /// U+FFFD or a lone surrogate, and where the decode paths were measured to give the same bytes, the pieces join to
+    /// the blocking decode's text.</summary>
+    [SkippableFact]
+    public async Task Stream_OfMultibyteText_HasNoBrokenCharacters()
+    {
+        LiteRtEngine engine = Engine;
+        string prompt = SessionDecodeHelpers.Prompt(engine,
+            "Repeat this text exactly, with nothing else: Café, niño, señal. 日本語のテキスト。中文文本。😀👍🎉");
+        List<string> pieces;
+        using (LiteRtSession session = SessionDecodeHelpers.Session(engine, 64))
+        {
+            session.Prefill(prompt);
+            pieces = await SessionDecodeHelpers.StreamWithin(session);
+            Assert.Equal(LiteRtSessionState.Decoded, session.State);
+        }
+        string text = string.Concat(pieces);
+        output.WriteLine($"{pieces.Count} pieces: {text}");
+        Skip.If(!text.Any(c => c > 0x7F), "The model answered with ASCII text only.");
+
+        const char Replacement = (char)0xFFFD;
+        foreach (string piece in pieces)
+        {
+            Assert.DoesNotContain(Replacement, piece);
+            Assert.False(char.IsLowSurrogate(piece[0]), $"A piece starts with a lone low surrogate: {piece}");
+            Assert.False(char.IsHighSurrogate(piece[^1]), $"A piece ends with a lone high surrogate: {piece}");
+        }
+
+        using LiteRtSession blocking = SessionDecodeHelpers.Session(engine, 64);
+        blocking.Prefill(prompt);
+        string whole = await SessionDecodeHelpers.DecodeWithin(blocking);
+        Assert.DoesNotContain(Replacement, whole);
+        if (SessionDecodeHelpers.SameBytesMeasured)
+            Assert.Equal(whole, text);
+    }
+}
+
+/// <summary>
+/// Session decode lifetime against its engine, on engines these tests load themselves (one live engine at a
+/// time): a stream whose enumerator is dropped, and an engine disposed before its session during and after a
+/// decode. <see cref="LiteRtEngine.LiveEngineCount"/> shows when the native engine is deleted.
+/// </summary>
+public sealed class SessionDecodeLifetimeModelTests(ITestOutputHelper output)
+{
+    /// <summary>A stream whose enumerator is dropped without disposal still settles: the decode runs to its end
+    /// and frees the gate. A second dropped stream, then <see cref="LiteRtSession.Dispose"/>, settles too, and the
+    /// native session and engine are deleted.</summary>
+    [SkippableFact]
+    public async Task Stream_DroppedWithoutDisposal_StillSettles()
+    {
+        LiteRtEngineOptions? options = SessionModelHelpers.Options();
+        Skip.If(options is null, SessionModelHelpers.SkipReason);
+        int before = LiteRtEngine.LiveEngineCount;
+        // Every object is disposed on every path, so that a failure here does not keep the native engine alive
+        // and refuse the engine loads of the later tests.
+        using LiteRtEngine engine = LiteRtEngine.Load(options);
+        string shortPrompt = SessionDecodeHelpers.Prompt(engine, "Say hello in five words.");
+        string longPrompt = SessionDecodeHelpers.Prompt(engine, SessionDecodeHelpers.CountPrompt);
+        using LiteRtSession runsToItsEnd = SessionDecodeHelpers.Session(engine, 16);
+        using LiteRtSession disposedWhileRunning = SessionDecodeHelpers.Session(engine, 200);
+        engine.Dispose();
+        Assert.Equal(before + 1, LiteRtEngine.LiveEngineCount);
+
+        runsToItsEnd.Prefill(shortPrompt);
+        await StartAndDrop(runsToItsEnd);
+        await SessionDecodeHelpers.Eventually(() => !runsToItsEnd.IsCallInProgress, "the dropped stream to settle");
+        Assert.Equal(LiteRtSessionState.Decoded, runsToItsEnd.State);
+        runsToItsEnd.Dispose();
+        SessionDecodeHelpers.AssertNativeSessionDeleted(runsToItsEnd);
+
+        disposedWhileRunning.Prefill(longPrompt);
+        await StartAndDrop(disposedWhileRunning);
+        disposedWhileRunning.Dispose();
+        await SessionDecodeHelpers.Eventually(() => !disposedWhileRunning.IsCallInProgress, "the disposed stream to settle");
+        output.WriteLine($"dropped then disposed: {disposedWhileRunning.State}");
+        Assert.True(disposedWhileRunning.State is LiteRtSessionState.Cancelled or LiteRtSessionState.Decoded,
+            $"Unexpected state {disposedWhileRunning.State}.");
+        SessionDecodeHelpers.AssertNativeSessionDeleted(disposedWhileRunning);
+        await SessionDecodeHelpers.Eventually(() => LiteRtEngine.LiveEngineCount == before, "the native engine to be deleted");
+    }
+
+    /// <summary>Starts a stream, reads one piece, and drops the enumerator without disposing it.</summary>
+    private static async Task StartAndDrop(LiteRtSession session)
+    {
+        IAsyncEnumerator<string> enumerator = session.DecodeStreamingAsync().GetAsyncEnumerator();
+        Assert.True(await enumerator.MoveNextAsync().AsTask().WaitAsync(SessionDecodeHelpers.DrainLimit));
+        Assert.True(session.IsCallInProgress || session.State != LiteRtSessionState.Prefilled);
+    }
+
+    /// <summary>The engine disposed during a stream does not stop it, and the session decodes again afterwards;
+    /// the native engine is deleted only when the session is disposed.</summary>
+    [SkippableFact]
+    public async Task Engine_DisposedDuringAndAfterADecode_TheSessionKeepsWorking()
+    {
+        LiteRtEngineOptions? options = SessionModelHelpers.Options();
+        Skip.If(options is null, SessionModelHelpers.SkipReason);
+        int before = LiteRtEngine.LiveEngineCount;
+        // Disposed on every path, as in the test above.
+        using LiteRtEngine engine = LiteRtEngine.Load(options);
+        string prompt = SessionDecodeHelpers.Prompt(engine, "Name three primary colors, separated by commas.");
+        using LiteRtSession session = SessionDecodeHelpers.Session(engine, 24);
+        session.Prefill(prompt);
+
+        List<string> pieces = await SessionDecodeHelpers.StreamWithin(session, onPiece: count =>
+        {
+            if (count == 1)
+                engine.Dispose();
+            return true;
+        });
+        Assert.NotEmpty(pieces);
+        Assert.Equal(LiteRtSessionState.Decoded, session.State);
+        Assert.Equal(before + 1, LiteRtEngine.LiveEngineCount);
+
+        session.Prefill(SessionDecodeHelpers.NextTurn("Name one more color."));
+        await SessionDecodeHelpers.DecodeWithin(session);
+        Assert.Equal(LiteRtSessionState.Decoded, session.State);
+        Assert.Equal(before + 1, LiteRtEngine.LiveEngineCount);
+
+        session.Dispose();
+        Assert.Equal(before, LiteRtEngine.LiveEngineCount);
+    }
+}

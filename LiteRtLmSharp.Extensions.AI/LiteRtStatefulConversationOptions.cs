@@ -69,24 +69,19 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// <para>
 /// The checkpoint is a second native conversation outside <see cref="MaxLiveConversations"/>. On text conversations
 /// it costs no measurable time or memory until it is used; inline attachments are copied once per checkpoint, which
-/// a file-path attachment avoids. A rollback does not remove earlier reasoning from the KV cache
-/// (<see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/>).
+/// a file-path attachment avoids. On the GPU, a rollback was not cheaper than a replay. With LiteRT-LM v0.20.0
+/// (win-x64, gemma-4 E2B), once the original conversation had generated, as it has in a turn that is rolled back,
+/// the first send on its checkpoint took as long as a <see cref="LiteRtConversationOptions.History"/> restore of
+/// the same conversation, or longer.
 /// </para>
 /// <para>
-/// <b>Re-sending the cut message.</b> The client appends a zero-width space (U+200B) to a message that repeats
-/// the one rolled back, one more each time it is cut again, so the reply can differ from the one the model would
-/// otherwise give. On the GPU backend (LiteRT-LM v0.18.0 and v0.19.0), a checkpoint's first send that repeats that
-/// message word for word, after another conversation generated, otherwise gets a wrong or empty reply with no
-/// error. A fork inherits this. A first send on a <see cref="LiteRtConversationBranching.ForkAsync"/> branch has
-/// the same problem when it repeats a message the parent or a sibling branch sent after the fork; the client does
-/// not change those.
+/// The runtime removes the thinking from the KV cache right after each reply, so a checkpoint taken after a reply
+/// with thinking does not hold that reasoning, and a rollback leaves no earlier reasoning in the context. This was
+/// measured on the CPU with LiteRT-LM v0.20.0 and gemma-4 E2B; the GPU was not measured.
 /// </para>
 /// <para>
 /// Disposing the client disposes all live conversations. There is no time-based expiry in this mode — size
 /// the cap for your concurrency.
-/// (Multiple live conversations require native LiteRT-LM v0.15.0+: earlier runtimes silently lost a
-/// suspended conversation's state when another advanced, and this mode was hard-limited to one live
-/// conversation until the fix shipped.)
 /// </para>
 /// <para>
 /// <b>Token usage.</b> <see cref="ChatResponse.Usage"/>'s <see cref="UsageDetails.TotalTokenCount"/> is the
@@ -98,12 +93,16 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// approaches the engine's <see cref="LiteRtEngineOptions.MaxNumTokens"/> — watch
 /// <see cref="UsageDetails.TotalTokenCount"/> against it. Load the engine with an <b>explicit</b>
 /// <c>MaxNumTokens</c> to arm the binding's KV overflow guard: replies are clamped to the remaining context
-/// and a send on a full conversation throws <see cref="LiteRtContextOverflowException"/> instead of
-/// corrupting the native runtime (unguarded, the overflow crashes the process on a later call). A reply that
-/// filled the context carries <see cref="ChatFinishReason.Length"/> <b>in the same turn</b> (deliberately
-/// overriding <see cref="ChatFinishReason.ToolCalls"/> — a full conversation cannot be continued, so treat
-/// <c>Length</c> as "this thread is over"). A "message doesn't fit" rejection happens before any native
-/// work and <b>keeps the live conversation resumable</b> — retry the id with a shorter message; a "context
+/// and a send on a full conversation throws <see cref="LiteRtContextOverflowException"/> instead of reaching
+/// the runtime (unguarded, the runtime rejects it, and a rejected prefill leaves the conversation failing every
+/// later send; LiteRT-LM v0.20.0, win-x64, gemma-4 E2B, CPU and GPU). A reply that
+/// the guard cut at the context limit carries <see cref="ChatFinishReason.Length"/> <b>in the same turn</b>
+/// (deliberately overriding <see cref="ChatFinishReason.ToolCalls"/>). Usually the context is then full and the
+/// thread is over. After a reply with thinking, the runtime removes the thinking from the KV cache, so the
+/// context has room again and the thread can continue; <see cref="UsageDetails.TotalTokenCount"/> shows how much
+/// of the context is in use. A "message doesn't fit" rejection happens before any native
+/// work and <b>keeps the live conversation resumable</b> — retry the id with a shorter message (a new
+/// conversation whose first message does not fit is not kept, because the request returned no id); a "context
 /// is full" rejection evicts it, so resuming its id throws <see cref="ArgumentException"/> and you start a new
 /// conversation, summarizing or trimming what must carry over. The exception is a send of tool results whose turn
 /// has a checkpoint with room: the turn rolls back and the id stays valid.
@@ -124,9 +123,11 @@ public sealed record LiteRtStatefulConversationOptions
     /// count. On a model with a dynamic context such as gemma-4 E2B, that state grows with the tokens the
     /// conversation has used, up to the engine's <see cref="LiteRtEngineOptions.MaxNumTokens"/>: measured on
     /// LiteRT-LM v0.18.0, a conversation of 2,300 tokens holds about 36 MB on a desktop CPU and 60 to 100 MB on
-    /// a desktop GPU. A model with a static context keeps a full-size cache for every live conversation. On
-    /// memory-constrained (mobile) devices size the cap deliberately, and lower it (e.g. 1-2) where memory is
-    /// tighter than concurrency.
+    /// a desktop GPU. A model with a static context keeps a full-size cache for every live conversation, so keep
+    /// few live conversations with such models. On the GPU, running out of memory this way did not fail cleanly:
+    /// with Ministral 3 3B (a static 4,096-token context) on a 10 GB GPU and LiteRT-LM v0.20.0, the fourth live
+    /// conversation of about 2,300 tokens ended the process. On memory-constrained (mobile) devices size the cap
+    /// deliberately, and lower it (e.g. 1-2) where memory is tighter than concurrency.
     /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">The value is less than 1.</exception>
     public int MaxLiveConversations

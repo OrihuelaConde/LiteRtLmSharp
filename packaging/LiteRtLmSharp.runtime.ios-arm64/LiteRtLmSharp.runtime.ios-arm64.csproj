@@ -17,7 +17,7 @@
     <NoWarn>$(NoWarn);NU5128</NoWarn>
 
     <PackageId>LiteRtLmSharp.runtime.ios-arm64</PackageId>
-    <Description>Native LiteRT-LM runtime (iOS) for LiteRtLmSharp: Google's official CLiteRTLM.xcframework injected via NativeReference (CPU backend). PREVIEW: build/link is validated in CI, but on-device execution is not yet validated — not for production until a hardware-validated release. Official LiteRT-LM $(LiteRtLmVersion) prebuilt. $(LiteRtLmDisclaimer)</Description>
+    <Description>Native LiteRT-LM runtime (iOS) for LiteRtLmSharp: Google's official CLiteRTLM.xcframework injected via NativeReference (CPU backend; the framework links Metal, which was not run on a device). PREVIEW: build/link is validated in CI, but on-device execution is not yet validated — not for production until a hardware-validated release. Official LiteRT-LM $(LiteRtLmVersion) prebuilt. $(LiteRtLmDisclaimer)</Description>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 

@@ -4,12 +4,16 @@
       href: chat.md
     - name: Embeddings
       href: embeddings.md
+    - name: Download and update models
+      href: model-sync.md
     - name: Microsoft.Extensions.AI (IChatClient)
       href: extensions-ai.md
     - name: Semantic Kernel
       href: semantic-kernel.md
     - name: Conversation state — restore & clone
       href: conversation-state.md
+    - name: Sessions — raw prefill & decode
+      href: sessions.md
     - name: Engine tuning
       href: engine-tuning.md
     - name: Speculative decoding

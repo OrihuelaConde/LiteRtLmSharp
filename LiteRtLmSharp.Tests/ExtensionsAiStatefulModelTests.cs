@@ -2,6 +2,7 @@ using System.Text.Json;
 using LiteRtLmSharp.Extensions.AI;
 using Microsoft.Extensions.AI;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace LiteRtLmSharp.Tests;
 
@@ -12,7 +13,7 @@ namespace LiteRtLmSharp.Tests;
 /// Each test loads and disposes its own engine — assembly parallelization is disabled (AssemblyInfo.cs), so
 /// they run serially and never have two engines alive at once.
 /// </summary>
-public sealed class ExtensionsAiStatefulModelTests
+public sealed class ExtensionsAiStatefulModelTests(ITestOutputHelper output)
 {
     private static string? Model => Environment.GetEnvironmentVariable("LITERTLM_TEST_MODEL");
     private static string Backend => Environment.GetEnvironmentVariable("LITERTLM_TEST_BACKEND") ?? "cpu";
@@ -132,6 +133,12 @@ public sealed class ExtensionsAiStatefulModelTests
 
     private const string CountPrompt = "Count upward starting from 400, one number per line, and never stop.";
 
+    // Under constrained decoding, LiteRT-LM v0.20.0 can end a text reply at its first line break (it depends on
+    // the machine), so the cut of a constrained conversation counts on one line to keep generating past the
+    // cancellation.
+    private const string SingleLineCountPrompt =
+        "Count upward starting from 400, separated by commas on a single line, and never stop.";
+
     /// <summary>
     /// A cancelled continuation keeps its <c>ConversationId</c>: the client rolls the conversation back to the
     /// checkpoint it took before the turn, so the next request on the same id continues from the turn before the
@@ -196,8 +203,7 @@ public sealed class ExtensionsAiStatefulModelTests
             new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = id })).Text;
 
         // Each send on a checkpoint words its message differently from what the conversations it shares state with
-        // already sent: on the GPU backend (LiteRT-LM v0.18.0), a first send on a clone that repeats such a message
-        // word for word, after another conversation generated, gets a wrong reply.
+        // already sent, so this test checks the kept state only. The next two tests re-send a message word for word.
         await CutTurnAsync(client, a);
         Assert.Contains("COBALT", await Ask(b, "What is my code word? One word."), StringComparison.OrdinalIgnoreCase);
         await CutTurnAsync(client, a, "Count upward starting from 700, one number per line, and never stop.");
@@ -208,9 +214,12 @@ public sealed class ExtensionsAiStatefulModelTests
     }
 
     /// <summary>
-    /// Re-sending the cut message on the checkpoint, after another conversation generated, gets a real reply. On
-    /// the GPU backend the runtime answers a checkpoint's first send that repeats the message word for word with
-    /// a wrong or empty reply, so the client changes the repeated message, also when the retry is cut again.
+    /// Re-sending the cut message word for word on the checkpoint, after another conversation generated, gets the
+    /// reply a fresh conversation with the same history gets, also after the message was cut twice. The client
+    /// sends the message as it is. Only a GPU backend discriminates: on LiteRT-LM v0.18.0 (win-x64 WebGPU) the
+    /// reply continued the other conversation instead ("COBAL", then "401", "402", and so on), with no error.
+    /// No CI leg has a GPU where that reproduced, so run this test and the next one on a win-x64 GPU before
+    /// moving to another native version.
     /// </summary>
     [SkippableFact]
     public async Task Stateful_ResendingACutMessage_GetsARealReply_AfterAnotherConversationGenerated()
@@ -221,6 +230,7 @@ public sealed class ExtensionsAiStatefulModelTests
         using var engine = LiteRtEngine.Load(Options());
         using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
         var greedy = new ChatOptions { TopK = 1, MaxOutputTokens = 32 };
+        string fresh = await FreshReplyToTheCountPromptAsync(client);
 
         string a = (await client.GetResponseAsync(
             [new ChatMessage(ChatRole.User, "Remember: my code word is TANGERINE. Reply OK.")], greedy)).ConversationId!;
@@ -239,13 +249,15 @@ public sealed class ExtensionsAiStatefulModelTests
         ChatResponse retry = await client.GetResponseAsync(
             [new ChatMessage(ChatRole.User, CountPrompt)],
             new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = a });
-        Assert.Contains("400", retry.Text, StringComparison.Ordinal);
-        Assert.Contains("401", retry.Text, StringComparison.Ordinal);
+        AssertTheFreshReply(fresh, retry.Text);
     }
 
     /// <summary>
-    /// A fork taken after a rollback inherits what the rollback left behind: re-sending the cut message on the
-    /// branch, after another conversation generated, gets a real reply on the GPU backend too.
+    /// A fork taken after a rollback re-sends the cut message word for word, after another conversation generated,
+    /// and gets the reply a fresh conversation with the same history gets. Only a GPU backend discriminates: on
+    /// LiteRT-LM v0.18.0 (win-x64 WebGPU), sent as it is, the message got a reply that continued the other
+    /// conversation instead ("COBAL", then "401", "402", and so on), with no error. Run it on a win-x64 GPU before
+    /// moving to another native version, as the previous test.
     /// </summary>
     [SkippableFact]
     public async Task Stateful_ForkAfterARollback_GetsARealReply_WhenItResendsTheCutMessage()
@@ -257,6 +269,7 @@ public sealed class ExtensionsAiStatefulModelTests
         using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions());
         var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
         var greedy = new ChatOptions { TopK = 1, MaxOutputTokens = 32 };
+        string fresh = await FreshReplyToTheCountPromptAsync(client);
 
         string a = (await client.GetResponseAsync(
             [new ChatMessage(ChatRole.User, "Remember: my code word is TANGERINE. Reply OK.")], greedy)).ConversationId!;
@@ -272,8 +285,34 @@ public sealed class ExtensionsAiStatefulModelTests
         ChatResponse retry = await client.GetResponseAsync(
             [new ChatMessage(ChatRole.User, CountPrompt)],
             new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = fork });
-        Assert.Contains("400", retry.Text, StringComparison.Ordinal);
-        Assert.Contains("401", retry.Text, StringComparison.Ordinal);
+        AssertTheFreshReply(fresh, retry.Text);
+    }
+
+    /// <summary>The count prompt's reply on a fresh stateful conversation that holds only the TANGERINE turn, which
+    /// is the history of the conversation the re-send tests cut.</summary>
+    private static async Task<string> FreshReplyToTheCountPromptAsync(LiteRtChatClient client)
+    {
+        string id = (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Remember: my code word is TANGERINE. Reply OK.")],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32 })).ConversationId!;
+        return (await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, CountPrompt)],
+            new ChatOptions { TopK = 1, MaxOutputTokens = 32, ConversationId = id })).Text;
+    }
+
+    private void AssertTheFreshReply(string fresh, string retry)
+    {
+        output.WriteLine($"Fresh conversation: {JsonSerializer.Serialize(fresh)}");
+        output.WriteLine($"Re-sent message:    {JsonSerializer.Serialize(retry)}");
+        Assert.Contains("400", retry, StringComparison.Ordinal);
+        Assert.Contains("401", retry, StringComparison.Ordinal);
+        // Equality was measured on win-x64 only (CPU, and the WebGPU backend). A difference on another backend is
+        // either the runtime defect these tests pin or a backend that does not decode greedily byte for byte.
+        Assert.True(fresh == retry,
+            "The re-sent message's reply differs from a fresh conversation's. Either the runtime again mixes in " +
+            "the other conversation's state, or this backend's greedy decode differs on the clone-and-rollback " +
+            "path: re-send the cut message on a checkpoint clone while no other conversation generates in between. " +
+            "If that reply also differs from the fresh one, the cause is the backend's numerics, not mixed state.");
     }
 
     /// <summary>
@@ -329,8 +368,12 @@ public sealed class ExtensionsAiStatefulModelTests
             [new ChatMessage(ChatRole.User, "Write one short sentence about the sea.")],
             new ChatOptions { TopK = 1, MaxOutputTokens = 48, ConversationId = id }))
         {
-            // Creating a conversation waits for the generation in flight, so the reply has ended after this.
+            // Creating a conversation waits for the generation in flight, so the reply has ended after this. The
+            // final chunk's callback runs just after that, so the pause lets it arrive before the break. The
+            // pause is a margin, not a guarantee: a callback that runs later than 200 ms makes the break cut the
+            // stream, and the asserts below fail.
             using LiteRtConversation waited = engine.CreateConversation();
+            await Task.Delay(200);
             break;
         }
 
@@ -354,7 +397,12 @@ public sealed class ExtensionsAiStatefulModelTests
         using var engine = LiteRtEngine.Load(Options());
         using var client = new LiteRtChatClient(
             engine,
-            optionsTemplate: new LiteRtConversationOptions { EnableConstrainedDecoding = true },
+            // The flag reaches the runtime only on a conversation with tools.
+            optionsTemplate: new LiteRtConversationOptions
+            {
+                EnableConstrainedDecoding = true,
+                Tools = [new LiteRtTool("get_weather", "Gets the weather of a city.", """{"type":"object","properties":{"city":{"type":"string"}}}""")],
+            },
             statefulConversations: new LiteRtStatefulConversationOptions());
 
         string id = (await client.GetResponseAsync(
@@ -362,7 +410,7 @@ public sealed class ExtensionsAiStatefulModelTests
             new ChatOptions { TopK = 1, MaxOutputTokens = 16 })).ConversationId!;
         Assert.True(client.Store!.Get(id)!.CloneIsSlow);
 
-        await CutTurnAsync(client, id);
+        await CutTurnAsync(client, id, SingleLineCountPrompt);
 
         var gone = await Assert.ThrowsAsync<ArgumentException>(() => client.GetResponseAsync(
             [new ChatMessage(ChatRole.User, "hi")], new ChatOptions { MaxOutputTokens = 8, ConversationId = id }));
@@ -382,7 +430,12 @@ public sealed class ExtensionsAiStatefulModelTests
         using var engine = LiteRtEngine.Load(Options());
         using var client = new LiteRtChatClient(
             engine,
-            optionsTemplate: new LiteRtConversationOptions { EnableConstrainedDecoding = true },
+            // The flag reaches the runtime only on a conversation with tools.
+            optionsTemplate: new LiteRtConversationOptions
+            {
+                EnableConstrainedDecoding = true,
+                Tools = [new LiteRtTool("get_weather", "Gets the weather of a city.", """{"type":"object","properties":{"city":{"type":"string"}}}""")],
+            },
             statefulConversations: new LiteRtStatefulConversationOptions { CheckpointConstrainedConversations = true });
 
         string id = (await client.GetResponseAsync(
@@ -390,7 +443,7 @@ public sealed class ExtensionsAiStatefulModelTests
             new ChatOptions { TopK = 1, MaxOutputTokens = 16 })).ConversationId!;
         int beforeTurn = client.Store!.Get(id)!.Conversation.TokenCount;
 
-        await CutTurnAsync(client, id);
+        await CutTurnAsync(client, id, SingleLineCountPrompt);
 
         Assert.Equal(beforeTurn, client.Store!.Get(id)!.Conversation.TokenCount);
         ChatResponse recall = await client.GetResponseAsync(
@@ -691,8 +744,9 @@ public sealed class ExtensionsAiStatefulModelTests
             name: "get_weather", description: "Gets the current weather for a given city.");
 
         // The template arms the provider on every conversation, so the schema continuation below can
-        // be enforced. NOTE: no EnableConstrainedDecoding here — provider and the tool-calling
-        // constrained mode are mutually exclusive; tools still work without it.
+        // be enforced. NOTE: no EnableConstrainedDecoding here — the binding does not combine the
+        // tool-calling constrained mode with a provider on one conversation (the binding's rule, not a
+        // native one); tools still work without it.
         using IChatClient client = new LiteRtChatClient(engine,
                 optionsTemplate: new LiteRtConversationOptions { ConstraintProvider = LiteRtConstraintProvider.LlGuidance },
                 statefulConversations: new LiteRtStatefulConversationOptions())
@@ -766,10 +820,7 @@ public sealed class ExtensionsAiStatefulModelTests
 
     // ─────────────────────── Forking + multi-conversation ───────────────────────
     //
-    // These tests exercise the multi-live-conversation / forking surface, unlocked with the v0.15.0
-    // repin: the native runtime now preserves a suspended conversation's state when another advances
-    // (verified by the Upstream_..._Sentinel canary below and the interleave recall tests here). They
-    // were parked behind LITERTLM_TEST_MULTICONV=1 from 2026-07-10 until that fix shipped.
+    // These tests exercise the multi-live-conversation / forking surface.
 
     /// <summary><c>GetService(typeof(LiteRtConversationBranching))</c> returns a branching instance in the
     /// stateful mode and <c>null</c> in the stateless mode; the standard <see cref="ChatClientMetadata"/> and
@@ -888,8 +939,8 @@ public sealed class ExtensionsAiStatefulModelTests
             "Set LITERTLM_TEST_MODEL to a .litertlm file to run.");
 
         using var engine = LiteRtEngine.Load(Options());
-        // Capacity exactly 2 (via the internal seam) so the third live conversation evicts the LRU — the
-        // parked multi-conversation machinery under test.
+        // Capacity exactly 2 (MaxLiveConversations) so the third live conversation evicts the LRU — the
+        // multi-conversation machinery under test.
         using var client = new LiteRtChatClient(engine, statefulConversations: new LiteRtStatefulConversationOptions { MaxLiveConversations = 2 });
         var branching = (LiteRtConversationBranching)client.GetService(typeof(LiteRtConversationBranching))!;
 

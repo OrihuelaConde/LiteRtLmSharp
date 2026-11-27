@@ -296,9 +296,10 @@ internal static class LiteRtChatMapping
     /// rather than the conversation-level session config. The client creates a fresh conversation per call, so
     /// the two scopes are behaviorally identical for the output cap; per-send is the more faithful mapping and
     /// avoids allocating a session config when the output cap is the only option set. This is safe for the
-    /// multimodal encoder side effect: a multimodal engine forces the session config into existence regardless
-    /// (see <c>LiteRtConversation.Create</c>'s <c>engineIsMultimodal</c> branch), so dropping the output cap
-    /// from these options can never flip that behavior; the per-send cap likewise never creates a session config.
+    /// multimodal encoders: the vision executor loads for any conversation created with a conversation config, and
+    /// a multimodal engine forces a conversation config into existence regardless (see
+    /// <c>LiteRtConversation.Create</c>'s <c>engineIsMultimodal</c> branch), so dropping the output cap from these
+    /// options can never flip that behavior; the per-send cap likewise never creates a session config.
     /// </para>
     /// </remarks>
     public static LiteRtConversationOptions? ToConversationOptions(
@@ -312,6 +313,11 @@ internal static class LiteRtChatMapping
         // "Present" for tools = ChatOptions carries tools; then ToTools honors ToolMode (None → no tools, and it
         // does NOT fall back to the template). Only a request with no tools at all uses the template's tools.
         IReadOnlyList<LiteRtTool>? tools = options?.Tools is { Count: > 0 } ? ToTools(options) : template?.Tools;
+        // The tool-calling constraint has no tool calls to constrain without tools. With LiteRT-LM v0.20.0, a text
+        // reply of a conversation with EnableConstrainedDecoding and no tools could end at its first line break
+        // (measured; the cause is not known), so a request without tools does not set it.
+        if (tools is not { Count: > 0 })
+            constrained = false;
 
         // System message: the per-request system message (a leading System turn in history) wins; the template's
         // SystemMessage is used only when the request carries none — guaranteeing there are never two system
@@ -343,19 +349,19 @@ internal static class LiteRtChatMapping
 
         if (hasSchemaFormat)
         {
-            // Schema-constrained sampling masks EVERY generated token to schema-conforming
-            // continuations, so the model cannot produce the tool-call format — combining the two
-            // silently breaks tool calling. Reject it in MEAI vocabulary rather than let it
-            // misbehave (unlike OpenAI-style providers, this runtime cannot scope the schema to the
-            // final answer only).
+            // The binding's rule: a schema ResponseFormat is not combined with tools. In the one send
+            // measured with tools and a regex constraint (LiteRT-LM v0.20.0, CPU, gemma-4 E2B), the
+            // reply was plain text and no tool call. Reject the combination in MEAI vocabulary rather
+            // than let tool calling silently fail.
             if (tools is { Count: > 0 })
                 throw new ArgumentException(
                     "A JSON-schema ChatOptions.ResponseFormat cannot be combined with ChatOptions.Tools on " +
                     "this provider: the schema is enforced during sampling for the whole reply, which makes " +
                     "emitting a tool call impossible. Run the tool phase without the ResponseFormat, then " +
                     "request the schema-formatted answer in a separate call.", nameof(options));
-            // Tool-calling constrained decoding is meaningless without tools and mutually exclusive
-            // with the LlGuidance provider at the native level — the schema request wins.
+            // Tool-calling constrained decoding is meaningless without tools, and this binding does not
+            // combine it with the LlGuidance provider (the binding's rule, not a native one): the
+            // schema request wins.
             constrained = false;
         }
 
@@ -424,7 +430,7 @@ internal static class LiteRtChatMapping
         int maxOutput = options?.MaxOutputTokens ?? 0;
 
         // MEAI's FrequencyPenalty / PresencePenalty are the OpenAI-style subtractive penalties — the
-        // exact semantics of the native repetition-penalty config's matching fields (v0.15.0+).
+        // exact semantics of the native repetition-penalty config's matching fields.
         LiteRtRepetitionPenaltyOptions? penalties =
             options is { FrequencyPenalty: not null } or { PresencePenalty: not null }
                 ? new LiteRtRepetitionPenaltyOptions
@@ -457,13 +463,12 @@ internal static class LiteRtChatMapping
     }
 
     /// <summary>
-    /// Maps a JSON-schema <see cref="ChatOptions.ResponseFormat"/> to a native LlGuidance constraint
-    /// (v0.15.0+): the schema is enforced during sampling, so the reply is guaranteed to be a
+    /// Maps a JSON-schema <see cref="ChatOptions.ResponseFormat"/> to a native LlGuidance constraint:
+    /// the schema is enforced during sampling, so the reply is guaranteed to be a
     /// conforming JSON document — real structured output, not prompt hope. Schema-less
     /// <see cref="ChatResponseFormatJson"/> ("JSON mode") and text format map to <c>null</c>
-    /// (unconstrained): without a schema there is nothing precise to enforce, and the pre-v0.15.0
-    /// behavior (prompt-driven) is preserved. In stateful mode the constraint requires the
-    /// conversation to have the provider from its first call (see <see cref="ToConversationOptions"/>).
+    /// (unconstrained, prompt-driven): without a schema there is nothing precise to enforce. In stateful
+    /// mode the constraint requires the conversation to have the provider from its first call (see <see cref="ToConversationOptions"/>).
     /// </summary>
     internal static LiteRtConstraint? ToConstraint(ChatOptions? options) =>
         options?.ResponseFormat is ChatResponseFormatJson { Schema: { } schema }
@@ -511,7 +516,8 @@ internal static class LiteRtChatMapping
 
     /// <summary>
     /// Maps the function tools in <see cref="ChatOptions.Tools"/> to native <see cref="LiteRtTool"/>s (non-function
-    /// tools are ignored), honoring <see cref="ChatOptions.ToolMode"/>. The native API has no tool-choice flag, so:
+    /// tools are ignored), honoring <see cref="ChatOptions.ToolMode"/>. The binding does not use the native
+    /// <c>tool_choice</c> setting, which does not force a call (see <see cref="RequiredToolInstruction"/>), so:
     /// <see cref="NoneChatToolMode"/> advertises <b>no</b> tools (emulating "none" — the model can't call what it
     /// isn't given); a <see cref="RequiredChatToolMode"/> naming a function advertises <b>only</b> that one (so the
     /// model's only option is the required tool). Returns <c>null</c> when there are no tools to advertise.
@@ -539,9 +545,10 @@ internal static class LiteRtChatMapping
 
     /// <summary>
     /// The best-effort instruction to add for a <see cref="RequiredChatToolMode"/> request, or <c>null</c> for
-    /// Auto/None. The native API has no forced tool choice (no equivalent of a server's <c>tool_choice: required</c>),
-    /// so "required" is approximated by instructing the model to call a tool. Paired with <see cref="ToTools"/>
-    /// offering only the named function, this nudges — but does not guarantee — a tool call.
+    /// Auto/None. The native <c>tool_choice</c> setting does not force a call: with LiteRT-LM v0.20.0 the runtime
+    /// accepts and ignores every value without constrained decoding, and with constrained decoding it rejects every
+    /// value but <c>auto</c>. So "required" is approximated by instructing the model to call a tool. Paired with
+    /// <see cref="ToTools"/> offering only the named function, this nudges — but does not guarantee — a tool call.
     /// </summary>
     public static string? RequiredToolInstruction(ChatOptions? o)
     {
@@ -592,18 +599,26 @@ internal static class LiteRtChatMapping
 
     /// <summary>
     /// Builds the token <see cref="UsageDetails"/> for a completed turn. <paramref name="totalTokens"/> (the
-    /// conversation's KV-cache size = prompt + reply, from <see cref="LiteRtConversation.TokenCount"/>) is always
-    /// set, at no cost. The input/output split (<see cref="UsageDetails.InputTokenCount"/> /
+    /// conversation's KV-cache size after the reply, from <see cref="LiteRtConversation.TokenCount"/>) is always
+    /// set, at no cost. After a reply with thinking it leaves the thinking out, because the runtime removes it
+    /// from the KV cache, so it can be lower than the input count plus the output count, which includes the
+    /// thinking. The input/output split (<see cref="UsageDetails.InputTokenCount"/> /
     /// <see cref="UsageDetails.OutputTokenCount"/>) is taken from <paramref name="benchmark"/> when present — which
     /// requires the engine to have been loaded with <see cref="LiteRtEngineOptions.EnableBenchmark"/> = <c>true</c>;
     /// when it is <c>null</c> those stay <c>null</c> (the caller leaves <see cref="UsageBenchmarkNote"/> nearby).
+    /// The input count is the prefill of the send's own message
+    /// (<see cref="LiteRtBenchmarkInfo.LastSendPrefillTokenCount"/>), not the KV-cache refill the runtime records
+    /// as a later prefill turn after a reply with thinking.
     /// </summary>
     public static UsageDetails BuildUsage(int totalTokens, LiteRtBenchmarkInfo? benchmark)
     {
         var usage = new UsageDetails { TotalTokenCount = totalTokens };
         if (benchmark is not null)
         {
-            usage.InputTokenCount = benchmark.LastPrefillTokenCount;
+            // A send always prefills at least one token, so 0 means a benchmark built without the value.
+            usage.InputTokenCount = benchmark.LastSendPrefillTokenCount > 0
+                ? benchmark.LastSendPrefillTokenCount
+                : benchmark.LastPrefillTokenCount;
             usage.OutputTokenCount = benchmark.LastDecodeTokenCount;
         }
         return usage;
@@ -623,7 +638,7 @@ internal static class LiteRtChatMapping
             TopP = o.TopP ?? defaults.TopP,
             Temperature = o.Temperature ?? defaults.Temperature,
             // ChatOptions.Seed is a long?; the native seed is an int. Unset falls back to the
-            // cross-binding default (0, deterministic) like every official LiteRT-LM binding.
+            // binding's default seed (0, deterministic), the value the official Python wrapper also fills in.
             Seed = o.Seed is { } seed ? unchecked((int)seed) : defaults.Seed,
         };
     }

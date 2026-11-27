@@ -7,9 +7,8 @@ namespace LiteRtLmSharp;
 /// conversation's configuration unchanged.
 /// </summary>
 /// <remarks>
-/// This is also the growth point for per-send settings future native versions add (e.g. a per-send
-/// output-token cap), so they can land without changing the send signatures. Maps to the C API's
-/// per-send <c>conversation_optional_args</c>.
+/// This record is also where new per-send settings of the native API are added, so they can land without
+/// changing the send signatures. Maps to the C API's per-send <c>conversation_optional_args</c>.
 /// </remarks>
 public sealed record LiteRtSendOptions
 {
@@ -32,19 +31,19 @@ public sealed record LiteRtSendOptions
     /// underlying decode cap as the conversation-level setting, applied at per-send granularity: the
     /// native runtime resolves the effective cap as the per-send value when present, otherwise the
     /// session's value (session_advanced.cc). Unlike the conversation-level setting, it does not create a
-    /// session config, so it never changes multimodal encoder loading.
+    /// session config.
     /// </remarks>
     public int MaxOutputTokens { get; init; }
 
     /// <summary>
     /// Repetition penalties (multiplicative and/or subtractive) applied to this send's decode.
-    /// <c>null</c> (default) = none. Requires native LiteRT-LM v0.15.0+.
+    /// <c>null</c> (default) = none.
     /// </summary>
     public LiteRtRepetitionPenaltyOptions? RepetitionPenalties { get; init; }
 
     /// <summary>
     /// Bans this send's decode from repeating n-grams it already produced. <c>null</c> (default) =
-    /// no ban. Requires native LiteRT-LM v0.15.0+.
+    /// no ban.
     /// </summary>
     public LiteRtNoRepeatNgramOptions? NoRepeatNgram { get; init; }
 
@@ -56,7 +55,6 @@ public sealed record LiteRtSendOptions
     /// (note most words tokenize differently with/without a leading space). The list is copied at
     /// initialization (later mutation of the source list has no effect) and ids must be
     /// non-negative; out-of-vocabulary ids are ignored by the native layer (bounds-checked there).
-    /// Requires native LiteRT-LM v0.15.0+.
     /// </summary>
     /// <exception cref="System.ArgumentOutOfRangeException">Any id is negative.</exception>
     public IReadOnlyList<int>? SuppressTokens
@@ -77,10 +75,10 @@ public sealed record LiteRtSendOptions
     }
 
     /// <summary>
-    /// Per-send thinking override: <c>true</c>/<c>false</c> turns the model's reasoning mode on/off
-    /// for this send only, overriding the conversation-level
-    /// <see cref="LiteRtConversationOptions.EnableThinking"/>. <c>null</c> (default) = inherit the
-    /// conversation-level value. Requires native LiteRT-LM v0.15.0+.
+    /// Per-send thinking override for this send only, over the conversation-level
+    /// <see cref="LiteRtConversationOptions.EnableThinking"/>: <c>false</c> turns the model's reasoning off.
+    /// <c>true</c> turns it on only on the conversation's first send with Gemma 4 (see remarks).
+    /// <c>null</c> (default) = inherit the conversation-level value.
     /// </summary>
     /// <remarks>
     /// The native per-send thinking config replaces the conversation-level one wholesale, so the
@@ -88,6 +86,22 @@ public sealed record LiteRtSendOptions
     /// is built (a raw <c>enable_thinking</c> key set only via
     /// <see cref="LiteRtConversationOptions.ExtraContext"/> is not visible to this composition —
     /// prefer the typed <see cref="LiteRtConversationOptions.EnableThinking"/>).
+    /// <para>Gemma 4's chat template switches thinking on in the system turn, which the runtime prefills with the
+    /// conversation's first send, so on a later send the runtime alone does not change the mode. For <c>false</c>,
+    /// the binding also suppresses the token that opens the thinking channel when the model's tokenizer has it
+    /// (<c>&lt;|channel&gt;</c>).</para>
+    /// <para>Measured on LiteRT-LM v0.20.0, gemma-4 E2B, argmax, CPU and GPU:</para>
+    /// <list type="bullet">
+    /// <item>After a first reply with thinking, a text follow-up with <c>false</c> answers without thinking, also with
+    /// <see cref="LiteRtConversationOptions.EnableConstrainedDecoding"/> or
+    /// <see cref="LiteRtConversationOptions.EnableSpeculativeDecoding"/> on. The next send without options thinks
+    /// again; this was measured with neither option and with speculative decoding, not with constrained decoding. A
+    /// streamed follow-up was measured on CPU only.</item>
+    /// <item>After a first reply with thinking, a send of tool results with <c>false</c>, a follow-up with <c>false</c> that calls a tool, and a
+    /// follow-up with <c>false</c> and a regex or JSON-schema <see cref="Constraint"/> did not think without the
+    /// suppression either; the suppression gave the same reply.</item>
+    /// <item><c>true</c> on a later send of a conversation whose first send did not think gives no thinking.</item>
+    /// </list>
     /// </remarks>
     public bool? EnableThinking { get; init; }
 
@@ -99,7 +113,6 @@ public sealed record LiteRtSendOptions
     /// (default) = inherit the conversation-level value; <c>-1</c> = explicitly infinite; <c>0</c>
     /// is treated by the native layer as "no budget". A budget on a send whose effective
     /// <see cref="EnableThinking"/> is unset at both levels implies thinking ON for that send.
-    /// Requires native LiteRT-LM v0.15.0+.
     /// </summary>
     /// <exception cref="System.ArgumentOutOfRangeException">The value is negative and not -1.</exception>
     public int? ThinkingTokenBudget
@@ -117,14 +130,13 @@ public sealed record LiteRtSendOptions
     /// Output constraint (regex / JSON Schema) enforced during this send's sampling. Requires the
     /// conversation to have been created with
     /// <see cref="LiteRtConversationOptions.ConstraintProvider"/> set — without a provider the send
-    /// throws <see cref="LiteRtException"/>. <c>null</c> (default) = unconstrained. Requires native
-    /// LiteRT-LM v0.15.0+.
+    /// throws <see cref="LiteRtException"/>. <c>null</c> (default) = unconstrained.
     /// </summary>
     /// <remarks>
-    /// The constraint masks <b>every</b> generated token to pattern-conforming continuations, so on a
-    /// conversation with <see cref="LiteRtConversationOptions.Tools"/> a constrained send cannot emit
-    /// a tool call — the model is forced into the pattern instead. Constrain only the sends whose
-    /// reply must match the pattern; run tool rounds unconstrained.
+    /// Constrain only the sends whose reply must match the pattern, and run tool rounds unconstrained. On a
+    /// conversation with <see cref="LiteRtConversationOptions.Tools"/>, the one constrained send measured
+    /// (a regex constraint; LiteRT-LM v0.20.0, win-x64, CPU, gemma-4 E2B) answered with text and no tool
+    /// call.
     /// </remarks>
     public LiteRtConstraint? Constraint { get; init; }
 }

@@ -4,43 +4,101 @@ using System.Text;
 namespace LiteRtLmSharp.Native;
 
 /// <summary>
-/// Reads the LiteRT-LM C API's error report (native v0.18.0+, <c>c/error_reporter.h</c>): the canonical
-/// status code and message that the last <i>failing</i> call left on the calling thread, so a failed native
-/// call surfaces the runtime's own reason instead of a bare "returned null".
+/// Turns a failed LiteRT-LM C API call into a <see cref="LiteRtException"/> that carries the status the call
+/// returned and the reason the runtime recorded (<c>c/error_reporter.h</c>), so a failure surfaces the
+/// runtime's own words instead of a bare status.
 /// </summary>
 /// <remarks>
-/// The native contract is errno-style: the report is thread-local, it is set only on failure (a successful
-/// call never clears it), and the message belongs to the library until the next failure or clear on that
-/// thread. The binding therefore (1) clears the slot right before a call it may need to diagnose, so a
-/// report can never be a stale one left by an earlier, unrelated failure; (2) decides failure from the
-/// call's own return value, never from the report; and (3) reads the report on the same thread right after
-/// the failing call, then clears it, which also frees the message on long-lived thread-pool threads. Every
-/// diagnosed call site is synchronous on one thread: the blocking sends that the async APIs move to the
-/// thread pool move there as a whole, read included.
+/// Every C API function that can fail returns a <c>LiteRtLmStatusCode</c>, which the declarations type as
+/// <see cref="LiteRtStatusCode"/> (the values match). A non-OK status also leaves a message on the calling
+/// thread, readable with <c>litert_lm_get_last_error_message</c> until the next failure or clear on that
+/// thread; a successful call never touches it. The binding therefore (1) decides failure from the returned
+/// status, never from the message; (2) reads the message on the same thread right after the failing call,
+/// then clears it, which also frees it on long-lived thread-pool threads; and (3) does not clear the message
+/// before a call, because every failure overwrites it and the message is only read after a failure. Every
+/// call site is synchronous on one thread: the blocking sends that the async APIs move to the thread pool
+/// move there as a whole, read included. A failure the binding maps to a value instead of an exception
+/// calls <see cref="Clear"/> so the slot stays empty.
 /// </remarks>
 internal static class NativeError
 {
-    /// <summary>Clears the calling thread's report before a call that may need diagnosing.</summary>
+    /// <summary>Clears the calling thread's message, for a failure the binding maps to a value instead of
+    /// reporting it.</summary>
     internal static void Clear() => LiteRtLmNative.litert_lm_clear_last_error();
 
-    /// <summary>Reads and clears the calling thread's report; <c>null</c> when the runtime recorded none.</summary>
-    internal static (LiteRtStatusCode Code, string Message)? Take()
+    /// <summary>
+    /// Throws a <see cref="LiteRtException"/> when <paramref name="status"/> is not OK. The message is
+    /// "<paramref name="function"/> failed", then the status and the runtime's reason, then
+    /// <paramref name="hint"/> when given.
+    /// </summary>
+    internal static void ThrowIfFailed(LiteRtStatusCode status, string function, string? hint = null)
     {
-        int code = LiteRtLmNative.litert_lm_get_last_error_code();
-        string? message = Marshal.PtrToStringUTF8(LiteRtLmNative.litert_lm_get_last_error_message());
-        LiteRtLmNative.litert_lm_clear_last_error();
-        if (code == 0 && string.IsNullOrEmpty(message))
-            return null;
+        if (status != LiteRtStatusCode.Ok)
+            throw Exception(status, $"{function} failed.", hint);
+    }
+
+    /// <summary>
+    /// Reads and clears the calling thread's message for a call that returned <paramref name="status"/>
+    /// (not OK). The code is the status itself, an unrecognized value read as
+    /// <see cref="LiteRtStatusCode.Unknown"/>; the message is the runtime's reason without the leading
+    /// code (see <see cref="Detail"/>), empty when it gave none.
+    /// </summary>
+    internal static (LiteRtStatusCode Code, string Message) Take(LiteRtStatusCode status)
+    {
         // The header freezes the canonical set but asks callers to read unrecognized values as Unknown, so a
         // binding built against this version stays correct with a newer native library.
-        var status = Enum.IsDefined((LiteRtStatusCode)code) ? (LiteRtStatusCode)code : LiteRtStatusCode.Unknown;
-        return (status, Detail(status, message));
+        LiteRtStatusCode code = Enum.IsDefined(status) ? status : LiteRtStatusCode.Unknown;
+        return (code, Detail(code, TakeMessage()));
+    }
+
+    private static string? TakeMessage()
+    {
+        string? message = Marshal.PtrToStringUTF8(LiteRtLmNative.litert_lm_get_last_error_message());
+        LiteRtLmNative.litert_lm_clear_last_error();
+        return message;
+    }
+
+    /// <summary>
+    /// Builds the exception for a call that returned <paramref name="status"/> (not OK). The message is
+    /// <paramref name="failure"/> (what failed), then the status and the runtime's reason;
+    /// <paramref name="fallbackHint"/> only when the runtime gave no reason (the binding's guess at the usual
+    /// causes); and <paramref name="hint"/> in both cases (guidance that stays useful next to the runtime's
+    /// reason).
+    /// </summary>
+    internal static LiteRtException Exception(
+        LiteRtStatusCode status, string failure, string? hint = null, string? fallbackHint = null)
+        => Build(failure, Take(status), hint, fallbackHint);
+
+    /// <summary>
+    /// Builds the exception like <see cref="Exception(LiteRtStatusCode, string, string?, string?)"/>, choosing
+    /// the guidance from the runtime's report, for hints that only fit some causes.
+    /// <paramref name="hintFor"/> receives <c>null</c> when the runtime gave no reason.
+    /// </summary>
+    internal static LiteRtException Exception(
+        LiteRtStatusCode status, string failure,
+        Func<(LiteRtStatusCode Code, string Message)?, string?> hintFor, string? fallbackHint = null)
+    {
+        var report = Take(status);
+        return Build(failure, report, hintFor(HasReason(report) ? report : null), fallbackHint);
+    }
+
+    /// <summary>
+    /// Builds the exception like the overload that takes <c>hintFor</c> and a fallback hint, with <paramref name="innerException"/> as its cause: a managed exception that made the native call fail,
+    /// such as one a callback caught and reported to the runtime as a status.
+    /// </summary>
+    internal static LiteRtException Exception(
+        LiteRtStatusCode status, string failure, Exception? innerException,
+        Func<(LiteRtStatusCode Code, string Message)?, string?> hintFor)
+    {
+        var report = Take(status);
+        return Build(failure, report, hintFor(HasReason(report) ? report : null), fallbackHint: null, innerException);
     }
 
     /// <summary>
     /// Reads a status the runtime delivered as text, such as the error string of a stream chunk
     /// (<c>"INVALID_ARGUMENT: reason"</c>): the status from its leading canonical name, and the detail
-    /// normalized like <see cref="Take"/>. <c>null</c> when the text starts with no canonical name.
+    /// normalized like <see cref="Take(LiteRtStatusCode)"/>. <c>null</c> when the text starts with no
+    /// canonical name.
     /// </summary>
     internal static (LiteRtStatusCode Code, string Message)? ParseStatusText(string text)
     {
@@ -55,9 +113,10 @@ internal static class NativeError
 
     /// <summary>
     /// The runtime's reason without the leading code, as one line; empty when it gave none. The runtime
-    /// stores the full absl status text (<c>"INVALID_ARGUMENT: Invalid magic number…"</c>), so the code is
-    /// dropped to avoid printing it twice. With the native log silenced (a level above 5, such as 1000),
-    /// LiteRT's status macros record no reason at all and the text is the bare <c>"INVALID_ARGUMENT: "</c>.
+    /// stores either the full absl status text (<c>"INVALID_ARGUMENT: Invalid magic number…"</c>) or a bare
+    /// reason (<c>"Unknown LiteRtLmLogSeverity."</c>); a leading code is dropped to avoid printing it twice.
+    /// With the native log silenced (a level above 5, such as 1000), LiteRT's status macros record no reason
+    /// at all and the text is the bare <c>"INVALID_ARGUMENT: "</c>.
     /// </summary>
     internal static string Detail(LiteRtStatusCode status, string? message)
     {
@@ -79,10 +138,11 @@ internal static class NativeError
     /// <remarks>
     /// Errors raised through LiteRT's status macros arrive as a call trace: one <c>ERROR: [path:line]</c>
     /// location per line, the lines after the first prefixed with <c>└</c>, and the reason, when there is
-    /// one, on the last line. A missing cache directory, for example, arrives as three lines
-    /// (<c>embedding_engine_impl.cc:402</c>, <c>embedding_engine_settings.cc:316</c>, then
+    /// one, on the last line. A missing embedding cache directory, for example, arrives as four lines
+    /// (<c>embedding_engine_impl.cc:1283</c>, <c>embedding_engine_impl.cc:480</c>,
+    /// <c>embedding_engine_settings.cc:346</c>, then
     /// <c>Cache directory does not exist or is not writable: …</c>) and reads as
-    /// "Cache directory does not exist or is not writable: … (at embedding_engine_settings.cc:316)". A trace
+    /// "Cache directory does not exist or is not writable: … (at embedding_engine_settings.cc:346)". A trace
     /// without a reason keeps only the innermost location. Other messages are returned unchanged.
     /// </remarks>
     internal static string Untrace(string message)
@@ -110,30 +170,9 @@ internal static class NativeError
     }
 
     /// <summary>
-    /// Builds the exception for a failed native call. The message is <paramref name="failure"/> (what
-    /// failed), then the runtime's status and message when it reported one; <paramref name="fallbackHint"/>
-    /// only when it reported nothing (the binding's guess at the usual causes); and <paramref name="hint"/>
-    /// in both cases (guidance that stays useful next to the runtime's reason).
-    /// </summary>
-    internal static LiteRtException Exception(string failure, string? hint = null, string? fallbackHint = null)
-        => Build(failure, Take(), hint, fallbackHint);
-
-    /// <summary>
-    /// Builds the exception like <see cref="Exception(string, string?, string?)"/>, choosing the guidance
-    /// from the runtime's report, for hints that only fit some causes. <paramref name="hintFor"/> receives
-    /// <c>null</c> when the runtime gave no reason (no report, or a status without detail).
-    /// </summary>
-    internal static LiteRtException Exception(
-        string failure, Func<(LiteRtStatusCode Code, string Message)?, string?> hintFor, string? fallbackHint = null)
-    {
-        var report = Take();
-        return Build(failure, report, hintFor(HasReason(report) ? report : null), fallbackHint);
-    }
-
-    /// <summary>
-    /// Builds the exception for a failure the runtime delivered as status text rather than through the
-    /// thread report, such as a stream chunk's error, so it carries the same status, one-line reason and
-    /// guidance as a failed blocking call.
+    /// Builds the exception for a failure the runtime delivered as status text rather than as a returned
+    /// status, such as a stream chunk's error, so it carries the same status, one-line reason and guidance
+    /// as a failed blocking call.
     /// </summary>
     internal static LiteRtException FromStatusText(
         string failure, string statusText, Func<(LiteRtStatusCode Code, string Message)?, string?> hintFor)
@@ -147,7 +186,8 @@ internal static class NativeError
     private static bool HasReason((LiteRtStatusCode Code, string Message)? report) => report is { Message.Length: > 0 };
 
     private static LiteRtException Build(
-        string failure, (LiteRtStatusCode Code, string Message)? report, string? hint, string? fallbackHint)
+        string failure, (LiteRtStatusCode Code, string Message)? report, string? hint, string? fallbackHint,
+        Exception? innerException = null)
     {
         var sb = new StringBuilder(failure.TrimEnd('.', ' '));
         if (report is { } r)
@@ -168,6 +208,10 @@ internal static class NativeError
             sb.Append(' ').Append(hint);
         }
         string message = sb.ToString();
+        if (innerException is not null)
+            return report is { } withInner
+                ? new LiteRtException(message, withInner.Code, innerException)
+                : new LiteRtException(message, innerException);
         return report is { } rep ? new LiteRtException(message, rep.Code) : new LiteRtException(message);
     }
 

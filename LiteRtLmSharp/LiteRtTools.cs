@@ -11,11 +11,10 @@ namespace LiteRtLmSharp;
 /// <c>{"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}</c>.
 /// </summary>
 /// <remarks>
-/// Names are sent to the model <b>verbatim</b>. Small on-device models are trained predominantly on
-/// <c>snake_case</c> tool and parameter names, and calling accuracy suffers with other conventions —
-/// prefer <c>get_weather</c> over <c>GetWeather</c>/<c>getWeather</c>. (Google's Kotlin binding
-/// converts camelCase to snake_case automatically for this reason; this binding keeps names
-/// as-authored, so the convention is the caller's responsibility.)
+/// Names are sent to the model <b>verbatim</b>: this binding does not convert them to another naming
+/// convention. On LiteRT-LM v0.20.0 (win-x64, CPU, gemma-4 E2B), the tool names <c>get_weather</c> and
+/// <c>getWeather</c> each gave 10 of 10 correct calls on 10 paraphrased prompts. Other models and
+/// conventions were not measured.
 /// </remarks>
 public sealed record LiteRtTool(string Name, string? Description, string ParametersJson)
 {
@@ -63,9 +62,15 @@ public sealed class LiteRtResponse
     /// <summary>
     /// The model's reasoning ("thinking") trace, separate from the final <see cref="Text"/> answer,
     /// or <c>null</c> when there is none. Convenience over <see cref="Channels"/> (the concatenation
-    /// of all channel content). Populated only when the conversation was created with
-    /// <see cref="LiteRtConversationOptions.EnableThinking"/> = true on a reasoning model.
+    /// of all channel content). Populated when reasoning is on for the reply, on a reasoning model.
     /// </summary>
+    /// <remarks>
+    /// On Gemma 4 the runtime keeps the thinking mode of the conversation's first send:
+    /// <see cref="LiteRtConversationOptions.EnableThinking"/> = true, or a per-send
+    /// <see cref="LiteRtSendOptions.EnableThinking"/> = true on that first send, turns it on (measured on
+    /// LiteRT-LM v0.20.0, gemma-4 E2B). For per-send values on later sends, see
+    /// <see cref="LiteRtSendOptions.EnableThinking"/>.
+    /// </remarks>
     public string? Thinking => Channels.Count == 0 ? null : string.Concat(Channels.Values);
 
     /// <summary>The raw response JSON from the engine.</summary>
@@ -151,8 +156,10 @@ public sealed class LiteRtResponse
         return map ?? EmptyChannels;
     }
 
-    // Gemma's chat template uses special tokens (e.g. <|"|>) as string delimiters; with constrained
-    // decoding they can leak into parsed tool-call arguments. Strip them so tools get clean values.
+    // Gemma's chat template uses special tokens (e.g. <|"|>) as string delimiters. On LiteRT-LM v0.20.0
+    // (gemma-4 E2B; on CPU with and without constrained decoding, and on GPU with constrained decoding),
+    // tool-call arguments arrived as clean JSON without them. The strip stays as protection in case a model
+    // emits them.
     private static string StripControlTokens(string s)
         => s.Replace("<|\"|>", string.Empty, StringComparison.Ordinal);
 
@@ -233,7 +240,7 @@ internal static class LiteRtJson
     /// <c>{"role":"user","content":[{"type":"text","text":…},{"type":"image","blob":&lt;base64&gt;}, …]}</c>.
     /// The text part comes first (omitted when empty), then each attachment in order — content-part
     /// order is preserved and the model sees the media where it appears. Inline bytes are emitted as a
-    /// base64 <c>"blob"</c>; a file-backed attachment as a <c>"path"</c> the native layer memory-maps.
+    /// base64 <c>"blob"</c>; a file-backed attachment as a <c>"path"</c> the native side opens itself.
     /// Falls back to the text-only <see cref="UserMessage(string)"/> when there are no attachments.
     /// </summary>
     public static string UserMessage(string text, IReadOnlyList<LiteRtAttachment>? attachments)
@@ -257,7 +264,7 @@ internal static class LiteRtJson
             {
                 w.WriteStartObject();
                 w.WriteString("type", a.Kind == LiteRtAttachmentKind.Image ? "image" : "audio");
-                // A path is memory-mapped natively; inline bytes go as a base64 "blob" the engine
+                // The native side opens a path itself; inline bytes go as a base64 "blob" the engine
                 // decodes with absl::Base64Unescape (runtime/conversation/.../data_utils.cc).
                 if (a.Path is { } path)
                     w.WriteString("path", path);
@@ -270,13 +277,12 @@ internal static class LiteRtJson
         });
     }
 
-    /// <summary>[{"type":"text","text":...}] — content-parts ARRAY for the system message config.
-    /// MUST be an array (or a raw non-JSON string), never a bare part object: the C wrapper JSON-parses
-    /// the argument into the message "content", and the chat template drops object-valued content —
-    /// the system turn renders EMPTY (the pre-v0.14.0-repin bug: SystemMessage silently ignored).
-    /// Array-valued content renders via the template's part iteration, and unlike passing the raw text
-    /// it also survives a system prompt that happens to be valid JSON. Verified both ways with
-    /// RenderPreface against v0.14.0 natives.</summary>
+    /// <summary>[{"type":"text","text":...}] — content-parts ARRAY for the system message config. The C
+    /// wrapper JSON-parses the argument into the message "content". On LiteRT-LM v0.20.0 (win-x64, CPU,
+    /// gemma-4 E2B), the array, a single {"type":"text"} part object on its own and a plain string all render
+    /// the system turn; only a message object with string content renders it empty. The array renders via
+    /// the template's part iteration, and unlike passing the raw text it also survives a system prompt that
+    /// happens to be valid JSON.</summary>
     public static string SystemMessage(string text)
         => Build(w =>
         {
@@ -373,7 +379,7 @@ internal static class LiteRtJson
                     foreach (LiteRtAttachment a in m.Attachments)
                     {
                         // Same content-part shape as a live multimodal send (UserMessage): a file-backed
-                        // attachment as a memory-mapped "path", inline bytes as a base64 "blob".
+                        // attachment as a "path" the native side opens, inline bytes as a base64 "blob".
                         w.WriteStartObject();
                         w.WriteString("type", a.Kind == LiteRtAttachmentKind.Image ? "image" : "audio");
                         if (a.Path is { } path)

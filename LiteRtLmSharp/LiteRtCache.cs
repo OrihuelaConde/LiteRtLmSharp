@@ -9,7 +9,8 @@ namespace LiteRtLmSharp;
 /// <remarks>
 /// Each mode is an explicit value, so a cache location can never be confused with a directory path
 /// that happens to look like a special token. The default value (<c>default(LiteRtCache)</c>) is
-/// <see cref="Default"/>.
+/// <see cref="Default"/>. The cache files are named after the model file, and within one process a path's
+/// cache key is fixed at its first load; see <see cref="LiteRtEngineOptions.Cache"/>.
 /// </remarks>
 public readonly struct LiteRtCache : IEquatable<LiteRtCache>
 {
@@ -25,10 +26,16 @@ public readonly struct LiteRtCache : IEquatable<LiteRtCache>
     /// <summary>Disable the on-disk cache entirely.</summary>
     public static LiteRtCache Disabled => new(":nocache");
 
-    /// <summary>Keep the cache in RAM only (CPU backend only; not available on Windows).</summary>
+    /// <summary>Keep the cache in RAM only, without writing a cache file (CPU backend only).</summary>
+    /// <remarks>On win-x64 with LiteRT-LM v0.20.0 (gemma-4 E2B and Qwen3-0.6B), the CPU engine loads, answers
+    /// and writes no cache file; on GPU, engine creation fails with UNKNOWN ("Failed to modify graph with
+    /// delegate"). The CPU result was the same with LiteRT-LM v0.18.0.</remarks>
     public static LiteRtCache InMemory => new(":memory");
 
     /// <summary>Use a specific directory for the cache.</summary>
+    /// <remarks>On Windows, unless the process uses the UTF-8 code page, keep the path to ASCII characters: with
+    /// LiteRT-LM v0.20.0 and v0.18.0 under the ANSI code page 1252, a directory with a character outside ASCII made
+    /// <see cref="LiteRtEngine.Load"/> fail ("Cache directory does not exist or is not writable").</remarks>
     /// <exception cref="System.ArgumentException"><paramref name="path"/> is null or empty, or starts
     /// with <c>':'</c> — that prefix is reserved for the engine's special cache tokens (a real directory
     /// named e.g. <c>":memory"</c> would silently become <see cref="InMemory"/>).</exception>

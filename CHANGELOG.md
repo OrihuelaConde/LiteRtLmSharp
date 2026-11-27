@@ -8,52 +8,218 @@ are published together.
 
 ## [Unreleased]
 
-Most of this release comes from a contribution by @DimQ1
+This release moves the native runtime from LiteRT-LM v0.18.0 to v0.20.0, adds raw prefill-and-decode sessions
+with experimental checkpoints, and adds experimental model downloads and updates. No public member of 1.3.0 is
+removed or changed, but some runtime behaviour changes can break code that relied on 1.3.0: see **Changed**.
+The engine-usage changes come from a contribution by @DimQ1
 ([#15](https://github.com/OrihuelaConde/LiteRtLmSharp/pull/15)), who measured where the engine-usage API fell
 short for an application that shares one model between live translation, chat and background jobs.
 
+Experimental members carry an `[Experimental]` attribute with a diagnostic ID. They can change or be removed in a
+later release. The C# compiler reports each use as an error until you suppress that ID, for example with
+`#pragma warning disable LITERTLM001` in the file or `<NoWarn>$(NoWarn);LITERTLM001</NoWarn>` in the project.
+
 ### Added
 
+- **Raw sessions.** `LiteRtEngine.CreateSession` returns a `LiteRtSession`, which runs the model on text that you
+  write. Use one when you need the exact text in the context, for example to continue a reply that was cut.
+  `Prefill` and `PrefillAsync` add text to the context, and `Decode`, `DecodeAsync` and `DecodeStreamingAsync`
+  generate a reply. A session applies no chat template, keeps no message history, takes text only, and parses no
+  tool calls or reasoning.
+  - `LiteRtSessionOptions` sets the `Sampler` and the `MaxOutputTokens` cap for the session's lifetime.
+  - `LiteRtSession.State` returns a `LiteRtSessionState` (`Fresh`, `Prefilled`, `Decoded`, `ContextFull`,
+    `Faulted` or `Cancelled`) that tells what the session accepts next. `Dispose` frees the session.
+  - A session refuses a second call while one runs, instead of waiting. On a model whose start token is a
+    single token, such as Gemma 4, it also refuses a first prefill that starts with that token, which the runtime
+    adds itself.
+  - Sessions and conversations can share one engine. `CreateSession` waits for a generation in flight on the
+    engine.
+
+  See the [Sessions guide](https://orihuelaconde.github.io/LiteRtLmSharp/sessions.html).
+- **Experimental session checkpoints (`LITERTLM001`).** `LiteRtSession.SaveCheckpoint` returns a
+  `LiteRtSessionCheckpoint`, `LiteRtSession.RewindTo` returns the session to it, and `LiteRtSession.Reset` clears
+  the context. With them you can try a turn, drop it, and try another. `RewindTo` and `Reset` also continue a
+  session whose context filled (`ContextFull`) or whose prefill failed (`Faulted`). They're experimental because
+  they were measured with one model (gemma-4 E2B), on Windows x64 with the CPU and GPU backends and, in part, on an
+  Android x86_64 emulator: they can change or be removed in a later release, and using them requires suppressing
+  `LITERTLM001`. See
+  [Experimental: checkpoints, rewind, and reset](https://orihuelaconde.github.io/LiteRtLmSharp/sessions.html#experimental-checkpoints-rewind-and-reset).
+- **Experimental model downloads and updates (`LITERTLM003`).** `LiteRtModelSync.UpdateAsync` downloads a
+  `.litertlm` file to a path, or brings a local copy up to date with a newer remote file by reusing the sections
+  that did not change. The calls need no engine.
+  - `LiteRtModelSync.CreatePlanAsync` returns a `LiteRtModelSyncPlan` (`IsUpToDate`, `BytesToDownload`,
+    `BytesToReuse`, `TotalRemoteSize`) without writing anything.
+  - `LiteRtModelSyncSource.FromHttp` reads the remote file with HTTP range requests.
+  - `LiteRtModelSyncOptions.Progress` receives the running total of bytes received, and `UpdateAsync` returns a
+    `LiteRtModelUpdateResult` with `BytesReceived`.
+
+  A section is reused only when both files record section hashes. None of the published model files that were
+  checked records them, so an update of those files downloads the whole file. Every ModelSync type is
+  experimental: it can change or be removed in a later release, and using it requires suppressing `LITERTLM003`.
+  See [Download and update models](https://orihuelaconde.github.io/LiteRtLmSharp/model-sync.html),
+  which also covers deleting the compiled cache after you replace a model file.
 - **Several chat engines in one process.** `LiteRtEngineOptions.AllowMultipleEngines` lets an engine stay
   alive next to other chat engines. A load next to live engines succeeds only when the new engine and every
   live one opted in, so code that loads an engine without the setting keeps the one-engine guarantee.
   `LiteRtEngine.LiveEngineCount` reports how many chat engines are alive. Engines only run in parallel on a desktop
-  CPU, and each one holds its own memory: on Windows, about 2.3 GB of committed memory per gemma-4 E2B engine on
-  CPU. The API reference for `AllowMultipleEngines` lists the measurements.
+  CPU (measured with LiteRT-LM v0.18.0), and each one holds its own memory. On Windows, a gemma-4 E2B engine
+  commits about 2.3 GB of private memory on CPU and about 4.1 GB on GPU right after it loads (LiteRT-LM v0.20.0,
+  Float32, GPU: NVIDIA RTX 3080). The API reference for `AllowMultipleEngines` lists the measurements.
 - **`LiteRtConversation.TokenCountCached`**, a token count that never waits. The native `TokenCount` reader
   goes through the engine, so it waits behind a generation in flight on any conversation of that engine. The
   cache is refreshed after every completed send, and it and `IsContextFull` can be read from another thread
   while a send is in flight.
 - **`LiteRtConversation.IsCancelled`** tells whether a send on the conversation was cut short (a cancelled
   send, an abandoned stream, or `CancelProcess()` during a send), after which the runtime answers `CANCELLED`
-  to every later send. A stream that failed during generation counts too.
+  to every later send. A stream that failed during generation counts too, and so does a cancel that lands as the
+  reply ends.
 - **Keyed chat clients.** `AddKeyedLiteRtChatClient` registers several models side by side, for example one per
   agent. Keys with equal options share one engine. See
   [Register several models](https://orihuelaconde.github.io/LiteRtLmSharp/extensions-ai.html#register-several-models).
+- **`LiteRtConversation.LastReplyReachedContextLimit`** tells whether the overflow guard capped the last reply
+  and the reply used the whole budget. Unlike `IsContextFull`, it does not mean that the next send fails: after a
+  reply with thinking, the runtime removes the thinking from the context, so the conversation can continue. A
+  send that the binding rejects leaves the value as it was. `LiteRtChatClient` uses it to report
+  `ChatFinishReason.Length`.
+- **`LiteRtBenchmarkInfo.LastSendPrefillTokenCount`** reports the prefill of the last send's own message. After
+  a reply with thinking, the runtime records its refill of the context as a second prefill turn of the same send,
+  so `LastPrefillTokenCount` and `LastPrefillTokensPerSecond` then describe that refill, not the message.
+  `UsageDetails.InputTokenCount` in `LiteRtLmSharp.Extensions.AI` reads the new value.
 
 ### Changed
 
-- **`Greedy` and `TopK` work on the CPU and GPU backends.** The LiteRT-LM CPU backend builds only TopP
-  samplers: a `Greedy` or `TopK` conversation failed its first send with `UNIMPLEMENTED: Sampler type: N`, and
-  after a TopP send it was accepted but did not decode as named. The GPU backend runs every type as TopP. The
-  binding now sends `Greedy` as TopP with `TopK = 1` (exact argmax) and `TopK` as TopP with `TopP = 1`,
-  keeping the temperature and seed. On the GPU this changes the output of existing `Greedy` and `TopK`
-  callers, which got sampled text before.
+- **Native binaries are LiteRT-LM v0.20.0** (from v0.18.0), still Google's official prebuilts. Each runtime
+  package carries Google's library for its platform, unchanged apart from the name; the win-x64 package also
+  carries the DirectX Shader Compiler pair (`dxcompiler.dll`, `dxil.dll`) for the GPU backend. The C API moved
+  to version 1.1.0: every function that can fail returns a status code and writes its result through out
+  pointers, and the binding follows the new signatures. A failure the runtime reports carries that status in
+  `LiteRtException.StatusCode`, with the runtime's reason.
+
+  Exception messages from native failures read `<function> failed: CODE: reason.`, where 1.3.0 messages read
+  `<function> returned null: …` or `… failed with code N.`. On win-x64, `LiteRtModelInfo.Read` on a model file
+  that exists but can't be opened, for example one that another handle holds locked, reports `Unknown`
+  (`Failed to open`), where 1.3.0 reported `Internal`.
+
+  A conversation that leaves
+  `LiteRtConversationOptions.EnableSpeculativeDecoding` unset keeps the engine setting: the runtime does this
+  itself, so the binding no longer passes the setting to such a conversation (win-x64, CPU and GPU,
+  gemma-4 E2B).
+
+  The binding checks the C API version the first time it uses the native library. It refuses a library that
+  doesn't implement C API 1.1 or a later 1.x version, with a `LiteRtException` that names the versions and the
+  runtime package to install. A v0.18.0 library next to this build fails with that message instead of crashing.
+
+  Behaviour changes that can affect existing code:
+  - **`Greedy` and `TopK` decode as named on the CPU and GPU backends.** In 1.3.0, the CPU backend failed the
+    first send of a `Greedy` or `TopK` conversation with `UNIMPLEMENTED: Sampler type: N`, and the GPU backend
+    ran every type as TopP. LiteRT-LM v0.20.0 decodes `Greedy` as argmax and `TopK` as top-k on both backends,
+    also in the first conversation on a fresh CPU engine (measured on win-x64 with gemma-4 E2B, and on CPU also
+    with Phi-4-mini and Ministral 3 3B). On the GPU this changes the output of existing `Greedy` and `TopK`
+    callers, which got sampled text before.
+  - **Speculative decoding follows the sampler.** With speculative decoding turned on, a sampled reply follows
+    the conversation's seed: seeds 7, 8 and 9 gave three different replies on CPU and on GPU. On CPU, 1.3.0 gave
+    one text for all three seeds. An argmax reply with speculative decoding equals the plain argmax reply byte
+    for byte on CPU; on the GPU it differed from the plain argmax reply in 2 of 2 processes. Measured on win-x64
+    with gemma-4 E2B, speculative decoding turned on per conversation (GPU: WebGPU on Direct3D 12, NVIDIA
+    RTX 3080, Float32).
+  - **The token count leaves a reply's thinking out as soon as the reply ends.** A reply with thinking that the
+    overflow guard cuts at the limit leaves room in the context: `IsContextFull` stays `false`, the next send
+    works, and `LiteRtChatClient` still reports `ChatFinishReason.Length` for that turn. A clone taken after
+    such a reply holds the count without the thinking. A stream or a blocking send of a reply with thinking
+    returns only after the runtime has refilled the context. `UsageDetails.TotalTokenCount` in
+    `LiteRtLmSharp.Extensions.AI` reads this count, so after a reply with thinking it can be lower than
+    `InputTokenCount` plus `OutputTokenCount`, which counts the thinking.
+
+    The runtime leaves the thinking out whatever `LiteRtConversationOptions.FilterThinkingFromKvCache` says:
+    its native default drops channel content, and the binding sends the setting only for `true`, so `false`
+    doesn't keep the thinking in the context (CPU, gemma-4 E2B). The 1.3.0 docs described the filter as off
+    unless the option was set.
+  - **A send ends with a native token-count read that can wait for other generations on the engine.** A
+    stream that runs to its end now waits for the runtime to finish the turn before its loop ends, as a
+    blocking send does. If that wait fails, the conversation counts as cancelled (`IsCancelled`). Every
+    completed send, blocking or streamed, then reads the native token count to refresh `TokenCountCached`,
+    also with the overflow guard off; 1.3.0 read it only after a send for which the guard set the output cap.
+    Like `TokenCount`, that read goes through the engine, so it can wait behind a generation in flight on
+    another conversation of the engine.
+  - **`SendRaw` takes one message JSON object per call.** A JSON array, which 1.3.0 answered, fails with
+    `INVALID_ARGUMENT: Message must be a JSON object.`, and the conversation stays usable.
+  - **A message that doesn't fit the remaining context fails with `RESOURCE_EXHAUSTED`**, where 1.3.0 failed it
+    with `FAILED_PRECONDITION`. You can reach it with sends that the overflow guard doesn't measure (media and
+    extra context) and on engines without `MaxNumTokens`. A prefill that lands in the last free entries of the
+    context fails with `FAILED_PRECONDITION`. After either failure, every later send of that conversation fails
+    with `INTERNAL: Task failed with state: 7`; 1.3.0 did the same after a message that didn't fit. With the
+    overflow guard off, no crash was seen (win-x64, CPU and GPU, gemma-4 E2B; 17 runs on the GPU). The 1.3.0
+    docs said that an overflow the guard doesn't stop damages native memory and crashes the process later.
+  - **Under `EnableConstrainedDecoding` without tools, a text reply can end at its first line break.** 1.3.0
+    continued such a reply to the output cap. It depends on the machine: with gemma-4 E2B, a count with one
+    number per line ended at its first line break on some machines and ran to the cap on others, including two
+    win-x64 machines that differed. The same count on one line ran normally.
+  - **A text LoRA adapter applies to its own conversation only.** 1.3.0 applied an adapter to the whole engine.
+    A conversation without an adapter now answers normally next to one with an adapter, and the
+    `No LoRA ID is set` failure does not occur (measured on CPU with the upstream LoRA test bundle).
+  - **`LiteRtModelInfo.MaxContextTokens` reports a language model's default context size.** It reads the
+    context size the file's metadata sets or, when the metadata sets none, the runtime's default of 4,096,
+    capped by the size of a static model graph, so a declared 4,096 and the default read the same. The
+    LiteRT-LM v0.18.0 C API that 1.3.0 wraps defined the value as the size of a static model graph, or the
+    largest size a dynamic model accepts. Three model files report a 4,096-token context (win-x64):
+    - `gemma-4-E2B-it`, dynamic context: 1.3.0 read 32,003. The file also declares CPU and GPU for vision.
+      The value is not a hard maximum for this model: gemma-4 E2B accepted 19,533 tokens with `MaxNumTokens`
+      20000 (win-x64 CPU, overflow guard off).
+    - `gemma-4-E4B-it`, dynamic context: the 1.3.0 docs listed its context as not declared.
+    - `Phi-4-mini-instruct`, static context: the 1.3.0 docs listed its context as not declared.
+  - **`LiteRtModelInfo.Read` no longer copies the vision sections into memory.** While it reads
+    `gemma-4-E2B-it`, the process's peak memory rises by about 10 MB (win-x64, LiteRT-LM v0.20.0). The 1.3.0
+    docs gave about 0.8 GB, measured with LiteRT-LM v0.18.0, and advised calling `Read` on a phone before
+    loading engines; that advice no longer applies.
+  - **On Windows, `LiteRtModelInfo.Read` can pass a non-ASCII model path as an alias.** v0.20.0 opens the path
+    twice with two encodings, so on Windows with a system code page other than UTF-8, `Read` passes a model path
+    with non-ASCII characters to the runtime as its 8.3 short name or, on a volume without short names, as a
+    temporary DOS device name.
+  - **Values outside a declared enum fail.** A value of `LiteRtConstraintProvider`, `LiteRtSamplerType` or
+    `LiteRtInputOverflowStrategy` that only a cast can produce fails with a `LiteRtException`
+    (`InvalidArgument`) from the runtime. Such a `LiteRtActivationDataType` value makes `LiteRtEngine.Load` and
+    `LiteRtEmbeddingEngine.Load` fail the same way.
+  - **`LiteRtBenchmarkInfo.TotalInitTimeSeconds` is the engine creation time only.** LiteRT-LM v0.18.0 summed
+    every initialization phase in it.
+  - **Concurrent sends on one engine.** On the GPU, two blocking sends at once on two conversations of one engine
+    gave correct replies in 20 of 20 rounds, where 1.3.0 gave a wrong reply in 20 of 20. Two streams at once gave
+    the same replies as each one alone in 20 of 20 rounds. On CPU, the runtime ran concurrent sends one after
+    another (720 sends, 0 mismatches). Measured on win-x64 with gemma-4 E2B through the core API (GPU: WebGPU on
+    Direct3D 12, NVIDIA RTX 3080, Float32). Chat clients over one engine run one generation at a time (see
+    "Chat clients over one engine take turns" below).
+  - **Repeating a processed message on a GPU clone.** On the GPU, a clone's first send that repeats a message the
+    conversation had already processed, after another conversation generated, gave a correct reply in 100 of 100
+    runs (60 direct clones, 40 through the stateful chat client). With v0.18.0, the same sequence gave a wrong
+    reply in 25 of 25. The upstream issue,
+    [LiteRT-LM #4394](https://github.com/google-ai-edge/LiteRT-LM/issues/4394), is still open: it did not
+    reproduce with v0.20.0 on the GPU measured (win-x64, WebGPU on Direct3D 12, NVIDIA RTX 3080, gemma-4 E2B,
+    Float32). Other GPUs and Float16 activations were not measured.
+  - **The first load after the upgrade rewrites the compiled cache.** LiteRT-LM v0.18.0 and v0.20.0 name cache
+    files the same way, after the model file's name, modification time and size, and each version rewrites
+    the files that the other wrote, once. On the GPU, the program cache file grows instead of being replaced.
+    Measured on win-x64, CPU and GPU, with Qwen3-0.6B.
+- **A per-send `EnableThinking = false` on a later send of a Gemma 4 conversation answers without thinking, for
+  that send only.** In 1.3.0, a per-send `false` took effect only on the send right after the first reply with
+  thinking, and then stayed for the rest of the conversation. Gemma 4 switches thinking on in the system turn,
+  which the runtime prefills with the conversation's first send, so the first send's mode stays for the
+  conversation. For a later send with `LiteRtSendOptions.EnableThinking = false`, the binding also suppresses
+  the token that opens the thinking channel, for that send; later sends follow the conversation's mode again.
+  The opposite has no effect: a per-send `true` after a first send without thinking gives no thinking. On the
+  first send of a conversation, a per-send `true` turns thinking on. Measured on win-x64 with gemma-4 E2B on
+  CPU and GPU (LiteRT-LM v0.20.0).
 - **`IsContextFull` reads the cached token count** (see `TokenCountCached`), so it never waits behind a
   generation on another conversation. It is exact after each completed send.
 - **`LiteRtConversation.Clone()` throws `InvalidOperationException` for a conversation whose send was cut
   short** or whose stream failed: the runtime would return an empty clone that also answers `CANCELLED`. To
   continue after a cancellation, take the clone before the send. The
-  [conversation-state guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html#continue-after-a-cancellation) shows how, and covers a
-  runtime problem on the GPU backend when a clone's first send repeats a message
-  ([LiteRT-LM #4394](https://github.com/google-ai-edge/LiteRT-LM/issues/4394)).
+  [conversation-state guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html#continue-after-a-cancellation) shows how.
 - **A cancelled or failed stateful send no longer ends the conversation.** Before, `LiteRtChatClient` disposed the
   conversation and its `ConversationId` stopped working. Now it goes back to a checkpoint taken before the turn: the
   id keeps working and the whole turn, tool calls included, is discarded, so send the message again. Agent Framework
   relies on this, because it keeps a session's id after a failed run. Some cases still end the conversation,
   including its first turn and conversations with constrained decoding. On conversations with constrained decoding,
   the new `LiteRtStatefulConversationOptions.CheckpointConstrainedConversations` keeps the id after the first turn,
-  at a cost of about a second per turn. See [Cancelled and failed sends](https://orihuelaconde.github.io/LiteRtLmSharp/extensions-ai.html#cancelled-and-failed-sends).
+  at a cost of about a second per turn (measured with LiteRT-LM v0.18.0). See [Cancelled and failed sends](https://orihuelaconde.github.io/LiteRtLmSharp/extensions-ai.html#cancelled-and-failed-sends).
 - **A stateful stream you stop reading after the reply ended keeps its turn.** Before, any stream not read to its
   end ended the conversation. In the stateful mode, a reply's tool calls now reach the stream together when the
   reply ends, after any text in it, so stopping at them keeps the turn.
@@ -63,22 +229,56 @@ short for an application that shares one model between live translation, chat an
   a key, so a second model silently ran on the first engine. Equal options still share one engine, and a
   `LiteRtEngine` you registered without a key before the `serviceId` still serves them. A `serviceId` also
   no longer inherits the model id, template and stateful settings of an earlier registration, or goes through an
-  `IChatClient` registered without a key. A service registered from options loads its engine on its first call, not
-  when it is resolved, so a bad path fails at that call unless you set `eager`. See
+  `IChatClient` registered without a key. See
   [Register several models](https://orihuelaconde.github.io/LiteRtLmSharp/semantic-kernel.html#register-several-models).
+- **A Semantic Kernel chat service registered from options loads its engine on its first call**, with or without a
+  `serviceId`. Before, resolving `IChatCompletionService` loaded the engine, so a bad model path or backend failed
+  there; now it fails at the first call. To load the engine at registration, and fail there, set `eager`.
 - **A conflicting chat registration throws.** Registering a chat client again, with or without a Semantic Kernel
   `serviceId`, with a different engine or different options throws `InvalidOperationException`. Before, the second
   registration was silently ignored. The same applies to a key registered with the new `AddKeyedLiteRtChatClient`.
   This includes a registration without a key after a `serviceId`, because the first `serviceId`
   is also registered without a key, so register the one without a key first. The same engine or equal options again
   still does nothing.
+- **`LiteRtSamplerParams.Temperature` must be finite.** An infinite temperature now throws
+  `ArgumentOutOfRangeException`, like NaN and negative values. The LiteRT-LM v0.20.0 C API requires a finite
+  temperature.
+- **A chat request without tools does not ask for constrained decoding.** `LiteRtChatClient` and the Semantic
+  Kernel connector used to pass `EnableConstrainedDecoding` to the runtime even when the request offered no
+  tools. With LiteRT-LM v0.20.0 and the flag set, a text reply to a request without tools ended at its first
+  line break (measured with gemma-4 E2B; the cause is not known), so the flag now applies only to requests
+  with tools.
 - **Chat clients over one engine take turns.** Each `LiteRtChatClient` used to serialize only its own calls, so two
-  clients over one engine could put two generations in flight on it, which the runtime does not support. Now they wait
-  for each other. An open stream counts until you read it to the end or dispose it, so calling another client over
-  the same engine from inside the loop that reads the stream waits forever.
+  clients over one engine could put two generations in flight on it. Now they wait for each other, so the clients
+  over one engine run one generation at a time. An open stream counts until you read it to the end or dispose it,
+  so calling another client over the same engine from inside the loop that reads the stream waits forever.
+
+### Removed
+
+- **The fallbacks for native libraries that lack an entry point.** The C API version check refuses such a
+  library before the first call, so no call throws `EntryPointNotFoundException`.
 
 ### Fixed
 
+- **Native handles stay alive for the whole call.** `LiteRtEngine.Tokenize`, `Detokenize`, `GetStartToken` and
+  `GetStopTokens`, and `LiteRtConversation.CancelProcess`, hold a reference on the native handle for the call: a
+  `Dispose` on another thread, or finalization, no longer deletes the native engine or conversation while the
+  call uses it. The call either completes or throws `ObjectDisposedException`. `LiteRtConversation.RenderMessage`,
+  `RenderMessageRaw` and `RenderPreface` keep the conversation reachable until the rendered string is copied.
+- **A rejected first message no longer leaves a conversation behind.** In the stateful mode of
+  `LiteRtChatClient`, a request without a `ConversationId` whose first message the context overflow guard rejects
+  no longer leaves its new conversation in the store. The caller never received that conversation's id.
+- **`LiteRtModelInfo.DefaultSampler` with values that aren't finite.** It is `null` when the model file declares
+  a sampler with an infinite top-p or temperature, as it already was for NaN.
+- **Paths with non-ASCII characters on Windows are documented.** A cache folder whose path has non-ASCII
+  characters makes `LiteRtEngine.Load` fail, and a model path with non-ASCII characters fails `Load` on the GPU
+  and loads on the CPU without a usable compiled cache (measured with ANSI code page 1252; the same with
+  v0.18.0). The docs didn't mention it. See
+  [Model and cache paths on Windows](https://orihuelaconde.github.io/LiteRtLmSharp/engine-tuning.html#model-and-cache-paths-on-windows).
+- **The license notices include Dawn.** `THIRD-PARTY-NOTICES.md` reproduces the license of Dawn, which includes
+  Tint, and names SPIRV-Tools, for the win-x64, linux-x64, linux-arm64 and osx-arm64 packages. The notices that
+  LiteRT-LM v0.20.0 ships in its iOS framework, from which `THIRD_PARTY_NOTICES.litert-lm.txt` is built, no
+  longer list them.
 - **Disposing an engine before its conversations no longer frees the native engine under them.** Each
   conversation now keeps its engine's native object alive, so the native engine and its one-engine slot are
   released when the last conversation is disposed. Before, a conversation disposed or finalized after its
@@ -87,16 +287,68 @@ short for an application that shares one model between live translation, chat an
   switches models has to dispose its conversations first, as the docs always asked.
 - **`History` is documented as prefilled by the conversation's first send**, not when the conversation is
   created: right after `CreateConversation`, `TokenCount` still reads 0.
-- **Concurrency guidance.** Interleaving several conversations of one engine works from LiteRT-LM v0.15.0,
-  where the state loss of upstream #2807 is fixed; two generations in flight on one engine stay unsupported.
-  The README notes that the v0.13.x and v0.14.0 libraries (1.1.x and older) lose state when conversations are
-  interleaved, and do not return from a send after a cancellation.
+- **Interleaving conversations.** With LiteRT-LM v0.20.0, interleaving turns between several live conversations
+  of one engine keeps each conversation's state, and its replies stay correct (win-x64, CPU and GPU). The README
+  now notes that with LiteRtLmSharp 1.1.x and older (LiteRT-LM v0.13.1 and v0.14.0), interleaving two
+  conversations of one engine loses the suspended conversation's state.
 - **Stateful-mode memory.** On a model with a dynamic context such as gemma-4 E2B, a live conversation's KV
-  state grows with the tokens it has used (about 36 MB for 2,300 tokens on a desktop CPU); a model with a
-  static context keeps a full-size cache per live conversation.
-- **Speculative decoding and the sampler.** The docs said speculative decoding preserves the output
-  distribution. In the LiteRT-LM v0.18.0 and v0.18.1 sources it verifies the drafted tokens greedily, so only
-  the first token of each turn uses the conversation's sampler.
+  state grows with the tokens it has used (about 36 MB for 2,300 tokens on a desktop CPU, measured with
+  LiteRT-LM v0.18.0). A model with a static context keeps a full-size cache per live conversation, so keep few
+  live conversations with such a model. On the GPU, running out of memory this way did not fail cleanly. With
+  Ministral 3 3B (static 4,096-token context) on a 10 GB GPU and live conversations each filled to about 2,300
+  tokens, the fourth conversation exhausted the GPU memory and the process ended with exit code `0xC0000409`, in
+  2 of 2 runs (LiteRT-LM v0.20.0, win-x64, NVIDIA RTX 3080).
+- **The documentation describes what LiteRT-LM v0.20.0 does** in these cases, measured on win-x64 with
+  gemma-4 E2B unless the item says otherwise:
+  - `LiteRtConversation.GetBenchmarkInfo()` returns `null` only when benchmarking is off. Before the first send,
+    it returns an info with zero prefill and decode turns.
+  - `LiteRtEngine.Detokenize` returns plain text with ordinary spaces, not the SentencePiece `▁` word marker.
+  - The runtime detects the media format from the bytes. PNG and JPEG images and MP3, WAV and FLAC audio decode;
+    WEBP images and OGG Vorbis audio failed to decode (CPU).
+  - On the GPU, `LiteRtEngineOptions.ActivationDataType` `Int16` and `Int8` produced unusable text (NVIDIA
+    RTX 3080); the docs said the GPU ran them as F16. On CPU the setting had no effect.
+  - `LiteRtAttachment.ImageFile` works on Android too: it answered like the inline bytes on an x86_64 emulator
+    (API 35, CPU). The docs said file-path attachments were desktop only. `AudioFile` was not measured on
+    Android.
+  - The Android packages run on Mono (.NET for Android), not on CoreCLR as the docs said (checked on an x86_64
+    emulator).
+  - The stateless `LiteRtChatClient` and the Semantic Kernel connector send the media of earlier user turns too;
+    the docs said they sent only the last message's. With an image on the first turn, the model recalled it in a
+    later turn (chat client: CPU and GPU; Semantic Kernel connector: CPU). Audio on earlier turns was not
+    measured.
+  - On a text-only model, setting `VisionBackend` or `AudioBackend` makes `CreateConversation` fail with
+    `NotFound` (`tf_lite_vision_encoder not found in the model`, or the same message for the audio encoder);
+    the engine itself loads. The docs said the setting had no effect there. Measured on CPU with
+    Phi-4-mini-instruct.
+  - The runtime uses a `MaxNumTokens` above the model's default; the docs said it ignored such a value. With
+    gemma-4 E2B on CPU, whose limit is 4,096 when no value is set, 20000 was used as set and 40000 gave a limit
+    of 32,000. The overflow guard measures against the value you set, so with 40000 a send can reach the
+    runtime's `RESOURCE_EXHAUSTED`, after which every send of that conversation fails.
+  - A small `MaxNumTokens` makes engine creation or sends fail with an exception. No blocking send returned an
+    empty reply, which the docs said could happen:
+    - On CPU, 100 failed at engine creation, and 512 loaded but failed every text send with
+      `Failed to allocate tensors`.
+    - On the GPU, 512 accepted a 427-token first message, and 100 failed every send.
+  - `LiteRtEngine.SetMinLogLevel(3)`, called before the first engine, also hides the runtime's early `I0000`
+    lines; `W0000` and `WARNING` lines remain (CPU). The docs said the level couldn't hide them.
+  - With a cache directory set, the vision and audio encoder caches also go to that directory, not next to the
+    model (vision on CPU and GPU, audio on CPU). The drafter's cache file is named
+    `<model file>_<mtime>_<size>.mtp_drafter.xnnpack_cache`, with nothing after `xnnpack_cache` (CPU). The docs
+    said the cache directory didn't reach the encoders, and gave the drafter's file name a suffix. See
+    [Delete the compiled cache after you replace a model](https://orihuelaconde.github.io/LiteRtLmSharp/model-sync.html#delete-the-compiled-cache-after-you-replace-a-model).
+  - `LiteRtCache.InMemory` works on Windows with the CPU backend: the engine loads and answers, and no cache
+    file is written. The same CPU result was seen with LiteRT-LM v0.18.0 (Qwen3-0.6B). On the GPU, engine
+    creation fails with `UNKNOWN: Failed to modify graph with delegate`. The docs said the in-memory cache
+    couldn't be used on Windows.
+  - On the GPU, Ministral 3 3B (q4) gave the same results with `Float16` and `Float32` activations: both passed
+    the same 43 checks of a precision test (NVIDIA RTX 3080). The docs said the `Float16` errors reproduce on
+    that model. gemma-4 E2B with `Float16` still gets arithmetic wrong on the GPU: it writes 3052 for
+    1024 + 2048.
+  - Tool names in camelCase did not lower call accuracy: `get_weather` and `getWeather` each gave 10 correct
+    calls out of 10 (CPU). The docs said accuracy suffers with names that aren't snake_case.
+  - A win-x64 GPU process that loads and disposes many engines sometimes exited without an error with LiteRT-LM
+    v0.18.0, which the 1.3.0 docs listed as a known issue. It did not occur in 12 full GPU runs of the test
+    suite with v0.20.0 (NVIDIA RTX 3080).
 
 ## [1.3.0] — 2026-10-12
 

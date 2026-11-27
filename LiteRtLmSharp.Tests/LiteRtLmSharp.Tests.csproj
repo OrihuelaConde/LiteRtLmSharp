@@ -5,6 +5,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <!-- The C API tests call the native functions directly, with out pointers to locals. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- The tests use the experimental session checkpoints, rewind and reset, and the experimental model sync. -->
+    <NoWarn>$(NoWarn);LITERTLM001;LITERTLM003</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

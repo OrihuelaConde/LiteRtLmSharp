@@ -3,12 +3,15 @@
 Speculative decoding speeds up token generation by letting a small **Multi-Token-Prediction (MTP)
 drafter** — shipped *inside* the `.litertlm` file — propose several tokens ahead, which the main
 model then verifies in a single forward pass. When the drafter is accurate, many tokens are accepted
-per main-model step, so decode throughput goes up, with the sampler caveat in the note below. On the
-hardware we measured it has not paid off yet: it slowed gemma-4-E2B down on desktop CPU and GPU (see
-[Measured results](#measured-results)).
+per main-model step, so decode throughput goes up. On the GPU backend the reply can also differ from the
+reply without the drafter (see the sampler note in
+[How effectiveness is measured](#how-effectiveness-is-measured)). On the hardware we measured it has not
+paid off yet: it slowed gemma-4-E2B down on desktop CPU and GPU (see [Measured results](#measured-results)).
 
 LiteRtLmSharp exposes it as an engine-level flag with a per-conversation override, plus the native
-**benchmark API** to measure the effect.
+**benchmark API** to measure the effect. The binding sets the engine flag and the per-conversation override with the on/off setters that the v0.20.0 C API
+marks deprecated, and it doesn't wrap the speculative decoding config that replaces them, so the C API's
+adaptive mode and lenience factor aren't available.
 
 ## Requirements
 
@@ -16,20 +19,18 @@ LiteRtLmSharp exposes it as an engine-level flag with a per-conversation overrid
   `LiteRtModelInfo.SupportsSpeculativeDecoding` tells before loading. On a model without a drafter the
   flag fails: engine creation throws `LiteRtException` (Ministral 3 reports `NOT_FOUND:
   tf_lite_mtp_drafter not found in the model`), and a per-conversation `true` fails the first send.
-- The engine flag is fixed at engine creation. Since native v0.18.0 a conversation can override it:
-  `LiteRtConversationOptions.EnableSpeculativeDecoding = true` on an engine loaded without it makes the
-  runtime load the drafter lazily on that conversation's first send, and `false` turns it off for one
-  conversation of a speculative engine. The runtime keeps a lazily loaded drafter on the engine and would
-  use it for every later conversation that leaves the setting unset (on CPU those decoded at 0.80× of
-  the plain speed); the binding passes the engine setting to them explicitly, so unset keeps meaning the
-  engine setting.
-- ~~On the WebGPU GPU backend (desktop), disable the disk cache~~ — **fixed in LiteRT-LM v0.14.0**.
-  On v0.13.1 the drafter's shared weight-cache file failed to open ("Access denied") on Windows and
-  engine creation failed unless `Cache = LiteRtCache.Disabled` (upstream
-  [#2572](https://github.com/google-ai-edge/LiteRT-LM/issues/2572); full investigation in
-  [Root cause](#root-cause-the-disk-cache)). The fix is in the v0.14.0 tag and re-verified end to
-  end with our v0.14.0 natives (engine create + generate + cache readback across two loads, win-x64
-  WebGPU): the default disk cache is safe again, and warm loads benefit from it.
+- The engine flag is fixed at engine creation. A conversation can override it with
+  `LiteRtConversationOptions.EnableSpeculativeDecoding`:
+  - `true`, on an engine loaded without the flag, makes the runtime load the drafter lazily on that
+    conversation's first send.
+  - `false` turns the drafter off for one conversation of a speculative engine.
+  - Unset (`null`) keeps the engine setting, also after another conversation loaded the drafter. The
+    binding sends no value for it. With LiteRT-LM v0.20.0 (win-x64, CPU and GPU), an unset conversation
+    decoded at the plain rate after another conversation had loaded the drafter.
+- The default disk cache works with speculative decoding on every backend we tested, including desktop
+  WebGPU, and warm loads benefit from it. LiteRT-LM v0.13.1 needed `Cache = LiteRtCache.Disabled` on
+  desktop WebGPU (upstream [#2572](https://github.com/google-ai-edge/LiteRT-LM/issues/2572), fixed in v0.14.0;
+  see [Root cause](#root-cause-the-disk-cache)).
 
 ## Using it
 
@@ -41,8 +42,6 @@ using var engine = LiteRtEngine.Load(new LiteRtEngineOptions
     MaxNumTokens = 4096,
     EnableSpeculativeDecoding = true,                 // MTP drafter
     EnableBenchmark = true,                           // so GetBenchmarkInfo() reports timings
-    // On LiteRT-LM v0.13.1 natives, speculative + WebGPU GPU also required
-    // Cache = LiteRtCache.Disabled (upstream #2572); fixed in v0.14.0.
 });
 
 using var chat = engine.CreateConversation();
@@ -51,14 +50,14 @@ chat.Send("Hello!");
 if (chat.GetBenchmarkInfo() is { NumDecodeTurns: > 0 } b)
     Console.WriteLine($"{b.LastDecodeTokensPerSecond:F1} tok/s decode · TTFT {b.TimeToFirstTokenSeconds:F2}s");
 
-// Native v0.18.0+: opt one conversation out of the engine setting (or in, on an engine loaded without it).
+// Opt one conversation out of the engine setting (or in, on an engine loaded without it).
 using var plain = engine.CreateConversation(new LiteRtConversationOptions { EnableSpeculativeDecoding = false });
 ```
 
 `GetBenchmarkInfo()` works after both blocking (`Send`) and streaming
-(`SendStreamingAsync`) generation. It returns `null` when benchmarking was not enabled or no
-turn has completed yet; it throws `EntryPointNotFoundException` on native binaries that predate the
-benchmark API (the samples catch this and fall back to wall-clock timing).
+(`SendStreamingAsync`) generation. It returns `null` only when benchmarking was not enabled; before
+the first send it reports 0 prefill and 0 decode turns, which is why the snippet checks
+`NumDecodeTurns`.
 
 ### In the samples
 
@@ -69,9 +68,7 @@ benchmark API (the samples catch this and fall back to wall-clock timing).
   ```
 - **MAUI**: after picking the backend, a *Speculative decoding* prompt (shown only for MTP-capable
   models). The three tab headers show `· speculative on/off` and the gauge shows decode tok/s · TTFT.
-
-(Until v0.14.0 both samples automatically set `Cache = LiteRtCache.Disabled` when speculative decoding
-was enabled on the GPU backend; with #2572 fixed they use the default disk cache everywhere.)
+- **Cache**: both samples use the default disk cache, with speculative decoding on or off.
 
 ## How effectiveness is measured
 
@@ -92,11 +89,15 @@ dotnet test LiteRtLmSharp.Tests/LiteRtLmSharp.Tests.csproj -c Release `
 In CI it runs on the CPU leg of `model-tests.yml` on each push via ci.yml (linux-x64 / linux-arm64 /
 win-x64 / osx-arm64); the printed row lands in that job's console log and step summary.
 
-> Sampler note: in the LiteRT-LM v0.18.0 and v0.18.1 sources, the main model verifies the drafted
-> tokens greedily, so with speculative decoding on, only the first token of each turn uses the
-> conversation's sampler and the rest of the reply is decoded greedily (upstream changed this after
-> v0.18.1). On the GPU backend the reply can still differ from a plain argmax reply (measured on v0.18.0,
-> win-x64). The A/B therefore checks coherence and throughput rather than asserting byte-identical output.
+> Sampler note: with speculative decoding on, a sampled reply follows the conversation's seed. Measured
+> with LiteRT-LM v0.20.0 and gemma-4 E2B on win-x64:
+>
+> - On CPU, seeds 7, 8 and 9 gave three different replies (LiteRtLmSharp 1.3.0 gave one reply for all
+>   three), and the argmax reply was byte-identical with and without speculative decoding.
+> - On the GPU backend (RTX 3080, `Float32`), the argmax reply with speculative decoding differed from the
+>   one without it on the same engine.
+>
+> The A/B therefore checks coherence and throughput rather than asserting byte-identical output.
 
 ## Measured results
 
@@ -110,25 +111,35 @@ native benchmark API's `decode_tokens_per_sec` for the turn.
 | win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, v0.18.0, 2026-10-07, F16 activations, the default before 1.3.0) | 87.7 to 96.4 tok/s | 37.7 to 43.5 tok/s | **0.43× to 0.45×** | default disk cache; two runs (87.7/37.7 and 96.4/43.5) |
 | win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, v0.18.0, 2026-10-06, F32) | 91.4 tok/s | 60.5 tok/s | **0.66×** | disk cache disabled by the benchmark (a v0.13.1 workaround, obsolete since v0.14.0) |
 | win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, v0.18.0, 2026-10-06, F16) | 84.1 tok/s | 56.8 tok/s | **0.68×** | disk cache disabled by the benchmark, as above |
-| win-x64 · CPU (dev box, 2026-06-15) | 29.9 tok/s | 23.4 tok/s | **0.78×** | works, but slower — see below |
-| win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, 2026-06-15) | 41.8 tok/s | 35.5 tok/s | **0.85×** | A/B both with cache off; plain GPU *with* the disk cache ≈85 tok/s |
-| linux-x64 · CPU (CI ubuntu-latest, 2026-06-16) | 16.7 tok/s | 12.2 tok/s | **0.73×** | from `model-tests.yml` |
-| osx-arm64 · CPU (CI macos-15, 2026-06-16) | 21.1 tok/s | 20.5 tok/s | **0.97×** | from `model-tests.yml` |
+| win-x64 · CPU (dev box, v0.13.1, 2026-06-15) | 29.9 tok/s | 23.4 tok/s | **0.78×** | works, but slower — see below |
+| win-x64 · GPU WebGPU/D3D12, RTX 3080 (dev box, v0.13.1, 2026-06-15) | 41.8 tok/s | 35.5 tok/s | **0.85×** | A/B both with cache off; plain GPU *with* the disk cache ≈85 tok/s |
+| linux-x64 · CPU (CI ubuntu-latest, v0.13.1, 2026-06-16) | 16.7 tok/s | 12.2 tok/s | **0.73×** | from `model-tests.yml` |
+| osx-arm64 · CPU (CI macos-15, v0.13.1, 2026-06-16) | 21.1 tok/s | 20.5 tok/s | **0.97×** | from `model-tests.yml` |
 | linux-x64 · CPU (CI ubuntu-latest, v0.18.0, 2026-10-07) | 25.6 and 26.1 tok/s | 12.7 and 12.8 tok/s | **0.49× to 0.50×** | two CI runs |
 | linux-arm64 · CPU (CI ubuntu-24.04-arm, v0.18.0, 2026-10-07) | 25.2 and 26.0 tok/s | 17.9 and 17.9 tok/s | **0.69× to 0.71×** | two CI runs |
 | win-x64 · CPU (CI windows-latest, v0.18.0, 2026-10-07) | 16.1 and 25.8 tok/s | 8.8 and 20.6 tok/s | **0.55× to 0.80×** | two CI runs; shared runners are noisy |
 | osx-arm64 · CPU (CI macos-15, v0.18.0, 2026-10-07) | 21.1 and 12.8 tok/s | 17.1 and 11.7 tok/s | **0.81× to 0.92×** | two CI runs; shared runners are noisy |
-| android-arm64 · GPU OpenCL, Adreno 650 (Moto G100, 2026-06-16) | 13.9 tok/s | 14.1 tok/s | **~1.01×** | runs correctly on GPU (drafter on OpenCL, GPU sampler active, no fallback); ~32% draft acceptance, too low to beat the drafter overhead on this older GPU |
+| android-arm64 · GPU OpenCL, Adreno 650 (Moto G100, v0.13.1, 2026-06-16) | 13.9 tok/s | 14.1 tok/s | **~1.01×** | runs correctly on GPU (drafter on OpenCL, GPU sampler active, no fallback); ~32% draft acceptance, too low to beat the drafter overhead on this older GPU |
 
 ### Findings
 
 - **CPU regresses (every platform).** The drafter + verification overhead is not amortized on CPU, so
-  speculative decoding is a net loss-to-neutral for this model: **0.73×** (linux-x64 CI), **0.78×**
-  (win-x64 dev box), **0.97×** (osx-arm64 CI). On v0.18.0 the CI runners measured 0.49× (linux-x64) to
-  0.92× (osx-arm64), and the dev box again 0.78×. This matches the general result that
-  speculative decoding helps memory-bandwidth-bound (accelerator) decode, not compute-bound CPU
-  decode. Both outputs were coherent, full paragraphs, and the `*.mtp_drafter.xnnpack_cache_*` file
-  produced alongside the model confirms the drafter was actually engaged.
+  speculative decoding is a net loss-to-neutral for this model. This matches the general result that
+  speculative decoding helps memory-bandwidth-bound (accelerator) decode, not compute-bound CPU decode.
+  With and without the drafter, the outputs were coherent, full paragraphs.
+
+  | LiteRT-LM | Speedup on CPU |
+  |---|---|
+  | v0.13.1 | **0.73×** (linux-x64 CI), **0.78×** (win-x64 dev box), **0.97×** (osx-arm64 CI) |
+  | v0.18.0 | 0.49× (linux-x64 CI) to 0.92× (osx-arm64 CI); 0.78× on the dev box |
+  | v0.20.0 | Every CI CPU leg (linux-x64, linux-arm64, osx-arm64 and win-x64) decoded slower with the drafter than without it, in every run |
+
+- **The drafter leaves a cache file.** With speculative decoding on, the CPU backend writes a file
+  named `<model file>_<mtime>_<size>.mtp_drafter.xnnpack_cache` to the engine's cache location, for
+  example
+  `gemma-4-E2B-it.litertlm_1780809386_2588147712.mtp_drafter.xnnpack_cache` (LiteRT-LM v0.20.0, win-x64).
+  The file confirms the drafter was engaged. The name ends in `.xnnpack_cache`, so the pattern
+  `*.mtp_drafter.xnnpack_cache*` matches it.
 - **Desktop WebGPU GPU on the official prebuilts (v0.18.0): works, still slower.** With the default disk
   cache and the GPU sampler embedded in the library (so neither factor below applies any more), the
   drafter halves the decode throughput on an RTX 3080: 100.3 → 51.8 tok/s (0.52×) with the F32
@@ -187,11 +198,12 @@ reloads. The whole section above is kept as the v0.13.1 historical record.
 
 ### Upstream tracking (researched 2026-06-15)
 
-- **Cache**: no dedicated issue for the Windows/WebGPU case yet —
+- **Cache**: when this was researched, there was no dedicated issue for the Windows/WebGPU case.
   [#2503](https://github.com/google-ai-edge/LiteRT-LM/issues/2503) is the iOS/Metal sibling, and a
   buried comment on [#2461](https://github.com/google-ai-edge/LiteRT-LM/issues/2461) reports the exact
-  trace as a **regression from v0.12.0** (without MTP, so the collision is broader than MTP). A new
-  upstream issue is warranted.
+  trace as a **regression from v0.12.0** (without MTP, so the collision is broader than MTP). The
+  Windows/WebGPU case was later filed as
+  [#2572](https://github.com/google-ai-edge/LiteRT-LM/issues/2572) and fixed in v0.14.0.
 - **CPU-sampling fallback**: this was [#2073](https://github.com/google-ai-edge/LiteRT-LM/issues/2073)
   (WebGPU sampler exports 3/7 C-ABI functions on macOS/Windows → CPU fallback), closed upstream on
   2026-09-22. It no longer applies: the official prebuilts the binding ships since 1.2.0 embed the GPU

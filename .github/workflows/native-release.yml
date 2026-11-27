@@ -38,7 +38,7 @@ on:
       litertlm_version:
         description: 'LiteRT-LM release tag (release tag here = native-<tag>).'
         required: true
-        default: 'v0.18.0'
+        default: 'v0.20.0'
       source:
         description: 'Where the Linux, Windows, Android and macOS libraries come from: the C API zip release asset, the litert-lm-api wheels on PyPI, or auto (the zip when the release has it, else PyPI).'
         type: choice
@@ -64,19 +64,22 @@ on:
 env:
   UPSTREAM_REPO: google-ai-edge/LiteRT-LM
   # Defaults keep the workflow runnable when an input is left empty.
-  UPSTREAM_TAG: ${{ inputs.litertlm_version || 'v0.18.0' }}
+  UPSTREAM_TAG: ${{ inputs.litertlm_version || 'v0.20.0' }}
   # The jobs read the resolved source (auto -> zip or pypi) from the prepare job.
   SOURCE_INPUT: ${{ inputs.source || 'auto' }}
   CAPI_ZIP: litert_lm_c_api-${{ inputs.capi_version || '0.1.0' }}.zip
   PYPI_VERSION: ${{ inputs.pypi_version }}
   PLATFORMS: ${{ inputs.platforms || 'all' }}
-  # Minimum litert_lm_* export count we accept (v0.16.0 ships 144, v0.18.0 212; the check catches a
-  # truncated or wrong-architecture binary, not a specific version).
-  MIN_EXPORTS: '140'
+  # Minimum litert_lm_* export count we accept: the number of distinct litert_lm_* functions the binding declares
+  # (203 for C API 1.1.0; v0.20.0 exports 242, 243 on Mach-O). The check catches a truncated or wrong-architecture
+  # binary, not a changed signature; each platform's list of required names catches a missing entry point.
+  MIN_EXPORTS: '203'
   # DirectX Shader Compiler runtime for win-x64 (the official DLL's Dawn requires DXC on D3D12 and
-  # has no FXC fallback: without dxil.dll the GPU engine fails to create, "DynamicLib.Open: dxil.dll
-  # Windows Error: 87"). Pinned by hash; this exact pair was validated on an RTX 3080 (2026-09) and is
-  # byte-identical to the pair the v0.18.0 Windows wheel carries.
+  # has no FXC fallback: without dxcompiler.dll the GPU engine fails to create, "DynamicLib.Open:
+  # dxcompiler.dll Windows Error: 87"). dxil.dll ships alongside it; on LiteRT-LM v0.20.0 with one
+  # RTX 3080, one GPU run without dxil.dll (cache disabled) still loaded and answered. Pinned by
+  # hash; this exact pair was validated on an RTX 3080 (2026-09) and is byte-identical to the pair
+  # the v0.20.0 Windows wheel carries.
   DXC_URL: https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/dxc_2026_02_20.zip
   DXC_SHA256: a1e89031421cf3c1fca6627766ab3020ca4f962ac7e2caa7fab2b33a8436151e
 
@@ -263,6 +266,15 @@ jobs:
     timeout-minutes: 30
     env:
       SOURCE: ${{ needs.prepare.outputs.source }}
+      # Session API. The same names are in .github/scripts/assert-elf-exports.sh,
+      # .github/scripts/inspect-pe.py and LiteRtLmSharp.Tests/SessionAbiTests.cs (SessionImports).
+      SESSION_EXPORTS: >-
+        litert_lm_engine_create_session litert_lm_session_delete litert_lm_session_cancel_process
+        litert_lm_session_save_checkpoint litert_lm_session_rewind_to_checkpoint litert_lm_session_rewind_to_step
+        litert_lm_session_run_prefill litert_lm_session_run_decode litert_lm_session_run_decode_async
+        litert_lm_session_run_text_scoring litert_lm_session_config_set_apply_prompt_template
+        litert_lm_responses_delete litert_lm_responses_get_num_candidates litert_lm_responses_get_response_text_at
+        litert_lm_responses_get_score_at litert_lm_responses_get_token_length_at
     steps:
       - uses: actions/checkout@v4
 
@@ -289,9 +301,16 @@ jobs:
           if grep -q 'libLiteRt' <<< "$deps"; then
             echo "::error::macos library expects a separate libLiteRt companion — not the monolithic layout this workflow packages"; exit 1
           fi
-          cnt=$(nm -gU "$lib" | grep -c ' _litert_lm_' || true)
+          syms=$(nm -gU "$lib")
+          cnt=$(grep -c ' _litert_lm_' <<< "$syms" || true)
           echo "exported litert_lm_* symbols: $cnt"
           [ "$cnt" -ge "$MIN_EXPORTS" ] || { echo "::error::expected >= $MIN_EXPORTS litert_lm_* exports, got $cnt"; exit 1; }
+          # Session API (SESSION_EXPORTS) and model sync entry points (Mach-O names carry a leading
+          # underscore). The model sync names are in .github/scripts/inspect-pe.py,
+          # .github/scripts/assert-elf-exports.sh and ModelSyncAbiTests.cs.
+          for sym in litert_lm_get_api_version $SESSION_EXPORTS litert_lm_model_sync_update litert_lm_model_sync_plan_create_from_file; do
+            grep -q " _${sym}\$" <<< "$syms" || { echo "::error::macos library lacks $sym"; exit 1; }
+          done
           echo "--- minimum macOS version ---"
           vtool -show-build "$lib" | grep -E 'platform|minos|sdk' || true
           ls -la artifacts/macos
@@ -325,11 +344,18 @@ jobs:
           lipo -info "$device"
           otool -L "$device"
           vtool -show-build "$device" | grep -E 'platform|minos|sdk' || true
-          cnt=$(nm -gU "$device" | grep -c ' _litert_lm_' || true)
+          syms=$(nm -gU "$device")
+          cnt=$(grep -c ' _litert_lm_' <<< "$syms" || true)
           echo "exported litert_lm_* symbols: $cnt"
           [ "$cnt" -ge "$MIN_EXPORTS" ] || { echo "::error::expected >= $MIN_EXPORTS litert_lm_* exports, got $cnt"; exit 1; }
-          echo "--- GPU companions referenced by name (documented: CPU-only with the xcframework alone) ---"
-          strings "$device" | grep -E 'libLiteRt(MetalAccelerator|TopKMetalSampler)\.dylib' | sort -u || true
+          for sym in litert_lm_get_api_version $SESSION_EXPORTS litert_lm_model_sync_update litert_lm_model_sync_plan_create_from_file; do
+            grep -q " _${sym}\$" <<< "$syms" || { echo "::error::ios device binary lacks $sym"; exit 1; }
+          done
+          # The v0.20.0 framework links the Metal accelerator and the TopK Metal sampler (it still names their
+          # dylibs, for the factory's dynamic-load path). Logged, not enforced: nothing has run on an iOS device,
+          # and the CPU backend stays the supported path there.
+          echo "--- Metal accelerator and TopK Metal sampler linked into the device binary ---"
+          nm -U "$device" | grep -E ' _LiteRtTopKMetalSampler_Create$|GpuMetalAccelerator' | head -5 || true
           ls -R artifacts/ios | head -40
 
       - uses: actions/upload-artifact@v4
@@ -439,9 +465,23 @@ jobs:
           done
           cd release
           # Merge with the existing release's checksums so a partial (platform-filtered) run
-          # doesn't clobber checksums of assets that weren't repackaged.
-          gh release download "native-${UPSTREAM_TAG}" --repo "${{ github.repository }}" \
-            --pattern 'checksums.txt' --output existing.txt 2>/dev/null || touch existing.txt
+          # doesn't clobber checksums of assets that weren't repackaged. Only a missing release or a
+          # release without checksums.txt starts from an empty list; any other error stops the run.
+          if names=$(gh release view "native-${UPSTREAM_TAG}" --repo "${{ github.repository }}" \
+              --json assets --jq '.assets[].name' 2> "$RUNNER_TEMP/release-view.err"); then
+            if grep -qx 'checksums.txt' <<< "$names"; then
+              gh release download "native-${UPSTREAM_TAG}" --repo "${{ github.repository }}" \
+                --pattern 'checksums.txt' --output existing.txt
+            else
+              touch existing.txt
+            fi
+          elif grep -q 'release not found' "$RUNNER_TEMP/release-view.err"; then
+            touch existing.txt
+          else
+            cat "$RUNNER_TEMP/release-view.err"
+            echo "::error::could not read release native-${UPSTREAM_TAG}; refusing to replace its checksums.txt"
+            exit 1
+          fi
           sha256sum *.tar.gz THIRD_PARTY_NOTICES.litert-lm.txt > new.txt 2>/dev/null || touch new.txt
           awk '{print $2, $0}' new.txt existing.txt | sort -u -k1,1 | cut -d' ' -f2- > checksums.txt
           rm -f existing.txt new.txt

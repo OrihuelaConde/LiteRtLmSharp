@@ -6,7 +6,7 @@ namespace LiteRtLmSharp.Tests;
 
 /// <summary>
 /// Model-backed tests for the engine improvements: several live engines, the non-blocking token count, the
-/// sampler mapping, and continuing after a cancellation on a <see cref="LiteRtConversation.Clone"/>
+/// sampler strategies, and continuing after a cancellation on a <see cref="LiteRtConversation.Clone"/>
 /// checkpoint.
 /// Set LITERTLM_TEST_MODEL to a .litertlm file to run (LITERTLM_TEST_BACKEND selects cpu/gpu).
 /// </summary>
@@ -185,11 +185,18 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// Greedy and TopK work on the CPU and GPU backends because the binding sends them as TopP (measured on
-    /// LiteRT-LM v0.18.0: the CPU backend rejects the raw types with UNIMPLEMENTED on a fresh engine, and the GPU
-    /// backend runs them as TopP). On a fresh engine, Greedy must decode exact argmax: with a hot temperature and
-    /// two different seeds it still gives the argmax reply, which a sampled TopP reply would not. TopK must be
-    /// the first conversation on its own engine too, and sample exactly like TopP with <c>TopP = 1</c>.
+    /// Greedy and TopK are sent to the runtime as given and work as named as the first conversation on a fresh
+    /// engine, on the CPU and GPU backends. Greedy must decode exact argmax: with a hot temperature and two
+    /// different seeds it still gives the argmax reply, which a sampled reply would not. TopK, the first
+    /// conversation on its own engine too, must sample exactly like TopP with <c>TopP = 1</c>. Without the
+    /// runtime's support for these types, the first send fails with <c>UNIMPLEMENTED: Sampler type: N</c> on
+    /// the CPU backend, and Greedy gives sampled text on the GPU backend (both measured on LiteRT-LM v0.18.0).
+    /// The second engine then pins LiteRT-LM v0.20.0 behaviour: a TopK conversation after a TopP one gives the
+    /// reply of the TopK conversation that came first on that engine. If the runtime kept the TopP sampler, the
+    /// TopK reply would come from it instead; that sampler's reply differs from the TopK one, which the test
+    /// checks first. A runtime that kept the TopP type with the TopK conversation's parameters is not told apart
+    /// on any backend: TopK samples as TopP with <c>TopP = 1</c>, so TopP with this TopK conversation's
+    /// parameters gives the same text (measured on LiteRT-LM v0.20.0, gemma-4 E2B, win-x64 GPU).
     /// </summary>
     [SkippableFact]
     public void GreedyAndTopK_ShouldWorkOnAFreshEngine_AndGreedyShouldBeArgmax()
@@ -200,23 +207,40 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         string argmax;
         using (var engine = LiteRtEngine.Load(options))
         {
-            // The first conversation on the fresh engine asks for Greedy: the case the CPU backend rejected.
+            // The first conversation on the fresh engine asks for Greedy.
             var hotGreedy = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.Greedy, Temperature = 1.6f };
             string greedy7 = Reply(engine, hotGreedy with { Seed = 7 });
             string greedy8 = Reply(engine, hotGreedy with { Seed = 8 });
             argmax = Reply(engine, Argmax);
+            output.WriteLine($"Greedy seed 7: {greedy7}");
+            output.WriteLine($"Greedy seed 8: {greedy8}");
+            output.WriteLine($"Argmax:        {argmax}");
             Assert.Equal(argmax, greedy7);
             Assert.Equal(argmax, greedy8);
         }
-        output.WriteLine($"Greedy/argmax reply: {argmax}");
 
         using (var engine = LiteRtEngine.Load(options))
         {
             var sampled = new LiteRtSamplerParams { TopK = 8, Temperature = 1.0f, Seed = 7 };
             string topK = Reply(engine, sampled with { Strategy = LiteRtSamplerType.TopK });
             string topP = Reply(engine, sampled with { Strategy = LiteRtSamplerType.TopP, TopP = 1.0f });
+            output.WriteLine($"TopK k 8:      {topK}");
+            output.WriteLine($"TopP k 8, p 1: {topP}");
             Assert.False(string.IsNullOrWhiteSpace(topK));
             Assert.Equal(topP, topK);
+
+            // A TopK conversation after a TopP one gives the reply of the TopK conversation that came first on
+            // this engine. If the runtime kept the TopP sampler, the reply would come from it instead; that
+            // sampler's reply differs from the TopK one, which is checked first.
+            var hotTopP = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 64, TopP = 1.0f, Temperature = 1.6f, Seed = 7 };
+            string topPBefore = Reply(engine, hotTopP);
+            output.WriteLine($"TopP before TopK: {topPBefore}");
+            Assert.NotEqual(argmax, topK);
+            Assert.NotEqual(argmax, topPBefore);
+            Assert.NotEqual(topPBefore, topK);
+            string topKAfter = Reply(engine, sampled with { Strategy = LiteRtSamplerType.TopK });
+            output.WriteLine($"TopK after TopP:  {topKAfter}");
+            Assert.Equal(topK, topKAfter);
         }
     }
 
@@ -229,7 +253,10 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
     /// <summary>
     /// Each conversation's parameters take effect on an engine where others already generated: a Greedy
     /// conversation after a sampled one gives the reply of a separate engine that never sampled, and so does
-    /// one sent turn by turn next to a live sampled conversation.
+    /// one sent turn by turn next to a live sampled conversation. If the runtime kept the sampler of an earlier
+    /// conversation on the engine, the Greedy reply would be sampled text (LiteRT-LM v0.18.0 on the CPU backend
+    /// did that). A TopK conversation after a TopP one is pinned in
+    /// <see cref="GreedyAndTopK_ShouldWorkOnAFreshEngine_AndGreedyShouldBeArgmax"/>.
     /// </summary>
     [SkippableFact]
     public void Greedy_ShouldBeArgmax_AfterASampledConversation_AndNextToALiveOne()
@@ -240,6 +267,8 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         string argmax;
         using (var alone = LiteRtEngine.Load(options))
             argmax = Reply(alone, Argmax);
+
+        output.WriteLine($"Argmax, own engine: {argmax}");
 
         var hotTopP = new LiteRtSamplerParams { Strategy = LiteRtSamplerType.TopP, TopK = 64, TopP = 1.0f, Temperature = 1.6f, Seed = 7 };
         var hotGreedy = hotTopP with { Strategy = LiteRtSamplerType.Greedy, Seed = 8 };
@@ -371,8 +400,10 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
         int before = chat.TokenCountCached;
         await foreach (LiteRtStreamChunk _ in chat.SendStreamingAsync("Write one short sentence about the sea."))
         {
-            // Creating a conversation waits for the generation in flight, so the reply has ended after this.
+            // Creating a conversation waits for the generation in flight, so the reply has ended after this. The
+            // final chunk's callback runs just after that, so the pause lets it arrive before the break.
             using LiteRtConversation waited = engine.CreateConversation();
+            await Task.Delay(200);
             break;
         }
 
@@ -454,8 +485,8 @@ public sealed class EngineImprovementsModelTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// CancelProcess() on an idle conversation is a documented no-op, so it must not mark the conversation as
-    /// cancelled: Clone() still works and the clone generates.
+    /// CancelProcess() on an idle conversation had no visible effect on LiteRT-LM v0.20.0, so it must not mark
+    /// the conversation as cancelled: Clone() still works and the clone generates.
     /// </summary>
     [SkippableFact]
     public void CancelProcess_OnAnIdleConversation_ShouldNotBlockClone()

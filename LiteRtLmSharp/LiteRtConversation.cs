@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using LiteRtLmSharp.Native;
@@ -8,22 +9,45 @@ namespace LiteRtLmSharp;
 
 /// <summary>
 /// A stateful conversation over a <see cref="LiteRtEngine"/>. Handles chat templating
-/// internally (mirrors the Gemini Chat APIs). Not thread-safe: serialize calls per instance — and
-/// serialize <b>sends per engine</b>, not just per conversation: multiple live conversations may be
-/// interleaved freely, but concurrent generation on different conversations of one engine is not
-/// supported by the native runtime (non-deterministic output and GPU-backend errors, upstream
-/// LiteRT-LM#2807; its thread-safety contract is undocumented).
+/// internally (mirrors the Gemini Chat APIs). Not thread-safe: serialize calls per instance. The C API's
+/// threading model (<c>c/engine.h</c>) forbids overlapping calls that use the same handle, the engine's
+/// included, and some sends call the engine's tokenizer (see remarks). Multiple live
+/// conversations of one engine may be interleaved freely; plan for one generation at a time per engine
+/// (see remarks).
 /// </summary>
 /// <remarks>
 /// <b>Interleaving vs. concurrency.</b> Switching between several live conversations of one engine turn by
-/// turn is supported and verified from LiteRT-LM v0.15.0 (no state loss, replies stay correct, measured on
-/// CPU and GPU); on v0.14.0 the suspended conversation silently loses its state. What is <i>not</i>
-/// supported is two generations in flight on one engine at the same time: upstream reports
-/// non-deterministic output and GPU-backend errors (LiteRT-LM#2807). Native calls that go through the
-/// engine, such as <see cref="TokenCount"/> and creating a conversation, also wait for a generation in
-/// flight on any conversation of the engine. Do the scheduling at the application level: keep one send in
-/// flight per engine, and cut the running one with <see cref="CancelProcess"/> when something more urgent
-/// arrives (see <see cref="Clone"/> for keeping a checkpoint to continue from).
+/// turn is supported (no state loss, replies stay correct, measured on CPU and GPU). Do the scheduling at
+/// the application level: keep one send in flight per engine, and cut the running one with
+/// <see cref="CancelProcess"/> when something more urgent arrives (see <see cref="Clone"/> for keeping a
+/// checkpoint to continue from).
+/// <para>
+/// A send started while another conversation of the engine was generating waited for it. Measured on
+/// LiteRT-LM v0.20.0 (win-x64, gemma-4 E2B):
+/// </para>
+/// <list type="bullet">
+/// <item>CPU: concurrent sends on two conversations gave the same replies as each one alone, and the
+/// runtime ran one generation to its end before it started the other.</item>
+/// <item>GPU (WebGPU on Direct3D 12, one NVIDIA RTX 3080, Float32): two blocking sends at once, and two
+/// streams at once, gave the same replies as each one alone in 20 of 20 rounds. The streams ran one after the
+/// other. Other GPUs were not measured.</item>
+/// <item>With a <see cref="LiteRtSession"/> and a conversation on one engine, an overlapping session decode and
+/// send ran one after the other, and both replies equaled their replies alone (CPU and GPU).</item>
+/// </list>
+/// <para>
+/// Native calls that go through the engine, such as <see cref="TokenCount"/> and creating a conversation,
+/// also wait for a generation in flight on any conversation of the engine.
+/// </para>
+/// <para>
+/// <b>Calls on the engine handle.</b> Some sends call the tokenizer on the engine handle, from the thread
+/// that sends. On an engine loaded with an explicit <see cref="LiteRtEngineOptions.MaxNumTokens"/>, a send
+/// measures its message and, after a reply that the guard capped, can measure the reply. The first send on the
+/// engine with <see cref="LiteRtSendOptions.EnableThinking"/> set to <c>false</c> looks up a token with it.
+/// <see cref="LiteRtEngine.Tokenize"/> and <see cref="LiteRtEngine.Detokenize"/> use the same handle. Two such
+/// calls on different threads at once would overlap on the engine handle, which <c>c/engine.h</c> forbids, so
+/// the binding runs the tokenizer calls of one engine one at a time. It does not serialize them with the other
+/// calls that use the engine handle, such as creating a conversation or a session.
+/// </para>
 /// </remarks>
 public sealed class LiteRtConversation : IDisposable
 {
@@ -58,6 +82,9 @@ public sealed class LiteRtConversation : IDisposable
     private bool _disposed;
     // Backs IsCancelled (see its remarks for what sets it).
     private volatile bool _cancelled;
+    // How many native cancels this conversation has requested (CancelProcess and the stream teardown), so a
+    // stream can tell whether one was requested while it ran.
+    private int _cancelRequests;
 
     /// <summary>Channel name passed to <c>set_stream_tool_calls</c>. Pinned explicitly (rather than
     /// relying on the native default, currently also "tool_call") so the split logic and the native
@@ -85,16 +112,16 @@ public sealed class LiteRtConversation : IDisposable
     internal static LiteRtConversation Create(
         LiteRtEngine engine, LiteRtConversationOptions? options, bool engineIsMultimodal = false)
     {
-        // The native runtime supports one constrained-decoding mode per conversation: the
-        // tool-calling path (EnableConstrainedDecoding) or a custom provider (ConstraintProvider) —
-        // upstream docs/api/cpp/constrained-decoding.md says choose one. Checked before the platform
-        // guard below so an invalid combination reports the same error on every OS.
+        // The binding accepts one constrained-decoding mode per conversation: the tool-calling path
+        // (EnableConstrainedDecoding) or a custom provider (ConstraintProvider) — upstream
+        // docs/api/cpp/constrained-decoding.md says choose one. On LiteRT-LM v0.20.0 the runtime itself
+        // created a conversation with both and answered a send on it, but whether both took effect together
+        // was not measured.
         if (options is { EnableConstrainedDecoding: true, ConstraintProvider: not null })
         {
             throw new ArgumentException(
                 "EnableConstrainedDecoding (tool-calling constrained decoding) and ConstraintProvider " +
-                "(custom constraints) are mutually exclusive — the native runtime supports only one " +
-                "per conversation. Set one of the two.", nameof(options));
+                "(custom constraints) are mutually exclusive in this binding. Set one of the two.", nameof(options));
         }
 
         ConversationConfigHandle? config = null;
@@ -115,18 +142,13 @@ public sealed class LiteRtConversation : IDisposable
                 ? null
                 : LiteRtJson.ResolveHistory(options.History, options.HistoryJson);
 
-            // A multimodal engine needs the conversation to carry a session config, otherwise the
-            // vision/audio executor never loads and the first attachment send fails with "Vision/Audio
-            // executor should not be null". A BARE session config is enough and is neutral for text, so
-            // attach one whenever the engine has an encoder enabled — even if the caller passed no
-            // sampler/output cap — so a plain CreateConversation() can send attachments without setup.
-            // Speculative decoding: null means the engine setting. A drafter that an earlier conversation loaded
-            // lazily stays on the engine and the executor uses it for every session that leaves the flag unset,
-            // so once that has happened the engine setting is passed explicitly.
-            bool? speculative = options?.EnableSpeculativeDecoding
-                ?? (engine.DrafterLoadedByAConversation ? engine.EnableSpeculativeDecoding : null);
-            if (speculative == true && !engine.EnableSpeculativeDecoding)
-                engine.DrafterLoadedByAConversation = true;
+            // A multimodal engine needs the conversation to be created with a conversation config. On
+            // LiteRT-LM v0.20.0 (CPU and GPU), a conversation created with none (NULL) failed its image send
+            // with "Vision executor should not be null", and the next send on it failed too; with a
+            // conversation config, with or without a session config in it, the vision executor loaded.
+            // engineIsMultimodal forces that config, so a plain CreateConversation() can send attachments
+            // without setup. It also attaches a bare session config, which is neutral for text.
+            bool? speculative = options?.EnableSpeculativeDecoding;
 
             bool needsSessionConfig =
                 options?.Sampler is not null || options?.MaxOutputTokens > 0
@@ -143,125 +165,120 @@ public sealed class LiteRtConversation : IDisposable
 
             if (needsConfig)
             {
-                NativeError.Clear();
-                configPtr = LiteRtLmNative.litert_lm_conversation_config_create();
-                if (configPtr == nint.Zero)
-                    throw NativeError.Exception("litert_lm_conversation_config_create returned null.");
+                nint createdConfig;   // configPtr is captured by a lambda below, so it cannot take the out value
+                unsafe
+                {
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_conversation_config_create(&createdConfig),
+                        nameof(LiteRtLmNative.litert_lm_conversation_config_create));
+                }
+                configPtr = createdConfig;
                 config = new ConversationConfigHandle(configPtr);
 
                 if (needsSessionConfig)
                 {
-                    NativeError.Clear();
-                    nint sessionPtr = LiteRtLmNative.litert_lm_session_config_create();
-                    if (sessionPtr == nint.Zero)
-                        throw NativeError.Exception("litert_lm_session_config_create returned null.");
+                    nint sessionPtr;
+                    unsafe
+                    {
+                        NativeError.ThrowIfFailed(
+                            LiteRtLmNative.litert_lm_session_config_create(&sessionPtr),
+                            nameof(LiteRtLmNative.litert_lm_session_config_create));
+                    }
                     sessionConfig = new SessionConfigHandle(sessionPtr);
 
                     if (options?.MaxOutputTokens > 0)
-                        LiteRtLmNative.litert_lm_session_config_set_max_output_tokens(sessionPtr, options.MaxOutputTokens);
+                        NativeError.ThrowIfFailed(
+                            LiteRtLmNative.litert_lm_session_config_set_max_output_tokens(sessionPtr, options.MaxOutputTokens),
+                            nameof(LiteRtLmNative.litert_lm_session_config_set_max_output_tokens));
 
-                    // Unspecified = "let the engine choose": no sampler params are sent at all, so the
-                    // executor's internal default sampling applies — the same effective behavior as
-                    // 1.0.0/v0.13.1, where the native unspecified type made the sampler factory return
-                    // null (sampler_factory.cc CreateCpuSampler) and the numeric fields went unused.
-                    // v0.14.0 removed the native unspecified member, so "don't set" is the only faithful
-                    // mapping; forcing TopP here would switch CPU decoding to an explicit top-p sampler.
-                    if (options?.Sampler is { Strategy: not LiteRtSamplerType.Unspecified } s)
-                    {
-                        // v0.14.0: build the opaque sampler params, set ALL four fields (create() zeroes
-                        // them — not the ecosystem defaults our record always carries), copy them into the
-                        // session config, then delete immediately (try/finally so it can't leak). Greedy and
-                        // TopK reach the runtime as TopP (see NativeSampler).
-                        (LiteRtSamplerType nativeType, int topK, float topP) = NativeSampler(s);
-                        NativeError.Clear();
-                        nint samplerParams = LiteRtLmNative.litert_lm_sampler_params_create((LiteRtLmSamplerType)nativeType);
-                        if (samplerParams == nint.Zero)
-                            throw NativeError.Exception("litert_lm_sampler_params_create returned null.");
-                        try
-                        {
-                            LiteRtLmNative.litert_lm_sampler_params_set_top_k(samplerParams, topK);
-                            LiteRtLmNative.litert_lm_sampler_params_set_top_p(samplerParams, topP);
-                            LiteRtLmNative.litert_lm_sampler_params_set_temperature(samplerParams, s.Temperature);
-                            // Seed 0 (the default) = deterministic, matching the engine default and
-                            // Google's official bindings (Kotlin defaults 0; python maps unset -> 0).
-                            LiteRtLmNative.litert_lm_sampler_params_set_seed(samplerParams, s.Seed);
-                            LiteRtLmNative.litert_lm_session_config_set_sampler_params(sessionPtr, samplerParams);
-                        }
-                        finally
-                        {
-                            LiteRtLmNative.litert_lm_sampler_params_delete(samplerParams);
-                        }
-                    }
+                    NativeSampler.Apply(sessionPtr, options?.Sampler);
 
                     // LoRA adapters (text / audio). The native side opens the file at set time, so a bad
                     // path surfaces here as a clear LiteRtException rather than a later create failure.
                     if (options?.LoraPath is { } loraPath)
                     {
-                        NativeError.Clear();
-                        int rc = LiteRtLmNative.litert_lm_session_config_set_lora_path(sessionPtr, loraPath);
-                        if (rc != 0)
+                        LiteRtStatusCode status = LiteRtLmNative.litert_lm_session_config_set_lora_path(sessionPtr, loraPath);
+                        if (status != LiteRtStatusCode.Ok)
                             throw NativeError.Exception(
-                                $"litert_lm_session_config_set_lora_path failed (returned {rc}) for '{loraPath}'.",
+                                status,
+                                $"litert_lm_session_config_set_lora_path failed for '{loraPath}'.",
                                 hint: "The path must point to a readable LoRA weights file.");
                     }
 
                     if (options?.AudioLoraPath is { } audioLoraPath)
                     {
-                        NativeError.Clear();
-                        int rc = LiteRtLmNative.litert_lm_session_config_set_audio_lora_path(sessionPtr, audioLoraPath);
-                        if (rc != 0)
+                        LiteRtStatusCode status = LiteRtLmNative.litert_lm_session_config_set_audio_lora_path(sessionPtr, audioLoraPath);
+                        if (status != LiteRtStatusCode.Ok)
                             throw NativeError.Exception(
-                                $"litert_lm_session_config_set_audio_lora_path failed (returned {rc}) for '{audioLoraPath}'.",
+                                status,
+                                $"litert_lm_session_config_set_audio_lora_path failed for '{audioLoraPath}'.",
                                 hint: "The path must point to a readable audio LoRA weights file.");
                     }
 
-                    // Per-conversation speculative decoding (v0.18.0): unset inherits the engine setting; true
-                    // on an engine loaded without it makes the executor load the MTP drafter lazily on this
-                    // conversation's first send; false turns it off here even when the engine enables it.
+                    // Per-conversation speculative decoding: unset inherits the engine setting, also after
+                    // another conversation loaded the drafter; true on an engine loaded without it makes the
+                    // executor load the MTP drafter lazily on this conversation's first send; false turns it
+                    // off here even when the engine enables it.
                     if (speculative is { } enableSpeculative)
-                        LiteRtLmNative.litert_lm_session_config_set_enable_speculative_decoding(sessionPtr, enableSpeculative);
-                    // Multimodal-only (no sampler/output cap/LoRA): the session config stays bare — its
-                    // mere presence is what lets the encoder executor load.
+                        NativeError.ThrowIfFailed(
+                            LiteRtLmNative.litert_lm_session_config_set_enable_speculative_decoding(sessionPtr, enableSpeculative),
+                            nameof(LiteRtLmNative.litert_lm_session_config_set_enable_speculative_decoding));
+                    // Multimodal-only (no sampler/output cap/LoRA): the session config stays bare. The
+                    // conversation config it sits in is what lets the encoder executor load.
 
-                    LiteRtLmNative.litert_lm_conversation_config_set_session_config(configPtr, sessionPtr);
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_conversation_config_set_session_config(configPtr, sessionPtr),
+                        nameof(LiteRtLmNative.litert_lm_conversation_config_set_session_config));
                 }
 
-                // LiteRtJson.SystemMessage wraps the text in a content-parts ARRAY — a bare part object
-                // gets dropped by the chat template and the system turn renders empty (the old
-                // "SystemMessage silently ignored" bug; see the builder's doc for the full story).
+                // LiteRtJson.SystemMessage wraps the text in a content-parts ARRAY, one of the forms the
+                // runtime renders as the system turn (see the builder's doc).
                 if (options?.SystemMessage is not null)
-                    LiteRtLmNative.litert_lm_conversation_config_set_system_message(configPtr, LiteRtJson.SystemMessage(options.SystemMessage));
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_conversation_config_set_system_message(configPtr, LiteRtJson.SystemMessage(options.SystemMessage)),
+                        nameof(LiteRtLmNative.litert_lm_conversation_config_set_system_message));
 
                 if (hasTools)
-                    LiteRtLmNative.litert_lm_conversation_config_set_tools(configPtr, LiteRtJson.Tools(options!.Tools!));
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_conversation_config_set_tools(configPtr, LiteRtJson.Tools(options!.Tools!)),
+                        nameof(LiteRtLmNative.litert_lm_conversation_config_set_tools));
 
                 if (options?.EnableConstrainedDecoding == true)
-                    LiteRtLmNative.litert_lm_conversation_config_set_enable_constrained_decoding(configPtr, true);
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_conversation_config_set_enable_constrained_decoding(configPtr, true),
+                        nameof(LiteRtLmNative.litert_lm_conversation_config_set_enable_constrained_decoding));
 
                 if (extraContext is not null)
-                    LiteRtLmNative.litert_lm_conversation_config_set_extra_context(configPtr, extraContext);
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_conversation_config_set_extra_context(configPtr, extraContext),
+                        nameof(LiteRtLmNative.litert_lm_conversation_config_set_extra_context));
 
                 if (options?.FilterThinkingFromKvCache == true)
-                    LiteRtLmNative.litert_lm_conversation_config_set_filter_channel_content_from_kv_cache(configPtr, true);
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_conversation_config_set_filter_channel_content_from_kv_cache(configPtr, true),
+                        nameof(LiteRtLmNative.litert_lm_conversation_config_set_filter_channel_content_from_kv_cache));
 
                 if (options?.StreamToolCalls == true)
-                    LiteRtLmNative.litert_lm_conversation_config_set_stream_tool_calls(
-                        configPtr, true, ToolCallStreamChannelName);
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_conversation_config_set_stream_tool_calls(configPtr, true, ToolCallStreamChannelName),
+                        nameof(LiteRtLmNative.litert_lm_conversation_config_set_stream_tool_calls));
 
                 if (historyJson is not null)
-                    LiteRtLmNative.litert_lm_conversation_config_set_messages(configPtr, historyJson);
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_conversation_config_set_messages(configPtr, historyJson),
+                        nameof(LiteRtLmNative.litert_lm_conversation_config_set_messages));
 
                 if (options?.PromptTemplate is { } promptTemplate)
-                    LiteRtLmNative.litert_lm_conversation_config_set_prompt_template(configPtr, promptTemplate);
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_conversation_config_set_prompt_template(configPtr, promptTemplate),
+                        nameof(LiteRtLmNative.litert_lm_conversation_config_set_prompt_template));
 
+                // Passed by value; the public enum's values match the native ones (LlGuidance = 1).
                 if (options?.ConstraintProvider is { } provider)
-                {
-                    unsafe
-                    {
-                        int providerValue = (int)provider;
-                        LiteRtLmNative.litert_lm_conversation_config_set_constraint_provider(configPtr, &providerValue);
-                    }
-                }
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_conversation_config_set_constraint_provider(
+                            configPtr, (LiteRtLmConstraintProviderType)provider),
+                        nameof(LiteRtLmNative.litert_lm_conversation_config_set_constraint_provider));
 
                 // Conversation-level thinking token budget → typed thinking config. Only built when a
                 // budget is set: the plain EnableThinking flag keeps its established extra_context
@@ -274,7 +291,8 @@ public sealed class LiteRtConversation : IDisposable
                     // ThinkingConfig default is also enabled).
                     ApplyThinkingConfig(
                         options.EnableThinking ?? true, budget,
-                        cfg => LiteRtLmNative.litert_lm_conversation_config_set_thinking_config(configPtr, cfg));
+                        cfg => LiteRtLmNative.litert_lm_conversation_config_set_thinking_config(configPtr, cfg),
+                        nameof(LiteRtLmNative.litert_lm_conversation_config_set_thinking_config));
                 }
             }
 
@@ -282,12 +300,18 @@ public sealed class LiteRtConversation : IDisposable
             // this reference), so disposing the engine first can never free it under a live session.
             bool engineReferenced = false;
             engine.Handle.DangerousAddRef(ref engineReferenced);
-            NativeError.Clear();
-            nint convPtr = LiteRtLmNative.litert_lm_conversation_create(engine.Handle.Ptr, configPtr);
-            if (convPtr == nint.Zero)
+            nint convPtr;
+            LiteRtStatusCode createStatus;
+            unsafe
             {
+                createStatus = LiteRtLmNative.litert_lm_conversation_create(engine.Handle.Ptr, configPtr, &convPtr);
+            }
+            if (createStatus != LiteRtStatusCode.Ok)
+            {
+                // Read the report before any other native call: the release can delete the engine.
+                LiteRtException failure = NativeError.Exception(createStatus, "litert_lm_conversation_create failed.");
                 engine.Handle.DangerousRelease();
-                throw NativeError.Exception("litert_lm_conversation_create returned null.");
+                throw failure;
             }
 
             return new LiteRtConversation(
@@ -308,18 +332,20 @@ public sealed class LiteRtConversation : IDisposable
     /// <summary>
     /// Tokens currently held in this conversation's KV cache (prefill + decode, accumulated across
     /// turns). When this approaches the engine's <see cref="LiteRtEngineOptions.MaxNumTokens"/> the
-    /// context is full and further generation degrades — manage history before that point. When the
+    /// context is full: the reply stops there and later sends fail — manage history before that point. When the
     /// engine was loaded with an explicit <c>MaxNumTokens</c>, the send methods guard the limit and
-    /// throw <see cref="LiteRtContextOverflowException"/> rather than let a send overflow the cache
-    /// (which corrupts the native runtime).
+    /// throw <see cref="LiteRtContextOverflowException"/> rather than let the runtime reject a send at the
+    /// end of the cache (a rejected prefill leaves the conversation failing every later send; LiteRT-LM v0.20.0,
+    /// gemma-4 E2B, CPU and GPU).
     /// </summary>
     /// <remarks>
     /// <b>This read is a native call and can block.</b> The C API reads the count through the engine, so it
-    /// queues behind a generation that is in flight on <i>any</i> conversation of the engine — measured at
-    /// up to ~12 s on gemma-4 E2B (CPU) when another conversation was decoding thousands of tokens. Use
-    /// <see cref="TokenCountCached"/> for display/diagnostics while generation is running, and this property
-    /// when the exact current value matters and nothing is generating. Every completed send refreshes the
-    /// cache, so after a send the two agree.
+    /// queues behind a generation that is in flight on <i>any</i> conversation of the engine. The wait reached
+    /// up to ~12 s on gemma-4 E2B (CPU) while another conversation was decoding thousands of tokens (measured
+    /// with LiteRT-LM v0.18.0). Use <see cref="TokenCountCached"/> for display/diagnostics while generation is
+    /// running, and this property when the exact current value matters and nothing is generating. Every
+    /// completed send refreshes the cache, so after a send the two agree; a send that a cancel consumed
+    /// (<see cref="IsCancelled"/>) does not.
     /// </remarks>
     public int TokenCount
     {
@@ -339,17 +365,30 @@ public sealed class LiteRtConversation : IDisposable
     /// <c>0</c> until the conversation has completed a send or the exact count was read once (a
     /// <see cref="Clone"/> starts with its parent's count). Every completed
     /// send refreshes it (blocking, streaming and tool-result sends, each with one native read right after the
-    /// send), so after a send the two agree; while a send is in flight it does not include the turn being
-    /// generated. Unlike the rest of the conversation, this property and <see cref="IsContextFull"/> can be read
+    /// send), so after a send the two agree; a send that a cancel consumed (<see cref="IsCancelled"/>) leaves it
+    /// unchanged. While a send is in flight it does not include the turn being generated. Unlike the rest of the conversation, this property and <see cref="IsContextFull"/> can be read
     /// from another thread while a send is in flight, for example by a status line.
     /// </remarks>
     public int TokenCountCached => _cachedTokenCount;
 
     /// <summary>Reads the exact native count and refreshes <see cref="TokenCountCached"/>. Every internal
-    /// read goes through here, so a value the guard already fetched is never re-fetched for the caller.</summary>
-    private int ReadTokenCount()
+    /// read goes through here, so a value the guard already fetched is never re-fetched for the caller.
+    /// A failed read gives -1 (the runtime reports the failure as a status and writes no count) and leaves
+    /// no message on the thread.</summary>
+    private unsafe int ReadTokenCount()
     {
-        int count = LiteRtLmNative.litert_lm_conversation_get_token_count(_conversation.Ptr);
+        nuint native;
+        LiteRtStatusCode status = LiteRtLmNative.litert_lm_conversation_get_token_count(_conversation.Ptr, &native);
+        int count;
+        if (status == LiteRtStatusCode.Ok)
+        {
+            count = checked((int)native);
+        }
+        else
+        {
+            NativeError.Clear();
+            count = -1;
+        }
         _cachedTokenCount = count;
         return count;
     }
@@ -362,9 +401,13 @@ public sealed class LiteRtConversation : IDisposable
     /// counts too, because a failure during generation consumes the conversation the same way (its later sends
     /// fail with another status); this is the safe reading, and some failures may leave it usable.
     /// </summary>
-    /// <remarks>Decided by the outcome, not by the call: <see cref="CancelProcess"/> on an idle conversation,
-    /// a cancelled token that lost the race to a completed send, and a stream left after its reply had already
-    /// ended keep it <c>false</c>. Like <see cref="TokenCountCached"/>, it can be read from another
+    /// <remarks>A cancel requested while a send runs sets it, even when that send then completes: a cancel that
+    /// lands as the reply ends still makes the runtime fail every later send. <see cref="CancelProcess"/> on an
+    /// idle conversation, a cancelled token that fires only after the send returned, and a stream left after its
+    /// final chunk had already arrived keep it <c>false</c>; a stream left before that is cut. A stream that
+    /// ended cleanly also sets it when the runtime reports a failure for the wait that ends the stream (see
+    /// <see cref="SendStreamingAsync(string, System.Threading.CancellationToken)"/>): the conversation's state is
+    /// then unknown, so it counts as cut. Like <see cref="TokenCountCached"/>, it can be read from another
     /// thread.</remarks>
     public bool IsCancelled => _cancelled;
 
@@ -386,49 +429,128 @@ public sealed class LiteRtConversation : IDisposable
     /// <remarks>Reads only the cached token count, so unlike <see cref="TokenCount"/> it never waits behind a
     /// generation running on another conversation of the same engine, and it can be read from another thread
     /// while a send is in flight (see <see cref="TokenCountCached"/>). It lags a send that is still in
-    /// flight.</remarks>
+    /// flight. A reply with thinking that the decode clamp cut can leave it <c>false</c>: the runtime removes the
+    /// thinking from the KV cache after the reply, so the context has room again and the next send passes the
+    /// guard. <see cref="LastReplyReachedContextLimit"/> tells that such a reply was cut.</remarks>
     public bool IsContextFull
         => _sawCeiling || LiteRtContextGuard.IsContextFull(_cachedTokenCount, _engineOwner.MaxNumTokens);
 
     /// <summary>
-    /// Returns benchmark timings (prefill/decode tokens-per-second, time-to-first-token, init
-    /// time) for this conversation, or <c>null</c> when benchmarking was not enabled
-    /// (<see cref="LiteRtEngineOptions.EnableBenchmark"/>) or no turn has completed yet.
+    /// Gets a value indicating whether the reply of the last send that reached the runtime ran to the limit of the
+    /// context: the KV overflow
+    /// guard capped the reply at the room left in the context, and the reply used that whole budget, so it was
+    /// likely cut mid-sentence.
     /// </summary>
     /// <remarks>
-    /// The native per-turn accessors do not bounds-check their index, so this only reads a turn
-    /// after confirming the corresponding turn count is &gt; 0. Throws
-    /// <see cref="EntryPointNotFoundException"/> on native binaries predating the benchmark API.
-    /// Wraps a native surface Google still marks experimental in its own bindings; the reported
-    /// values may change with the native runtime version.
+    /// <para>Unlike <see cref="IsContextFull"/>, it does not mean that the next send fails. After a reply with
+    /// thinking, the runtime removes the thinking from the KV cache, so the context has room again: this property
+    /// is <c>true</c> and <see cref="IsContextFull"/> is <c>false</c>.</para>
+    /// <para>Each send that reaches the runtime resets it. A send that the binding rejects before calling the
+    /// runtime, such as one that throws
+    /// <see cref="LiteRtContextOverflowException"/>, leaves it as it was, as it leaves
+    /// <see cref="LiteRtBenchmarkInfo.LastSendPrefillTokenCount"/>. A <see cref="Clone"/> starts at <c>false</c>.
+    /// It stays <c>false</c> when the reply ended on its own, when a
+    /// <c>MaxOutputTokens</c> cap set by the caller was the tighter limit, when the guard could not measure the
+    /// message (attachments or an extra context), and when the engine was loaded without an explicit
+    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/>. With <see cref="LiteRtEngineOptions.EnableBenchmark"/> on,
+    /// it compares the decoded token count with the budget. Otherwise it tokenizes the answer and thinking text the
+    /// send returned, which can count a few tokens fewer than were decoded, so a non-empty reply that ends on its
+    /// own within 16 tokens of the budget also reads as cut; tool calls in the reply are not counted then, so a
+    /// reply cut inside a tool call can read as not cut.</para>
     /// </remarks>
+    public bool LastReplyReachedContextLimit => _lastReplyReachedLimit;
+
+    /// <summary>
+    /// Returns benchmark timings (prefill/decode tokens-per-second, time-to-first-token, init
+    /// time) for this conversation, or <c>null</c> when benchmarking was not enabled
+    /// (<see cref="LiteRtEngineOptions.EnableBenchmark"/>).
+    /// </summary>
+    /// <remarks>
+    /// Before the first send, the info has zero prefill and decode turns: the per-turn values and
+    /// <see cref="LiteRtBenchmarkInfo.TimeToFirstTokenSeconds"/> are 0, and
+    /// <see cref="LiteRtBenchmarkInfo.TotalInitTimeSeconds"/> is already set.
+    /// The native per-turn accessors reject an index past the last turn, so this only reads a turn
+    /// after confirming the corresponding turn count is &gt; 0.
+    /// </remarks>
+    /// <exception cref="LiteRtException">Reading a benchmark value failed in the runtime.</exception>
     public LiteRtBenchmarkInfo? GetBenchmarkInfo()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        nint infoPtr = LiteRtLmNative.litert_lm_conversation_get_benchmark_info(_conversation.Ptr);
-        if (infoPtr == nint.Zero)
-            return null;
+        nint infoPtr;
+        unsafe
+        {
+            if (LiteRtLmNative.litert_lm_conversation_get_benchmark_info(_conversation.Ptr, &infoPtr) != LiteRtStatusCode.Ok)
+            {
+                // Benchmarking off is a failure natively and null here.
+                NativeError.Clear();
+                return null;
+            }
+        }
 
         using var info = new BenchmarkInfoHandle(infoPtr);
-        int prefillTurns = LiteRtLmNative.litert_lm_benchmark_info_get_num_prefill_turns(info.Ptr);
-        int decodeTurns = LiteRtLmNative.litert_lm_benchmark_info_get_num_decode_turns(info.Ptr);
+        return ReadBenchmarkInfo(info.Ptr, _sendFirstPrefillTurn);
+    }
+
+    /// <summary>Reads every value of a native benchmark info. A failed read throws: the runtime writes no
+    /// value on failure, and every getter fails only on a null handle or an index past the last turn, which
+    /// this never passes. <paramref name="sendFirstPrefillTurn"/> is the index of the first prefill turn of the
+    /// last send (-1 when not tracked).</summary>
+    private static unsafe LiteRtBenchmarkInfo ReadBenchmarkInfo(nint info, int sendFirstPrefillTurn)
+    {
+        nuint prefillTurns, decodeTurns;
+        double timeToFirstToken, totalInitTime;
+        NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_benchmark_info_get_num_prefill_turns(info, &prefillTurns),
+            nameof(LiteRtLmNative.litert_lm_benchmark_info_get_num_prefill_turns));
+        NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_benchmark_info_get_num_decode_turns(info, &decodeTurns),
+            nameof(LiteRtLmNative.litert_lm_benchmark_info_get_num_decode_turns));
+        NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_benchmark_info_get_time_to_first_token(info, &timeToFirstToken),
+            nameof(LiteRtLmNative.litert_lm_benchmark_info_get_time_to_first_token));
+        NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_benchmark_info_get_total_init_time_in_second(info, &totalInitTime),
+            nameof(LiteRtLmNative.litert_lm_benchmark_info_get_total_init_time_in_second));
+
+        nuint lastPrefillTokens = 0, lastDecodeTokens = 0;
+        double lastPrefillRate = 0, lastDecodeRate = 0;
+        if (prefillTurns > 0)
+        {
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_benchmark_info_get_prefill_token_count_at(info, prefillTurns - 1, &lastPrefillTokens),
+                nameof(LiteRtLmNative.litert_lm_benchmark_info_get_prefill_token_count_at));
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_benchmark_info_get_prefill_tokens_per_sec_at(info, prefillTurns - 1, &lastPrefillRate),
+                nameof(LiteRtLmNative.litert_lm_benchmark_info_get_prefill_tokens_per_sec_at));
+        }
+        if (decodeTurns > 0)
+        {
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_benchmark_info_get_decode_token_count_at(info, decodeTurns - 1, &lastDecodeTokens),
+                nameof(LiteRtLmNative.litert_lm_benchmark_info_get_decode_token_count_at));
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_benchmark_info_get_decode_tokens_per_sec_at(info, decodeTurns - 1, &lastDecodeRate),
+                nameof(LiteRtLmNative.litert_lm_benchmark_info_get_decode_tokens_per_sec_at));
+        }
+
+        // After a reply with thinking, the runtime records the KV-cache refill as a second prefill turn of the
+        // same send, so the send's message is its first prefill turn, not the last one. A send that the runtime
+        // rejected before its prefill recorded none, so it reports 0 rather than the previous send's last turn.
+        nuint sendPrefillTokens = sendFirstPrefillTurn < 0 ? lastPrefillTokens : 0;
+        if (sendFirstPrefillTurn >= 0 && (nuint)sendFirstPrefillTurn < prefillTurns)
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_benchmark_info_get_prefill_token_count_at(
+                    info, (nuint)sendFirstPrefillTurn, &sendPrefillTokens),
+                nameof(LiteRtLmNative.litert_lm_benchmark_info_get_prefill_token_count_at));
 
         return new LiteRtBenchmarkInfo
         {
-            TimeToFirstTokenSeconds = LiteRtLmNative.litert_lm_benchmark_info_get_time_to_first_token(info.Ptr),
-            TotalInitTimeSeconds = LiteRtLmNative.litert_lm_benchmark_info_get_total_init_time_in_second(info.Ptr),
-            NumPrefillTurns = prefillTurns,
-            NumDecodeTurns = decodeTurns,
-            // Per-turn getters are unguarded natively — never pass a negative index.
-            LastPrefillTokenCount = prefillTurns > 0
-                ? LiteRtLmNative.litert_lm_benchmark_info_get_prefill_token_count_at(info.Ptr, prefillTurns - 1) : 0,
-            LastDecodeTokenCount = decodeTurns > 0
-                ? LiteRtLmNative.litert_lm_benchmark_info_get_decode_token_count_at(info.Ptr, decodeTurns - 1) : 0,
-            LastPrefillTokensPerSecond = prefillTurns > 0
-                ? LiteRtLmNative.litert_lm_benchmark_info_get_prefill_tokens_per_sec_at(info.Ptr, prefillTurns - 1) : 0,
-            LastDecodeTokensPerSecond = decodeTurns > 0
-                ? LiteRtLmNative.litert_lm_benchmark_info_get_decode_tokens_per_sec_at(info.Ptr, decodeTurns - 1) : 0,
+            TimeToFirstTokenSeconds = timeToFirstToken,
+            TotalInitTimeSeconds = totalInitTime,
+            NumPrefillTurns = checked((int)prefillTurns),
+            NumDecodeTurns = checked((int)decodeTurns),
+            LastPrefillTokenCount = checked((int)lastPrefillTokens),
+            LastSendPrefillTokenCount = checked((int)sendPrefillTokens),
+            LastDecodeTokenCount = checked((int)lastDecodeTokens),
+            LastPrefillTokensPerSecond = lastPrefillRate,
+            LastDecodeTokensPerSecond = lastDecodeRate,
         };
     }
 
@@ -443,15 +565,19 @@ public sealed class LiteRtConversation : IDisposable
     /// Cloning duplicates state in memory; to persist a conversation across process restarts use
     /// <see cref="LiteRtConversationOptions.History"/> instead.
     /// <para>
-    /// <b>The conversation must have advanced at least once</b> (<see cref="TokenCount"/> &gt; 0): the
-    /// native clone duplicates the <i>prefilled</i> state, and creating a conversation prefills nothing —
-    /// the system message, tools and <see cref="LiteRtConversationOptions.History"/> are only pushed
-    /// into the KV cache by the first send. Cloning a never-sent conversation is not rejected natively but
-    /// the result is unreliable: the first clone happens to work (it pays the parent's prefill itself),
-    /// and after any other conversation runs on the engine the parent and its later clones continue that
-    /// other conversation's context instead of their own (observed on LiteRT-LM v0.15.0 and v0.16.0, CPU
-    /// and GPU). To keep a reusable "base" (system prompt + tools) to branch from, send one real turn on
-    /// it first, then clone.
+    /// <b>The conversation must have advanced at least once</b> (<see cref="TokenCount"/> &gt; 0); this
+    /// method throws otherwise. The native clone duplicates the <i>prefilled</i> state, and creating a
+    /// conversation prefills nothing — the system message, tools and
+    /// <see cref="LiteRtConversationOptions.History"/> are only pushed into the KV cache by the first send. To
+    /// keep a reusable "base" (system prompt + tools) to branch from, send one real turn on it first, then
+    /// clone.
+    /// </para>
+    /// <para>
+    /// The runtime itself does not reject a clone of a never-sent conversation. On LiteRT-LM v0.15.0 and
+    /// v0.16.0 (CPU and GPU), after any other conversation ran on the engine, the parent and its later clones
+    /// continued that other conversation's context instead of their own. On v0.20.0 (win-x64; gemma-4 E2B on
+    /// CPU, gemma-4 E4B on GPU), the never-sent conversation, a clone of it and later clones all kept their own
+    /// context in 10 of 10 runs, before and after another conversation ran.
     /// </para>
     /// <para>
     /// <b>A clone is also a checkpoint.</b> A send that is cut short (a cancelled <c>SendAsync</c>, an
@@ -459,15 +585,17 @@ public sealed class LiteRtConversation : IDisposable
     /// <c>CANCELLED</c> to every later send, and a clone taken after the cut does too, so this method refuses
     /// it. Take the clone <i>before</i> a send that might be cut, and continue on the clone if it is. The same
     /// applies to a send that failed during generation: the runtime keeps the failure for that conversation,
-    /// so clone before the send, not after it. This method cannot tell that a blocking send failed, and the clone
-    /// it returns then fails too.
+    /// so clone before the send, not after it. This method cannot tell that a blocking send failed, so it does
+    /// not refuse that clone. On LiteRT-LM v0.20.0 (CPU and GPU), a clone taken after a send whose prefill the
+    /// runtime rejected failed every send. After a message that the runtime rejected before its prefill (an
+    /// undecodable image), the conversation and its clone kept working.
     /// </para>
     /// <para>
-    /// <b>Known issue on the GPU backend</b> (LiteRT-LM v0.18.0 and v0.19.0): a clone shares its native state with
-    /// its parent and its sibling clones until it diverges. If its first send repeats, word for word, a message
-    /// any of them already processed, and another conversation generated in between, the reply comes out wrong
-    /// or empty, with no error. Any other token avoids it, but whitespace does not, because the model's template
-    /// trims it: reword the message, or append one more zero-width space (U+200B) than the earlier attempts had.
+    /// <b>Re-sending a message on a clone, GPU backend.</b> On LiteRT-LM v0.18.0, when a clone's first send repeated
+    /// word for word a message the conversation it came from had already processed, and another conversation
+    /// generated in between, the reply came out wrong, with no error. This was not reproduced with v0.20.0 on the
+    /// GPU measured (win-x64 WebGPU, gemma-4 E2B, Float32 activations): 60 of 60 such re-sends gave the same reply
+    /// as a fresh conversation. Other GPUs were not measured.
     /// </para>
     /// <para>
     /// Creating the clone is lazy: on text conversations it costs no measurable time or memory until the clone
@@ -475,9 +603,17 @@ public sealed class LiteRtConversation : IDisposable
     /// conversation with <see cref="LiteRtConversationOptions.EnableConstrainedDecoding"/> or a
     /// <see cref="LiteRtConversationOptions.ConstraintProvider"/> is the exception, because the runtime
     /// rebuilds the constraint machinery for the clone: about 0.9 s and 1 s per clone on gemma-4 E2B
-    /// (LiteRT-LM v0.18.0, win-x64, CPU and GPU alike). A clone does not carry the native state that removes
-    /// earlier reasoning from the KV cache (<see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/>),
-    /// so on a reasoning conversation that reasoning stays in the clone's context.
+    /// (LiteRT-LM v0.18.0, win-x64, CPU and GPU alike). On LiteRT-LM v0.18.0, a clone did not carry the native
+    /// state that removed earlier reasoning from the KV cache
+    /// (<see cref="LiteRtConversationOptions.FilterThinkingFromKvCache"/>), so that reasoning stayed in the clone's
+    /// context. On v0.20.0, the token count read after a reply with thinking already leaves the thinking out, and a
+    /// clone taken then holds the same count (measured on CPU, gemma-4 E2B).
+    /// </para>
+    /// <para>
+    /// <b>Continuing on a clone, GPU backend.</b> On LiteRT-LM v0.20.0 (gemma-4 E2B), continuing on a clone
+    /// saves the replay of the conversation only when nothing else generated in between. After the original or
+    /// another conversation generated, the clone's first send took as long as a
+    /// <see cref="LiteRtConversationOptions.History"/> restore of the same conversation, or longer.
     /// </para>
     /// </remarks>
     /// <exception cref="InvalidOperationException">
@@ -494,36 +630,41 @@ public sealed class LiteRtConversation : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         // A cancelled conversation clones into an empty conversation that also answers CANCELLED (measured
-        // on LiteRT-LM v0.18.0, CPU and GPU), so the checkpoint has to be taken before the send.
+        // on LiteRT-LM v0.18.0 and v0.20.0, CPU and GPU), so the checkpoint has to be taken before the send.
         if (_cancelled)
             throw new InvalidOperationException(
                 "Cannot clone a conversation whose send was cut short: the runtime fails every later send on it, " +
                 "and a clone of it fails too. To continue after a cancellation, take the " +
                 "Clone() before the send that might be cut and continue on the clone, or restore the turns " +
                 "on a new conversation through LiteRtConversationOptions.History.");
-        // Nothing prefilled yet: the native clone would copy an empty state and the branch silently drifts
-        // onto whatever conversation ran last on the engine (see the doc above). Fail loudly instead.
+        // Nothing prefilled yet: the native clone would copy an empty state. On LiteRT-LM v0.15.0 and v0.16.0
+        // the branch drifted onto whatever conversation ran last on the engine (see the doc above), so this
+        // fails loudly instead.
         if (TokenCount <= 0)
             throw new InvalidOperationException(
                 "Cannot clone a conversation that has not advanced yet: Clone() duplicates the prefilled " +
                 "KV-cache state, and a newly created conversation has none (its system message, tools and " +
-                "History are prefilled by the first send). Cloning it anyway produces a branch that continues " +
-                "another conversation's context once any other conversation runs on the engine. Send one " +
-                "message on this conversation first, then clone it.");
+                "History are prefilled by the first send). Send one message on this conversation first, " +
+                "then clone it.");
 
         bool engineReferenced = false;
         _engineOwner.Handle.DangerousAddRef(ref engineReferenced);   // released by the clone's handle
-        NativeError.Clear();
-        nint clonedPtr = LiteRtLmNative.litert_lm_conversation_clone(_conversation.Ptr);
-        if (clonedPtr == nint.Zero)
+        nint clonedPtr;
+        LiteRtStatusCode cloneStatus;
+        unsafe
         {
-            _engineOwner.Handle.DangerousRelease();
-            throw NativeError.Exception(
-                "litert_lm_conversation_clone returned null.",
+            cloneStatus = LiteRtLmNative.litert_lm_conversation_clone(_conversation.Ptr, &clonedPtr);
+        }
+        if (cloneStatus != LiteRtStatusCode.Ok)
+        {
+            LiteRtException failure = NativeError.Exception(
+                cloneStatus, "litert_lm_conversation_clone failed.",
                 hint: "Cloning duplicates the conversation's prefilled KV-cache state into a new conversation, " +
                 "and some engines or backends do not implement it (the native layer then reports " +
                 "UNIMPLEMENTED). To restore a conversation from persisted messages instead, create one with " +
                 "LiteRtConversationOptions.History.");
+            _engineOwner.Handle.DangerousRelease();
+            throw failure;
         }
 
         // The clone is a fully independent native conversation; it does not share or need the parent's
@@ -542,6 +683,8 @@ public sealed class LiteRtConversation : IDisposable
         // parent's cache), and a full parent means a full branch.
         clone._cachedTokenCount = _cachedTokenCount;
         clone._sawCeiling = _sawCeiling;
+        // The native clone carries its parent's benchmark turns, so the parent's last send is the clone's too.
+        clone._sendFirstPrefillTurn = _sendFirstPrefillTurn;
         return clone;
     }
 
@@ -579,7 +722,7 @@ public sealed class LiteRtConversation : IDisposable
     /// </summary>
     /// <exception cref="LiteRtContextOverflowException">Sending would overflow the KV cache sized by
     /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> — the guard that keeps a long tool loop from
-    /// crashing the native runtime. Only thrown when the engine was loaded with an explicit
+    /// running into the end of the context. Only thrown when the engine was loaded with an explicit
     /// <c>MaxNumTokens</c>.</exception>
     public LiteRtResponse SendToolResults(IEnumerable<LiteRtToolResult> results, LiteRtSendOptions? options = null)
     {
@@ -595,8 +738,8 @@ public sealed class LiteRtConversation : IDisposable
     /// as consumed: dispose it and continue on a fresh one. To keep the earlier turns without replaying them,
     /// take a <see cref="Clone"/> before the send and continue on the clone; otherwise restore prior turns via
     /// <see cref="LiteRtConversationOptions.History"/>. Sending again on a
-    /// cancelled conversation returns <c>CANCELLED</c> for every later call (LiteRT-LM v0.16.0 and v0.18.0)
-    /// or hangs (v0.14.0); the engine itself is unaffected. While the send is in flight, do not touch the
+    /// cancelled conversation returns <c>CANCELLED</c> for every later call (LiteRT-LM v0.18.0 and v0.20.0);
+    /// the engine itself is unaffected. While the send is in flight, do not touch the
     /// conversation from other threads — cancellation, and reading <see cref="TokenCountCached"/> or
     /// <see cref="IsContextFull"/>, are the only supported concurrent operations.
     /// </summary>
@@ -635,28 +778,52 @@ public sealed class LiteRtConversation : IDisposable
     /// running on another thread, a <see cref="SendAsync(string, CancellationToken)"/>, or an active
     /// <see cref="SendStreamingAsync(string, System.Threading.CancellationToken)"/> stream. Besides reading
     /// <see cref="TokenCountCached"/> and <see cref="IsContextFull"/>, it is the only operation that is safe to
-    /// call from any thread while a send is in flight; when nothing is in flight it is a no-op. The send it
+    /// call from any thread while a send is in flight. When nothing is in flight, it had no visible effect on
+    /// LiteRT-LM v0.20.0: <see cref="IsCancelled"/> stayed <c>false</c>, and a clone taken afterwards
+    /// answered. The C API's threading model (<c>c/engine.h</c>) still says a conversation must not be reused after
+    /// <c>cancel_process</c>, so call this only while a send runs. The send it
     /// cuts fails with a <see cref="LiteRtException"/> whose <see cref="LiteRtException.StatusCode"/> is
     /// <see cref="LiteRtStatusCode.Cancelled"/>, a stream included; the async variants throw
     /// <see cref="OperationCanceledException"/> instead only when their own token was cancelled. Afterwards,
     /// treat the conversation as consumed: dispose it and continue on a fresh one. To keep the earlier turns without
     /// replaying them, take a <see cref="Clone"/> before the send and continue on the clone; otherwise restore
     /// prior turns via <see cref="LiteRtConversationOptions.History"/>. Sending again on a
-    /// cancelled conversation returns <c>CANCELLED</c> for every later call (LiteRT-LM v0.16.0 and v0.18.0)
-    /// or hangs (v0.14.0); the engine itself is unaffected. Mirrors the native <c>cancel_process</c> (the
+    /// cancelled conversation returns <c>CANCELLED</c> for every later call (LiteRT-LM v0.18.0 and v0.20.0);
+    /// the engine itself is unaffected. Mirrors the native <c>cancel_process</c> (the
     /// Kotlin binding's <c>cancelProcess</c> / the JS binding's <c>cancel</c>).
     /// </summary>
     public void CancelProcess()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        LiteRtLmNative.litert_lm_conversation_cancel_process(_conversation.Ptr);
+        // engine.h allows cancel_process to overlap another call on the conversation only from the stream
+        // callback. A cancel from another thread during a blocking send relies on the implementation, where
+        // the cancel only reads the handle and flags the session's active tasks under the execution
+        // manager's lock.
+        Interlocked.Increment(ref _cancelRequests);
+        // A reference for the call: this member runs from any thread, so a Dispose on another thread, or the
+        // finalizer, must not delete the native conversation under it; the delete then runs at the release. A
+        // handle whose native conversation was already deleted throws ObjectDisposedException here, before the
+        // native call.
+        bool referenced = false;
+        try
+        {
+            _conversation.DangerousAddRef(ref referenced);
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_conversation_cancel_process(_conversation.Ptr),
+                nameof(LiteRtLmNative.litert_lm_conversation_cancel_process));
+        }
+        finally
+        {
+            if (referenced)
+                _conversation.DangerousRelease();
+        }
     }
 
     /// <summary>
     /// Runs a blocking send on the thread pool with the cancellation contract of the Async sends: the
     /// token triggers the native cancel; a send that then fails while the token is set surfaces as
-    /// <see cref="OperationCanceledException"/> (the native CANCELLED state reaches the C API as a null
-    /// response, i.e. a <see cref="LiteRtException"/> here).
+    /// <see cref="OperationCanceledException"/> (the native send returns the CANCELLED status, i.e. a
+    /// <see cref="LiteRtException"/> here).
     /// </summary>
     private async Task<LiteRtResponse> RunCancellable(Func<LiteRtResponse> send, CancellationToken cancellationToken)
     {
@@ -694,8 +861,8 @@ public sealed class LiteRtConversation : IDisposable
     // while a send is in flight, hence volatile.
     private volatile int _cachedTokenCount;
 
-    // Set by GuardContextOverflow on each measured, ceiling-clamped send (pre-send token count, measured
-    // prefill, imposed decode budget) and consumed after the send completes to detect — exactly, not by
+    // Set by GuardContextOverflow on each measured send whose output cap is the guard's budget, which is every
+    // measured send without a tighter caller cap (pre-send token count, measured prefill, imposed decode budget) and consumed after the send completes to detect — exactly, not by
     // threshold — that the reply saturated its budget and the context is full. Conversations are not
     // thread-safe (documented), so plain fields are safe here.
     private (int Used, int Input, int Budget)? _ceilingProbe;
@@ -703,21 +870,61 @@ public sealed class LiteRtConversation : IDisposable
     // margin of measurement drift). A context never shrinks, so the latch never resets. Volatile for the same
     // reason as _cachedTokenCount (IsContextFull reads it).
     private volatile bool _sawCeiling;
+    // LastReplyReachedContextLimit: set by CompleteCeilingProbe, cleared right before the native send. Volatile for the same
+    // reason as _sawCeiling.
+    private volatile bool _lastReplyReachedLimit;
+    // The number of prefill turns the native benchmark had recorded when the last send started, which is the
+    // index of that send's own prefill turn; -1 when not tracked (benchmarking off, or no send yet).
+    private int _sendFirstPrefillTurn = -1;
+
+    /// <summary>Resets the per-send state right before the native send, after the guard and the optional args, so
+    /// that a send the binding rejects leaves both <see cref="LastReplyReachedContextLimit"/> and the send's prefill
+    /// index as they were: clears the truncation flag and records the index of the send's first prefill turn.</summary>
+    private void BeginSend()
+    {
+        _lastReplyReachedLimit = false;
+        MarkSendPrefillTurn();
+    }
+
+    /// <summary>Records the index the send's first prefill turn will take. Reads the native benchmark only when the
+    /// engine has benchmarking on.</summary>
+    private unsafe void MarkSendPrefillTurn()
+    {
+        if (!_engineOwner.BenchmarkEnabled)
+            return;
+        int turns = -1;
+        nint info;
+        if (LiteRtLmNative.litert_lm_conversation_get_benchmark_info(_conversation.Ptr, &info) == LiteRtStatusCode.Ok)
+        {
+            using var handle = new BenchmarkInfoHandle(info);
+            nuint prefillTurns;
+            if (LiteRtLmNative.litert_lm_benchmark_info_get_num_prefill_turns(handle.Ptr, &prefillTurns) == LiteRtStatusCode.Ok)
+                turns = checked((int)prefillTurns);
+            else
+                NativeError.Clear();
+        }
+        else
+        {
+            NativeError.Clear();
+        }
+        _sendFirstPrefillTurn = turns;
+    }
 
     /// <summary>
     /// The KV overflow guard (see <see cref="LiteRtContextOverflowException"/>), run before every send.
-    /// Active only when the engine was loaded with an explicit <see cref="LiteRtEngineOptions.MaxNumTokens"/>
-    /// (the C API exposes no getter for the engine's internal default, so an unset limit is unknowable).
+    /// Active only when the engine was loaded with an explicit <see cref="LiteRtEngineOptions.MaxNumTokens"/>.
+    /// The C API exposes the engine's internal default only through the benchmark info of an engine in
+    /// benchmark mode, and this binding does not bind that getter.
     /// Two layers:
     /// (1) a hard stop — a conversation at the guard ceiling (the shared predicate behind
     ///     <see cref="IsContextFull"/>, so signal and stop can never disagree) throws instead of reaching
-    ///     native code, which is the exact state that crashes the runtime on the next send;
+    ///     native code, which is the state in which the runtime rejects the next send;
     /// (2) a decode clamp — the message's real prefill cost is measured (render + tokenize, no inference)
     ///     and the remaining context becomes this send's <c>max_output_tokens</c>, so decode physically
     ///     cannot grow the KV cache past the limit. A message whose prefill alone leaves no room throws.
     /// The measurement is best-effort: sends flagged <paramref name="unmeasured"/> (media attachments or a
-    /// per-send extra context, whose token costs are not measurable managed-side) and natives that cannot
-    /// render/tokenize fall back to layer (1) alone — leave headroom under the limit for those.
+    /// per-send extra context, whose token costs are not measurable managed-side) and sends whose render or
+    /// tokenize fails fall back to layer (1) alone — leave headroom under the limit for those.
     /// </summary>
     private LiteRtSendOptions? GuardContextOverflow(string messageJson, LiteRtSendOptions? options, bool unmeasured)
     {
@@ -731,7 +938,9 @@ public sealed class LiteRtConversation : IDisposable
             LiteRtContextGuard.ThrowContextFull(used, limit);
         LiteRtContextGuard.ThrowIfContextFull(used, limit);
 
-        if (unmeasured)
+        // A count that could not be read is unknown, not zero: sizing the decode cap from it would treat the
+        // conversation as empty.
+        if (unmeasured || used < 0)
             return options;
 
         int inputTokens;
@@ -748,10 +957,10 @@ public sealed class LiteRtConversation : IDisposable
                 return options;
             inputTokens = _engineOwner.CountTokens(rendered);
         }
-        catch (Exception e) when (e is LiteRtException or EntryPointNotFoundException)
+        catch (LiteRtException)
         {
-            // Older natives without the render/tokenize entry points, or a message shape the template cannot
-            // render: the guard cannot measure, the hard stop above still protects the known-fatal state.
+            // A failed render or tokenize, such as a message shape the template cannot render: the guard cannot
+            // measure, and the hard stop above still rejects a send on a full context, which the runtime would reject.
             return options;
         }
 
@@ -771,14 +980,19 @@ public sealed class LiteRtConversation : IDisposable
     /// <summary>Consumes the pending ceiling probe after a completed send: latches the context-full state
     /// when the KV cache grew by at least the measured prefill plus the imposed decode budget (less the
     /// safety margin, absorbing measurement drift) — the reply ran to the ceiling rather than ending on
-    /// its own. Never throws (runs on success paths).</summary>
+    /// its own — and sets <see cref="LastReplyReachedContextLimit"/> when the reply used the whole budget. The
+    /// reply text for the tokenizer count comes from <paramref name="responseJson"/> (blocking) or
+    /// <paramref name="stream"/>. Never throws (runs on success paths).</summary>
     // NOTE (v0.15.0 recalibration): with the context-full threshold now at MinPrefillReserve (128),
     // a clamped send always lands inside the full band, so the threshold predicate alone already
     // reports IsContextFull — this probe's latch can no longer be the deciding term. It is kept as
-    // belt-and-suspenders (exact detection independent of the constant) at negligible cost.
-    private void CompleteCeilingProbe()
+    // belt-and-suspenders (exact detection independent of the constant) at negligible cost. A reply with
+    // thinking is the exception to both: the runtime removes the thinking from the KV cache before this read,
+    // so the count shows neither the growth nor the full band; ReplyUsedBudget still tells that it was cut.
+    private void CompleteCeilingProbe(string? responseJson, StreamState? stream)
     {
-        // Runs on every completed send, so this is also where the non-blocking cache is refreshed: the
+        // Runs on every completed send that no cancel consumed, so this is also where the non-blocking cache is
+        // refreshed: the
         // conversation is idle again (its own send just returned), and the read is immediate as long as
         // sends on the engine are serialized, as documented. A stream's teardown can run after the consumer
         // disposed the conversation; the native object is gone then, so there is nothing to read.
@@ -791,15 +1005,65 @@ public sealed class LiteRtConversation : IDisposable
         _ceilingProbe = null;
         if (count - probe.Used >= probe.Input + probe.Budget - LiteRtContextGuard.SafetyMargin)
             _sawCeiling = true;
+        _lastReplyReachedLimit = ReplyUsedBudget(probe.Budget, responseJson, stream);
+    }
+
+    /// <summary>Whether the reply decoded the whole decode <paramref name="budget"/> the guard imposed
+    /// (<see cref="LiteRtContextGuard.ReplyUsedBudget"/>). With benchmarking on, the decode turn's token count is
+    /// exact: it equals the budget when the reply was cut (CPU and GPU, LiteRT-LM v0.20.0). Otherwise the answer
+    /// and thinking text are tokenized again, which measured 0 to 4 tokens fewer than were decoded (the
+    /// thinking-channel markers); tool calls are not counted. Never throws: a failed read counts as not
+    /// cut.</summary>
+    private bool ReplyUsedBudget(int budget, string? responseJson, StreamState? stream)
+    {
+        try
+        {
+            if (_engineOwner.BenchmarkEnabled && GetBenchmarkInfo() is { NumDecodeTurns: > 0 } benchmark)
+                return LiteRtContextGuard.ReplyUsedBudget(benchmark.LastDecodeTokenCount, budget, exactCount: true);
+
+            string? answer, thinking;
+            if (stream is not null)
+            {
+                answer = stream.Answer?.ToString();
+                thinking = stream.Thinking?.ToString();
+            }
+            else if (responseJson is not null)
+            {
+                LiteRtResponse response = LiteRtResponse.Parse(responseJson);
+                answer = response.Text;
+                thinking = response.Thinking;
+            }
+            else
+            {
+                return false;
+            }
+            // A reply with fewer UTF-8 bytes than the threshold skips the tokenizer.
+            int bytes = Encoding.UTF8.GetByteCount(answer ?? "") + Encoding.UTF8.GetByteCount(thinking ?? "");
+            if (LiteRtContextGuard.TooShortToHaveUsedBudget(bytes, budget))
+                return false;
+            int decoded = (string.IsNullOrEmpty(answer) ? 0 : _engineOwner.CountTokens(answer))
+                        + (string.IsNullOrEmpty(thinking) ? 0 : _engineOwner.CountTokens(thinking));
+            return LiteRtContextGuard.ReplyUsedBudget(decoded, budget, exactCount: false);
+        }
+        catch (Exception)
+        {
+            // A send that completed must not fail here, whatever the benchmark read, the parse of a raw reply or
+            // the tokenizer throws.
+            return false;
+        }
     }
 
     /// <summary>
     /// Low-level escape hatch: sends a raw message JSON and returns the raw response JSON.
     /// Use when you need full control over the wire format.
     /// </summary>
+    /// <remarks><paramref name="messageJson"/> is one message JSON object per call. On LiteRT-LM v0.20.0 a
+    /// JSON array fails with <c>INVALID_ARGUMENT</c> ("Message must be a JSON object."), and the conversation
+    /// stays usable (measured on win-x64, CPU, gemma-4 E2B).</remarks>
     /// <exception cref="LiteRtContextOverflowException">Sending would overflow the KV cache sized by
     /// <see cref="LiteRtEngineOptions.MaxNumTokens"/> — the conversation is full (or the message's
-    /// prefill leaves no room to reply); continuing would corrupt the native runtime. Only thrown when
+    /// prefill leaves no room to reply); the runtime would reject the send (LiteRT-LM v0.20.0, gemma-4 E2B,
+    /// CPU and GPU). Only thrown when
     /// the engine was loaded with an explicit <c>MaxNumTokens</c>. A send carrying media or a non-null
     /// <paramref name="extraContext"/> gets only the conversation-full check (its prefill cost is not
     /// measurable managed-side) — leave headroom under the limit for those.</exception>
@@ -826,21 +1090,34 @@ public sealed class LiteRtConversation : IDisposable
         options = GuardContextOverflow(messageJson, options, unmeasured);
         bool hasMedia = MessageHasMedia(messageJson);
         using ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs(options, hasMedia);
-        NativeError.Clear();
-        nint responsePtr = LiteRtLmNative.litert_lm_conversation_send_message(
-            _conversation.Ptr, messageJson, extraContext, optionalArgs?.Ptr ?? nint.Zero);
+        BeginSend();
+        int cancelRequestsAtStart = Volatile.Read(ref _cancelRequests);
+        nint responsePtr;
+        LiteRtStatusCode status;
+        unsafe
+        {
+            status = LiteRtLmNative.litert_lm_conversation_send_message(
+                _conversation.Ptr, messageJson, extraContext, optionalArgs?.Ptr ?? nint.Zero, &responsePtr);
+        }
         // The send can run for seconds. Without this, a caller whose LAST use of the conversation is
         // this call could have the wrapper collected mid-call — and its SafeHandle finalizer deletes
         // the native conversation the native thread is still generating on.
         GC.KeepAlive(this);
-        if (responsePtr == nint.Zero)
+        // A cancel requested while the send ran consumes the conversation even when the send then returns OK: a
+        // cancel that lands at the end of the turn (as the reply completes, or on the background KV-cache refill of
+        // a reply with channel content) leaves every later send failing with CANCELLED, and engine.h forbids
+        // reusing a conversation after cancel_process anyway.
+        bool cancelRequested = Volatile.Read(ref _cancelRequests) != cancelRequestsAtStart;
+        if (cancelRequested)
+            _cancelled = true;
+        if (status != LiteRtStatusCode.Ok)
         {
-            // The blocking send returns null; the runtime's reason comes from this thread's error report.
+            // The status is the generation error; the runtime's reason comes from this thread's error report.
             // The multimodal setup guidance goes next to it only for the unconfigured-encoder failure ("Vision
             // executor should not be null"), or when the runtime reported nothing; a specific native reason
             // (an undecodable image, a visual budget above the per-image cap) speaks for itself.
             bool smallContext = LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(_engineOwner.MaxNumTokens);
-            LiteRtException failure = NativeError.Exception("litert_lm_conversation_send_message returned null.",
+            LiteRtException failure = NativeError.Exception(status, "litert_lm_conversation_send_message failed.",
                 report => SendFailureHint(report?.Message, hasMedia, smallContext));
             if (failure.StatusCode == LiteRtStatusCode.Cancelled)
                 _cancelled = true;
@@ -848,11 +1125,24 @@ public sealed class LiteRtConversation : IDisposable
         }
 
         using var response = new JsonResponseHandle(responsePtr);
-        nint strPtr = LiteRtLmNative.litert_lm_json_response_get_string(response.Ptr);
+        nint strPtr;
+        unsafe
+        {
+            // Lent by the response, valid until it is deleted; PtrToStringUTF8 copies it out first. It fails
+            // only for a null response, and a failure reads as an empty response, as a null string did.
+            if (LiteRtLmNative.litert_lm_json_response_get_string(response.Ptr, &strPtr) != LiteRtStatusCode.Ok)
+            {
+                NativeError.Clear();
+                strPtr = nint.Zero;
+            }
+        }
         string result = Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
         // The send completed: detect (from exact counts) whether the reply ran to the ceiling-derived
-        // decode budget, latching the context-full state the same turn it happens.
-        CompleteCeilingProbe();
+        // decode budget, latching the context-full state the same turn it happens. engine.h allows no call but
+        // the delete after cancel_process, so a send that a cancel consumed skips the count read, as the stream
+        // teardown does; the cached count and IsContextFull then keep their values from before the send.
+        if (!cancelRequested)
+            CompleteCeilingProbe(result, stream: null);
         return result;
     }
 
@@ -865,9 +1155,7 @@ public sealed class LiteRtConversation : IDisposable
     /// <remarks>The rendered string is exactly what the next send would prefill: on a conversation whose
     /// preface (system message + tools + history) has not been consumed by a first send yet, it
     /// <b>includes the preface</b>; after the first send it is the turn alone — do not add
-    /// <see cref="RenderPreface"/> on top when measuring a first send's cost. Wraps a native entry point
-    /// Google still marks experimental in its own bindings; the rendered format may change with the
-    /// native runtime version.</remarks>
+    /// <see cref="RenderPreface"/> on top when measuring a first send's cost.</remarks>
     public string RenderMessage(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
@@ -886,11 +1174,18 @@ public sealed class LiteRtConversation : IDisposable
 
         // The returned pointer is owned by the conversation and only valid until the next render call;
         // PtrToStringUTF8 copies it out here, so the managed string outlives that window.
-        NativeError.Clear();
-        nint strPtr = LiteRtLmNative.litert_lm_conversation_render_message_to_string(_conversation.Ptr, messageJson);
-        if (strPtr == nint.Zero)
-            throw NativeError.Exception("litert_lm_conversation_render_message_to_string returned null.");
-        return Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
+        nint strPtr;
+        unsafe
+        {
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_conversation_render_message_to_string(_conversation.Ptr, messageJson, &strPtr),
+                nameof(LiteRtLmNative.litert_lm_conversation_render_message_to_string));
+        }
+        string rendered = Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
+        // The string is freed with the native conversation, so the wrapper must stay reachable until the copy is
+        // made: otherwise its SafeHandle finalizer could delete the conversation first.
+        GC.KeepAlive(this);
+        return rendered;
     }
 
     /// <summary>
@@ -901,21 +1196,24 @@ public sealed class LiteRtConversation : IDisposable
     /// consume up front, or to inspect the templated preamble. Complements
     /// <see cref="RenderMessage(string)"/>, which renders one user turn.
     /// </summary>
-    /// <remarks>Wraps a native entry point Google still marks experimental in its own bindings; the
-    /// rendered format may change with the native runtime version. Requires native LiteRT-LM v0.14.0+
-    /// (throws <see cref="EntryPointNotFoundException"/> on older binaries).</remarks>
-    /// <exception cref="LiteRtException">The native render call returned null.</exception>
+    /// <exception cref="LiteRtException">The native render call failed.</exception>
     public string RenderPreface()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         // The returned pointer is owned by the conversation and only valid until the next render call;
         // PtrToStringUTF8 copies it out here, so the managed string outlives that window.
-        NativeError.Clear();
-        nint strPtr = LiteRtLmNative.litert_lm_conversation_render_preface_to_string(_conversation.Ptr);
-        if (strPtr == nint.Zero)
-            throw NativeError.Exception("litert_lm_conversation_render_preface_to_string returned null.");
-        return Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
+        nint strPtr;
+        unsafe
+        {
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_conversation_render_preface_to_string(_conversation.Ptr, &strPtr),
+                nameof(LiteRtLmNative.litert_lm_conversation_render_preface_to_string));
+        }
+        string rendered = Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
+        // As in RenderMessageRaw: reachable until the copy is made.
+        GC.KeepAlive(this);
+        return rendered;
     }
 
     /// <summary>Whether a native failure message is the one the runtime gives when an image/audio arrives
@@ -924,40 +1222,25 @@ public sealed class LiteRtConversation : IDisposable
         => nativeMessage.Contains("executor should not be null", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// The sampler type and the TopK/TopP values sent to the runtime for <paramref name="sampler"/>. Greedy
-    /// and TopK are mapped onto TopP, the one type every LiteRT-LM backend builds (the CPU backend rejects the
-    /// others with UNIMPLEMENTED, and the GPU backend runs every type as TopP): Greedy becomes TopP with
-    /// TopK = 1, which is exact argmax, and TopK becomes TopP with TopP = 1, which is plain top-k sampling.
-    /// Only the field that defines the strategy changes; temperature and seed are sent as given.
-    /// </summary>
-    internal static (LiteRtSamplerType Type, int TopK, float TopP) NativeSampler(LiteRtSamplerParams sampler)
-        => sampler.Strategy switch
-        {
-            LiteRtSamplerType.Greedy => (LiteRtSamplerType.TopP, 1, sampler.TopP),
-            LiteRtSamplerType.TopK => (LiteRtSamplerType.TopP, sampler.TopK, 1.0f),
-            _ => (sampler.Strategy, sampler.TopK, sampler.TopP),
-        };
-
-    /// <summary>
-    /// Whether a native failure is the runtime's rejection of a sampler type its backend does not build
+    /// Whether a native failure is the runtime's rejection of a sampler type it does not implement
     /// (<c>UNIMPLEMENTED: Sampler type: 1 not implemented yet.</c>; the message names the numeric type).
-    /// Since the binding maps Greedy and TopK onto TopP, this can only come from a sampler the model file
-    /// declares, used when <see cref="LiteRtConversationOptions.Sampler"/> is not set or its strategy is
-    /// <see cref="LiteRtSamplerType.Unspecified"/>.
+    /// On v0.20.0 an explicit Greedy or TopK no longer fails (measured on CPU and GPU), and the C API rejects
+    /// a type outside the enum when the sampler is built. The case left is a sampler the model file declares,
+    /// used when <see cref="LiteRtConversationOptions.Sampler"/> is not set or its strategy is
+    /// <see cref="LiteRtSamplerType.Unspecified"/>; no model at hand declares one, so that case is unmeasured.
     /// </summary>
     internal static bool IsUnsupportedSamplerError(string? nativeReason)
         => nativeReason is not null
            && nativeReason.Contains("Sampler type:", StringComparison.OrdinalIgnoreCase)
            && nativeReason.Contains("not implemented", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Guidance appended when a conversation fails because the backend does not build the
-    /// sampler type the model file declares.</summary>
+    /// <summary>Guidance appended when a send fails because the runtime does not implement the sampler
+    /// type in use, which can be the one the model file declares.</summary>
     internal const string SamplerNotSupportedHint =
-        "The engine's backend does not build the sampler type the model file declares (the LiteRT-LM CPU " +
-        "backend builds only TopP samplers; LiteRtModelInfo.DefaultSampler shows the model's own sampler). " +
-        "Set LiteRtConversationOptions.Sampler to an explicit strategy: the binding sends Greedy and TopK as " +
-        "TopP, which the CPU and GPU backends build. Continue on a fresh conversation, because the one that " +
-        "failed is consumed.";
+        "The runtime does not implement the sampler type this conversation uses, which can be the one the " +
+        "model file declares (LiteRtModelInfo.DefaultSampler shows it). Set " +
+        "LiteRtConversationOptions.Sampler to an explicit strategy. Continue on a fresh conversation, " +
+        "because the one that failed is consumed.";
 
     /// <summary>
     /// Guidance appended when a send carrying an image/audio attachment fails the way an unconfigured
@@ -974,21 +1257,34 @@ public sealed class LiteRtConversation : IDisposable
 
     /// <summary>
     /// Appended to a failed send when the engine was loaded with a <c>MaxNumTokens</c> below the largest
-    /// prefill signature of the published gemma conversions (1024): the native loader accepts the smaller
-    /// limit, but prefill breaks inside the native graph once an input spans more than the smallest work
-    /// group (an internal <c>DYNAMIC_UPDATE_SLICE</c> error). The C API cannot report the signatures, so
-    /// this is guidance on failure rather than up-front validation.
+    /// prefill signature of the published gemma conversions (1024) and the failure matches
+    /// <see cref="IsSmallContextFailure"/>. The C API cannot report the signatures, so this is guidance on
+    /// failure rather than up-front validation.
     /// </summary>
+    /// <remarks>
+    /// Below 1024 the outcome depends on the value and the backend (see the remarks of
+    /// <see cref="LiteRtEngineOptions.MaxNumTokens"/>). Measured on LiteRT-LM v0.20.0 (win-x64, gemma-4 E2B):
+    /// <list type="bullet">
+    /// <item>CPU: 100 fails when the engine is created; 512 loads, but every text send fails with
+    /// "Failed to allocate tensors". The native log names a <c>DYNAMIC_UPDATE_SLICE</c> node; the exception
+    /// text does not.</item>
+    /// <item>GPU: 512 accepted a 427-token first message; 100 failed every send.</item>
+    /// </list>
+    /// On both backends, no blocking send returned an empty reply: every failure raised an exception.
+    /// </remarks>
     internal const string SmallContextSendHint =
-        "The engine was loaded with LiteRtEngineOptions.MaxNumTokens below 1024. The native executor " +
-        "accepts that, but a send whose prefill spans more than its smallest work group then fails inside " +
-        "the native graph (the published gemma conversions' largest prefill signature is 1024). If this " +
-        "message was longer than a short sentence, reload the engine with MaxNumTokens >= 1024.";
+        "The engine was loaded with LiteRtEngineOptions.MaxNumTokens below 1024, the largest prefill " +
+        "signature of the published gemma conversions. The native executor accepts some such limits, and a " +
+        "send on the engine can then fail inside the native graph whatever the length of its message. " +
+        "Reload the engine with MaxNumTokens >= 1024.";
 
     /// <summary>Whether a send failure on an engine below 1024 tokens looks like the small-context
-    /// failure (v0.18.0 reports it as "Failed to invoke the compiled model Failed to allocate tensors"),
-    /// or the runtime gave no reason; any other reason, such as a cancellation or a bad LoRA adapter,
-    /// speaks for itself.</summary>
+    /// failure (LiteRT-LM v0.20.0 on CPU reports "Failed to allocate tensors"), or the runtime gave no
+    /// reason; any other reason, such as a cancellation or a bad LoRA adapter, speaks for itself.</summary>
+    /// <remarks>It does not match a prefill that does not fit the context. With <c>MaxNumTokens</c> 1000 and
+    /// the context guard off, such a message failed with <c>FAILED_PRECONDITION</c> ("Prefill input length
+    /// exceeds available state entries") as the first send, or with <c>RESOURCE_EXHAUSTED</c> after an earlier
+    /// message (LiteRT-LM v0.20.0, CPU and GPU).</remarks>
     internal static bool IsSmallContextFailure(string? nativeMessage) =>
         nativeMessage is null
         || nativeMessage.Contains("allocate tensors", StringComparison.OrdinalIgnoreCase)
@@ -1049,13 +1345,13 @@ public sealed class LiteRtConversation : IDisposable
     /// conversation-level <see cref="LiteRtConversationOptions.VisualTokenBudget"/>; a per-send
     /// <see cref="LiteRtSendOptions.MaxOutputTokens"/> overrides the conversation-level
     /// <see cref="LiteRtConversationOptions.MaxOutputTokens"/> for this one send. The caller owns the
-    /// returned handle: dispose it after the send completes (for streaming, only after the native
-    /// decode thread is done — it reads the args during prefill).
+    /// returned handle and disposes it after the send call; both sends copy the args before they return.
     /// </summary>
     private ConversationOptionalArgsHandle? BuildOptionalArgs(LiteRtSendOptions? options, bool hasMedia)
     {
-        // The budget only matters for images, and v0.18.0 validates it against the per-image cap on every send
-        // it is attached to: attached to a text-only turn, a budget above the cap would fail that turn too.
+        // The budget only matters for images, and the runtime (v0.18.0 and v0.20.0) validates it against the
+        // per-image cap on every send it is attached to: attached to a text-only turn, a budget above the cap
+        // would fail that turn too.
         int budget = !hasMedia ? 0 : options is { VisualTokenBudget: > 0 } ? options.VisualTokenBudget : _visualTokenBudget;
         int maxOutputTokens = options is { MaxOutputTokens: > 0 } ? options.MaxOutputTokens : 0;
         bool hasDecodingOptions = options is not null &&
@@ -1071,34 +1367,54 @@ public sealed class LiteRtConversation : IDisposable
                 "LiteRtConversationOptions.ConstraintProvider set (e.g. LiteRtConstraintProvider.LlGuidance) — " +
                 "without a provider the native runtime has nothing to enforce the constraint with.");
 
-        NativeError.Clear();
-        nint p = LiteRtLmNative.litert_lm_conversation_optional_args_create();
-        if (p == nint.Zero)
-            throw NativeError.Exception("litert_lm_conversation_optional_args_create returned null.");
+        nint created;   // p is captured by a lambda below, so it cannot take the out value
+        unsafe
+        {
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_conversation_optional_args_create(&created),
+                nameof(LiteRtLmNative.litert_lm_conversation_optional_args_create));
+        }
+        nint p = created;
 
         var handle = new ConversationOptionalArgsHandle(p);
         try
         {
             if (budget > 0)
-                LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget(p, budget);
+                NativeError.ThrowIfFailed(
+                    LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget(p, budget),
+                    nameof(LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget));
             if (maxOutputTokens > 0)
-                LiteRtLmNative.litert_lm_conversation_optional_args_set_max_output_tokens(p, maxOutputTokens);
+                NativeError.ThrowIfFailed(
+                    LiteRtLmNative.litert_lm_conversation_optional_args_set_max_output_tokens(p, maxOutputTokens),
+                    nameof(LiteRtLmNative.litert_lm_conversation_optional_args_set_max_output_tokens));
 
             // v0.15.0 per-send decoding configs. Each native config is deep-copied by its setter, so
             // the build-set-attach-delete lifetime stays inside this method (sampler-params pattern).
             if (options?.RepetitionPenalties is { } penalties)
             {
-                NativeError.Clear();
-                nint cfg = LiteRtLmNative.litert_lm_repetition_penalty_config_create();
-                if (cfg == nint.Zero)
-                    throw NativeError.Exception("litert_lm_repetition_penalty_config_create returned null.");
+                nint cfg;
+                unsafe
+                {
+                    NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_repetition_penalty_config_create(&cfg),
+                        nameof(LiteRtLmNative.litert_lm_repetition_penalty_config_create));
+                }
                 try
                 {
-                    LiteRtLmNative.litert_lm_repetition_penalty_config_set_repetition_penalty(cfg, penalties.RepetitionPenalty);
-                    LiteRtLmNative.litert_lm_repetition_penalty_config_set_presence_penalty(cfg, penalties.PresencePenalty);
-                    LiteRtLmNative.litert_lm_repetition_penalty_config_set_frequency_penalty(cfg, penalties.FrequencyPenalty);
-                    LiteRtLmNative.litert_lm_repetition_penalty_config_set_window_size(cfg, penalties.WindowSize);
-                    LiteRtLmNative.litert_lm_conversation_optional_args_set_repetition_penalty_config(p, cfg);
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_repetition_penalty_config_set_repetition_penalty(cfg, penalties.RepetitionPenalty),
+                        nameof(LiteRtLmNative.litert_lm_repetition_penalty_config_set_repetition_penalty));
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_repetition_penalty_config_set_presence_penalty(cfg, penalties.PresencePenalty),
+                        nameof(LiteRtLmNative.litert_lm_repetition_penalty_config_set_presence_penalty));
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_repetition_penalty_config_set_frequency_penalty(cfg, penalties.FrequencyPenalty),
+                        nameof(LiteRtLmNative.litert_lm_repetition_penalty_config_set_frequency_penalty));
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_repetition_penalty_config_set_window_size(cfg, penalties.WindowSize),
+                        nameof(LiteRtLmNative.litert_lm_repetition_penalty_config_set_window_size));
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_conversation_optional_args_set_repetition_penalty_config(p, cfg),
+                        nameof(LiteRtLmNative.litert_lm_conversation_optional_args_set_repetition_penalty_config));
                 }
                 finally
                 {
@@ -1108,15 +1424,23 @@ public sealed class LiteRtConversation : IDisposable
 
             if (options?.NoRepeatNgram is { } ngram)
             {
-                NativeError.Clear();
-                nint cfg = LiteRtLmNative.litert_lm_no_repeat_ngram_config_create();
-                if (cfg == nint.Zero)
-                    throw NativeError.Exception("litert_lm_no_repeat_ngram_config_create returned null.");
+                nint cfg;
+                unsafe
+                {
+                    NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_no_repeat_ngram_config_create(&cfg),
+                        nameof(LiteRtLmNative.litert_lm_no_repeat_ngram_config_create));
+                }
                 try
                 {
-                    LiteRtLmNative.litert_lm_no_repeat_ngram_config_set_no_repeat_ngram_size(cfg, ngram.NgramSize);
-                    LiteRtLmNative.litert_lm_no_repeat_ngram_config_set_window_size(cfg, ngram.WindowSize);
-                    LiteRtLmNative.litert_lm_conversation_optional_args_set_no_repeat_ngram_config(p, cfg);
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_no_repeat_ngram_config_set_no_repeat_ngram_size(cfg, ngram.NgramSize),
+                        nameof(LiteRtLmNative.litert_lm_no_repeat_ngram_config_set_no_repeat_ngram_size));
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_no_repeat_ngram_config_set_window_size(cfg, ngram.WindowSize),
+                        nameof(LiteRtLmNative.litert_lm_no_repeat_ngram_config_set_window_size));
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_conversation_optional_args_set_no_repeat_ngram_config(p, cfg),
+                        nameof(LiteRtLmNative.litert_lm_conversation_optional_args_set_no_repeat_ngram_config));
                 }
                 finally
                 {
@@ -1124,12 +1448,22 @@ public sealed class LiteRtConversation : IDisposable
                 }
             }
 
-            if (options?.SuppressTokens is { Count: > 0 } suppress)
+            // The Gemma 4 template switches thinking on only in the system turn, which the runtime prefills with the
+            // first message, and the runtime's decode config for a send with thinking off enforces nothing: after a
+            // first reply with thinking, a follow-up with thinking off still thinks (measured on v0.20.0, CPU and
+            // GPU). Suppressing the token that opens the thinking channel makes the send answer without it.
+            IReadOnlyList<int>? suppressList = SendSuppressTokens(
+                options?.SuppressTokens, options?.EnableThinking,
+                options?.EnableThinking == false && SuppressThinkingChannelWhenThinkingOff
+                    ? _engineOwner.ThinkingChannelOpenToken : null);
+            if (suppressList is { Count: > 0 } suppress)
             {
-                NativeError.Clear();
-                nint cfg = LiteRtLmNative.litert_lm_suppress_tokens_config_create();
-                if (cfg == nint.Zero)
-                    throw NativeError.Exception("litert_lm_suppress_tokens_config_create returned null.");
+                nint cfg;
+                unsafe
+                {
+                    NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_suppress_tokens_config_create(&cfg),
+                        nameof(LiteRtLmNative.litert_lm_suppress_tokens_config_create));
+                }
                 try
                 {
                     int[] ids = suppress as int[] ?? [.. suppress];
@@ -1137,10 +1471,14 @@ public sealed class LiteRtConversation : IDisposable
                     {
                         fixed (int* idsPtr = ids)
                         {
-                            LiteRtLmNative.litert_lm_suppress_tokens_config_set_suppress_tokens(cfg, idsPtr, (nuint)ids.Length);
+                            NativeError.ThrowIfFailed(
+                                LiteRtLmNative.litert_lm_suppress_tokens_config_set_suppress_tokens(cfg, idsPtr, (nuint)ids.Length),
+                                nameof(LiteRtLmNative.litert_lm_suppress_tokens_config_set_suppress_tokens));
                         }
                     }
-                    LiteRtLmNative.litert_lm_conversation_optional_args_set_suppress_tokens_config(p, cfg);
+                    NativeError.ThrowIfFailed(
+                        LiteRtLmNative.litert_lm_conversation_optional_args_set_suppress_tokens_config(p, cfg),
+                        nameof(LiteRtLmNative.litert_lm_conversation_optional_args_set_suppress_tokens_config));
                 }
                 finally
                 {
@@ -1159,13 +1497,16 @@ public sealed class LiteRtConversation : IDisposable
                 ApplyThinkingConfig(
                     options!.EnableThinking ?? _thinkingEnable ?? true,
                     options.ThinkingTokenBudget ?? _thinkingBudget ?? -1,
-                    cfg => LiteRtLmNative.litert_lm_conversation_optional_args_set_thinking_config(p, cfg));
+                    cfg => LiteRtLmNative.litert_lm_conversation_optional_args_set_thinking_config(p, cfg),
+                    nameof(LiteRtLmNative.litert_lm_conversation_optional_args_set_thinking_config));
             }
 
             if (options?.Constraint is { } constraint)
             {
-                LiteRtLmNative.litert_lm_conversation_optional_args_set_constraint(
-                    p, (LiteRtLmConstraintType)constraint.Type, constraint.Pattern);
+                NativeError.ThrowIfFailed(
+                    LiteRtLmNative.litert_lm_conversation_optional_args_set_constraint(
+                        p, (LiteRtLmConstraintType)constraint.Type, constraint.Pattern),
+                    nameof(LiteRtLmNative.litert_lm_conversation_optional_args_set_constraint));
             }
 
             return handle;
@@ -1177,21 +1518,45 @@ public sealed class LiteRtConversation : IDisposable
         }
     }
 
-    /// <summary>Builds a native thinking config, hands it to <paramref name="attach"/> (whose native
-    /// setter deep-copies it), and deletes it — the shared create-set-attach-delete lifetime for the
-    /// conversation-level and per-send thinking configs.</summary>
-    private static void ApplyThinkingConfig(bool enableThinking, int tokenBudget, Action<nint> attach)
+    /// <summary>The suppressed tokens of one send: the caller's <paramref name="callerTokens"/>, plus
+    /// <paramref name="channelOpenToken"/> when the send turns thinking off (<paramref name="enableThinking"/>
+    /// <c>false</c>) and the caller's list does not hold it already. Returns <paramref name="callerTokens"/>
+    /// itself when nothing is added. <paramref name="channelOpenToken"/> is <c>null</c> when the model's tokenizer
+    /// has no such token.</summary>
+    internal static IReadOnlyList<int>? SendSuppressTokens(
+        IReadOnlyList<int>? callerTokens, bool? enableThinking, int? channelOpenToken)
     {
-        NativeError.Clear();
-        nint cfg = LiteRtLmNative.litert_lm_thinking_config_create();
-        if (cfg == nint.Zero)
-            throw NativeError.Exception("litert_lm_thinking_config_create returned null.");
+        if (enableThinking != false || channelOpenToken is not int open || (callerTokens?.Contains(open) ?? false))
+            return callerTokens;
+        return callerTokens is { Count: > 0 } ? [.. callerTokens, open] : [open];
+    }
+
+    /// <summary>Whether a send with <see cref="LiteRtSendOptions.EnableThinking"/> <c>false</c> suppresses the
+    /// token that opens the thinking channel. Always <c>true</c> outside tests; a test sets it to <c>false</c> to
+    /// compare with what the runtime does alone.</summary>
+    internal bool SuppressThinkingChannelWhenThinkingOff { get; set; } = true;
+
+    /// <summary>Builds a native thinking config, hands it to <paramref name="attach"/> (whose native
+    /// setter deep-copies it and returns its status, checked against <paramref name="attachName"/>), and
+    /// deletes it — the shared create-set-attach-delete lifetime for the conversation-level and per-send
+    /// thinking configs.</summary>
+    private static void ApplyThinkingConfig(
+        bool enableThinking, int tokenBudget, Func<nint, LiteRtStatusCode> attach, string attachName)
+    {
+        nint cfg;
+        unsafe
+        {
+            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_thinking_config_create(&cfg),
+                nameof(LiteRtLmNative.litert_lm_thinking_config_create));
+        }
         try
         {
             // Always set BOTH fields: the native default ctor is enabled + infinite, not zeroes.
-            LiteRtLmNative.litert_lm_thinking_config_set_enable_thinking(cfg, enableThinking);
-            LiteRtLmNative.litert_lm_thinking_config_set_thinking_token_budget(cfg, tokenBudget);
-            attach(cfg);
+            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_thinking_config_set_enable_thinking(cfg, enableThinking),
+                nameof(LiteRtLmNative.litert_lm_thinking_config_set_enable_thinking));
+            NativeError.ThrowIfFailed(LiteRtLmNative.litert_lm_thinking_config_set_thinking_token_budget(cfg, tokenBudget),
+                nameof(LiteRtLmNative.litert_lm_thinking_config_set_thinking_token_budget));
+            NativeError.ThrowIfFailed(attach(cfg), attachName);
         }
         finally
         {
@@ -1212,6 +1577,13 @@ public sealed class LiteRtConversation : IDisposable
     /// <see cref="LiteRtStreamChunkKind.ToolCallDelta"/> progress fragments additionally precede that
     /// complete tool-call chunk.
     /// </summary>
+    /// <remarks>
+    /// When the reply ends cleanly and no cancel was requested, the loop over the stream ends only after two
+    /// native calls: a wait for the work the runtime still runs for the turn, such as the KV-cache refill after
+    /// a reply with thinking, and a read of the token count. Like <see cref="TokenCount"/>, the read waits for a generation in flight on any
+    /// conversation of the engine. If the runtime reports a failure for the wait, <see cref="IsCancelled"/>
+    /// becomes <c>true</c> and the conversation counts as cut short.
+    /// </remarks>
     public IAsyncEnumerable<LiteRtStreamChunk> SendStreamingAsync(
         string text, CancellationToken cancellationToken = default)
         => SendStreamingAsync(text, attachments: null, options: null, cancellationToken);
@@ -1239,25 +1611,35 @@ public sealed class LiteRtConversation : IDisposable
         var channel = Channel.CreateUnbounded<LiteRtStreamChunk>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
         var state = new StreamState(channel, _toolCallStreamChannel, _engineOwner.MaxNumTokens, attachments is { Count: > 0 });
-        // The optional args (visual token budget) must stay alive for the whole stream: the native
-        // decode thread reads them during prefill. Freed in the finally, after the channel completes.
-        // Built before the GCHandle so that if native allocation fails we don't leak a pinned handle.
+        // The truncation check tokenizes the reply when the guard capped it and benchmarking is off, so only
+        // then does the callback keep the text.
+        if (_ceilingProbe is not null && !_engineOwner.BenchmarkEnabled)
+        {
+            state.Answer = new StringBuilder();
+            state.Thinking = new StringBuilder();
+        }
+        // The native send copies the optional args before it returns; they are freed in the finally,
+        // after the channel completes. Built before the GCHandle so that if native allocation fails we
+        // don't leak a pinned handle.
         ConversationOptionalArgsHandle? optionalArgs = BuildOptionalArgs(options, attachments is { Count: > 0 });
+        BeginSend();
         var gcHandle = GCHandle.Alloc(state);
+        // A CancelProcess while the stream runs makes the teardown skip the wait (see the finally).
+        int cancelRequestsAtStart = Volatile.Read(ref _cancelRequests);
 
-        int rc;
-        NativeError.Clear();
+        LiteRtStatusCode status;
         unsafe
         {
-            rc = LiteRtLmNative.litert_lm_conversation_send_message_stream(
+            status = LiteRtLmNative.litert_lm_conversation_send_message_stream(
                 _conversation.Ptr, messageJson, null, optionalArgs?.Ptr ?? nint.Zero,
                 &OnStreamChunk, GCHandle.ToIntPtr(gcHandle));
         }
 
-        if (rc != 0)
+        if (status != LiteRtStatusCode.Ok)
         {
-            // Read the report before any other native call (disposing the args is one).
-            LiteRtException failure = NativeError.Exception($"litert_lm_conversation_send_message_stream failed with code {rc}.",
+            // The stream did not start, so the callback never runs. Read the report before any other
+            // native call (disposing the args is one).
+            LiteRtException failure = NativeError.Exception(status, "litert_lm_conversation_send_message_stream failed.",
                 report => SendFailureHint(report?.Message, attachments is { Count: > 0 },
                     LiteRtContextGuard.IsBelowLargestKnownPrefillSignature(_engineOwner.MaxNumTokens)));
             if (gcHandle.IsAllocated) gcHandle.Free();
@@ -1275,54 +1657,113 @@ public sealed class LiteRtConversation : IDisposable
             // The native streaming thread invokes the callback until is_final (or the CANCELLED error),
             // which completes the channel. Before freeing the GCHandle (and letting the caller dispose
             // the conversation) we MUST ensure that thread is done — otherwise it dereferences freed
-            // state / a deleted conversation and segfaults. If the consumer abandoned early (break or
-            // cancellation), cancel the native inference, then DRAIN the channel: chunks the consumer
-            // never read may still sit in the buffer, and a channel's Completion only transitions once
-            // the writer has completed AND the buffer is empty — awaiting Completion without draining
-            // deadlocks exactly when there are leftovers.
-            if (!channel.Reader.Completion.IsCompleted)
+            // state / a deleted conversation and segfaults. Chunks the consumer never read may still sit
+            // in the buffer, and a channel's Completion only transitions once the writer has completed AND
+            // the buffer is empty, so every path DRAINS the channel instead of awaiting Completion, which
+            // would deadlock exactly when there are leftovers.
+            bool freeHandle = true;
+            if (!channel.Reader.Completion.IsCompleted && !state.FinalSeen)
             {
-                // Cancel the native generation. When it already ended (the consumer stopped with chunks still
-                // buffered), the cancel changes nothing natively, so the outcome of the drain decides whether
-                // the conversation was consumed. A consumer that disposed the conversation in its loop body
-                // needs no cancel: the native delete waited for the generation, and the pointer is gone.
+                // The consumer abandoned the stream (break or cancellation) before its final chunk: cancel the
+                // native generation, then drain until the terminal chunk. engine.h forbids reusing a
+                // conversation after cancel_process, and when the generation had already ended the cancel can
+                // still land on the KV-cache refill that channel filtering schedules before the final chunk,
+                // which leaves every later send failing with CANCELLED; so the conversation is consumed
+                // whatever the drain finds. A consumer that disposed the conversation in its loop body needs no
+                // cancel: the native delete waited for the generation, and the pointer is gone.
                 if (!_disposed)
-                    LiteRtLmNative.litert_lm_conversation_cancel_process(_conversation.Ptr);
-                bool cut = false;
-                try
-                {
-                    // Terminates once the writer completes: WaitToReadAsync returns false on a clean
-                    // completion and throws the completion error on a faulted one (the CANCELLED path).
-                    while (await channel.Reader.WaitToReadAsync().ConfigureAwait(false))
-                        while (channel.Reader.TryRead(out _)) { }
-                }
-                catch
-                {
-                    cut = true;   // the cancel error is expected here; the consumer already gave up
-                }
-                if (cut)
-                    _cancelled = true;
-                else
-                    CompleteCeilingProbe();
+                    SendCancel();
+                await DrainAsync(channel).ConfigureAwait(false);
+                _cancelled = true;
             }
-            else if (channel.Reader.Completion.IsCompletedSuccessfully)
+            else if (await DrainAsync(channel).ConfigureAwait(false))
             {
                 // The stream ran to its natural end natively (even if the consumer stopped reading after the
-                // last chunk): same ceiling detection and cache refresh as the blocking path, so a clamped
-                // stream (which just stops, with no error) still latches IsContextFull same-turn. Faulted
-                // streams skip it — the conversation is consumed anyway.
-                CompleteCeilingProbe();
+                // final chunk, with chunks still buffered): no cancel. Wait for the work the runtime still runs
+                // for the turn (the background KV-cache refill of a reply with channel content) and for its
+                // last callback, so the token count is settled and the conversation is idle when the stream
+                // returns, as it is after a blocking send. engine.h forbids the wait after a cancel, so a
+                // CancelProcess recorded before the wait skips it. One from another thread can still arrive
+                // while the wait runs, and it can land on the refill, which makes the runtime fail every later
+                // send; the counter is read again after the wait, so either one consumes the conversation, as on
+                // the blocking path. Then the same ceiling detection and cache refresh as the blocking path, so a
+                // clamped stream (which just stops, with no error) still latches IsContextFull same-turn, unless
+                // the reply carried thinking that the runtime removed from the KV cache.
+                bool settled = true;
+                if (Volatile.Read(ref _cancelRequests) != cancelRequestsAtStart)
+                {
+                    // A CancelProcess during the stream consumes the conversation even though the stream ended
+                    // cleanly, as on the blocking path.
+                    settled = false;
+                    _cancelled = true;
+                }
+                else if (!_disposed)
+                {
+                    nint conversation = _conversation.Ptr;
+                    LiteRtStatusCode waited = await Task.Run(() =>
+                    {
+                        LiteRtStatusCode s = LiteRtLmNative.litert_lm_conversation_wait_until_done(conversation);
+                        if (s != LiteRtStatusCode.Ok)
+                            NativeError.Clear();   // the message is on this thread; nothing reports it
+                        return s;
+                    }).ConfigureAwait(false);
+                    if (waited != LiteRtStatusCode.Ok)
+                    {
+                        // The runtime gave up waiting (its fixed wait limit), and the conversation is in an
+                        // unknown state. Keeping the GCHandle allocated is a precaution: whether a callback can
+                        // still come after a failed wait was not measured, and a small leak is safer than a
+                        // callback on a freed handle.
+                        freeHandle = settled = false;
+                        _cancelled = true;
+                    }
+                    else if (Volatile.Read(ref _cancelRequests) != cancelRequestsAtStart)
+                    {
+                        // A CancelProcess arrived during the wait. The wait still returned after the last callback,
+                        // so the GCHandle is freed, but the conversation is consumed.
+                        settled = false;
+                        _cancelled = true;
+                    }
+                }
+                if (settled)
+                    CompleteCeilingProbe(responseJson: null, state);
             }
             else
             {
                 // Cancelled from outside (CancelProcess on another thread), or failed during generation: the
-                // conversation is consumed either way, as in the drain above.
+                // conversation is consumed either way.
                 _cancelled = true;
             }
-            if (gcHandle.IsAllocated)
+            if (freeHandle && gcHandle.IsAllocated)
                 gcHandle.Free();
             optionalArgs?.Dispose();
         }
+    }
+
+    /// <summary>Reads and discards every chunk left in <paramref name="channel"/> until the writer completes.
+    /// <c>true</c> when the stream completed cleanly, <c>false</c> when it completed with an error.</summary>
+    private static async Task<bool> DrainAsync(Channel<LiteRtStreamChunk> channel)
+    {
+        try
+        {
+            // Terminates once the writer completes: WaitToReadAsync returns false on a clean completion and
+            // throws the completion error on a faulted one (the CANCELLED path).
+            while (await channel.Reader.WaitToReadAsync().ConfigureAwait(false))
+                while (channel.Reader.TryRead(out _)) { }
+            return true;
+        }
+        catch
+        {
+            return false;   // the error was the consumer's to read; the teardown only needs the outcome
+        }
+    }
+
+    /// <summary>The stream teardown's cancel. A failure (only possible for an invalid handle) means nothing was
+    /// cancelled: the drain then waits for the natural end, so the status is not reported.</summary>
+    private void SendCancel()
+    {
+        Interlocked.Increment(ref _cancelRequests);
+        if (LiteRtLmNative.litert_lm_conversation_cancel_process(_conversation.Ptr) != LiteRtStatusCode.Ok)
+            NativeError.Clear();
     }
 
     /// <summary>Unmanaged streaming callback (v0.15.0 <c>LiteRtLmStreamCallback</c> shape: callback
@@ -1338,17 +1779,35 @@ public sealed class LiteRtConversation : IDisposable
             return;
 
         // The whole body is guarded: an exception escaping an [UnmanagedCallersOnly] frame
-        // rude-terminates the process. Unlike the v0.14.0 callback (whose payload arrived as plain
-        // parameters), this body P/Invokes the chunk getters — against a mismatched older native
-        // that lacks them, that's an EntryPointNotFoundException on the native decode thread, which
-        // must surface as a faulted stream (diagnosable, teardown-safe), not a fail-fast.
+        // rude-terminates the process. The body P/Invokes the chunk getters and builds managed
+        // exceptions; anything that throws must surface as a faulted stream (diagnosable,
+        // teardown-safe), not a fail-fast.
         try
         {
-            nint errorMsg = chunk != nint.Zero ? LiteRtLmNative.litert_lm_stream_chunk_get_error(chunk) : nint.Zero;
-            nint text = chunk != nint.Zero ? LiteRtLmNative.litert_lm_stream_chunk_get_text(chunk) : nint.Zero;
-            bool isFinal = chunk == nint.Zero || LiteRtLmNative.litert_lm_stream_chunk_is_final(chunk);
+            // engine.h "Threading model": a callback calls no LiteRT-LM function on the engine, session or
+            // conversation, so only the three chunk getters run here, and a failure is reported from the
+            // returned status alone (reading the thread's message would be another native call). The getters
+            // fail only for a null chunk or out pointer, which the guard below rules out. "Is final" starts
+            // true so that a failed read ends the stream instead of leaving the consumer waiting.
+            nint errorMsg = nint.Zero, text = nint.Zero;
+            byte isFinalByte = 1;
+            LiteRtStatusCode status = LiteRtStatusCode.Ok;
+            if (chunk != nint.Zero)
+            {
+                status = LiteRtLmNative.litert_lm_stream_chunk_get_error(chunk, &errorMsg);
+                if (status == LiteRtStatusCode.Ok)
+                    status = LiteRtLmNative.litert_lm_stream_chunk_get_text(chunk, &text);
+                if (status == LiteRtStatusCode.Ok)
+                    status = LiteRtLmNative.litert_lm_stream_chunk_is_final(chunk, &isFinalByte);
+            }
+            bool isFinal = status != LiteRtStatusCode.Ok || isFinalByte != 0;
 
-            if (errorMsg != nint.Zero)
+            if (status != LiteRtStatusCode.Ok)
+            {
+                state.Channel.Writer.TryComplete(new LiteRtException(
+                    $"Reading a native stream chunk failed: {NativeError.CanonicalName(status)}.", status));
+            }
+            else if (errorMsg != nint.Zero)
             {
                 // The streaming path carries the runtime's status text in the chunk ("CODE: reason"):
                 // build the same exception as the blocking path, with the status, the one-line reason
@@ -1364,20 +1823,27 @@ public sealed class LiteRtConversation : IDisposable
                 string? piece = Marshal.PtrToStringUTF8(text);
                 if (!string.IsNullOrEmpty(piece))
                     foreach (LiteRtStreamChunk c in SplitMessageChunk(piece, state.ToolCallChannel))
+                    {
+                        if (c.Kind == LiteRtStreamChunkKind.Answer) state.Answer?.Append(c.Text);
+                        else if (c.Kind == LiteRtStreamChunkKind.Thinking) state.Thinking?.Append(c.Text);
                         state.Channel.Writer.TryWrite(c);
+                    }
             }
 
             if (isFinal)
+            {
+                // Set before the channel completes, so a teardown that sees chunks still buffered knows the
+                // native generation has ended and sends no cancel.
+                state.FinalSeen = true;
                 state.Channel.Writer.TryComplete();
+            }
         }
         catch (Exception ex)
         {
             // Fault the channel so the consumer gets the real exception and the teardown's drain
             // still terminates. TryComplete is first-wins, so an already-completed channel ignores it.
             state.Channel.Writer.TryComplete(ex is LiteRtException ? ex : new LiteRtException(
-                $"The streaming callback failed reading the native stream chunk: {ex.Message} " +
-                "(a managed/native version mismatch is the most likely cause — the v0.15.0+ managed " +
-                "binding requires the same-version native library).", ex));
+                $"The streaming callback failed reading the native stream chunk: {ex.Message}", ex));
         }
         // NOTE: do NOT free the GCHandle here — the async iterator's finally owns its lifetime and
         // only frees it once the channel is fully completed, so this callback can never run against
@@ -1436,6 +1902,11 @@ public sealed class LiteRtConversation : IDisposable
         public readonly int MaxNumTokens = maxNumTokens;
         /// <summary>Whether the message carries an image or audio, for the multimodal hint on a failed stream.</summary>
         public readonly bool HasMedia = hasMedia;
+        /// <summary>Whether the callback received the stream's final chunk.</summary>
+        public volatile bool FinalSeen;
+        /// <summary>The answer and thinking text the callback received, kept only when the guard capped the
+        /// reply and benchmarking is off (<c>null</c> otherwise). Read after the stream completed.</summary>
+        public StringBuilder? Answer, Thinking;
     }
 
     /// <summary>Disposes the conversation, freeing its native resources (and its config handles). Dispose

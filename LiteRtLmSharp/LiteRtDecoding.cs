@@ -5,7 +5,7 @@ namespace LiteRtLmSharp;
 /// implements: a multiplicative HuggingFace-style <see cref="RepetitionPenalty"/> and subtractive
 /// OpenAI-style <see cref="PresencePenalty"/>/<see cref="FrequencyPenalty"/>. All penalties look at
 /// the <b>generated</b> output window of the current send only (not the prompt, not prior turns).
-/// Set on <see cref="LiteRtSendOptions.RepetitionPenalties"/>. Requires native LiteRT-LM v0.15.0+.
+/// Set on <see cref="LiteRtSendOptions.RepetitionPenalties"/>.
 /// </summary>
 /// <remarks>Maps to the C API <c>litert_lm_repetition_penalty_config_*</c> builder; the defaults
 /// below are the native defaults, so a partially configured record is faithful.</remarks>
@@ -82,8 +82,7 @@ public sealed record LiteRtRepetitionPenaltyOptions
 /// <summary>
 /// Bans the current send's decode from repeating any n-gram of <see cref="NgramSize"/> consecutive
 /// tokens it already produced: a candidate token that would complete an already-seen n-gram has its
-/// logit forced to -inf. Set on <see cref="LiteRtSendOptions.NoRepeatNgram"/>. Requires native
-/// LiteRT-LM v0.15.0+.
+/// logit forced to -inf. Set on <see cref="LiteRtSendOptions.NoRepeatNgram"/>.
 /// </summary>
 /// <remarks>Maps to the C API <c>litert_lm_no_repeat_ngram_config_*</c> builder.</remarks>
 public sealed record LiteRtNoRepeatNgramOptions
@@ -138,7 +137,7 @@ public enum LiteRtConstraintType
 /// <see cref="LiteRtConversationOptions.ConstraintProvider"/>: tokens that cannot lead to a valid
 /// completion of the pattern are masked out, so the model can only emit conforming output. Set on
 /// <see cref="LiteRtSendOptions.Constraint"/>; requires the conversation to have been created with
-/// <see cref="LiteRtConstraintProvider.LlGuidance"/>. Requires native LiteRT-LM v0.15.0+.
+/// <see cref="LiteRtConstraintProvider.LlGuidance"/>.
 /// </summary>
 /// <remarks>Maps to the C API <c>litert_lm_conversation_optional_args_set_constraint</c>.</remarks>
 public sealed record LiteRtConstraint
@@ -146,9 +145,9 @@ public sealed record LiteRtConstraint
     private readonly LiteRtConstraintType _type;
 
     /// <summary>How to interpret <see cref="Pattern"/>. Must be a defined member — an out-of-range
-    /// value (including the unset <c>default</c>) is rejected here rather than passed to the native
-    /// layer, whose constraint compiler does not police the enum (an undefined value reaches
-    /// undefined behavior in the LlGuidance bridge).</summary>
+    /// value (including the unset <c>default</c>) is rejected here, when the constraint is built. The native
+    /// layer also rejects an undeclared constraint type, with <c>INVALID_ARGUMENT</c> (LiteRT-LM
+    /// v0.20.0).</summary>
     /// <exception cref="System.ArgumentOutOfRangeException">The value is not
     /// <see cref="LiteRtConstraintType.Regex"/> or <see cref="LiteRtConstraintType.JsonSchema"/>.</exception>
     public required LiteRtConstraintType Type
@@ -189,13 +188,13 @@ public sealed record LiteRtConstraint
 /// <summary>
 /// Provider used to compile and enforce custom <see cref="LiteRtConstraint"/>s (the "custom
 /// constrained decoding" path). Distinct from <see cref="LiteRtConversationOptions.EnableConstrainedDecoding"/>,
-/// which is the <b>tool-calling</b> constrained-decoding path — the native runtime supports only one
-/// of the two per conversation.
+/// which is the <b>tool-calling</b> constrained-decoding path — this binding accepts only one of the two
+/// per conversation.
 /// </summary>
 public enum LiteRtConstraintProvider
 {
     /// <summary>The <a href="https://github.com/guidance-ai/llguidance">llguidance</a> engine
-    /// (regex, JSON Schema). Compiled into the native library from source — unlike the tool-calling
-    /// constraint provider, it does not depend on a platform prebuilt.</summary>
+    /// (regex, JSON Schema). Built into the official native library, as the tool-calling constraint
+    /// provider is; neither depends on a separate platform prebuilt.</summary>
     LlGuidance = 1,
 }

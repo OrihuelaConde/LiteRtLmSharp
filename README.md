@@ -32,7 +32,7 @@ NuGet packages (LLamaSharp-style). Status: **stable (1.x)**.
 | win-x64 | ✅ | ✅ | ✅ | ✅ | real hardware |
 | linux-x64 | ✅ | ✅ | ✅ | ✅ | real hardware (GPU last checked with the v0.13.1 libraries) |
 | linux-arm64 | ✅ | ✅ | ✅ | — | CI |
-| android-arm64 | ✅ | ✅ | ✅ | ✅ | real device |
+| android-arm64 | ✅ | ✅ | ✅ | ✅ | real device (validated with the LiteRT-LM v0.18.0 libraries) |
 | android-x64 (emulator) | ✅ | ✅ | ✅ | — | emulator |
 | osx-arm64 | ✅ | ✅ | ✅ | ✅ | CI |
 | ios-arm64 | ✅ | ⏳ | — | — | pending |
@@ -54,6 +54,7 @@ version number**. Which LiteRT-LM native build each release wraps:
 
 | LiteRtLmSharp | LiteRT-LM native |
 |---|---|
+| 1.4.0 (not yet published) | v0.20.0 (Google's official prebuilts) |
 | 1.3.0 | v0.18.0 (Google's official prebuilts) |
 | 1.2.0 | v0.16.0 (Google's official C API prebuilts) |
 | 1.1.1 | v0.14.0 |
@@ -63,12 +64,15 @@ version number**. Which LiteRT-LM native build each release wraps:
 | 0.1.0-preview.2 | v0.13.1 |
 | 0.1.0-preview.1 | v0.13.1 |
 
-> **Use 1.2.0 or newer for more than one conversation per engine.** With the LiteRT-LM v0.13.x and
-> v0.14.0 libraries (LiteRtLmSharp 1.1.x and older), interleaving two conversations of one engine
-> silently loses the suspended conversation's state (upstream #2807, fixed in v0.15.0), and a send on a
-> conversation after a cancellation does not return. The binding cannot detect the native version at
-> runtime, so on those versions keep one conversation alive at a time and dispose a cancelled
-> conversation instead of sending on it again.
+From 1.4.0 on, the binding reads the native library's C API version when it loads the library. It throws a
+`LiteRtException` unless the library implements C API 1.1 or a later 1.x version; LiteRT-LM v0.20.0
+implements 1.1.0.
+
+> **Use 1.2.0 or newer for more than one conversation per engine.** With LiteRtLmSharp 1.1.x and older,
+> interleaving two conversations of one engine silently loses the suspended conversation's state
+> (upstream #2807), and a send on a conversation after a cancellation does not return. On those
+> versions, keep one conversation alive at a time and dispose a cancelled conversation instead of
+> sending on it again.
 
 ```csharp
 using LiteRtLmSharp;
@@ -104,6 +108,8 @@ Every feature has a full guide on the [documentation site](https://orihuelaconde
 | **Reasoning mode** | Gemma "thinking", surfaced separately from the answer (blocking & streaming) — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/chat.html#reasoning-mode-thinking) |
 | **Multimodal** | Image and audio attachments, in-memory or memory-mapped from disk — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/chat.html#multimodal-messages-image--audio) |
 | **Conversation state** | Persist/restore chats across restarts; clone a live conversation to branch it — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html) |
+| **Raw sessions** | Prefill and decode text you write, with no chat template; experimental checkpoints, rewind and reset — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/sessions.html) |
+| **Model download and update (experimental)** | Download a `.litertlm` file over HTTP, or update a local copy by reusing the sections that didn't change — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/model-sync.html) |
 | **Embeddings** | On-device text embeddings (EmbeddingGemma 2) for semantic search and RAG, next to a chat model — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/embeddings.html) |
 | **Model metadata** | Read a model file's type, context size, inputs and backends without loading it — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/chat.html#read-a-models-metadata) |
 | **Token counting** | Tokenize/detokenize with the model's own tokenizer; budget the context window — [guide](https://orihuelaconde.github.io/LiteRtLmSharp/chat.html#token-counting-tokenize--detokenize) |
@@ -153,28 +159,35 @@ conversations** (MEAI `ConversationId`) are supported — see the
 - **One chat engine alive at a time — by default.** Loading a second `LiteRtEngine` while one is alive
   throws. To switch model or backend, dispose the conversations and the engine, then `LiteRtEngine.Load`
   again — same pattern as Google's Edge Gallery. An embedding engine (`LiteRtEmbeddingEngine`) does not
-  count, so a chat model and an embedding model can stay loaded together. To keep several chat engines
-  alive, load each of them with `AllowMultipleEngines = true` in `LiteRtEngineOptions`; an engine loaded
-  without it stays alone. Several engines were measured on win-x64 (CPU and GPU), linux-x64 and the Android
-  emulator, but they only run in parallel on a desktop CPU, and each one holds its own memory (on Windows,
-  about 2.3 GB of committed memory per gemma-4 E2B engine on CPU), so check free memory before loading
-  another one. The `AllowMultipleEngines` docs list the measurements.
+  count, so a chat model and an embedding model can stay loaded together.
+
+  To keep several chat engines alive, load each of them with `AllowMultipleEngines = true` in
+  `LiteRtEngineOptions`; an engine loaded without it stays alone. Each engine holds its own memory, so check
+  free memory before loading another one: on Windows with LiteRT-LM v0.20.0, a gemma-4 E2B engine on CPU
+  commits about 2.3 GB once loaded. Engines run in parallel only on a desktop CPU (measured with LiteRT-LM
+  v0.18.0). Several engines were measured on win-x64 (CPU and GPU) and on the Android x86_64 emulator (CPU)
+  with LiteRT-LM v0.20.0, and on linux-x64 with v0.18.0; the `AllowMultipleEngines` docs list the
+  measurements.
 - **A send that is cut short consumes its conversation.** After a cancelled send, an abandoned stream or
   `CancelProcess()` during a send, the runtime answers every later send with `CANCELLED`. To continue, take a
   `Clone()` before the send that might be cut and continue on the clone — see the
   [conversation-state guide](https://orihuelaconde.github.io/LiteRtLmSharp/conversation-state.html).
-- **`MaxNumTokens`** is the total context window (prompt + response, across turns). Use >= 1024;
-  too small can make blocking generation return nothing.
-- **Conversations are not thread-safe** — serialize sends per engine (the Microsoft.Extensions.AI
-  client does this for you).
-- **Linux needs no extra system package for the CPU backend** since 1.3.0 (1.2.0's library needed
-  `libvulkan1`). The official library has no hard dependency on the Vulkan loader. The GPU backend runs on Vulkan: install your GPU's Vulkan driver and
-  the Vulkan loader (`libvulkan1` on Debian/Ubuntu).
+- **`MaxNumTokens`** is the total context window (prompt + response, across turns). Use 1024 or more.
+  Below that, the engine can fail to load or a send can fail with an exception, depending on the value and
+  the backend; a blocking send didn't return an empty reply in these cases (gemma-4 E2B, win-x64,
+  LiteRT-LM v0.20.0).
+- **Conversations are not thread-safe** — call each conversation from one thread at a time. With
+  gemma-4 E2B on win-x64 and LiteRT-LM v0.20.0, concurrent sends on different conversations of one
+  engine gave correct replies on the CPU, where the runtime queued them per engine, and, with blocking
+  sends, on the GPU. The Microsoft.Extensions.AI client keeps one send in flight per engine.
+- **The Linux libraries have no hard dependency on the Vulkan loader** since 1.3.0 (1.2.0's library needed
+  `libvulkan1`): they don't list `libvulkan.so.1` as a needed library. The GPU backend runs on Vulkan:
+  install your GPU's Vulkan driver and the Vulkan loader (`libvulkan1` on Debian/Ubuntu).
 - **win-x64 needs no Visual C++ Redistributable** since 1.2.0 (the official library links the CRT
   statically). The GPU backend's shader compiler (`dxcompiler.dll`, `dxil.dll`) ships in the runtime package.
 - **Android GPU needs manifest declarations.** Android 12+ only grants access to vendor native
   libraries declared via `<uses-native-library>`; without `libOpenCL.so` the engine silently picks a
-  Vulkan path that produces garbage on older Adreno drivers. Copy the `<uses-native-library>` block
+  Vulkan path that produces garbage on older Adreno drivers (measured with LiteRT-LM v0.13.1). Copy the `<uses-native-library>` block
   from [the MAUI sample's AndroidManifest](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/samples/Maui/Platforms/Android/AndroidManifest.xml).
   Full diagnosis in the [Android guide](https://orihuelaconde.github.io/LiteRtLmSharp/android.html).
 

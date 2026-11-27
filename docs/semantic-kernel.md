@@ -135,8 +135,8 @@ prompt template's YAML) works equally well.
 | `Seed` | `seed` | sampler seed |
 | `EnableThinking` | `enable_thinking` | reasoning mode (see below) |
 | `EnableConstrainedDecoding` | `enable_constrained_decoding` | force schema-constrained tool-call arguments ([Function calling](#function-calling)) |
-| `NoRepeatNgramSize` | `no_repeat_ngram_size` | ban repeating any n-gram of that size within the reply (native v0.15.0+) |
-| `SuppressTokens` | `suppress_tokens` | token ids that can never be sampled — an `int[]` (a JSON array works from prompt templates); find ids with `LiteRtEngine.Tokenize` (native v0.15.0+) |
+| `NoRepeatNgramSize` | `no_repeat_ngram_size` | ban repeating any n-gram of that size within the reply |
+| `SuppressTokens` | `suppress_tokens` | token ids that can never be sampled — an `int[]` (a JSON array works from prompt templates); find ids with `LiteRtEngine.Tokenize` |
 
 ### Conversation-options template (per-service)
 
@@ -186,17 +186,17 @@ ChatHistory:  [System, User₁, Assistant₁, User₂]   (what SK hands the conn
                  (re-prefilled each call)     (generates)
 ```
 
-This keeps SK's history and the model's KV cache in lockstep (SK owns the history and can edit it). The cost
-is an `O(history)` prefill per turn — fine for typical chats; for very long conversations, drive the native
-[`LiteRtConversation`](conversation-state.md) API directly. Calls are **serialized per engine** (the native
-runtime does not support two generations in flight on one engine, and conversations are not thread-safe), and
-the engine lifecycle is handled by the
-[Extensions.AI registration](extensions-ai.md) the connector builds on. A `ChatHistory` system message is
-restored through that same History path, so this connector was **never** affected by the pre-v0.14.0
-`LiteRtConversationOptions.SystemMessage` bug. And any `LiteRtEngineOptions` you pass to
-`AddLiteRtChatCompletion`, including the v0.14.0 additions (`NumThreads`, LoRA ranks) and
-`ActivationDataType` (`Float32` by default since 1.3.0), flows straight through: engine-level settings are
-fixed when the engine loads, so they go in those options rather than in the execution settings.
+This keeps SK's history and the model's KV cache in lockstep (SK owns the history and can edit it), and a
+`ChatHistory` system message is restored through that same History path. The cost is an `O(history)` prefill
+per turn — fine for typical chats; for very long conversations, drive the native
+[`LiteRtConversation`](conversation-state.md) API directly.
+
+Calls are **serialized per engine**, which is the binding's choice (see [Design](extensions-ai.md#design) in
+the Extensions.AI guide), and the engine lifecycle is handled by the
+[Extensions.AI registration](extensions-ai.md) the connector builds on. Any `LiteRtEngineOptions` you pass to
+`AddLiteRtChatCompletion`, including `NumThreads`, the LoRA ranks, and `ActivationDataType` (`Float32` by
+default since 1.3.0), flows straight through: engine-level settings are fixed when the engine loads, so they go
+in those options rather than in the execution settings.
 
 ## Function calling
 
@@ -250,7 +250,7 @@ but cannot *force* a call the way a cloud API's server-enforced `tool_choice: "r
 ## Structured output (`response_format`)
 
 A raw JSON-Schema `JsonElement` under the standard `response_format` execution-settings key is
-**enforced during sampling** (native LiteRT-LM v0.15.0+): SK's adapter converts it into a
+**enforced during sampling**: SK's adapter converts it into a
 Microsoft.Extensions.AI schema `ResponseFormat`, and the connector arms the LlGuidance constraint
 provider so the reply is guaranteed to be a conforming JSON document.
 
@@ -328,8 +328,9 @@ var reply = await chat.GetChatMessageContentsAsync(history);
 ```
 
 The engine must have been loaded with the matching modality enabled (`LiteRtEngineOptions.VisionBackend` /
-`AudioBackend`) on a multimodal model. Only the final user message's media is sent (prior turns are restored as
-text). See [docs/extensions-ai.md](extensions-ai.md#multimodal-image--audio) for the details.
+`AudioBackend`) on a multimodal model. Images on earlier turns of the `ChatHistory` are sent too, so the model
+can answer about a picture from an earlier turn: with the picture on the first user turn and the question on
+the third, the reply named the picture's color (LiteRT-LM v0.20.0, win-x64, CPU, gemma-4 E2B). See [docs/extensions-ai.md](extensions-ai.md#multimodal-image--audio) for the details.
 
 ## Scope
 

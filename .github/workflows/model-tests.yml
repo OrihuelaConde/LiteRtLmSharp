@@ -19,9 +19,10 @@ name: Model tests
 # Model choice: gemma-4-E2B-it (litert-community, ungated) — deliberately NOT a smaller one:
 #  - the small Gemma .litertlm repos (gemma-3-270m-it, Gemma3-1B-IT, functiongemma-*) are
 #    gated on Hugging Face (license acceptance + token), which this job avoids needing;
-#  - Qwen3-0.6B is ungated but its chat template rejects the tools injection ("tried to use
-#    + operator on unsupported types map and string" → send_message returns null), so it
-#    cannot exercise the tool-calling path. Both verified 2026-06-12.
+#  - Qwen3-0.6B is ungated but does not exercise the tool-calling path. With LiteRT-LM v0.20.0
+#    on win-x64 CPU and one tool declared, its chat template no longer rejects a send, but one
+#    send with thinking off answered in text with no tool call. Rendering the conversation's
+#    preface failed ("Failed to apply template: undefined value"). The gating was verified 2026-06-12.
 
 on:
   # Reusable: ci.yml calls this on every push/PR with platforms=all for per-commit model validation
@@ -42,7 +43,7 @@ on:
 
 env:
   # Keep in sync with Directory.Build.props <LiteRtLmVersion>.
-  NATIVE_REF: v0.18.0
+  NATIVE_REF: v0.20.0
   MODEL_FILE: gemma-4-E2B-it.litertlm
   MODEL_URL: https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm
   # LFS oid of the file on Hugging Face; also guards against a cached/partial download.
@@ -99,7 +100,7 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 130
     # Crash forensics (2026-07-17: one intermittent testhost crash in the overflow-guard test on
     # win-x64; the VSTest blame dump carried no exception context, so the NTSTATUS is unknown):
     # have the CLR write its own minidump on a fatal crash — createdump includes the exception
@@ -144,7 +145,7 @@ jobs:
           Set-ItemProperty $key DumpCount 3
 
       # The v0.16.0 Linux library hard-depended on the Vulkan loader (DT_NEEDED libvulkan.so.1); the
-      # v0.18.0 ones load without it, so nothing is installed here. The log records whether this runner
+      # v0.20.0 ones list no such dependency, so nothing is installed here. The log records whether this runner
       # image happens to carry a loader, which tells whether this run proved the "no libvulkan1" claim.
       - name: Report the Vulkan loader (linux)
         if: startsWith(matrix.rid, 'linux-')
@@ -236,7 +237,7 @@ jobs:
       # gemma-4-E2B-it model ships an MTP drafter, so the speedup is measured here; the printed
       # Markdown row lands in this step's console log and feeds docs/speculative-decoding.md.
       - name: Test with model (CPU — streaming + tools + speculative benchmark + multimodal)
-        timeout-minutes: 30
+        timeout-minutes: 60
         shell: bash
         env:
           LITERTLM_TEST_MODEL: ${{ github.workspace }}/models/${{ env.MODEL_FILE }}
@@ -270,7 +271,7 @@ jobs:
       # Metal delegate also works, per flutter_gemma) is still unvalidated by us — see roadmap.
       - name: Test with model (GPU — WebGPU/Metal — incl. multimodal on GPU)
         if: matrix.rid == 'osx-arm64'
-        timeout-minutes: 20
+        timeout-minutes: 50
         shell: bash
         env:
           LITERTLM_TEST_MODEL: ${{ github.workspace }}/models/${{ env.MODEL_FILE }}

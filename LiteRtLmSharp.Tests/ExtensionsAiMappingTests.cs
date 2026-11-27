@@ -386,10 +386,16 @@ public class ExtensionsAiMappingTests
     [Fact]
     public void ToConversationOptions_ReadsConstrainedDecoding()
     {
-        var opts = new LiteRtChatOptions { EnableConstrainedDecoding = true };
+        AIFunction fn = AIFunctionFactory.Create((string city) => "x", name: "get_weather", description: "d");
+        var opts = new LiteRtChatOptions { EnableConstrainedDecoding = true, Tools = [fn] };
         LiteRtConversationOptions? conv = LiteRtChatMapping.ToConversationOptions([], opts);
         Assert.NotNull(conv);
         Assert.True(conv!.EnableConstrainedDecoding);
+
+        // Without tools the flag is not passed on: constrained decoding only serves tool calls.
+        IReadOnlyList<LiteRtMessage> history = [LiteRtMessage.User("hi")];
+        var noTools = new LiteRtChatOptions { EnableConstrainedDecoding = true };
+        Assert.False(LiteRtChatMapping.ToConversationOptions(history, noTools)!.EnableConstrainedDecoding);
     }
 
     [Fact]
@@ -554,6 +560,20 @@ public class ExtensionsAiMappingTests
         Assert.Equal(120L, u.TotalTokenCount!.Value);
         Assert.Equal(30L, u.InputTokenCount!.Value);
         Assert.Equal(90L, u.OutputTokenCount!.Value);
+    }
+
+    /// <summary>After a reply with thinking the last prefill turn is the KV-cache refill, so the input count is
+    /// the send's own prefill.</summary>
+    [Fact]
+    public void BuildUsage_WithBenchmark_ReportsTheSendsOwnPrefill()
+    {
+        var bench = new LiteRtBenchmarkInfo
+        {
+            LastPrefillTokenCount = 296, LastSendPrefillTokenCount = 43, LastDecodeTokenCount = 966,
+        };
+        UsageDetails u = LiteRtChatMapping.BuildUsage(339, bench);
+        Assert.Equal(43L, u.InputTokenCount!.Value);
+        Assert.Equal(966L, u.OutputTokenCount!.Value);
     }
 
     // ─────────────────────── Streaming chunk → MEAI content mapping ───────────────────────
@@ -816,9 +836,13 @@ public class ExtensionsAiMappingTests
     [Fact]
     public void Template_EnableConstrainedDecoding_PerCallWins_TemplateOtherwise()
     {
-        var template = new LiteRtConversationOptions { EnableConstrainedDecoding = true };
+        var template = new LiteRtConversationOptions
+        {
+            EnableConstrainedDecoding = true,
+            Tools = [new LiteRtTool("get_weather", "d", "{\"type\":\"object\",\"properties\":{}}")],
+        };
 
-        // No per-call flag → template's true applies.
+        // No per-call flag → template's true applies (the template carries the tools the flag needs).
         Assert.True(LiteRtChatMapping.ToConversationOptions([], new ChatOptions(), template)!.EnableConstrainedDecoding);
 
         // Per-call false explicitly overrides the template's true (history keeps the options non-null so the
