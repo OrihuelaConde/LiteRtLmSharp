@@ -276,8 +276,9 @@ later release. The C# compiler reports each use as an error until you suppress t
   v0.18.0). The docs didn't mention it. See
   [Model and cache paths on Windows](https://orihuelaconde.github.io/LiteRtLmSharp/engine-tuning.html#model-and-cache-paths-on-windows).
 - **The license notices include Dawn.** `THIRD-PARTY-NOTICES.md` reproduces the license of Dawn, which includes
-  Tint, for the win-x64, linux-x64, linux-arm64 and osx-arm64 packages. The notices that LiteRT-LM v0.20.0 ships
-  in its iOS framework, from which `THIRD_PARTY_NOTICES.litert-lm.txt` is built, no longer list it.
+  Tint, and names SPIRV-Tools, for the win-x64, linux-x64, linux-arm64 and osx-arm64 packages. The notices that
+  LiteRT-LM v0.20.0 ships in its iOS framework, from which `THIRD_PARTY_NOTICES.litert-lm.txt` is built, no
+  longer list them.
 - **Disposing an engine before its conversations no longer frees the native engine under them.** Each
   conversation now keeps its engine's native object alive, so the native engine and its one-engine slot are
   released when the last conversation is disposed. Before, a conversation disposed or finalized after its

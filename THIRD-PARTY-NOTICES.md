@@ -73,6 +73,18 @@ https://github.com/google/dawn/blob/main/LICENSE
 
 ---
 
+## SPIRV-Tools — win-x64, linux-x64, linux-arm64 and osx-arm64
+
+- Source: https://github.com/KhronosGroup/SPIRV-Tools
+- Copyright: The Khronos Group Inc. and the SPIRV-Tools contributors
+- License: Apache License 2.0 (same text as this repository's `LICENSE.txt`)
+
+The LiteRT-LM libraries for win-x64, linux-x64, linux-arm64 and osx-arm64 contain SPIRV-Tools
+code, which Dawn uses. The license bundle of the LiteRT-LM v0.20.0 `CLiteRTLM.xcframework` has
+no entry for it, so it is named here.
+
+---
+
 ## DirectX Shader Compiler runtime (`dxcompiler.dll`, `dxil.dll`) — win-x64 only
 
 - Source: https://github.com/microsoft/DirectXShaderCompiler
