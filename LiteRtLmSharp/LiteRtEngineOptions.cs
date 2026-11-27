@@ -7,6 +7,13 @@ public sealed record LiteRtEngineOptions
     /// <see cref="LiteRtEngine.Load"/> throws <see cref="System.ArgumentException"/> when it is empty.
     /// (Deliberately not <c>required</c>: the native API has other model sources — e.g. loading from a file
     /// descriptor, which this binding does not expose — that would be added here as sibling properties.)</summary>
+    /// <remarks>On Windows, unless the process uses the UTF-8 code page, keep the path to ASCII characters.
+    /// Measured with LiteRT-LM v0.20.0 and v0.18.0 under the ANSI code page 1252: with a character
+    /// outside ASCII in a folder name or in the file name, a GPU engine failed to load, also with
+    /// <see cref="LiteRtCache.Disabled"/>. A CPU engine loaded, but with such a folder name it wrote no compiled
+    /// cache, and with such a file name it wrote its cache under a garbled name without the file's modification
+    /// time and size (see <see cref="Cache"/>), so the cache name does not follow a change of the model
+    /// file.</remarks>
     public string ModelPath { get; init; } = "";
 
     /// <summary>Backend to run the model on. Defaults to <see cref="LiteRtBackend.Cpu"/>. Use
@@ -664,7 +671,8 @@ public sealed record LiteRtConversationOptions
     /// This is the canonical use of extra context for the Gemma reasoning builds: the chat
     /// template branches on <c>{% if enable_thinking %}</c>. On a model whose template does not
     /// reference the key it is a harmless no-op. The runtime keeps the (often long) reasoning out of the KV
-    /// cache on later turns by default (see <see cref="FilterThinkingFromKvCache"/>). When both this and
+    /// cache on later turns by default (see <see cref="FilterThinkingFromKvCache"/>, which also says how that
+    /// removal behaves on a model with linear attention or a local attention window). When both this and
     /// <see cref="ExtraContext"/> set <c>enable_thinking</c>, this flag wins. Gemma 4's template applies the
     /// switch in the system turn, which the runtime prefills with the first send, so the mode of the first send
     /// stays for the conversation (LiteRT-LM v0.20.0, gemma-4 E2B, CPU and GPU). Only a per-send
@@ -752,8 +760,10 @@ public sealed record LiteRtConversationOptions
     /// <remarks>The runtime already drops channel content when this is left <c>false</c>: the native default
     /// is on, and the binding sends the setting only for <c>true</c>, so <c>false</c> cannot turn the filter
     /// off (LiteRT-LM v0.20.0; measured on CPU, gemma-4 E2B: the token count after a reply with thinking leaves
-    /// the thinking out with this unset). Maps to the C API
-    /// <c>conversation_config_set_filter_channel_content_from_kv_cache</c>.</remarks>
+    /// the thinking out with this unset). In LiteRT-LM v0.20.0 the runtime removes a reply's reasoning from the
+    /// context with the same rewind as <see cref="LiteRtSession.RewindTo"/>, so the caveat there about models with
+    /// linear attention or a local attention window applies to a conversation with thinking on such a model too.
+    /// Maps to the C API <c>conversation_config_set_filter_channel_content_from_kv_cache</c>.</remarks>
     public bool FilterThinkingFromKvCache { get; init; }
 
     /// <summary>

@@ -431,7 +431,9 @@ position than its tokens. A reply cut by `MaxOutputTokens` takes only its tokens
 
 `LiteRtEngineOptions.MaxNumTokens` sets the size of the context when it is below the model's built-in context
 length. With 0, the engine's default applies, and a value at or above the model's length falls back to the
-model's own size. The remarks of that property in the API reference give the details.
+model's own size. The length meant here is the largest context that the model's graph accepts: on Gemma 4 E2B,
+40000 gave a context of 32,000 (measured on the CPU). It isn't `LiteRtModelInfo.MaxContextTokens`, which reads
+4,096 on that model. The remarks of `MaxNumTokens` in the API reference give the details.
 
 ### A prefill that doesn't fit
 
@@ -591,7 +593,13 @@ GPU this differs from re-prefilling a reply on a new session (see
 The sampler is fixed for the session's lifetime, so a rewind can't give you a second reply with other sampling
 settings. With greedy sampling the same turn gives the same reply again, which is why the example rewords it.
 Every measurement used argmax sampling; whether another strategy gives a different reply after a rewind was not
-measured.
+measured. The runtime doesn't restore the sampler's random state on a rewind or a reset, so a strategy that draws
+random numbers goes on from where it was, not from the state at the checkpoint.
+
+A rewind moves the session back to the checkpoint's position, and the runtime doesn't restore any attention
+state other than a plain key-value cache. A model with linear attention or a local attention window keeps state
+that a rewind leaves as it is, and it can give wrong text after a rewind. The measurements in this section don't
+cover such models.
 
 ### What drops a checkpoint
 
@@ -783,7 +791,10 @@ Console.WriteLine(session.Decode());
   checkpoints held at the same time, and any rewind or reset with
   `LiteRtEngineOptions.UseRingbuffersLocalAttention` on. The recovery was measured only after prefills whose
   input didn't fit and after full contexts; a rewind or a reset after another prefill failure is accepted but
-  wasn't measured (see [Recover a full or failed session](#recover-a-full-or-failed-session)).
+  wasn't measured (see [Recover a full or failed session](#recover-a-full-or-failed-session)). The same replies
+  after a rewind or a reset were measured with argmax sampling, and the runtime doesn't restore the sampler's
+  random state. A rewind doesn't restore attention state other than a plain key-value cache, so a model with
+  linear attention or a local attention window is not covered and can give wrong text after a rewind.
 - **Checkpoints, rewind, and reset on Android.** On the emulator of **Android** above, with a 1,024-token context, each of
   the following gave the expected result in 3 of 3 runs:
   - After a rewind to a checkpoint saved in `Decoded`, the session was `Decoded`, and the repeated turn gave

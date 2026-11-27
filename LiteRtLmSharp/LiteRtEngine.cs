@@ -435,7 +435,22 @@ public sealed class LiteRtEngine : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(text);
-        return TokenizeIds(text);
+        bool referenced = false;
+        try
+        {
+            // The public tokenizer members hold a reference on the native engine for the call, so a Dispose on
+            // another thread, or the finalizer, cannot delete the engine under it: the delete then runs when the
+            // reference is released. A handle whose native engine was already deleted throws
+            // ObjectDisposedException here, before any native call. The internal callers (see CountTokens) take
+            // none: their conversation or session holds a reference on the native engine.
+            _engine.DangerousAddRef(ref referenced);
+            return TokenizeIds(text);
+        }
+        finally
+        {
+            if (referenced)
+                _engine.DangerousRelease();
+        }
     }
 
     /// <summary>The body of <see cref="Tokenize"/>, without the disposed check (see <see cref="CountTokens"/>).</summary>
@@ -500,7 +515,18 @@ public sealed class LiteRtEngine : IDisposable
     public string Detokenize(ReadOnlySpan<int> tokens)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return DetokenizeIds(tokens);
+        bool referenced = false;
+        try
+        {
+            // A reference for the call, as in Tokenize.
+            _engine.DangerousAddRef(ref referenced);
+            return DetokenizeIds(tokens);
+        }
+        finally
+        {
+            if (referenced)
+                _engine.DangerousRelease();
+        }
     }
 
     /// <summary>The body of <see cref="Detokenize"/>, without the disposed check (see <see cref="CountTokens"/>).</summary>
@@ -539,7 +565,18 @@ public sealed class LiteRtEngine : IDisposable
     public LiteRtTokenUnion? GetStartToken()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return ReadStartToken();
+        bool referenced = false;
+        try
+        {
+            // A reference for the call, as in Tokenize.
+            _engine.DangerousAddRef(ref referenced);
+            return ReadStartToken();
+        }
+        finally
+        {
+            if (referenced)
+                _engine.DangerousRelease();
+        }
     }
 
     /// <summary>The body of <see cref="GetStartToken"/>, without the disposed check (see <see cref="CountTokens"/>).</summary>
@@ -576,8 +613,20 @@ public sealed class LiteRtEngine : IDisposable
 
         nint ptr;
         LiteRtStatusCode status;
-        lock (_tokenizerGate)
-            status = LiteRtLmNative.litert_lm_engine_get_stop_tokens(_engine.Ptr, &ptr);
+        bool referenced = false;
+        try
+        {
+            // A reference for the call, as in Tokenize. The collection it returns is the caller's, so it is read
+            // after the release.
+            _engine.DangerousAddRef(ref referenced);
+            lock (_tokenizerGate)
+                status = LiteRtLmNative.litert_lm_engine_get_stop_tokens(_engine.Ptr, &ptr);
+        }
+        finally
+        {
+            if (referenced)
+                _engine.DangerousRelease();
+        }
         if (status != LiteRtStatusCode.Ok)
         {
             // Read as "none declared", the value the binding has always returned for a failed read.

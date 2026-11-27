@@ -33,10 +33,15 @@ public abstract class LiteRtModelSyncSource
     /// <list type="bullet">
     /// <item><description>206: the <c>Content-Range</c> header must start at the requested byte, or the call
     /// fails with <see cref="LiteRtStatusCode.DataLoss"/>. A body that ends before the range it declares fails the
-    /// call with <see cref="LiteRtStatusCode.Unavailable"/>. A 206 that carries fewer bytes than asked is complete
-    /// when it ends at the end of the file; otherwise the source asks for the rest of the range with another
-    /// <c>GET</c>. When the <c>Content-Range</c> gives no file size, a 416 to that request means that the file
-    /// ended there.</description></item>
+    /// call with <see cref="LiteRtStatusCode.Unavailable"/>. When a 206 carries fewer bytes than asked and does not
+    /// reach the end of the file, the source asks for the rest of the range with another <c>GET</c>. When the
+    /// <c>Content-Range</c> gives no file size, the source asks for the rest too, and a 416 to that request means
+    /// that the file ended there.</description></item>
+    /// <item><description>Short ranges: only the first range of a call, the first 16 KiB of the file, can come
+    /// back shorter than asked, as it does for a smaller file. Any later range that comes back short, because the
+    /// file ends before the range does, fails the call with <see cref="LiteRtStatusCode.DataLoss"/>, and the
+    /// output is not replaced. This covers a 206 that reaches the end of the file, a 416 after a 206 without a
+    /// file size, and a 200 whose body is shorter than the range.</description></item>
     /// <item><description>200, the whole file: the source serves a request at byte 0 from the first bytes of the
     /// body. A 200 to the request for the rest of a range, after a 206 with a part of it, fails the call with
     /// <see cref="LiteRtStatusCode.Unknown"/>. To the first request of a range that starts after byte 0, the
@@ -93,8 +98,11 @@ public abstract class LiteRtModelSyncSource
     /// Writes the bytes <c>[offset, offset + length)</c> of the remote file to <paramref name="destination"/>.
     /// </summary>
     /// <remarks>
-    /// <para>Returns <c>true</c> after writing the range. For the first header fetch the runtime asks for more
-    /// bytes than a small file has; writing the bytes that exist and returning <c>true</c> is correct there.</para>
+    /// <para>Returns <c>true</c> after writing the range. For the first fetch of a call, the header fetch, the
+    /// runtime asks for more bytes than a small file has; writing the bytes that exist and returning <c>true</c>
+    /// is correct there. For any later fetch, every byte of the range must be written: returning <c>true</c> with
+    /// fewer bytes than <paramref name="length"/> fails the call with
+    /// <see cref="LiteRtStatusCode.DataLoss"/>.</para>
     /// <para>Returns <c>false</c>, with nothing written, when the remote cannot serve a range that starts after
     /// byte 0: the runtime then asks for a longer range and, at last, for the whole file from byte 0. Returning
     /// <c>false</c> after writing, or for a range at byte 0, fails the call.</para>

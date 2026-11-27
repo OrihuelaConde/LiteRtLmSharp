@@ -101,7 +101,8 @@ namespace LiteRtLmSharp.Extensions.AI;
 /// thread is over. After a reply with thinking, the runtime removes the thinking from the KV cache, so the
 /// context has room again and the thread can continue; <see cref="UsageDetails.TotalTokenCount"/> shows how much
 /// of the context is in use. A "message doesn't fit" rejection happens before any native
-/// work and <b>keeps the live conversation resumable</b> — retry the id with a shorter message; a "context
+/// work and <b>keeps the live conversation resumable</b> — retry the id with a shorter message (a new
+/// conversation whose first message does not fit is not kept, because the request returned no id); a "context
 /// is full" rejection evicts it, so resuming its id throws <see cref="ArgumentException"/> and you start a new
 /// conversation, summarizing or trimming what must carry over. The exception is a send of tool results whose turn
 /// has a checkpoint with room: the turn rolls back and the id stays valid.

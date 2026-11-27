@@ -524,7 +524,10 @@ using IChatClient client = new LiteRtChatClient(engine, statefulConversations: n
 - **Reasoning.** The runtime removes a reply's reasoning from the KV cache right after the reply, so a checkpoint
   holds no earlier reasoning: a clone taken after a reply with reasoning had the token count without it. This was
   measured on the CPU backend (LiteRT-LM v0.20.0, win-x64, gemma-4 E2B). A rollback of this client after such a
-  reply, the GPU backend, and replies that a checkpoint generates later weren't measured.
+  reply, the GPU backend, and replies that a checkpoint generates later weren't measured. In LiteRT-LM v0.20.0
+  the runtime removes the reasoning with a rewind to the point before it, and a rewind doesn't restore attention
+  state other than a plain key-value cache. So a conversation with thinking on a model with linear attention or
+  a local attention window is not covered by these measurements.
 
 ### Forking a conversation
 

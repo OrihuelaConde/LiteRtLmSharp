@@ -49,13 +49,13 @@ the packaging steps are the same for both. What each job does, per platform:
 
 | RID | Library (zip path / wheel) | Shipped as | Checks before packaging |
 |---|---|---|---|
-| linux-x64 | `lib/linux_x86_64/liblitert-lm.so` / `manylinux_*_x86_64` wheel | `libLiteRtLm.so` | x86-64 ELF; ≥ 140 `litert_lm_*` exports incl. the engine/stream entry points; no `libLiteRt*` companion dependency; fails when the library lists `libvulkan.so.1` as a dependency |
+| linux-x64 | `lib/linux_x86_64/liblitert-lm.so` / `manylinux_*_x86_64` wheel | `libLiteRtLm.so` | x86-64 ELF; ≥ 203 `litert_lm_*` exports (the number the binding declares) incl. `litert_lm_get_api_version` and the engine/stream entry points; no `libLiteRt*` companion dependency; fails when the library lists `libvulkan.so.1` as a dependency |
 | linux-arm64 | `lib/linux_arm64/liblitert-lm.so` / `manylinux_*_aarch64` wheel | `libLiteRtLm.so` | AArch64 ELF; same checks as linux-x64 |
-| android-arm64 | `lib/android_arm64/liblitert-lm.so` / `android_*_arm64_v8a` wheel | `libLiteRtLm.so` | AArch64 ELF; same export check; OpenCL TopK sampler names present (`LiteRtTopKOpenClSampler_*`; from C API 1.0.0 the library no longer exports them, and the check warns because the names alone do not show that the sampler is embedded); 16 KB page alignment (Google Play) |
+| android-arm64 | `lib/android_arm64/liblitert-lm.so` / `android_*_arm64_v8a` wheel | `libLiteRtLm.so` | AArch64 ELF; same export check; OpenCL TopK sampler linked in: from C API 1.0.0 the library no longer exports the sampler's entry points, so the check requires three error messages from the sampler's own source, which the v0.20.0 Android libraries carry and the Linux ones don't (the sampler's names are in both, so they prove nothing); this shows that the sampler code is linked, not that it works on a device; 16 KB page alignment (Google Play) |
 | android-x64 | `lib/android_x86_64/liblitert-lm.so` / `android_*_x86_64` wheel | `libLiteRtLm.so` | x86-64 ELF; same checks as android-arm64, except that a missing OpenCL sampler only warns |
 | win-x64 | `lib/windows_x86_64/bin/litert-lm.dll` / `win_amd64` wheel | `LiteRtLm.dll` + `dxcompiler.dll` + `dxil.dll` | x64 image; export check; no separate LiteRt import; **no VC++ runtime import** (static CRT); the DXC zip is pinned by sha256 |
 | osx-arm64 | `lib/macos_arm64/liblitert-lm.dylib` / `macosx_*_arm64` wheel | `libLiteRtLm.dylib` | arm64; export check; no `libLiteRt*` companion in the load commands, which the log lists |
-| ios-arm64 | `CLiteRTLM.xcframework.zip` | `xcframeworks/CLiteRTLM.xcframework` (upstream name kept) | device slice present; export check on the device binary; logs the Metal companions the binary references by name |
+| ios-arm64 | `CLiteRTLM.xcframework.zip` | `xcframeworks/CLiteRTLM.xcframework` (upstream name kept) | device slice present; export check on the device binary; logs the Metal accelerator and TopK Metal sampler symbols linked into it |
 
 Every download is verified against the digest its host publishes: the **sha256 digest GitHub records
 for each release asset** (`fetch-upstream-asset.sh`; an asset without a digest is not packaged), or the
@@ -68,7 +68,10 @@ workflow takes the release's `THIRD_PARTY_NOTICES.txt` asset when there is one (
 without it get a file built by `notices-from-xcframework.py` from the license bundle inside the
 release's own `CLiteRTLM.xcframework` (the framework's LICENSE plus one license per third-party
 component); the v0.16.0 asset was itself built from the Apple frameworks and covered every platform.
-The `native-<tag>` release notes record both sources.
+The `native-<tag>` release notes record both sources. The v0.20.0 bundle has no Dawn entry, although
+the win-x64, linux-x64, linux-arm64 and osx-arm64 libraries link Dawn, so the script appends Dawn's
+license when the bundle lists no Dawn component. `THIRD-PARTY-NOTICES.md`, which every package carries,
+reproduces it too.
 
 ## Platform notes that matter to consumers
 
@@ -107,9 +110,11 @@ The `native-<tag>` release notes record both sources.
 - **osx-arm64.** The dylib's own install name is `@rpath/liblitert-lm.so` (sic); irrelevant, because
   the resolver loads it by absolute path. The v0.20.0 library declares macOS 14 as its minimum.
 - **ios-arm64.** The framework keeps its upstream name (`CLiteRTLM`); the resolver loads
-  `Frameworks/CLiteRTLM.framework/CLiteRTLM`. The binary references `libLiteRtMetalAccelerator.dylib`
-  and `libLiteRtTopKMetalSampler.dylib` by name and the package ships neither, so iOS is CPU-only
-  until a Metal companion strategy is validated on hardware.
+  `Frameworks/CLiteRTLM.framework/CLiteRTLM`. The v0.20.0 framework links the Metal accelerator and
+  the TopK Metal sampler; it still names `libLiteRtMetalAccelerator.dylib` and
+  `libLiteRtTopKMetalSampler.dylib`, for the factory's dynamic-load path, and needs neither. Nothing
+  has run on an iOS device, so the CPU backend stays the supported path on iOS and the GPU backend is
+  untested there.
 
 ## Staying in sync with upstream
 

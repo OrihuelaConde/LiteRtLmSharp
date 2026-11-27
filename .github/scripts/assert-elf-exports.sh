@@ -16,7 +16,7 @@ if [ "$count" -lt "$min" ]; then
   echo "::error::$lib exports $count litert_lm_* symbols, expected at least $min"
   exit 1
 fi
-required="litert_lm_engine_create litert_lm_conversation_create litert_lm_conversation_send_message_stream litert_lm_stream_chunk_get_error"
+required="litert_lm_get_api_version litert_lm_engine_create litert_lm_conversation_create litert_lm_conversation_send_message_stream litert_lm_stream_chunk_get_error"
 # Session API. The same names are in .github/scripts/inspect-pe.py, in SESSION_EXPORTS of
 # .github/workflows/native-release.yml and in LiteRtLmSharp.Tests/SessionAbiTests.cs (SessionImports);
 # change all four together.

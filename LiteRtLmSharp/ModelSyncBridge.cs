@@ -175,7 +175,7 @@ internal sealed class ModelSyncCall
         }, CancellationToken.None);
         try
         {
-            return Drain(writer, offset, destination, sourceTask);
+            return Drain(writer, offset, length, destination, sourceTask);
         }
         finally
         {
@@ -200,7 +200,8 @@ internal sealed class ModelSyncCall
         }
     }
 
-    private unsafe LiteRtStatusCode Drain(nint writer, long offset, ModelSyncDestination destination, Task<bool> sourceTask)
+    private unsafe LiteRtStatusCode Drain(
+        nint writer, long offset, long length, ModelSyncDestination destination, Task<bool> sourceTask)
     {
         ChannelReader<ModelSyncDestination.Chunk> reader = destination.Reader;
         while (true)
@@ -265,6 +266,14 @@ internal sealed class ModelSyncCall
                         ? "The source could not serve the start of the file."
                         : "The source stopped serving a range after writing part of it.", null);
         }
+        // Only the first fetch of a call, the header fetch, can be longer than the file. Every later fetch asks
+        // for an exact length, one of them from byte 0, and the runtime does not count the bytes of a whole-file
+        // write: a short range would leave a truncated file, unnoticed when the remote header has no section
+        // hashes.
+        if (Volatile.Read(ref _fetches) > 1 && destination.Written < length)
+            return Fail(writer, LiteRtStatusCode.DataLoss,
+                $"The remote returned fewer bytes than the range the runtime asked for: {destination.Written} of " +
+                $"{length} bytes from byte {offset}.", null);
         if (ReportProgress(force: true) is { } failure)
             return Fail(writer, LiteRtStatusCode.Unknown, failure.Message, failure);
         return LiteRtStatusCode.Ok;

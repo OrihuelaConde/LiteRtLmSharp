@@ -251,8 +251,11 @@ public sealed class LiteRtChatClient : IChatClient
                 // The overflow guard rejected the message BEFORE any native work ("message doesn't fit"):
                 // the live conversation is untouched and stays resumable — the caller can retry this id
                 // with a shorter message, exactly as the exception's own guidance suggests. A turn in
-                // progress stays as it was.
-                if (startsTurn)
+                // progress stays as it was. A conversation this call created is removed instead: the caller
+                // never received its id, so nothing could resume it.
+                if (conversationId is null)
+                    _store!.Remove(id);
+                else if (startsTurn)
                     turn.Checkpoint?.Dispose();
                 throw;
             }
@@ -656,7 +659,11 @@ public sealed class LiteRtChatClient : IChatClient
             {
                 if (untouched)
                 {
-                    if (startsTurn)
+                    // Nothing was streamed, so the caller never received the id of a conversation this call
+                    // created: remove it, as nothing could resume it.
+                    if (conversationId is null)
+                        _store!.Remove(storedId!);
+                    else if (startsTurn)
                         turn.Checkpoint?.Dispose();   // a turn in progress stays as it was
                 }
                 else if (!(streamed?.IsCancelled ?? false) && (completed || !failed))

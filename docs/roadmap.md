@@ -82,7 +82,7 @@ library).
 > | v0.20.0 `litert_lm_*` functions | Count |
 > |---|---|
 > | Exported on ELF and PE | 242 |
-> | Exported in the Mach-O builds | 243 |
+> | Exported in the Mach-O builds (the extra one, `embedding_engine_settings_set_apple_coreai_compute_unit`, is in no public header) | 243 |
 > | Declared by the binding (distinct) | 203 |
 >
 > Functions added since v0.18.0 that the binding doesn't declare include the speculative decoding config (`speculative_decoding_config_create`,
@@ -221,10 +221,22 @@ responses functions and wraps 9 of them in `LiteRtSession`; see the Raw Session 
    reproduce with v0.20.0 on the one GPU measured, and other GPUs and `Float16` activations were not
    measured. (c) The speculative decoding config (`Adaptive` mode, lenience) is not wrapped, and
    `EnableSpeculativeDecoding` relies on the two setters that C API 1.0.0 deprecated (see the C API coverage
-   note above). (d) A session decode ignores an error that arrives on a chunk that is not the final one: the
-   decode ends by its final chunk alone. No such chunk sequence was seen with v0.20.0; check it again at the
-   next repin. (e) The Android packaging check finds the OpenCL sampler's names in the arm64 library, which
-   does not show that the sampler is embedded; a GPU run on a device does.
+   note above). (d) The Android packaging check requires error messages of the OpenCL sampler's own source in
+   the arm64 library, which shows that the sampler code is linked in, not that it works; a GPU run on a device
+   does. Planned for 1.4.0, in a separate pull request: (e) loading a model from a path with non-ASCII
+   characters on Windows on the GPU (see
+   [Model and cache paths on Windows](engine-tuning.md#model-and-cache-paths-on-windows)); (f) an option to keep a reply's
+   reasoning in the context (`FilterThinkingFromKvCache = false` has no effect); (g) speculative decoding
+   through the configuration object of C API 1.0.0 (`Adaptive` mode, lenience) instead of the two deprecated
+   setters, which closes (c). To check at the next repin, changes on upstream's main branch as of
+   2026-11-27: the C API version still reads 1.1.0 although functions were added, so the binding's version
+   check couldn't tell an older library from a newer one if the binding imported them; the Linux and Android
+   libraries get the SONAME `liblitert-lm.so`, which matters for the renaming in `package-elf.sh`; the
+   blocking send's JSON gains `finish_reason` and `executor_stats` fields, which `LiteRtResponse.RawJson`
+   would carry; conversations no longer rewind by default on the CPU and the GPU, so the thinking filter
+   saves and restores the context instead; fixed benchmark token counts combined with speculative decoding
+   fail with `INVALID_ARGUMENT`; the embedding batch call runs real batches; and the sampler's random state
+   becomes per session.
 
 -5. **AFTER 1.3.0 (open as of 2026-10-12).** (a) ✅ Pull request #15, the first external contribution
    (opt-in second engine, non-blocking `TokenCount`, sampler diagnostics), was merged on
@@ -273,7 +285,8 @@ responses functions and wraps 9 of them in `LiteRtSession`; see the Raw Session 
      does not add task instructions: the model card and the LiteRT-LM guide list different ones, so
      `docs/embeddings.md` cites both. Measured with EmbeddingGemma 2 Text 270M (i9-14900K / RTX 3080,
      `Float32` on GPU): CPU load 0.15 s, one sentence 35 ms, ~300 words 150 ms; GPU load 2.4 to 3.3 s,
-     15 ms, 32 ms; a batch costs the same as single calls (the runtime loops); the default input limit
+     15 ms, 32 ms; a batch costs the same as single calls (the runtime loops, and still does in LiteRT-LM
+     v0.20.0); the default input limit
      is the model's declared 1,024 tokens, not 8,192 (verified against the metadata and empirically);
      on GPU the process commit grows by 3.6 GB at load (7.1 GB with `MaxInputLength = 2048`); GPU vs
      CPU cosine 0.9994 with `Float32`, 0.9965 with the runtime's float16 default; in a 24-query check
@@ -542,7 +555,10 @@ responses functions and wraps 9 of them in `LiteRtSession`; see the Raw Session 
    `net10.0-ios` target, and a build/link CI check (`ios-package-check.yml`).
    **Deferred to the device-validation phase** (needs a paid Apple Developer account + a physical
    iPhone; the package is NOT device-functional until these land — do not publish it to nuget.org
-   before then):
+   before then). The two companion items date from the self-built frameworks: the official LiteRT-LM
+   v0.20.0 framework links the Metal accelerator and the TopK Metal sampler, and its load commands name no
+   companion library. Nothing has run on a device, so device validation still applies, and CPU stays the
+   supported backend on iOS:
    - **Companion `dlopen` patch** — point the engine's internal dlopen of the Metal accelerator /
      constraint provider at the framework layout (`@executable_path/Frameworks/<X>.framework/<X>`),
      mirroring flutter_gemma (their `gpu_registry.cc`/`sampler_factory.cc` patch, `patch_c_api.sh` §10b,
@@ -774,7 +790,9 @@ Gated tests pass end-to-end on win-x64 (gemma-4-E2B-it) for MEAI (blocking + str
 MEAI `DataContent` (inline bytes) / file-path `UriContent`, or Semantic Kernel `ImageContent`/`AudioContent`
 (an empirical probe confirmed SK's `AsChatCompletionService` forwards these as MEAI `DataContent`, media type
 preserved). `conv.Send(text, attachments)` / streaming overload. Requires the engine loaded with
-`VisionBackend`/`AudioBackend`; only the triggering turn's media is sent (history restored as text); remote
+`VisionBackend`/`AudioBackend`; only the triggering turn's media is sent (history restored as text; this
+was wrong: the stateless client and the Semantic Kernel connector send the media of earlier user turns too,
+see [extensions-ai.md](extensions-ai.md)); remote
 (non-file) URIs skipped. Gated tests pass on win-x64 (vision + audio, `LITERTLM_TEST_VISION=1`). No sample
 change (per the user). Embeddings, blocked then (no C-API embeddings at v0.13.1), arrive in 1.3.0 as an
 `IEmbeddingGenerator` (see the [embeddings guide](embeddings.md)). **Neither companion is

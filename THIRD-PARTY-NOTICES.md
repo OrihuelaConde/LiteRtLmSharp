@@ -28,6 +28,51 @@ affiliated with, sponsored, or endorsed by Google.
 
 ---
 
+## Dawn (includes Tint) — win-x64, linux-x64, linux-arm64 and osx-arm64
+
+- Source: https://dawn.googlesource.com/dawn (mirror: https://github.com/google/dawn)
+- License: BSD 3-Clause
+
+The LiteRT-LM libraries for win-x64, linux-x64, linux-arm64 and osx-arm64 link Dawn, Google's
+WebGPU implementation, which includes the Tint shader compiler. The license bundle of the
+LiteRT-LM v0.20.0 `CLiteRTLM.xcframework`, from which `THIRD_PARTY_NOTICES.litert-lm.txt` is
+built, has no Dawn entry, so its license is reproduced here:
+
+```
+// Copyright 2017-2026 The Dawn & Tint Authors
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
+//
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+Dawn's LICENSE file covers a few other paths with other terms (code generator templates and
+Android tooling under the Apache License 2.0, and a MurmurHash3 header in the public domain):
+https://github.com/google/dawn/blob/main/LICENSE
+
+---
+
 ## DirectX Shader Compiler runtime (`dxcompiler.dll`, `dxil.dll`) — win-x64 only
 
 - Source: https://github.com/microsoft/DirectXShaderCompiler

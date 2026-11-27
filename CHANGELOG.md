@@ -245,8 +245,9 @@ later release. The C# compiler reports each use as an error until you suppress t
   temperature.
 - **A chat request without tools does not ask for constrained decoding.** `LiteRtChatClient` and the Semantic
   Kernel connector used to pass `EnableConstrainedDecoding` to the runtime even when the request offered no
-  tools. With LiteRT-LM v0.20.0 that can end a text reply at its first line break, so the flag now applies only
-  to requests with tools.
+  tools. With LiteRT-LM v0.20.0 and the flag set, a text reply to a request without tools ended at its first
+  line break (measured with gemma-4 E2B; the cause is not known), so the flag now applies only to requests
+  with tools.
 - **Chat clients over one engine take turns.** Each `LiteRtChatClient` used to serialize only its own calls, so two
   clients over one engine could put two generations in flight on it. Now they wait for each other, so the clients
   over one engine run one generation at a time. An open stream counts until you read it to the end or dispose it,
@@ -259,6 +260,24 @@ later release. The C# compiler reports each use as an error until you suppress t
 
 ### Fixed
 
+- **Native handles stay alive for the whole call.** `LiteRtEngine.Tokenize`, `Detokenize`, `GetStartToken` and
+  `GetStopTokens`, and `LiteRtConversation.CancelProcess`, hold a reference on the native handle for the call: a
+  `Dispose` on another thread, or finalization, no longer deletes the native engine or conversation while the
+  call uses it. The call either completes or throws `ObjectDisposedException`. `LiteRtConversation.RenderMessage`,
+  `RenderMessageRaw` and `RenderPreface` keep the conversation reachable until the rendered string is copied.
+- **A rejected first message no longer leaves a conversation behind.** In the stateful mode of
+  `LiteRtChatClient`, a request without a `ConversationId` whose first message the context overflow guard rejects
+  no longer leaves its new conversation in the store. The caller never received that conversation's id.
+- **`LiteRtModelInfo.DefaultSampler` with values that aren't finite.** It is `null` when the model file declares
+  a sampler with an infinite top-p or temperature, as it already was for NaN.
+- **Paths with non-ASCII characters on Windows are documented.** A cache folder whose path has non-ASCII
+  characters makes `LiteRtEngine.Load` fail, and a model path with non-ASCII characters fails `Load` on the GPU
+  and loads on the CPU without a usable compiled cache (measured with ANSI code page 1252; the same with
+  v0.18.0). The docs didn't mention it. See
+  [Model and cache paths on Windows](https://orihuelaconde.github.io/LiteRtLmSharp/engine-tuning.html#model-and-cache-paths-on-windows).
+- **The license notices include Dawn.** `THIRD-PARTY-NOTICES.md` reproduces the license of Dawn, which includes
+  Tint, for the win-x64, linux-x64, linux-arm64 and osx-arm64 packages. The notices that LiteRT-LM v0.20.0 ships
+  in its iOS framework, from which `THIRD_PARTY_NOTICES.litert-lm.txt` is built, no longer list it.
 - **Disposing an engine before its conversations no longer frees the native engine under them.** Each
   conversation now keeps its engine's native object alive, so the native engine and its one-engine slot are
   released when the last conversation is disposed. Before, a conversation disposed or finalized after its

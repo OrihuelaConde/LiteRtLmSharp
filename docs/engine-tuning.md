@@ -210,6 +210,29 @@ upstream's LoRA test bundle and its rank-32 adapter:
 Tests in `LoraTextAdapterTests` pin these behaviors, so a runtime that changes them shows up as a failing
 test.
 
+## Model and cache paths on Windows
+
+On Windows, keep the model file and the cache folder (`LiteRtCache.Directory`) in paths that have ASCII
+characters only. With non-ASCII characters, such as an accented letter in the user name, the following was
+measured with Qwen3-0.6B on Windows 11 x64, in a process whose ANSI code page is 1252. LiteRT-LM v0.18.0
+(LiteRtLmSharp 1.3.0) and v0.20.0 gave the same results.
+
+A cache folder with non-ASCII characters in its path makes `LiteRtEngine.Load` fail with "Cache directory does
+not exist or is not writable". With the cache next to
+the model (the default), a model path with non-ASCII characters gave these results:
+
+| Non-ASCII characters in | CPU backend | GPU backend |
+|---|---|---|
+| The folder that holds the model | The engine loads, and no compiled cache file is written next to the model. | `LiteRtEngine.Load` throws `LiteRtException` (`UNKNOWN`), also with the cache disabled. |
+| The model file name | The engine loads, and the compiled cache file gets a garbled name: `josé.litertlm` got `josÃ©.litertlm.xnnpack_cache`. | `LiteRtEngine.Load` throws `LiteRtException` (`UNKNOWN`), also with the cache disabled. |
+
+A cache file of a model with an ASCII name carries two numbers after the model's name, which the runtime
+derives from the model file's modification time and size. The garbled name lacks them, so the runtime has no
+way to tell a replaced model file from the old one and can reuse a stale cache; that case wasn't measured.
+
+According to the upstream source, a process whose ANSI code page is UTF-8 (65001, set through the
+application manifest) reads these paths correctly. That wasn't measured.
+
 ## Benchmarking
 
 ### Measuring real runs — `EnableBenchmark`

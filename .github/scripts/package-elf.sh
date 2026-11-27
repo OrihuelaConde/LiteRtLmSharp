@@ -55,28 +55,29 @@ if [ "$kind" = android ]; then
   # as the self-built v0.15.0 set did, LiteRT-LM#3135). The x86_64 build targets the emulator, where
   # the docs say to use the CPU backend, so a missing sampler there only warns.
   # From C API 1.0.0 the library exports only litert_lm_* symbols, so the sampler's entry points are no
-  # longer in the dynamic symbol table. The embedded copy is then recognized by its names in the binary's
-  # strings, which is weaker evidence: it shows the sampler code is referenced, not that it loads.
+  # longer in the dynamic symbol table. Their names don't help either: the factory holds them for its
+  # dynamic-load path, so the v0.20.0 Linux libraries carry them too, without the sampler. The check then
+  # looks for three error messages of the sampler's own source (top_k_opencl_sampler.cc), which are in
+  # both v0.20.0 Android libraries and in neither Linux one. They show that the sampler code is linked in,
+  # not that it works on a device; only a GPU run on a device shows that.
   defined=$(readelf --dyn-syms -W "$lib" | awk '$7 != "UND" {sub(/@.*/, "", $8); print $8}')
-  sampler_strings=$(strings -a "$lib" | grep -i 'TopKOpenCl' | sort -u || true)
-  echo "--- OpenCL TopK sampler names found in the binary ---"
-  echo "${sampler_strings:-<none>}" | head -20
-  for sym in LiteRtTopKOpenClSampler_Create LiteRtTopKOpenClSampler_CanHandleInput LiteRtTopKOpenClSampler_SetInferenceFuncAndInputTensors; do
-    if ! grep -qx "$sym" <<< "$defined"; then
-      if grep -q "$sym" <<< "$sampler_strings"; then
-        # The library carries these names for its dynamic-load path too, so this does not show that the sampler
-        # is embedded. Only a run on a device with the GPU backend does.
-        echo "::warning::$sym is not exported; the binary names it, which does not verify that the OpenCL sampler is embedded."
-        continue
-      fi
-      if [ "$machine" = AArch64 ]; then
-        echo "::error::$src does not embed the OpenCL TopK sampler ($sym missing)"
-        exit 1
-      fi
-      echo "::warning::$src does not embed the OpenCL TopK sampler ($sym missing)"
+  if grep -qx LiteRtTopKOpenClSampler_Create <<< "$defined"; then
+    echo "OK: the OpenCL TopK sampler's entry points are exported."
+  else
+    lib_strings=$(strings -a "$lib")
+    missing=""
+    for mark in "Failed to enqueue barrier for logits tensor" "No valid sampling event created before downloading." "Failed to clEnqueueReadBuffer - "; do
+      grep -qF -- "$mark" <<< "$lib_strings" || missing+=" '$mark'"
+    done
+    if [ -z "$missing" ]; then
+      echo "OK: the OpenCL TopK sampler's code is linked in (its own error messages are in the binary)."
+    elif [ "$machine" = AArch64 ]; then
+      echo "::error::$src does not embed the OpenCL TopK sampler: no export, and the binary lacks the sampler's messages$missing"
+      exit 1
+    else
+      echo "::warning::$src does not embed the OpenCL TopK sampler: no export, and the binary lacks the sampler's messages$missing"
     fi
-  done
-  echo "OpenCL TopK sampler check done."
+  fi
   # Google Play's 16 KB page-size requirement: every PT_LOAD segment aligned to 0x4000.
   bad=$(readelf -lW "$lib" | awk '$1 == "LOAD" && $NF != "0x4000" && $NF != "0x10000"' || true)
   if [ -n "$bad" ]; then

@@ -418,8 +418,11 @@ public sealed class ModelSyncTests : IDisposable
     }
 
     [Fact]
-    public async Task ShortSectionWrite_FailsTheRuntimesSizeCheck()
+    public async Task ShortWrite_AfterTheFirstFetch_FailsWithDataLoss()
     {
+        // Only the first fetch of a call, the header fetch, may end short. The bridge fails a later fetch that
+        // writes fewer bytes than asked: a section, the rest of a long header, and the whole file of a remote
+        // without section hashes, which the runtime would otherwise keep truncated.
         string local = Put("a.litertlm", ModelSyncFixtures.A);
         var source = new ModelSyncMemorySource(ModelSyncFixtures.A1)
         {
@@ -427,7 +430,34 @@ public sealed class ModelSyncTests : IDisposable
         };
         var e = await Assert.ThrowsAsync<LiteRtException>(() => LiteRtModelSync.UpdateAsync(local, local, source));
         Assert.Equal(LiteRtStatusCode.DataLoss, e.StatusCode);
-        Assert.Contains("expected 8192 bytes, got 8092 bytes", e.Message, StringComparison.Ordinal);
+        Assert.Contains("fewer bytes than the range the runtime asked for: 8092 of 8192 bytes from byte 81920", e.Message, StringComparison.Ordinal);
+        Assert.Null(e.InnerException);
+        AssertBytes(ModelSyncFixtures.A, local);
+
+        byte[] noHashes = ModelSyncFixtures.H;
+        long headerEnd = ModelSyncFixtures.HeaderEnd(noHashes);
+        string output = PathIn("h.litertlm");
+        var whole = new ModelSyncMemorySource(noHashes)
+        {
+            Script = (_, offset, _) => offset == headerEnd ? new SourceAction { MissingBytes = 100 } : null,
+        };
+        var we = await Assert.ThrowsAsync<LiteRtException>(() => LiteRtModelSync.UpdateAsync(null, output, whole));
+        _output.WriteLine(we.Message);
+        Assert.Equal(LiteRtStatusCode.DataLoss, we.StatusCode);
+        Assert.Contains("Failed to fetch full model payload", we.Message, StringComparison.Ordinal);
+        Assert.Contains("fewer bytes than the range the runtime asked for", we.Message, StringComparison.Ordinal);
+        Assert.Equal($"[0,+16384] [{headerEnd},+{noHashes.Length - headerEnd}]", Sequence(whole));
+        Assert.False(File.Exists(output));
+
+        var header = new ModelSyncMemorySource(ModelSyncFixtures.LongHeader)
+        {
+            Script = (index, _, _) => index == 1 ? new SourceAction { MissingBytes = 100 } : null,
+        };
+        var he = await Assert.ThrowsAsync<LiteRtException>(() => LiteRtModelSync.CreatePlanAsync(null, header));
+        Assert.Equal(LiteRtStatusCode.DataLoss, he.StatusCode);
+        Assert.Contains("remaining remote header bytes", he.Message, StringComparison.Ordinal);
+        Assert.Equal("[0,+16384] [16384,+4768]", Sequence(header));
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     // ---------------------------------------------------------------- cancel

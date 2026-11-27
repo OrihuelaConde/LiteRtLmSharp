@@ -6,7 +6,7 @@ with a newer remote file. The calls load no model and need no engine.
 A `.litertlm` file starts with a header that lists the file's sections, the parts of the model stored one after
 another, and the header can record a SHA-256 hash of each section. The runtime compares the section hashes
 that the headers of the local and the remote file record. It copies the sections whose hashes match from the
-local file and downloads the others. When more than 80% of the section bytes changed, or when either file has
+local file and downloads the others. When 80% or more of the section bytes changed, or when either file has
 no section hashes, it downloads the whole file.
 
 Three members do the work:
@@ -216,8 +216,8 @@ The plan reports these values:
 | Member | What it means |
 |---|---|
 | `IsUpToDate` | `true` when the local file matches the remote file, section by section. It's `false` when there is no local file, when either file has no section hashes, and when a local section's bytes don't match the hash its header records. |
-| `BytesToDownload` | The bytes an update would download, the remote header included. It's 0 when the local file is up to date. It's the size of the whole file when there is no local file, when either file has no section hashes, or when more than 80% of the section bytes changed. |
-| `BytesToReuse` | The section bytes an update would copy from the local file. 0 with an existing local file means that the remote file has no section hashes, the local file has none, or more than 80% of the section bytes changed. The plan doesn't tell these cases apart. |
+| `BytesToDownload` | The bytes an update would download, the remote header included. It's 0 when the local file is up to date. It's the size of the whole file when there is no local file, when either file has no section hashes, or when 80% or more of the section bytes changed. |
+| `BytesToReuse` | The section bytes an update would copy from the local file. 0 with an existing local file means that the remote file has no section hashes, the local file has none, or at least 80% of the section bytes changed. The plan doesn't tell these cases apart. |
 | `TotalRemoteSize` | The size of the remote file in bytes. |
 | `ToString()` | The runtime's summary of the plan, for logs. Its format is not stable. |
 
@@ -556,11 +556,11 @@ catch (LiteRtException e)
 | `Unauthenticated` | The server answered 401. | Send a valid access token; see [Use a gated or private model](#use-a-gated-or-private-model). |
 | `PermissionDenied` | With an `HttpRequestException` as `InnerException`: the server answered 403. Without one: the runtime couldn't create or open a file, such as the temporary file next to the output, whatever the cause. | For a 403, check that the account can access the file. Otherwise, check that the output's folder is writable. |
 | `Aborted` | The remote file changed during the call: a later response carried another strong `ETag`. The output isn't replaced. | Run the update again, and use an address pinned to a revision. |
-| `DataLoss` | The server answered with other bytes than the ones requested, a downloaded section doesn't match the hash in the remote header, or the server returned a different number of bytes than the remote header declares. The C API also documents `DataLoss` for a failure of the runtime to store the bytes it received, which is not a fault of the server (not measured). | Run the update again. If it fails again, the remote file is damaged or changed during the call, or the runtime can't store the bytes: check the output's volume, for example its free space. |
+| `DataLoss` | The server answered with other bytes than the ones requested; the file on the server ended before a range that the runtime asked for, as happens when the file is shorter than its header declares (see [Servers without range support](#servers-without-range-support)); a downloaded section doesn't match the hash in the remote header; or the server returned a different number of bytes than the remote header declares. The runtime also returns `DataLoss` when it can't write the temporary file next to the output, which is not a fault of the server (not measured). | Run the update again. If it fails again, the remote file is damaged or changed during the call, or the runtime can't write the temporary file: check the output's volume, for example its free space. |
 | `InvalidArgument` | The remote file isn't a `.litertlm` file. | Check that the address points to the `.litertlm` file. |
 | `Unimplemented` | The server doesn't serve byte ranges, and the remote header is longer than 16 KiB. | Use a server that serves byte ranges; see [Servers without range support](#servers-without-range-support). |
 | `Internal` | The runtime couldn't replace or write the output. When the reason says "Failed to rename temporary model", the runtime downloaded what the update needs and wrote the temporary file, and the output or its temporary file `OUTPUT.tmp_updating` was open: for example by a `LiteRtModelInfo.Read` of the output, or by a second update of the same output in another process (measured on Windows). For an up-to-date local file, another cause is an output that is another name of the local file, such as a hard link or a short 8.3 name (not measured; another spelling of the path failed this way). | Close what holds the file and update again, or write the update to another path and replace the file later. For another name of the local file, pass the same path for both arguments. |
-| `ResourceExhausted` | The runtime's free-space check found less free space on the output's volume than the remote file's size. The check runs after the header fetch, before anything is written. | Free disk space on the output's volume. |
+| `ResourceExhausted` | The runtime's free-space check found less free space on the output's volume than the remote file's size. The check runs after the header fetch, before anything is written, and it counts the space of an `OUTPUT.tmp_updating` left by an update that didn't finish as used (not measured). | Free disk space on the output's volume. If an `OUTPUT.tmp_updating` is next to the output and no update of that output is running, delete it. |
 | `Unknown` | The server answered another status, such as 400 or 416; a progress receiver threw (its exception is the `InnerException`); or another failure. | Read the message and the `InnerException`. |
 
 Match on `StatusCode`, not on the message text. The runtime's reason can contain operating-system text in the
@@ -598,6 +598,14 @@ file, the source asks for the rest of the range with another `GET`. A server tha
 range costs one request per part. When the `Content-Range` of a short 206 doesn't give the file size, such as
 `bytes 0-1023/*`, the source also asks for the rest, and a `416 Range Not Satisfiable` answer to that request
 means that the file ended there.
+
+Only the first range of a call, the first 16 KiB of the file, can come back shorter than requested, as it does
+for a file smaller than 16 KiB. Every later range asks for an exact number of bytes. A later range that comes
+back short fails the call with `LiteRtStatusCode.DataLoss`, and the output isn't replaced. That covers a 206
+that ends at the end of the file before the end of the range, a 416 after a 206 that doesn't give the file
+size, and a 200 whose body is shorter than the range. The check catches a file on the server that is shorter
+than its header declares: the runtime doesn't count the bytes of a whole-file download (not measured), and it
+verifies only the sections that the header hashes, so without the check the output would be a truncated file.
 
 ## Windows paths
 
@@ -677,7 +685,10 @@ Non-ASCII file names in an ASCII folder were not measured; the measured non-ASCI
 - **No resume and no retry.** An update that fails or is cancelled during a fetch deletes its temporary file,
   so the next update starts over. The runtime doesn't retry a failed fetch. When the process ends during an
   update, `OUTPUT.tmp_updating` stays next to the output and the old output is intact. The temporary file
-  takes disk space until the next update of that output, which overwrites it.
+  takes disk space until the next update of that output, which overwrites it. The runtime's free-space check
+  runs before that overwrite and counts the file's space as used (not measured), so on a volume with little
+  room the next updates can fail with `ResourceExhausted` until you delete `OUTPUT.tmp_updating`. The binding
+  doesn't delete it; delete it only while no update of that output is running.
 - **Free space.** The temporary file is a full copy of the remote file, and it sits next to the old file until
   the rename, so the output's volume needs room for both. The binding turns on the runtime's free-space check,
   which fails the call with `ResourceExhausted` before it writes anything. A volume that fills up during the

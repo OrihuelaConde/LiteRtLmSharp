@@ -254,18 +254,29 @@ public sealed class ModelSyncInternalsTests
     {
         // Status, reason, the last fetch failed, the writer failed, update, expected text (null: no hint).
         { LiteRtStatusCode.ResourceExhausted, null, false, false, true, "free space" },
+        // The free-space check counts a temporary file left by an update that did not finish.
+        { LiteRtStatusCode.ResourceExhausted, null, false, false, true, "does not discount an OUTPUT.tmp_updating" },
         { LiteRtStatusCode.PermissionDenied, "Cannot open output file", false, false, true, "cannot create" },
         { LiteRtStatusCode.PermissionDenied, "HTTP 403", true, false, true, null },
         { LiteRtStatusCode.PermissionDenied, "x", false, false, false, null },
         { LiteRtStatusCode.Internal, "File exists", false, false, true, "pass the same path for both" },
         { LiteRtStatusCode.Internal, "Failed to rename temporary model to destination: Access is denied.", false, false, true, "while the output or its temporary file" },
         { LiteRtStatusCode.Internal, "x", false, false, false, null },
+        // A remote header shorter than it declares is the remote's fault, in a plan or an update.
+        { LiteRtStatusCode.Internal, "Fetched 900 bytes, but header requires 1184 bytes.", false, false, true, "fewer header bytes" },
+        { LiteRtStatusCode.Internal, "Fetched 900 bytes, but header requires 1184 bytes.", false, false, false, "fewer header bytes" },
         { LiteRtStatusCode.DataLoss, "Section SHA-256 verification failed", false, false, true, "may have changed during the call" },
         { LiteRtStatusCode.DataLoss, "Section payload truncated", false, false, true, "may not be a .litertlm file" },
         { LiteRtStatusCode.InvalidArgument, "magic bytes", false, false, false, "may not be a .litertlm file" },
         { LiteRtStatusCode.DataLoss, "Content-Range", true, false, true, null },
         // A failure of the runtime's own writer is not the remote's: it gets its own hint.
-        { LiteRtStatusCode.DataLoss, "write failed", false, true, true, "could not store the bytes it received" },
+        { LiteRtStatusCode.DataLoss, "write failed", false, true, true, "remote is not the cause" },
+        // So is a failed write of the runtime's own, without a callback.
+        { LiteRtStatusCode.DataLoss, "Failed to write padding bytes to output file.", false, false, true, "remote is not the cause" },
+        { LiteRtStatusCode.DataLoss, "Failed to write local section payload to output file.", false, false, true, "remote is not the cause" },
+        { LiteRtStatusCode.DataLoss, "Failed to flush and close output model file.", false, false, true, "remote is not the cause" },
+        // The same words in the reason of a failed fetch come from the source, not from the runtime's writes.
+        { LiteRtStatusCode.DataLoss, "Failed to fetch section payload: Failed to write", true, false, true, null },
         { LiteRtStatusCode.InvalidArgument, "x", false, true, false, null },
         { LiteRtStatusCode.Unavailable, "x", true, false, true, null },
     };

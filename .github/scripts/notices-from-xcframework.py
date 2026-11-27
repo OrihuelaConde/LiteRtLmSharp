@@ -10,6 +10,10 @@ native-release.yml uses it when the upstream release carries no THIRD_PARTY_NOTI
 v0.17.0 onward). The v0.16.0 notices asset was itself built from the Apple frameworks and covered every
 platform's binaries, so the framework's own bundle is the closest upstream source.
 
+The v0.20.0 bundle has no Dawn entry, while the win-x64, linux-x64, linux-arm64 and osx-arm64 libraries link
+Dawn (WebGPU, which includes Tint). When the bundle lists no Dawn component, the script appends Dawn's license,
+copied from LICENSE in google/dawn (the BSD-3-Clause part that covers its source files).
+
 Usage: notices-from-xcframework.py <CLiteRTLM.xcframework.zip> <output.txt> <upstream tag>
 """
 import html
@@ -17,6 +21,34 @@ import io
 import re
 import sys
 import zipfile
+
+
+DAWN_LICENSE = """// Copyright 2017-2026 The Dawn & Tint Authors
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
+//
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."""
 
 
 def tidy(text):
@@ -54,6 +86,9 @@ with zipfile.ZipFile(src) as z:
     pages = component_pages(z, names, bundle)
     if not pages:
         sys.exit(f"no component licenses in the third_party_licenses.bundle of {src}")
+    if not any(component.lower().startswith("dawn") for component, _ in pages):
+        pages.append(("dawn (includes Tint; added because the bundle lists no Dawn entry)",
+                      f"<pre>{html.escape(DAWN_LICENSE)}</pre>"))
 
     rule = "=" * 80
     parts = [

@@ -129,6 +129,9 @@ internal sealed class LiteRtConversationStore
         _lru = new LinkedList<KeyValuePair<string, Entry>>();
     }
 
+    /// <summary>The number of stored conversations, for tests.</summary>
+    public int Count => _map.Count;
+
     /// <summary>Looks up a conversation by id, promoting it to most-recently-used, or returns <c>null</c>
     /// when the id is unknown or was evicted.</summary>
     public Entry? Get(string id)

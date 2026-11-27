@@ -33,6 +33,9 @@ public readonly struct LiteRtCache : IEquatable<LiteRtCache>
     public static LiteRtCache InMemory => new(":memory");
 
     /// <summary>Use a specific directory for the cache.</summary>
+    /// <remarks>On Windows, unless the process uses the UTF-8 code page, keep the path to ASCII characters: with
+    /// LiteRT-LM v0.20.0 and v0.18.0 under the ANSI code page 1252, a directory with a character outside ASCII made
+    /// <see cref="LiteRtEngine.Load"/> fail ("Cache directory does not exist or is not writable").</remarks>
     /// <exception cref="System.ArgumentException"><paramref name="path"/> is null or empty, or starts
     /// with <c>':'</c> — that prefix is reserved for the engine's special cache tokens (a real directory
     /// named e.g. <c>":memory"</c> would silently become <see cref="InMemory"/>).</exception>

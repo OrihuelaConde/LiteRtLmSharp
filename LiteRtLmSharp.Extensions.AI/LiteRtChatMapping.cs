@@ -313,8 +313,9 @@ internal static class LiteRtChatMapping
         // "Present" for tools = ChatOptions carries tools; then ToTools honors ToolMode (None → no tools, and it
         // does NOT fall back to the template). Only a request with no tools at all uses the template's tools.
         IReadOnlyList<LiteRtTool>? tools = options?.Tools is { Count: > 0 } ? ToTools(options) : template?.Tools;
-        // Tool-calling constrained decoding does nothing useful without tools, and with LiteRT-LM v0.20.0 it can
-        // end a text reply at its first line break, so a request without tools does not ask for it.
+        // The tool-calling constraint has no tool calls to constrain without tools. With LiteRT-LM v0.20.0, a text
+        // reply of a conversation with EnableConstrainedDecoding and no tools could end at its first line break
+        // (measured; the cause is not known), so a request without tools does not set it.
         if (tools is not { Count: > 0 })
             constrained = false;
 

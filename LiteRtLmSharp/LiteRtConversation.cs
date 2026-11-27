@@ -800,9 +800,23 @@ public sealed class LiteRtConversation : IDisposable
         // the cancel only reads the handle and flags the session's active tasks under the execution
         // manager's lock.
         Interlocked.Increment(ref _cancelRequests);
-        NativeError.ThrowIfFailed(
-            LiteRtLmNative.litert_lm_conversation_cancel_process(_conversation.Ptr),
-            nameof(LiteRtLmNative.litert_lm_conversation_cancel_process));
+        // A reference for the call: this member runs from any thread, so a Dispose on another thread, or the
+        // finalizer, must not delete the native conversation under it; the delete then runs at the release. A
+        // handle whose native conversation was already deleted throws ObjectDisposedException here, before the
+        // native call.
+        bool referenced = false;
+        try
+        {
+            _conversation.DangerousAddRef(ref referenced);
+            NativeError.ThrowIfFailed(
+                LiteRtLmNative.litert_lm_conversation_cancel_process(_conversation.Ptr),
+                nameof(LiteRtLmNative.litert_lm_conversation_cancel_process));
+        }
+        finally
+        {
+            if (referenced)
+                _conversation.DangerousRelease();
+        }
     }
 
     /// <summary>
@@ -1167,7 +1181,11 @@ public sealed class LiteRtConversation : IDisposable
                 LiteRtLmNative.litert_lm_conversation_render_message_to_string(_conversation.Ptr, messageJson, &strPtr),
                 nameof(LiteRtLmNative.litert_lm_conversation_render_message_to_string));
         }
-        return Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
+        string rendered = Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
+        // The string is freed with the native conversation, so the wrapper must stay reachable until the copy is
+        // made: otherwise its SafeHandle finalizer could delete the conversation first.
+        GC.KeepAlive(this);
+        return rendered;
     }
 
     /// <summary>
@@ -1192,7 +1210,10 @@ public sealed class LiteRtConversation : IDisposable
                 LiteRtLmNative.litert_lm_conversation_render_preface_to_string(_conversation.Ptr, &strPtr),
                 nameof(LiteRtLmNative.litert_lm_conversation_render_preface_to_string));
         }
-        return Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
+        string rendered = Marshal.PtrToStringUTF8(strPtr) ?? string.Empty;
+        // As in RenderMessageRaw: reachable until the copy is made.
+        GC.KeepAlive(this);
+        return rendered;
     }
 
     /// <summary>Whether a native failure message is the one the runtime gives when an image/audio arrives

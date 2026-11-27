@@ -233,7 +233,9 @@ A failure other than a cut leaves this block with the exception, so dispose `cha
   each reply. After a 966-token reply that held 668 thinking tokens, the conversation held 339 tokens
   (LiteRT-LM v0.20.0, win-x64, CPU, gemma-4 E2B). A clone taken after such a reply holds the same token
   count, without the reasoning (CPU, gemma-4 E2B). The replies a clone generates later were not measured, and
-  neither was the GPU.
+  neither was the GPU. In LiteRT-LM v0.20.0 the runtime removes the reasoning with a rewind to the point before
+  it, and a rewind doesn't restore attention state other than a plain key-value cache. So a conversation with
+  thinking on a model with linear attention or a local attention window is not covered by these measurements.
 - **Ring buffers can break a clone's later turns.** In the LiteRT-LM sources, with
   `UseRingbuffersLocalAttention` on, the next turns on a clone can fail with `NOT_FOUND`; this was not
   measured.

@@ -13,7 +13,9 @@ namespace LiteRtLmSharp;
 /// <remarks>
 /// <para>A 206 must carry a byte <c>Content-Range</c> that starts at the requested offset. A 206 with fewer bytes
 /// than asked that ends before the end of the file, which RFC 9110 allows, is followed by a request for the rest,
-/// within the same fetch. A 200 answers a
+/// within the same fetch. An answer that ends at the end of the file, before the end of the range, serves the
+/// bytes the file has; the bridge accepts that only for the first fetch of a call and fails a later one with
+/// <c>DATA_LOSS</c>. A 200 answers a
 /// request at byte 0 with its first bytes, because the server ignored <c>Range</c>; a 200 to the first request of
 /// a range that starts after byte 0 reports "ranges unsupported", which makes the runtime fall back to a full
 /// download for any fetch after the header. A 200 to the request for the rest of a range, after a partial answer,
@@ -86,7 +88,7 @@ internal sealed class ModelSyncHttpSource : LiteRtModelSyncSource
             using HttpResponseMessage response = await SendAsync(request, cancellationToken).ConfigureAwait(false);
             int status = (int)response.StatusCode;
             // The request for the rest of a range, after an answer that did not say where the file ends: 416 says
-            // that the file ended where that answer did, so the range is complete.
+            // that the file ended where that answer did, so the source has served all the file has.
             if (status == 416 && endUnknown)
                 return true;
             if (status is not (200 or 206))
@@ -109,7 +111,8 @@ internal sealed class ModelSyncHttpSource : LiteRtModelSyncSource
                 if (from != next || to < from)
                     throw new ModelSyncSourceException(LiteRtStatusCode.DataLoss,
                         $"The remote answered the request for bytes {next}-{last} with bytes {from}-{to}.");
-                expected = Math.Min(last - next + 1, to - from + 1);
+                // From the smaller end, so that an end such as long.MaxValue cannot overflow the count.
+                expected = Math.Min(last, to) - next + 1;
                 fileLength = range.Length;
             }
             else if (next == offset)
@@ -133,12 +136,16 @@ internal sealed class ModelSyncHttpSource : LiteRtModelSyncSource
                 throw new IOException(
                     $"The response to the request for bytes {next}-{last} ended after {copied} of {count} bytes.");
             next += copied;
-            // A 206 may carry less than asked (RFC 9110, section 15.3.7). It completes the range only when it ends
-            // at the end of the file; otherwise the source asks for the rest. When the remote does not say where
-            // the file ends, the source asks too, and a 416 to that request means the file ended there: taking
-            // the short answer as the whole range would leave a truncated file without an error.
+            // A 206 may carry less than asked (RFC 9110, section 15.3.7). The source stops at the end of the file;
+            // otherwise it asks for the rest. When the remote does not say where the file ends, the source asks
+            // too, and a 416 to that request means the file ended there. A range that ends short at the end of the
+            // file is complete only for the first fetch of a call: the bridge fails a later one, because the
+            // runtime would keep a truncated file without an error.
             if (next > last || response.StatusCode != HttpStatusCode.PartialContent || (fileLength is { } size && next >= size))
                 return true;
+            // An answer that moved nothing would repeat the same request without end.
+            if (copied == 0)
+                throw new IOException($"The response to the request for bytes {next}-{last} carried no bytes.");
             endUnknown = fileLength is null;
         }
     }

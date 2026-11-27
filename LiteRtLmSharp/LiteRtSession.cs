@@ -50,7 +50,9 @@ namespace LiteRtLmSharp;
 /// <para>
 /// <b>Checkpoints, rewind and reset.</b> <see cref="SaveCheckpoint"/>, <see cref="RewindTo"/> and
 /// <see cref="Reset"/> are experimental: a call to them is the compile error LITERTLM001 until you suppress it,
-/// and they can change or be removed in a later version.
+/// and they can change or be removed in a later version. The replies after a rewind or a reset were measured with
+/// a sampler that keeps only the most likely token, on models that declare no attention state other than a
+/// key-value cache; <see cref="RewindTo"/> says what can differ otherwise.
 /// </para>
 /// </remarks>
 public sealed class LiteRtSession : IDisposable
@@ -438,9 +440,17 @@ public sealed class LiteRtSession : IDisposable
     /// rewind to a checkpoint saved on a Fresh session, the runtime adds one position again on the next prefill,
     /// the start token on Gemma 4 (see <see cref="Prefill"/>). A decode after the rewind gave the same reply as
     /// the first decode from that point, and as a new session that reached the point the same way, also when
-    /// another session or a conversation used the engine in between. No rewind or reset was measured with
-    /// <see cref="LiteRtEngineOptions.UseRingbuffersLocalAttention"/> on, the option that gives up instant
-    /// rewinding.
+    /// another session or a conversation used the engine in between. Those replies were measured with a sampler
+    /// that keeps only the most likely token (top-k 1). The runtime does not restore the sampler's random state on
+    /// a rewind, so with random sampling the reply after a rewind can differ from the first one. No rewind or reset
+    /// was measured with <see cref="LiteRtEngineOptions.UseRingbuffersLocalAttention"/> on, the option that gives up
+    /// instant rewinding.
+    /// </para>
+    /// <para>
+    /// A rewind to a point after the start of the session moves the runtime's position back and does not restore
+    /// attention state other than a plain key-value cache. The models these docs were measured with declare no such
+    /// state. A model that has it, such as a model with linear attention or a local attention window, is not
+    /// covered by these measurements and can give wrong text after a rewind.
     /// </para>
     /// <para>
     /// Accepted when the session is Fresh, Prefilled, Decoded or <see cref="LiteRtSessionState.ContextFull"/>, and
@@ -491,6 +501,11 @@ public sealed class LiteRtSession : IDisposable
     /// After a reset the runtime adds one position again on the next prefill, the start token on Gemma 4 (see
     /// <see cref="Prefill"/>), and the next turn gave the same reply as on a new session. The runtime drops every checkpoint except those saved
     /// while the session was Fresh.
+    /// </para>
+    /// <para>
+    /// That reply was measured with a sampler that keeps only the most likely token. The runtime does not restore
+    /// the sampler's random state on a reset either, so with random sampling the next turn can differ from the one
+    /// on a new session.
     /// </para>
     /// <para>
     /// Accepted in the same states as <see cref="RewindTo"/>: Fresh, <see cref="LiteRtSessionState.Prefilled"/>,

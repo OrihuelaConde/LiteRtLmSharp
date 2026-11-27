@@ -10,9 +10,9 @@
     Frameworks/CLiteRTLM.framework/CLiteRTLM at runtime, so SmartLink=False keeps the framework
     whole instead of dead-stripping symbols that are only referenced dynamically.
 
-    The xcframework carries device (ios-arm64) and simulator slices. GPU (Metal) needs companion
-    libraries the xcframework only references by name and this package does not ship - the CPU
-    backend is the supported path on iOS. See docs/packaging.md and docs/roadmap.md.
+    The xcframework carries device (ios-arm64) and simulator slices. The LiteRT-LM v0.20.0 framework
+    links the Metal accelerator and the TopK Metal sampler, but nothing has run on an iOS device, so
+    the CPU backend is the supported path on iOS. See docs/packaging.md and docs/roadmap.md.
   -->
   <PropertyGroup>
     <_LiteRtLmXcfDir>$(MSBuildThisFileDirectory)xcframeworks\</_LiteRtLmXcfDir>

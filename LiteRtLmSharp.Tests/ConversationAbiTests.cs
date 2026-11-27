@@ -666,10 +666,11 @@ public sealed class ConversationRuntimeBehaviourTests(ITestOutputHelper output)
         Assert.False(string.IsNullOrWhiteSpace(none.Send("Reply with one word: hello").Text));
     }
 
-    /// <summary>Under constrained decoding without tools, a text reply is still plain text. Where a
-    /// one-number-per-line count stops depends on the machine with LiteRT-LM v0.20.0: on some it ends at its first
-    /// line break (v0.18.0 continued to the output cap), on others it runs to the cap, so the test logs both
-    /// replies and asserts only how they start. The same count on one line keeps going everywhere measured.</summary>
+    /// <summary>On a conversation with <see cref="LiteRtConversationOptions.EnableConstrainedDecoding"/> and no
+    /// tools, a text reply is still plain text. With LiteRT-LM v0.20.0, a one-number-per-line count on such a
+    /// conversation ended at its first line break on some machines (v0.18.0 continued to the output cap) and ran to
+    /// the cap on others, so the test logs both replies and asserts only how they start. The same count on one line
+    /// kept going everywhere measured. What cuts the reply is not known.</summary>
     [SkippableFact]
     public void ConstrainedDecoding_WithoutTools_AnswersInText()
     {

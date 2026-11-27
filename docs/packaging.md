@@ -20,9 +20,9 @@ LLamaSharp-style model: **one pure managed package + per-RID native runtime pack
 > `NativeReference Kind=Framework`** from a `buildTransitive` `.targets` conditioned on the
 > `net10.0-ios` TFM — embedded and code-signed into the app bundle and loaded at runtime by
 > `NativeLibraryResolver` as `Frameworks/CLiteRTLM.framework/CLiteRTLM` (see the iOS linking
-> decision in `docs/roadmap.md`). The xcframework carries device and simulator slices. GPU (Metal)
-> needs companion libraries the xcframework only references by name and the package does not
-> ship, so the CPU backend is the supported path. Build/link is validated in CI
+> decision in `docs/roadmap.md`). The xcframework carries device and simulator slices. The
+> LiteRT-LM v0.20.0 framework links the Metal accelerator and the TopK Metal sampler, but nothing has
+> run on an iOS device, so the CPU backend is the supported path. Build/link is validated in CI
 > (`ios-package-check.yml`, which also asserts the package layout); on-device runtime is pending
 > hardware validation (see `docs/roadmap.md`). Every package ships `README.md`, `LICENSE.txt`,
 > `NOTICE` and `THIRD-PARTY-NOTICES.md` at its root; the runtime packages add upstream's

@@ -24,6 +24,10 @@ internal sealed record FakeHttpAction
     /// <summary>Answer 206 with this <c>Content-Range</c> start instead of the requested one.</summary>
     public long? ContentRangeFrom { get; init; }
 
+    /// <summary>Answer 206 with this <c>Content-Range</c> end instead of the last byte of the body. Use it with
+    /// <see cref="FakeModelServer.UnknownLength"/>, which leaves the file size out of the header.</summary>
+    public long? ContentRangeTo { get; init; }
+
     /// <summary>Answer 206 without a <c>Content-Range</c> header.</summary>
     public bool NoContentRange { get; init; }
 
@@ -165,7 +169,7 @@ internal sealed class FakeModelServer(byte[] data) : HttpMessageHandler
                 if (partial && action?.NoContentRange != true)
                 {
                     long first = action?.ContentRangeFrom ?? from;
-                    long last = first + declared.Length - 1;
+                    long last = action?.ContentRangeTo ?? first + declared.Length - 1;
                     // A server that sends extra bytes declares a size that holds them.
                     content.Headers.ContentRange = UnknownLength
                         ? new ContentRangeHeaderValue(first, last)

@@ -319,7 +319,9 @@ public sealed class ContextOverflowModelTests
     /// <summary>
     /// A "message doesn't fit" rejection happens BEFORE any native work, so in the stateful mode it must
     /// NOT evict the live conversation: the thread stays resumable and a shorter message on the same
-    /// ConversationId succeeds. (Only the terminal "context is full" rejection evicts.)
+    /// ConversationId succeeds. (Only the terminal "context is full" rejection evicts.) The same rejection of a
+    /// request without a ConversationId, blocking or streaming, leaves no conversation in the store: the caller
+    /// never received its id.
     /// </summary>
     [SkippableFact]
     public async Task StatefulThread_SurvivesAMessageThatDoesNotFit()
@@ -331,14 +333,29 @@ public sealed class ContextOverflowModelTests
         using var client = new LiteRtLmSharp.Extensions.AI.LiteRtChatClient(
             engine, statefulConversations: new LiteRtLmSharp.Extensions.AI.LiteRtStatefulConversationOptions());
 
+        string oversized = string.Join(" ", Enumerable.Repeat("many words that will not fit", 400));
         var chatOptions = new Microsoft.Extensions.AI.ChatOptions { MaxOutputTokens = 16 };
+
+        // Oversized first message of a new conversation, blocking and streaming: rejected up front, and the
+        // conversation the request created is not kept.
+        await Assert.ThrowsAsync<LiteRtContextOverflowException>(() => client.GetResponseAsync(
+            [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, oversized)], chatOptions));
+        Assert.Equal(0, client.Store!.Count);
+        await Assert.ThrowsAsync<LiteRtContextOverflowException>(async () =>
+        {
+            await foreach (Microsoft.Extensions.AI.ChatResponseUpdate _ in client.GetStreamingResponseAsync(
+                [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, oversized)], chatOptions))
+            {
+            }
+        });
+        Assert.Equal(0, client.Store!.Count);
+
         Microsoft.Extensions.AI.ChatResponse first = await client.GetResponseAsync(
             [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, "Reply with one short word: hello")],
             chatOptions);
         Assert.NotNull(first.ConversationId);
 
         // Oversized continuation: rejected up front, conversation untouched.
-        string oversized = string.Join(" ", Enumerable.Repeat("many words that will not fit", 400));
         chatOptions.ConversationId = first.ConversationId;
         await Assert.ThrowsAsync<LiteRtContextOverflowException>(() => client.GetResponseAsync(
             [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, oversized)], chatOptions));

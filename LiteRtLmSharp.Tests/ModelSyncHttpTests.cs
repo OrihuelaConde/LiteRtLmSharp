@@ -129,7 +129,7 @@ public sealed class ModelSyncHttpTests : IDisposable
     }
 
     [Fact]
-    public async Task ShortAnswerToTheHeaderRequest_OfASmallFile_IsServed()
+    public async Task ShortAnswerToTheHeaderRequest_OfASmallFile_IsServed_ButToALaterRange_FailsWithDataLoss()
     {
         // A 206 that is shorter than the request but complete per its Content-Range: a file under 16 KiB.
         byte[] remote = ModelSyncFixtures.Small;
@@ -139,6 +139,21 @@ public sealed class ModelSyncHttpTests : IDisposable
         Assert.Equal(6520, result.BytesReceived);
         Assert.Equal("bytes=0-16383", server.Requests[0].Range);
         AssertBytes(remote, output);
+
+        // A later range asks for an exact length. A remote file that is shorter than its header declares ends it
+        // early, with a 206 whose Content-Range gives the smaller size. The file has no section hashes, so the
+        // runtime would keep the truncated file: the call fails instead.
+        byte[] noHashes = ModelSyncFixtures.H;
+        long headerEnd = ModelSyncFixtures.HeaderEnd(noHashes);
+        var shorter = new FakeModelServer(noHashes[..^1000]);
+        string cutOutput = PathIn("h.litertlm");
+        var e = await Assert.ThrowsAsync<LiteRtException>(() => LiteRtModelSync.UpdateAsync(null, cutOutput, Source(shorter)));
+        _output.WriteLine(e.Message);
+        Assert.Equal(LiteRtStatusCode.DataLoss, e.StatusCode);
+        Assert.Contains("fewer bytes than the range the runtime asked for", e.Message, StringComparison.Ordinal);
+        Assert.Equal($"{Range(0, 16384)}:206 {Range(headerEnd, noHashes.Length - headerEnd)}:206", shorter.Sequence());
+        Assert.False(File.Exists(cutOutput));
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     /// <summary>The ranges a source asks for when every 206 carries at most <paramref name="cap"/> bytes.</summary>
@@ -190,6 +205,34 @@ public sealed class ModelSyncHttpTests : IDisposable
         string cutOutput = PathIn("h.litertlm");
         await LiteRtModelSync.UpdateAsync(null, cutOutput, Source(cut));
         AssertBytes(noHashes, cutOutput);
+
+        // The same file, 1,000 bytes shorter than its header declares: the 416 says that it ended before the end of
+        // a range after the header, so the call fails instead of keeping a truncated file.
+        long headerEnd = ModelSyncFixtures.HeaderEnd(noHashes);
+        long shortEnd = noHashes.Length - 1000;
+        var ended = new FakeModelServer(noHashes[..^1000]) { UnknownLength = true };
+        string endedOutput = PathIn("ended.litertlm");
+        var e = await Assert.ThrowsAsync<LiteRtException>(() => LiteRtModelSync.UpdateAsync(null, endedOutput, Source(ended)));
+        _output.WriteLine(e.Message);
+        Assert.Equal(LiteRtStatusCode.DataLoss, e.StatusCode);
+        Assert.Contains("fewer bytes than the range the runtime asked for", e.Message, StringComparison.Ordinal);
+        Assert.Equal(
+            $"{Range(0, 16384)}:206 {Range(headerEnd, noHashes.Length - headerEnd)}:206 {Range(shortEnd, 1000)}:416",
+            ended.Sequence());
+        Assert.False(File.Exists(endedOutput));
+        ModelSyncAsserts.NoTemporaries(_dir);
+
+        // "bytes 0-9223372036854775807/*" to the header request: the count of that answer must not overflow into
+        // an empty copy, which would send the same request again.
+        var huge = new FakeModelServer(ModelSyncFixtures.A)
+        {
+            UnknownLength = true,
+            Script = (index, _) => index == 0 ? new FakeHttpAction { ContentRangeTo = long.MaxValue } : null,
+        };
+        string hugeOutput = PathIn("huge.litertlm");
+        await LiteRtModelSync.UpdateAsync(null, hugeOutput, Source(huge)).WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(["bytes=0-16383:206", "bytes=1184-129023:206"], huge.Requests.Select(r => r.ToString()));
+        AssertBytes(ModelSyncFixtures.A, hugeOutput);
     }
 
     [Fact]
@@ -307,6 +350,22 @@ public sealed class ModelSyncHttpTests : IDisposable
         Assert.Equal($"{Range(0, 16384)}:200 {Range(1184, 127840)}:200 {Range(0, 129024)}:200", server.Sequence());
         Assert.Equal(145408, result.BytesReceived);
         AssertBytes(ModelSyncFixtures.A, output);
+
+        // A whole file 1,000 bytes shorter than its header declares, without section hashes. The third request
+        // starts at byte 0 but is not the first of the call, so its answer must carry every byte it asks for.
+        byte[] noHashes = ModelSyncFixtures.H;
+        long headerEnd = ModelSyncFixtures.HeaderEnd(noHashes);
+        var shorter = new FakeModelServer(noHashes[..^1000]) { ServesRanges = false };
+        string cutOutput = PathIn("h.litertlm");
+        var e = await Assert.ThrowsAsync<LiteRtException>(() => LiteRtModelSync.UpdateAsync(null, cutOutput, Source(shorter)));
+        _output.WriteLine(e.Message);
+        Assert.Equal(LiteRtStatusCode.DataLoss, e.StatusCode);
+        Assert.Contains("fewer bytes than the range the runtime asked for", e.Message, StringComparison.Ordinal);
+        Assert.Equal(
+            $"{Range(0, 16384)}:200 {Range(headerEnd, noHashes.Length - headerEnd)}:200 {Range(0, noHashes.Length)}:200",
+            shorter.Sequence());
+        Assert.False(File.Exists(cutOutput));
+        ModelSyncAsserts.NoTemporaries(_dir);
     }
 
     [Fact]

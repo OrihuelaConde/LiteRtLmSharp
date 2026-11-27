@@ -36,7 +36,7 @@ public sealed class LiteRtModelSyncPlan
     /// <summary>Gets the number of bytes an update would download.</summary>
     /// <remarks>
     /// <para>It includes the remote header, and is 0 when the local file is up to date. When the local file is
-    /// missing, when either file has no section hashes, or when more than 80% of the section bytes changed, it is
+    /// missing, when either file has no section hashes, or when 80% or more of the section bytes changed, it is
     /// the size of the whole file, because the update then downloads the whole file.</para>
     /// <para>It is an estimate: an update also downloads a section whose local bytes do not match their hash,
     /// even when the plan counted the section as reused. The bytes an update receives from the source differ
@@ -51,7 +51,7 @@ public sealed class LiteRtModelSyncPlan
     /// <see cref="TotalRemoteSize"/>: the alignment padding between sections is neither downloaded nor counted
     /// as reused.</para>
     /// <para>0 with an existing local file means the remote file has no section hashes, the local file has none,
-    /// or more than 80% of the section bytes changed. The plan does not tell these cases apart: a file published
+    /// or at least 80% of the section bytes changed. The plan does not tell these cases apart: a file published
     /// without section hashes looks the same as a new version.</para>
     /// </remarks>
     public long BytesToReuse { get; }

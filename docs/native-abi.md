@@ -10,8 +10,9 @@
 > matching header (the self-built era, v0.13.1 → v0.15.0), and since v0.16.0 by shipping upstream's
 > official prebuilts. The v0.20.0 libraries export 242 `litert_lm_*` functions on ELF and PE across
 > seven public headers: `c/engine.h`, `c/conversation.h`, `c/embedding_engine.h`, `c/model_info.h`,
-> `c/model_sync.h`, `c/error_reporter.h` and `c/experimental.h`. The Mach-O libraries list 243; the
-> reason for the extra export is not known. The binding's coverage is tracked in [`roadmap.md`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md).
+> `c/model_sync.h`, `c/error_reporter.h` and `c/experimental.h`. The Mach-O libraries list 243: the extra
+> export is `litert_lm_embedding_engine_settings_set_apple_coreai_compute_unit`, which no public header
+> declares and the binding doesn't use. The binding's coverage is tracked in [`roadmap.md`](https://github.com/OrihuelaConde/LiteRtLmSharp/blob/master/docs/roadmap.md).
 >
 > v0.20.0 implements C API 1.1.0. Since C API 1.0.0 (LiteRT-LM v0.19.0), most functions return a
 > `LiteRtLmStatusCode` and deliver their results through trailing `out_*` parameters. The stream
@@ -435,7 +436,8 @@ litert_lm_tokenize_result_delete(t);
 
 - The `"gpu"` backend on desktop uses **native WebGPU (Dawn)**, NOT a browser. It is a portable
   GPU layer mapping to: **Direct3D 12 on Windows**, Vulkan on Linux, Metal on macOS.
-  (On Android: OpenCL/Vulkan.)
+  (The v0.20.0 Android libraries don't use WebGPU or Vulkan: they embed the OpenCL and OpenGL ES
+  accelerator and the OpenCL TopK sampler, and they link `libGLESv3.so` and `libEGL.so`.)
 - Verified: with `Backend="gpu"` the log selects the discrete GPU (e.g.
   `NVIDIA RTX 3080, backend=Direct3D 12`) and runs the transformer layers on GPU
   (`delegate_webgpu.cc`, `delegate_kernel.cc`). The WebGPU accelerator is embedded in the official
@@ -533,7 +535,7 @@ parameter; the signatures in this list leave that parameter out.
 - **Batch:** `compute_embedding_batch(engine, inputs_batch, num_inputs_per_batch, batch_size, options)`
   takes, per request, an array of inputs and its length; the binding builds one single-input request per
   text. The returned collection owns its responses: `responses_get_at` returns a borrowed pointer, and
-  only `responses_delete` frees them. The runtime processes the requests one after another
+  only `responses_delete` frees them. In LiteRT-LM v0.20.0, the runtime processes the requests one after another
   (`EmbeddingEngineImpl::ComputeEmbeddingBatch` is a loop), so a batch saves call overhead but not
   compute, and the first failing request fails the call.
 - **Options:** `NULL` options mean the defaults: normalized, special tokens inserted, overflow strategy
@@ -637,9 +639,12 @@ Contract, as the binding relies on it:
   error. The runtime doesn't retry a failed fetch.
 - **`set_error`:** the UTF-8 text appears in the last error after the status and the phase, as in
   `CANCELLED: Failed to fetch section payload: <text>`. `NULL` restores the default text.
-- **Byte counts:** the runtime rejects short and long section writes and a short whole-file write with
-  `DATA_LOSS`, but accepts a whole-file write past `length` and leaves a longer, corrupt output. The binding
-  never passes the runtime a byte past `length`.
+- **Byte counts:** the runtime rejects short and long section writes with `DATA_LOSS`. It rejects a short
+  whole-file write only when the remote header carries section hashes: in a measurement without them, the
+  runtime wrote the short file and reported success. It accepts a whole-file write past `length` and leaves a
+  longer, corrupt output. The binding never passes the runtime a byte past `length`, and it fails with
+  `DATA_LOSS` every fetch after the first one of a call that writes fewer bytes than it asked for. Only the
+  first fetch, the header read, can legitimately come back short.
 - **Verification:** the runtime verifies each downloaded section that the remote header hashes, and nothing
   for a remote without section hashes.
 - **Paths (Windows):** the runtime decodes every path in the active ANSI code page (UTF-8 bytes fail on code

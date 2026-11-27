@@ -415,6 +415,10 @@ public sealed class LiteRtEmbeddingEngine : IDisposable
 public sealed record LiteRtEmbeddingEngineOptions
 {
     /// <summary>Gets the path to the embedding model's <c>.litertlm</c> file. Must be set.</summary>
+    /// <remarks>On Windows, unless the process uses the UTF-8 code page, keep the path to ASCII characters: with a
+    /// character outside ASCII in the path, a chat engine failed to load on GPU and wrote no compiled cache, or one
+    /// under a garbled name, on CPU, as <see cref="LiteRtEngineOptions.ModelPath"/> describes. An embedding engine
+    /// was not measured with such a path.</remarks>
     public string ModelPath { get; init; } = "";
 
     /// <summary>Gets the backend to run the model on. Defaults to <see cref="LiteRtBackend.Cpu"/>.</summary>

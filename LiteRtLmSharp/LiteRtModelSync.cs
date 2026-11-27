@@ -11,7 +11,7 @@ namespace LiteRtLmSharp;
 /// can change or be removed in a minor release.</para>
 /// <para>The calls load no model and create no engine. The runtime compares the section hashes that the local and
 /// the remote headers record. It copies the sections whose hashes match from the local file and downloads the
-/// others; when more than 80% of the section bytes changed, or when either file has no section hashes, it
+/// others; when 80% or more of the section bytes changed, or when either file has no section hashes, it
 /// downloads the whole file. It verifies the SHA-256 of each downloaded section that the remote header hashes, so
 /// the bytes of a remote without section hashes are not verified. Statements marked as measured were measured
 /// on LiteRT-LM v0.20.0, win-x64.</para>
@@ -125,7 +125,12 @@ public static class LiteRtModelSync
     /// until the rename. The binding turns on the runtime's check of free space before the download: when the
     /// output's volume has less free space than the remote file's size, the update fails with
     /// <see cref="LiteRtStatusCode.ResourceExhausted"/> after it reads the remote header and before it writes
-    /// anything (measured). A volume that fills up during the download is not measured.</para>
+    /// anything (measured). A volume that fills up during the download is not measured. The check does not
+    /// discount an <c>OUTPUT.tmp_updating</c> left by an update that did not finish, such as one whose process
+    /// ended: the runtime overwrites that file only after the check, so the space it holds counts as used. On a
+    /// volume with little room, updates of that output can then fail with
+    /// <see cref="LiteRtStatusCode.ResourceExhausted"/> until you delete the file. The binding does not delete
+    /// it; delete it only while no update of that output runs.</para>
     /// <para>Cost of files without section hashes: when the remote file or the local file has no section hashes,
     /// nothing is reused and the update downloads the whole file, even when the local file is identical to the
     /// remote file. Calling this method at every start then downloads the whole model every time. None of the
@@ -172,9 +177,10 @@ public static class LiteRtModelSync
     /// <see cref="LiteRtStatusCode.Unauthenticated"/> or <see cref="LiteRtStatusCode.PermissionDenied"/> for the
     /// matching HTTP status, <see cref="LiteRtStatusCode.DeadlineExceeded"/> for a timeout,
     /// <see cref="LiteRtStatusCode.Aborted"/> when the remote file changed during the call, and
-    /// <see cref="LiteRtStatusCode.DataLoss"/> when the remote returned other bytes than the ones asked for. The C
-    /// API also documents <see cref="LiteRtStatusCode.DataLoss"/> for a failure of the runtime to store the bytes
-    /// it receives, which is not a fault of the remote. The runtime does not retry a failed fetch. A remote that
+    /// <see cref="LiteRtStatusCode.DataLoss"/> when the remote returned other bytes than the ones asked for, or
+    /// fewer bytes than a range after the first one of the call (see <see cref="LiteRtModelSyncSource.FromHttp"/>).
+    /// The runtime also returns <see cref="LiteRtStatusCode.DataLoss"/> when it cannot write the temporary file,
+    /// which is not a fault of the remote. The runtime does not retry a failed fetch. A remote that
     /// cannot serve byte ranges makes the runtime download the whole file from byte 0: before that, an update that
     /// reuses sections makes two requests the remote cannot serve (the changed section, then the file after its
     /// header), and a first download makes one. Such a remote
@@ -372,11 +378,16 @@ public static class LiteRtModelSync
         {
             LiteRtStatusCode.ResourceExhausted =>
                 "The output's volume needs free space at least equal to the remote file's size, because the update " +
-                "writes a full temporary copy next to the output. The runtime's reason can mention a --clean flag; " +
-                "the binding has no equivalent.",
+                "writes a full temporary copy next to the output. The runtime's check does not discount an " +
+                "OUTPUT.tmp_updating left next to the output by an update that did not finish: if one is there and " +
+                "no update of that output runs, delete it. The runtime's reason can mention a --clean flag; the " +
+                "binding has no equivalent.",
             LiteRtStatusCode.PermissionDenied when runtimeCheck && update =>
                 "The runtime reports a file it cannot create, such as the temporary OUTPUT.tmp_updating next to the " +
                 "output, as PERMISSION_DENIED, whatever the cause. Check that the output's folder is writable.",
+            LiteRtStatusCode.Internal when runtimeCheck && reason?.Contains("but header requires", StringComparison.Ordinal) == true =>
+                "The remote returned fewer header bytes than its header declares: it may not be a .litertlm file, or " +
+                "it is damaged.",
             LiteRtStatusCode.Internal when update && reason?.Contains("Failed to rename temporary model", StringComparison.Ordinal) == true =>
                 "The runtime wrote the temporary file but could not replace the output with it, which happens on " +
                 "Windows while the output or its temporary file OUTPUT.tmp_updating is open: for example by a " +
@@ -386,9 +397,11 @@ public static class LiteRtModelSync
             LiteRtStatusCode.Internal when update =>
                 "The runtime could not write the output path. If the output is another spelling of the local file, " +
                 "such as a hard link or a short 8.3 name, pass the same path for both.",
-            LiteRtStatusCode.DataLoss when writerFailed && update =>
-                "The runtime could not store the bytes it received, so the remote is not the cause. Check the " +
-                "output's volume, for example its free space.",
+            // A failed write to the temporary file: by the writer during a fetch, or by the runtime itself (padding,
+            // a reused section, the final flush and close).
+            LiteRtStatusCode.DataLoss when update && (writerFailed || (runtimeCheck && LocalWriteFailure(reason))) =>
+                "The runtime could not write the temporary file next to the output, so the remote is not the " +
+                "cause. Check the output's volume, for example its free space.",
             LiteRtStatusCode.DataLoss when runtimeCheck && reason?.Contains("SHA-256", StringComparison.Ordinal) == true =>
                 "A downloaded section does not match the hash in the remote header: the remote file may have changed " +
                 "during the call, or it is corrupt.",
@@ -404,6 +417,14 @@ public static class LiteRtModelSync
                             "message is the one the call used.";
         return hint is null ? ansi : hint + " " + ansi;
     }
+
+    /// <summary>Whether the runtime's reason for a <c>DATA_LOSS</c> is a failed write of its own output stream,
+    /// such as "Failed to write padding bytes to output file." or "Failed to flush and close output model
+    /// file.".</summary>
+    private static bool LocalWriteFailure(string? reason) =>
+        reason is not null
+        && (reason.Contains("Failed to write", StringComparison.Ordinal)
+            || reason.Contains("Failed to flush", StringComparison.Ordinal));
 
     /// <summary><c>null</c> for a missing local file, else its full path in the binding's spelling.</summary>
     private static string? NormalizeLocal(string? localModelPath) =>

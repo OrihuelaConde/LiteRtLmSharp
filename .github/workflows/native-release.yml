@@ -70,9 +70,10 @@ env:
   CAPI_ZIP: litert_lm_c_api-${{ inputs.capi_version || '0.1.0' }}.zip
   PYPI_VERSION: ${{ inputs.pypi_version }}
   PLATFORMS: ${{ inputs.platforms || 'all' }}
-  # Minimum litert_lm_* export count we accept (v0.16.0 ships 144, v0.18.0 212, v0.20.0 242; the check catches a
-  # truncated or wrong-architecture binary, not a specific version).
-  MIN_EXPORTS: '140'
+  # Minimum litert_lm_* export count we accept: the number of distinct litert_lm_* functions the binding declares
+  # (203 for C API 1.1.0; v0.20.0 exports 242, 243 on Mach-O). The check catches a truncated or wrong-architecture
+  # binary, not a changed signature; each platform's list of required names catches a missing entry point.
+  MIN_EXPORTS: '203'
   # DirectX Shader Compiler runtime for win-x64 (the official DLL's Dawn requires DXC on D3D12 and
   # has no FXC fallback: without dxcompiler.dll the GPU engine fails to create, "DynamicLib.Open:
   # dxcompiler.dll Windows Error: 87"). dxil.dll ships alongside it; on LiteRT-LM v0.20.0 with one
@@ -307,7 +308,7 @@ jobs:
           # Session API (SESSION_EXPORTS) and model sync entry points (Mach-O names carry a leading
           # underscore). The model sync names are in .github/scripts/inspect-pe.py,
           # .github/scripts/assert-elf-exports.sh and ModelSyncAbiTests.cs.
-          for sym in $SESSION_EXPORTS litert_lm_model_sync_update litert_lm_model_sync_plan_create_from_file; do
+          for sym in litert_lm_get_api_version $SESSION_EXPORTS litert_lm_model_sync_update litert_lm_model_sync_plan_create_from_file; do
             grep -q " _${sym}\$" <<< "$syms" || { echo "::error::macos library lacks $sym"; exit 1; }
           done
           echo "--- minimum macOS version ---"
@@ -347,11 +348,14 @@ jobs:
           cnt=$(grep -c ' _litert_lm_' <<< "$syms" || true)
           echo "exported litert_lm_* symbols: $cnt"
           [ "$cnt" -ge "$MIN_EXPORTS" ] || { echo "::error::expected >= $MIN_EXPORTS litert_lm_* exports, got $cnt"; exit 1; }
-          for sym in $SESSION_EXPORTS litert_lm_model_sync_update litert_lm_model_sync_plan_create_from_file; do
+          for sym in litert_lm_get_api_version $SESSION_EXPORTS litert_lm_model_sync_update litert_lm_model_sync_plan_create_from_file; do
             grep -q " _${sym}\$" <<< "$syms" || { echo "::error::ios device binary lacks $sym"; exit 1; }
           done
-          echo "--- GPU companions referenced by name (documented: CPU-only with the xcframework alone) ---"
-          strings "$device" | grep -E 'libLiteRt(MetalAccelerator|TopKMetalSampler)\.dylib' | sort -u || true
+          # The v0.20.0 framework links the Metal accelerator and the TopK Metal sampler (it still names their
+          # dylibs, for the factory's dynamic-load path). Logged, not enforced: nothing has run on an iOS device,
+          # and the CPU backend stays the supported path there.
+          echo "--- Metal accelerator and TopK Metal sampler linked into the device binary ---"
+          nm -U "$device" | grep -E ' _LiteRtTopKMetalSampler_Create$|GpuMetalAccelerator' | head -5 || true
           ls -R artifacts/ios | head -40
 
       - uses: actions/upload-artifact@v4

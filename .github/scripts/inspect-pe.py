@@ -30,6 +30,7 @@ print(f"exports: {len(exports)} total, {len(capi)} litert_lm_*")
 if len(capi) < min_exports:
     sys.exit(f"::error::{path} exports {len(capi)} litert_lm_* functions, expected at least {min_exports}")
 REQUIRED = (
+    "litert_lm_get_api_version",
     "litert_lm_engine_create", "litert_lm_conversation_create",
     "litert_lm_conversation_send_message_stream", "litert_lm_stream_chunk_get_error",
     # Session API. The same names are in .github/scripts/assert-elf-exports.sh, in SESSION_EXPORTS of

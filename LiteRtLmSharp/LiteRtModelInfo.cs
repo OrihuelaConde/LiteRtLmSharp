@@ -71,7 +71,8 @@ public sealed class LiteRtModelInfo
     public IReadOnlyDictionary<LiteRtModality, IReadOnlyList<LiteRtBackend>> SupportedBackends { get; private init; } =
         new Dictionary<LiteRtModality, IReadOnlyList<LiteRtBackend>>();
 
-    /// <summary>Gets the sampler the model declares as its default, or <c>null</c> when it declares none.</summary>
+    /// <summary>Gets the sampler the model declares as its default, or <c>null</c> when it declares none, or
+    /// declares one whose top-p or temperature is not a finite number.</summary>
     public LiteRtSamplerParams? DefaultSampler { get; private init; }
 
     /// <summary>Gets the largest per-image vision token budget the model supports, or <c>null</c> when it
@@ -219,9 +220,10 @@ public sealed class LiteRtModelInfo
             SupportsSpeculativeDecoding = speculative != 0,
             InputModalities = modalities,
             SupportedBackends = backends,
-            // A sampler declared with NaN values (a malformed file) reads as undeclared rather than throwing.
+            // A sampler declared with NaN or infinite values (a malformed file) reads as undeclared rather than
+            // throwing.
             DefaultSampler = samplerType is LiteRtLmSamplerType.TopK or LiteRtLmSamplerType.TopP or LiteRtLmSamplerType.Greedy
-                             && !float.IsNaN(topP) && !float.IsNaN(temperature)
+                             && float.IsFinite(topP) && float.IsFinite(temperature)
                 ? new LiteRtSamplerParams
                 {
                     Strategy = (LiteRtSamplerType)samplerType,

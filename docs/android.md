@@ -16,8 +16,9 @@ resolver.
 
 - **Native binary** (`native-release.yml`): ✅ Google's official `liblitert-lm.so` for
   `android_arm64` and `android_x86_64`, each shipped as a single `libLiteRtLm.so` with the
-  OpenCL/WebGPU accelerators, the GPU samplers and the constraint provider embedded (16 KB page
-  alignment, the Google Play requirement, is asserted by the workflow). The v0.20.0 libraries declare
+  OpenCL and OpenGL ES accelerator, the OpenCL TopK sampler and the constraint provider embedded (16 KB
+  page alignment, the Google Play requirement, is asserted by the workflow). The v0.20.0 libraries
+  include neither WebGPU nor Vulkan; they link `libGLESv3.so` and `libEGL.so`. The v0.20.0 libraries declare
   Android 7.0 (API 24) as their minimum. They have run on API 35 only (the x86_64 emulator); loading on
   API 24 was not tested. Until v0.15.0 it was built here with Bazel and shipped
   next to upstream's companion `.so` files; the sections below that mention companions or the
@@ -151,8 +152,9 @@ physical Android device: the last device validation is item 7 (LiteRtLmSharp 1.3
    See [sessions.md](sessions.md) and [model-sync.md](model-sync.md).
 
 ## Risks
-- Vendor GPU drivers (see the diagnosis below): older Adreno Vulkan drivers break Dawn's shaders,
-  and OpenCL must be reachable through the manifest declaration.
+- Vendor GPU drivers (see the diagnosis below): OpenCL must be reachable through the manifest
+  declaration. With the self-built libraries, an older Adreno Vulkan driver broke Dawn's shaders; the
+  v0.20.0 libraries don't include Dawn.
 - Model size/memory on low-RAM devices.
 - Activation precision on mobile GPUs. Since 1.3.0 the binding asks for F32 activations by default
   (`LiteRtEngineOptions.ActivationDataType`), because the runtime's F16 default corrupts structured
