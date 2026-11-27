@@ -98,6 +98,9 @@ public sealed class LiteRtModelInfo
     /// <summary>Reads the metadata of the model file at <paramref name="modelPath"/>.</summary>
     /// <param name="modelPath">The path to the <c>.litertlm</c> file.</param>
     /// <returns>The model's declared metadata.</returns>
+    /// <remarks>On Windows, keep the path shorter than 260 characters: with LiteRT-LM v0.20.0, as with v0.18.0, the
+    /// runtime failed to open a plain path of 301 characters ("Failed to open"), here and in
+    /// <see cref="LiteRtEmbeddingEngine.Load"/>.</remarks>
     /// <exception cref="ArgumentException"><paramref name="modelPath"/> is empty or the file does not exist.</exception>
     /// <exception cref="LiteRtException">The native layer could not open the file as a model, or the native
     /// library's C API version does not match this binding.</exception>

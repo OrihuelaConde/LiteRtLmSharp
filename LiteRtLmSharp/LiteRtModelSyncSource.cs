@@ -34,8 +34,9 @@ public abstract class LiteRtModelSyncSource
     /// <item><description>206: the <c>Content-Range</c> header must start at the requested byte, or the call
     /// fails with <see cref="LiteRtStatusCode.DataLoss"/>. A body that ends before the range it declares fails the
     /// call with <see cref="LiteRtStatusCode.Unavailable"/>. A 206 that carries fewer bytes than asked is complete
-    /// when it ends at the end of the file, or when its <c>Content-Range</c> gives no file size; otherwise the
-    /// source asks for the rest of the range with another <c>GET</c>.</description></item>
+    /// when it ends at the end of the file; otherwise the source asks for the rest of the range with another
+    /// <c>GET</c>. When the <c>Content-Range</c> gives no file size, a 416 to that request means that the file
+    /// ended there.</description></item>
     /// <item><description>200, the whole file: the source serves a request at byte 0 from the first bytes of the
     /// body. A 200 to the request for the rest of a range, after a 206 with a part of it, fails the call with
     /// <see cref="LiteRtStatusCode.Unknown"/>. To the first request of a range that starts after byte 0, the

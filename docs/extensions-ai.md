@@ -623,7 +623,10 @@ throws with a message naming the likely cause.
 
 In the stateless (default) mode, the client also sends the media of earlier user turns with the restored
 history, so the model can answer about an image from an earlier turn. This was measured with an image, with
-LiteRT-LM v0.20.0 on win-x64 (gemma-4 E2B, CPU and GPU). Remote (non-`file://`) URIs are skipped — the on-device engine cannot fetch them, so supply bytes
+LiteRT-LM v0.20.0 on win-x64 (gemma-4 E2B, CPU and GPU). The overflow guard doesn't count the tokens of
+those earlier images. With `MaxNumTokens` set to 1,024, a long reply to such a request ran to the end of the
+context instead of stopping at the guard's margin, and it finished with `ChatFinishReason.Length` (same
+conditions). Remote (non-`file://`) URIs are skipped — the on-device engine cannot fetch them, so supply bytes
 or a local file.
 
 ## Token usage

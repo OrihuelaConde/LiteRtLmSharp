@@ -383,6 +383,8 @@ public sealed class ModelSyncTests : IDisposable
     [Fact]
     public async Task SectionOrHeaderWritePastTheLength_FailsWithDataLoss()
     {
+        // The header half fails only because of the binding's check: the runtime accepts extra header bytes. For a
+        // section, the runtime's own size check returns the same status, so that half does not tell the two apart.
         string local = Put("a.litertlm", ModelSyncFixtures.A);
         var section = new ModelSyncMemorySource(ModelSyncFixtures.A1)
         {

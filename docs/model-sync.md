@@ -595,8 +595,9 @@ Every request that `FromHttp` sends is a `GET` with a closed `Range: bytes=FIRST
 Content` answer must carry a `Content-Range` header that starts at the requested byte, or the call fails with
 `LiteRtStatusCode.DataLoss`. When a 206 carries fewer bytes than requested and doesn't reach the end of the
 file, the source asks for the rest of the range with another `GET`. A server that answers with a part of each
-range costs one request per part. A 206 whose `Content-Range` doesn't give the file size, such as
-`bytes 0-1023/*`, counts as complete.
+range costs one request per part. When the `Content-Range` of a short 206 doesn't give the file size, such as
+`bytes 0-1023/*`, the source also asks for the rest, and a `416 Range Not Satisfiable` answer to that request
+means that the file ended there.
 
 ## Windows paths
 

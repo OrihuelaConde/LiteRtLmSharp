@@ -76,6 +76,8 @@ internal sealed class ModelSyncHttpSource : LiteRtModelSyncSource
     {
         long last = offset + length - 1;
         long next = offset;
+        // Set after a 206 that carried less than asked and did not say where the file ends.
+        bool endUnknown = false;
         while (true)
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, Uri);
@@ -83,6 +85,10 @@ internal sealed class ModelSyncHttpSource : LiteRtModelSyncSource
 
             using HttpResponseMessage response = await SendAsync(request, cancellationToken).ConfigureAwait(false);
             int status = (int)response.StatusCode;
+            // The request for the rest of a range, after an answer that did not say where the file ends: 416 says
+            // that the file ended where that answer did, so the range is complete.
+            if (status == 416 && endUnknown)
+                return true;
             if (status is not (200 or 206))
                 throw new HttpRequestException(
                     $"The remote answered {status} ({response.ReasonPhrase}) to the request for bytes {next}-{last}.",
@@ -128,10 +134,12 @@ internal sealed class ModelSyncHttpSource : LiteRtModelSyncSource
                     $"The response to the request for bytes {next}-{last} ended after {copied} of {count} bytes.");
             next += copied;
             // A 206 may carry less than asked (RFC 9110, section 15.3.7). It completes the range only when it ends
-            // at the end of the file, or when the remote does not say where the file ends; otherwise the source
-            // asks for the rest.
-            if (next > last || response.StatusCode != HttpStatusCode.PartialContent || fileLength is not { } size || next >= size)
+            // at the end of the file; otherwise the source asks for the rest. When the remote does not say where
+            // the file ends, the source asks too, and a 416 to that request means the file ended there: taking
+            // the short answer as the whole range would leave a truncated file without an error.
+            if (next > last || response.StatusCode != HttpStatusCode.PartialContent || (fileLength is { } size && next >= size))
                 return true;
+            endUnknown = fileLength is null;
         }
     }
 

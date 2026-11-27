@@ -171,16 +171,25 @@ public sealed class ModelSyncHttpTests : IDisposable
     }
 
     [Fact]
-    public async Task PartialAnswer_WithoutAFileSize_IsComplete()
+    public async Task PartialAnswer_WithoutAFileSize_AsksForTheRest_UntilTheRemoteSaysTheFileEnded()
     {
-        // "bytes 0-3715/*": the remote does not say where the file ends, so the answer is taken as the whole range.
+        // "bytes 0-3715/*": the remote does not say where the file ends, so the source asks for the rest of the
+        // range, and the 416 to that request says the file ended there.
         byte[] remote = ModelSyncFixtures.Small;
         var server = new FakeModelServer(remote) { UnknownLength = true };
         string output = PathIn("small.litertlm");
         LiteRtModelUpdateResult result = await LiteRtModelSync.UpdateAsync(null, output, Source(server));
-        Assert.Equal(["bytes=0-16383", "bytes=912-3715"], server.Requests.Select(r => r.Range));
+        Assert.Equal(["bytes=0-16383:206", "bytes=3716-16383:416", "bytes=912-3715:206"], server.Requests.Select(r => r.ToString()));
         Assert.Equal(6520, result.BytesReceived);
         AssertBytes(remote, output);
+
+        // A remote that also cuts every answer short. The file has no section hashes, so the runtime would not
+        // notice missing bytes: a short answer taken as the whole range would leave a truncated file with no error.
+        byte[] noHashes = ModelSyncFixtures.H;
+        var cut = new FakeModelServer(noHashes) { UnknownLength = true, MaxPartial = 8000 };
+        string cutOutput = PathIn("h.litertlm");
+        await LiteRtModelSync.UpdateAsync(null, cutOutput, Source(cut));
+        AssertBytes(noHashes, cutOutput);
     }
 
     [Fact]
